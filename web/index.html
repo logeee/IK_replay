@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>G1-D 手臂 IK Demo</title>
+    <link rel="stylesheet" href="/web/style.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/web/vendor/three.module.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="control-panel">
+        <header class="app-header">
+          <h1>G1-D 手臂 IK Demo</h1>
+          <div class="subtle">离线 IK、轨迹规划与碰撞可视化</div>
+        </header>
+
+        <section class="panel-section">
+          <div class="row two">
+            <label>
+              <span>手臂</span>
+              <select id="armSelect">
+                <option value="left">左臂</option>
+                <option value="right">右臂</option>
+              </select>
+            </label>
+            <label>
+              <span>轨迹点数</span>
+              <input id="stepsInput" type="number" min="10" max="500" value="80" />
+            </label>
+          </div>
+          <label>
+            <span>时长（秒）</span>
+            <input id="durationInput" type="number" min="0.1" step="0.1" value="4.0" />
+          </label>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-title">当前关节角</div>
+          <div id="jointFields" class="joint-grid"></div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-title">目标点 XYZ（米）</div>
+          <div class="row three">
+            <label><span>X</span><input id="targetX" type="number" step="0.01" /></label>
+            <label><span>Y</span><input id="targetY" type="number" step="0.01" /></label>
+            <label><span>Z</span><input id="targetZ" type="number" step="0.01" /></label>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-title">TCP 偏移（米）</div>
+          <div class="row three">
+            <label><span>X</span><input id="tcpX" type="number" step="0.01" /></label>
+            <label><span>Y</span><input id="tcpY" type="number" step="0.01" /></label>
+            <label><span>Z</span><input id="tcpZ" type="number" step="0.01" /></label>
+          </div>
+        </section>
+
+        <section class="panel-section actions">
+          <button id="planBtn" class="primary-button" type="button">规划</button>
+          <button id="playBtn" class="secondary-button" type="button">播放</button>
+          <button id="resetBtn" class="secondary-button" type="button">重置</button>
+        </section>
+
+        <section class="metric-grid">
+          <div class="metric">
+            <span>IK</span>
+            <strong id="ikMetric">-</strong>
+          </div>
+          <div class="metric">
+            <span>误差</span>
+            <strong id="errorMetric">-</strong>
+          </div>
+          <div class="metric">
+            <span>轨迹点</span>
+            <strong id="pointsMetric">-</strong>
+          </div>
+          <div class="metric">
+            <span>碰撞</span>
+            <strong id="collisionMetric">-</strong>
+          </div>
+        </section>
+
+        <div id="messageBox" class="message-box">就绪。</div>
+      </aside>
+
+      <main class="viewer-panel">
+        <div id="viewport" class="viewport"></div>
+        <div class="viewer-overlay">
+          <span id="statusPill" class="status-pill safe">安全</span>
+          <span id="frameLabel">帧 0 / 0</span>
+          <span id="tcpLabel">tcp -</span>
+        </div>
+      </main>
+    </div>
+
+    <script type="module" src="/web/main.js?v=19"></script>
+  </body>
+</html>
