@@ -1,29 +1,27 @@
-# G1-D Arm IK, Trajectory, and Collision Demo
+# IK Replay Debug Viewer
 
-Standalone offline demo for Unitree G1-D arm inverse kinematics, smooth trajectory planning, simplified collision checking, and browser-based 3D playback.
+Offline web tool for generic robot IK visualization and trajectory replay.
 
-This project does not connect to a real robot and does not send robot control commands.
+The current version is intentionally offline. It loads a URDF, lets you edit joints and target TCP pose in the browser, calls a backend IK solver, plans a joint trajectory, and replays the result in a Three.js viewer. It does not connect to a robot, subscribe to robot state, run a data-recording workflow, use VR input, or send control commands.
 
-## Features
+## What Is Included
 
-- Loads `assets/g1_d_description/g1_d.urdf` and local STL meshes.
-- Supports left and right 7-DoF arm chains.
-- Accepts `current_joints`, `target_xyz`, `tcp_offset`, and `arm`.
-- Solves position-only numerical IK through a replaceable solver interface.
-- Generates quintic joint-space trajectories.
-- Checks each trajectory frame against simplified primitives:
-  - torso box
-  - head sphere
-  - upper arm and forearm capsules
-  - TCP sphere
-- Plays the planned motion in a local Three.js UI.
-- Uses green, yellow, and red status colors for safe, near, and collision.
+- URDF loading with relative mesh paths.
+- Generic `RobotModel` with FK and TCP pose calculation.
+- Replaceable IK solver interface.
+- Numerical IK solver for the first working version.
+- Replaceable trajectory planner interface.
+- Linear and quintic joint-space planners.
+- Browser 3D viewer with robot mesh, target marker, TCP marker, TCP path, replay controls, and debug output.
+- Configurable simplified collision regions with sphere, box, and capsule primitives.
+- YAML config for robot, chains, TCP, collision, solver, planner, and viewer defaults.
+- G1-D and H2 as example robots, not as core framework logic.
 
 ## Run
 
 ```bash
 pip install -r requirements.txt
-python app.py
+python3 app.py
 ```
 
 Open:
@@ -36,88 +34,70 @@ http://localhost:8000
 
 - `GET /`
 - `GET /api/robot/metadata`
+- `POST /api/fk`
 - `POST /api/ik/solve`
 - `POST /api/trajectory/plan`
 - `POST /api/collision/check`
-- `POST /api/demo/plan`
+- `POST /api/demo/solve_and_plan`
+- `POST /api/demo/plan` legacy-compatible alias for the original position-IK demo flow
 
-Example:
-
-```bash
-curl -X POST http://localhost:8000/api/demo/plan \
-  -H "Content-Type: application/json" \
-  -d "{\"arm\":\"left\",\"current_joints\":[0,0.25,0,0.85,0,-0.35,0],\"target_xyz\":[0.34,0.28,0.65],\"tcp_offset\":[0.08,0,0],\"steps\":80,\"duration\":4}"
-```
-
-## Replace the IK Module
-
-The IK boundary is `core/ik_solver.py`.
-
-Keep this call signature:
-
-```python
-solve(current_joints, target_xyz, tcp_offset, arm) -> IKResult
-```
-
-`IKResult` should continue to return:
-
-- `success`
-- `target_joints`
-- `named_target_joints`
-- `error_mm`
-- `message`
-- `tcp_position`
-
-To replace with Pinocchio, MoveIt, or a custom solver, create another class that implements `IKSolver.solve(...)`, then swap the instance in `app.py`:
-
-```python
-ik_solver = MyPinocchioIKSolver(robot)
-```
-
-## Replace the URDF or Meshes
-
-Put the new robot description under:
+## Project Shape
 
 ```text
-assets/g1_d_description/
+IK_replay/
+├── app.py
+├── config/
+│   ├── default.yaml
+│   └── robots/
+│       ├── g1_d.yaml
+│       └── h2.yaml
+├── assets/robots/
+│   ├── g1_d/
+│   │   ├── robot.urdf
+│   │   └── meshes/
+│   └── h2/
+│       ├── robot.urdf
+│       └── meshes/
+├── core/
+├── ik/
+├── planners/
+├── web/
+└── examples/
 ```
 
-Required:
+## Replacing The Robot
 
-```text
-g1_d.urdf
-meshes/
-```
+Create a new robot YAML under `config/robots/`, then point `config/default.yaml` at it.
 
-Then update `core/config.py` if joint names, end links, or arm chains differ:
+Required robot settings:
 
-- `ARM_JOINTS`
-- `ARM_END_LINKS`
-- `ARM_LINKS`
+- `robot.urdf_path`
+- `robot.mesh_root`
+- `chain.base_link`
+- `chain.end_link`
+- `chain.joints`
+- `tcp.offset_xyz`
+- `tcp.offset_rpy`
+- optional `collision.body` and `collision.chains.*.shapes`
 
-The browser loader expects mesh paths in the URDF to resolve relative to `/assets/g1_d_description/`.
+Do not put robot-specific joint names in `app.py`, `web/main.js`, or solver code.
 
-## Feed Real Robot Joints Later
+## Collision Regions
 
-This demo is offline only. To connect later, keep the frontend/API contract unchanged and add a separate adapter that reads real robot states into the same 7-value `current_joints` list:
+URDF collision tags are not required. Each robot YAML can define approximate collision primitives:
 
-```python
-current_joints = [
-    shoulder_pitch,
-    shoulder_roll,
-    shoulder_yaw,
-    elbow,
-    wrist_roll,
-    wrist_pitch,
-    wrist_yaw,
-]
-```
+- `box`: linked oriented box with `half_extents`.
+- `sphere`: linked sphere or TCP sphere.
+- `capsule`: segment between two linked points.
 
-Do not send control commands from this demo. If you later add execution, put it in a separate module with explicit safety checks, command limits, and operator confirmation.
+The backend checks each configured arm primitive against configured body primitives and returns `safe`, `near`, `collision`, or `unconfigured`.
 
-## Notes
+## Replacing IK Or Trajectory
 
-- Collision is approximate and for visualization only.
-- Mesh collision is intentionally not used in the first version.
-- IK solves TCP position, not end-effector orientation.
-- The Three.js runtime files are vendored in `web/vendor/` so the page does not need a CDN at runtime.
+Add a new solver under `ik/` that implements `BaseIKSolver.solve(IKRequest) -> IKResult`, then register it in `app.py` and select it in config or the UI.
+
+Add a new planner under `planners/` that implements `BaseTrajectoryPlanner.plan(TrajectoryRequest) -> list[Waypoint]`, then register it in `app.py` and select it in config or the UI.
+
+## Future Extensions
+
+VR input, replay-file input, ROS adapters, robot-state providers, mesh-level collision, and command executors should be added as optional adapters around the current API contract. They are not implemented in this version.

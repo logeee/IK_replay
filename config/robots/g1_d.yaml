@@ -1,0 +1,146 @@
+robot:
+  name: g1_d
+  display_name: G1-D 示例机器人
+  urdf_path: assets/robots/g1_d/robot.urdf
+  mesh_root: assets/robots/g1_d
+
+chains:
+  right_arm:
+    display_name: 画面左侧手臂
+    subtitle: 机器人右臂 / right_arm
+    panel_side: left
+    base_link: torso_link
+    end_link: right_wrist_yaw_link
+    target_visual_link: right_wrist_yaw_link
+    joints:
+      - right_shoulder_pitch_joint
+      - right_shoulder_roll_joint
+      - right_shoulder_yaw_joint
+      - right_elbow_joint
+      - right_wrist_roll_joint
+      - right_wrist_pitch_joint
+      - right_wrist_yaw_joint
+    display_links:
+      - torso_link
+      - right_shoulder_pitch_link
+      - right_shoulder_roll_link
+      - right_shoulder_yaw_link
+      - right_elbow_link
+      - right_wrist_roll_link
+      - right_wrist_pitch_link
+      - right_wrist_yaw_link
+      - right_hand_palm_link
+
+  left_arm:
+    display_name: 画面右侧手臂
+    subtitle: 机器人左臂 / left_arm
+    panel_side: right
+    base_link: torso_link
+    end_link: left_wrist_yaw_link
+    target_visual_link: left_wrist_yaw_link
+    joints:
+      - left_shoulder_pitch_joint
+      - left_shoulder_roll_joint
+      - left_shoulder_yaw_joint
+      - left_elbow_joint
+      - left_wrist_roll_joint
+      - left_wrist_pitch_joint
+      - left_wrist_yaw_joint
+    display_links:
+      - torso_link
+      - left_shoulder_pitch_link
+      - left_shoulder_roll_link
+      - left_shoulder_yaw_link
+      - left_elbow_link
+      - left_wrist_roll_link
+      - left_wrist_pitch_link
+      - left_wrist_yaw_link
+      - left_hand_palm_link
+
+tcp:
+  default:
+    offset_xyz: [0.08, 0.0, 0.0]
+    offset_rpy: [0.0, 0.0, 0.0]
+
+initial_joints:
+  right_arm:
+    right_shoulder_pitch_joint: 0.0
+    right_shoulder_roll_joint: -0.25
+    right_shoulder_yaw_joint: 0.0
+    right_elbow_joint: 0.85
+    right_wrist_roll_joint: 0.0
+    right_wrist_pitch_joint: -0.35
+    right_wrist_yaw_joint: 0.0
+  left_arm:
+    left_shoulder_pitch_joint: 0.0
+    left_shoulder_roll_joint: 0.25
+    left_shoulder_yaw_joint: 0.0
+    left_elbow_joint: 0.85
+    left_wrist_roll_joint: 0.0
+    left_wrist_pitch_joint: -0.35
+    left_wrist_yaw_joint: 0.0
+
+collision:
+  enabled: true
+  near_margin_m: 0.04
+  body:
+    - name: torso_box
+      kind: box
+      link: torso_link
+      xyz: [0.02, 0.0, 0.20]
+      rpy: [0.0, 0.0, 0.0]
+      half_extents: [0.13, 0.085, 0.23]
+    - name: head_sphere
+      kind: sphere
+      link: torso_link
+      xyz: [0.03, 0.0, 0.48]
+      radius: 0.13
+  chains:
+    right_arm:
+      shapes:
+        - name: upper_arm
+          kind: capsule
+          a:
+            link: right_shoulder_yaw_link
+            toward: right_elbow_link
+            t: 0.22
+          b:
+            link: right_elbow_link
+          radius: 0.045
+        - name: forearm
+          kind: capsule
+          a:
+            link: right_elbow_link
+          b:
+            link: right_wrist_yaw_link
+            toward: right_hand_palm_link
+            t: 0.85
+          radius: 0.04
+        - name: tcp
+          kind: sphere
+          tcp: true
+          radius: 0.05
+    left_arm:
+      shapes:
+        - name: upper_arm
+          kind: capsule
+          a:
+            link: left_shoulder_yaw_link
+            toward: left_elbow_link
+            t: 0.22
+          b:
+            link: left_elbow_link
+          radius: 0.045
+        - name: forearm
+          kind: capsule
+          a:
+            link: left_elbow_link
+          b:
+            link: left_wrist_yaw_link
+            toward: left_hand_palm_link
+            t: 0.85
+          radius: 0.04
+        - name: tcp
+          kind: sphere
+          tcp: true
+          radius: 0.05

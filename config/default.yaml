@@ -1,0 +1,26 @@
+active_robot: g1_d
+
+robots:
+  g1_d:
+    config_path: config/robots/g1_d.yaml
+  h2:
+    config_path: config/robots/h2.yaml
+
+ik:
+  solver: numerical
+  max_iterations: 180
+  tolerance_mm: 8.0
+  rotation_tolerance_deg: 10.0
+  position_weight: 1.0
+  rotation_weight: 0.18
+  regularization_weight: 0.003
+
+trajectory:
+  planner: quintic
+  duration: 4.0
+  steps: 80
+
+viewer:
+  show_tcp: true
+  show_target: true
+  show_trajectory: true

@@ -1,5 +1,6 @@
 fastapi>=0.110
 uvicorn[standard]>=0.29
+pydantic>=2.6
+PyYAML>=6.0
 numpy>=1.26
 scipy>=1.11
-pydantic>=2.6

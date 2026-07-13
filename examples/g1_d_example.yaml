@@ -1,0 +1,26 @@
+robot_config: config/robots/g1_d.yaml
+
+current_joints:
+  left_shoulder_pitch_joint: 0.0
+  left_shoulder_roll_joint: 0.25
+  left_shoulder_yaw_joint: 0.0
+  left_elbow_joint: 0.85
+  left_wrist_roll_joint: 0.0
+  left_wrist_pitch_joint: -0.35
+  left_wrist_yaw_joint: 0.0
+
+target_pose:
+  xyz: [0.34, 0.28, 0.65]
+  rpy: [0.0, 0.0, 0.0]
+
+tcp_offset:
+  xyz: [0.08, 0.0, 0.0]
+  rpy: [0.0, 0.0, 0.0]
+
+ik:
+  solver: numerical
+
+trajectory:
+  planner: quintic
+  duration: 4.0
+  steps: 80
