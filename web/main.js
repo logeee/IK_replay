@@ -139,6 +139,11 @@ async function loadRobotData(robotId = null) {
     updateGroundFrame();
     for (const panel of Object.values(state.panels)) {
       ensureTargetHand(panel);
+      if (panel.dom.switchHeight) {
+        // This field is explicitly a ground-frame height. Convert it only when
+        // building the pelvis-frame API request, using the loaded model offset.
+        panel.dom.switchHeight.value = "1.70";
+      }
       writePose(panel, "target", poseToScene(panel.chain.default_target_pose));
       updateTargetMarker(panel);
     }
@@ -185,6 +190,7 @@ function renderArmPanel(panelElement, side, entry) {
 
   const color = PANEL_COLORS[side];
   const { chainId, chain } = entry;
+  const isH2SwitchDemo = state.activeRobot === "h2" && chainId === "right_arm";
   panelElement.className = `control-panel arm-panel ${side}`;
   panelElement.innerHTML = `
     <header class="panel-header ${side}">
@@ -269,6 +275,33 @@ function renderArmPanel(panelElement, side, entry) {
       <div data-role="collisionMessage" class="message-line">-</div>
     </section>
 
+    ${isH2SwitchDemo ? `
+    <section class="panel-section switch-demo-section">
+      <div class="section-title">H2 开关两关键动作 IK</div>
+      <div class="row three">
+        <label><span>X 前方距离（m）</span><input data-role="switchDistance" type="number" min="0.22" max="0.55" step="0.01" value="0.40" /></label>
+        <label><span>Y 左侧偏移（m）</span><input data-role="switchLateral" type="number" min="-0.20" max="0.24" step="0.01" value="0.08" /></label>
+        <label><span>Z 地面高度（m）</span><input data-role="switchHeight" type="number" min="0.5" max="2.4" step="0.01" value="1.70" /></label>
+      </div>
+      <div class="row three">
+        <label><span>初始动作角</span><input data-role="startAngle" type="number" min="-80" max="80" step="5" value="-25" /></label>
+        <label><span>最终动作角</span><input data-role="endAngle" type="number" min="-80" max="80" step="5" value="25" /></label>
+        <label><span>中间轨迹</span><select data-role="keyframePath"><option value="arc">圆弧</option><option value="linear">直线</option></select></label>
+      </div>
+      <button data-role="switchPlan" class="switch-button" type="button">求解两个动作并规划</button>
+      <div class="switch-export-row">
+        <button data-role="exportTask" type="button" disabled>导出 IK 任务 JSON</button>
+        <button data-role="exportJoints" type="button" disabled>导出参考关节 CSV</button>
+      </div>
+      <div class="switch-status">
+        <span data-role="switchStage">等待生成</span>
+        <strong data-role="contactState">指尖：未接触</strong>
+      </div>
+      <div data-role="postureHint" class="message-line">默认自然 IK：位置 1.0、手腕 0.08、姿态 0.008、连续性 0.002。</div>
+      <div class="message-line">坐标方向：X 向机器人前方，Y 向机器人左侧（右侧为负），Z 从地面向上。</div>
+      <div class="message-line"><span class="keyframe-dot start"></span>绿色：初始动作　<span class="keyframe-dot end"></span>红色：最终动作</div>
+    </section>` : ""}
+
     <section class="panel-section">
       <div class="section-title">轨迹</div>
       <div class="row three">
@@ -314,6 +347,12 @@ function renderArmPanel(panelElement, side, entry) {
     tcpGroup: createPoseMarker(color, 0.02),
     trajectoryGroup: new THREE.Group(),
     skeletonGroup: new THREE.Group(),
+    switchGroup: new THREE.Group(),
+    switchHandle: null,
+    switchTurnAngle: 0,
+    fingertipMarker: null,
+    lastSwitchData: null,
+    lastSwitchRequest: null,
     fkTimer: 0,
     dom: {
       jointFields: panelElement.querySelector('[data-role="jointFields"]'),
@@ -349,6 +388,18 @@ function renderArmPanel(panelElement, side, entry) {
       collisionPair: panelElement.querySelector('[data-role="collisionPair"]'),
       collisionCounts: panelElement.querySelector('[data-role="collisionCounts"]'),
       collisionMessage: panelElement.querySelector('[data-role="collisionMessage"]'),
+      switchDistance: panelElement.querySelector('[data-role="switchDistance"]'),
+      switchLateral: panelElement.querySelector('[data-role="switchLateral"]'),
+      switchHeight: panelElement.querySelector('[data-role="switchHeight"]'),
+      startAngle: panelElement.querySelector('[data-role="startAngle"]'),
+      endAngle: panelElement.querySelector('[data-role="endAngle"]'),
+      keyframePath: panelElement.querySelector('[data-role="keyframePath"]'),
+      switchPlan: panelElement.querySelector('[data-role="switchPlan"]'),
+      switchStage: panelElement.querySelector('[data-role="switchStage"]'),
+      contactState: panelElement.querySelector('[data-role="contactState"]'),
+      postureHint: panelElement.querySelector('[data-role="postureHint"]'),
+      exportTask: panelElement.querySelector('[data-role="exportTask"]'),
+      exportJoints: panelElement.querySelector('[data-role="exportJoints"]'),
       planner: panelElement.querySelector('[data-role="planner"]'),
       duration: panelElement.querySelector('[data-role="duration"]'),
       steps: panelElement.querySelector('[data-role="steps"]'),
@@ -367,7 +418,7 @@ function renderArmPanel(panelElement, side, entry) {
     object.userData.targetMarker = true;
   });
 
-  state.helperRoot.add(panel.targetGroup, panel.tcpGroup, panel.trajectoryGroup, panel.skeletonGroup);
+  state.helperRoot.add(panel.targetGroup, panel.tcpGroup, panel.trajectoryGroup, panel.skeletonGroup, panel.switchGroup);
   state.panels[chainId] = panel;
   renderSelectors(panel);
   renderJointInputs(panel);
@@ -467,12 +518,25 @@ function bindPanelEvents(panel) {
   });
   panel.dom.solve.addEventListener("click", () => solveIk(panel));
   panel.dom.plan.addEventListener("click", () => planTrajectory(panel));
+  panel.dom.switchPlan?.addEventListener("click", () => planH2SwitchOperation(panel));
+  panel.dom.exportTask?.addEventListener("click", () => exportSwitchTask(panel));
+  panel.dom.exportJoints?.addEventListener("click", () => exportSwitchJoints(panel));
   panel.dom.replay.addEventListener("click", () => replay(panel));
   panel.dom.pause.addEventListener("click", () => pause(panel));
   panel.dom.step.addEventListener("click", () => stepFrame(panel));
   panel.dom.speed.addEventListener("input", () => {
     panel.dom.speedLabel.textContent = `${Number(panel.dom.speed.value).toFixed(2)}x`;
   });
+  for (const input of [
+    panel.dom.switchDistance,
+    panel.dom.switchLateral,
+    panel.dom.switchHeight,
+    panel.dom.startAngle,
+    panel.dom.endAngle,
+    panel.dom.keyframePath,
+  ].filter(Boolean)) {
+    input.addEventListener("change", () => invalidateSwitchExport(panel));
+  }
   for (const input of panel.dom.target) {
     input.addEventListener("input", () => {
       panel.currentIk = null;
@@ -495,6 +559,7 @@ function onJointEdit(panel) {
   panel.frames = [];
   panel.trajectoryGroup.clear();
   updateCollisionMetrics(panel, null);
+  invalidateSwitchExport(panel);
   applyJointInputsToRobot(panel);
   updateFrameLabel();
 }
@@ -664,6 +729,302 @@ async function planTrajectory(panel, options = {}) {
   }
 }
 
+function invalidateSwitchExport(panel) {
+  panel.lastSwitchData = null;
+  panel.lastSwitchRequest = null;
+  if (panel.dom.exportTask) panel.dom.exportTask.disabled = true;
+  if (panel.dom.exportJoints) panel.dom.exportJoints.disabled = true;
+}
+
+async function planH2SwitchOperation(panel) {
+  if (state.activeRobot !== "h2" || panel.chainId !== "right_arm") {
+    return;
+  }
+  pause(panel);
+  panel.dom.switchPlan.disabled = true;
+  panel.dom.switchStage.textContent = "正在求解初始与最终动作";
+  setState("正在规划 H2 两关键动作", "warn");
+  const payload = {
+    robot: "h2",
+    chain_id: "right_arm",
+    current_joints: readJointInputs(panel),
+    duration: Math.max(2, Number(panel.dom.duration.value || 8)),
+    steps: Math.max(70, Number(panel.dom.steps.value || 120)),
+    turn_angle_deg: Number(panel.dom.endAngle.value || 25) - Number(panel.dom.startAngle.value || -25),
+    approach_distance: 0.08,
+    switch_distance_m: Number(panel.dom.switchDistance.value || 0.40),
+    switch_lateral_m: Number(panel.dom.switchLateral.value || 0.08),
+    switch_height_m: xyzToRobot([0, 0, Number(panel.dom.switchHeight.value || 0)])[2],
+    lever_length: 0.075,
+    fingertip_length: 0.15,
+    use_current_posture: false,
+    use_natural_posture: true,
+    posture_weight: 0.008,
+    orientation_weight: 0.08,
+    start_angle_deg: Number(panel.dom.startAngle.value || -25),
+    end_angle_deg: Number(panel.dom.endAngle.value || 25),
+    path_type: panel.dom.keyframePath.value,
+  };
+  try {
+    const data = await fetchJson("/api/demo/h2_switch_operation", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    panel.frames = data.waypoints;
+    panel.frameIndex = 0;
+    panel.currentCollision = data.collision;
+    panel.lastSwitchData = data;
+    panel.lastSwitchRequest = payload;
+    panel.switchTurnAngle = THREE.MathUtils.degToRad(data.switch.turn_angle_deg);
+    panel.dom.switchDistance.value = formatNumber(data.switch.pivot_xyz[0]);
+    panel.dom.switchLateral.value = formatNumber(data.switch.pivot_xyz[1]);
+    panel.dom.switchHeight.value = formatNumber(xyzToScene(data.switch.pivot_xyz)[2]);
+    panel.dom.exportTask.disabled = false;
+    panel.dom.exportJoints.disabled = false;
+    const elbowDeltaMm = Number(data.reference_posture.elbow_minus_wrist_z_m) * 1000;
+    const postureText = elbowDeltaMm <= 0
+      ? `参考解：肘部低于腕部 ${Math.abs(elbowDeltaMm).toFixed(1)} mm。`
+      : `参考解：肘部仍高于腕部 ${elbowDeltaMm.toFixed(1)} mm，建议交由任务型 IK 继续优化。`;
+    const relaxationText = data.reference_posture.constraints_relaxed
+      ? ` 为满足指尖精度，姿态约束自动降至 ${(Number(data.reference_posture.constraint_scale) * 100).toFixed(0)}%。`
+      : "";
+    panel.dom.postureHint.textContent = postureText + relaxationText;
+    writePose(panel, "tcp", data.switch.fingertip_tcp);
+    updateTargetHandPose(panel);
+    panel.dom.duration.value = formatNumber(data.duration);
+    panel.dom.steps.value = String(data.waypoint_count);
+    createSwitchVisual(panel, data.switch);
+    updateCollisionMetrics(panel, data.collision);
+    updateTrajectoryLine(panel);
+    applyFrame(panel, 0);
+    writeDebug(panel, "H2 指尖拨动竖直开关", payload, {
+      轨迹点数: data.waypoint_count,
+      旋钮: data.switch,
+      碰撞: summarizeCollision(data.collision),
+      阶段: [...new Set(data.waypoints.map((frame) => frame.stage))],
+    });
+    setState("H2 指尖拨动轨迹已生成，开始离线回放", "success");
+    replay(panel);
+  } catch (error) {
+    panel.dom.switchStage.textContent = `生成失败：${error.message}`;
+    setState("H2 旋钮轨迹生成失败", "error");
+  } finally {
+    panel.dom.switchPlan.disabled = false;
+  }
+}
+
+function createSwitchVisual(panel, switchData) {
+  panel.switchGroup.clear();
+  const pivot = new THREE.Vector3().fromArray(xyzToScene(switchData.pivot_xyz));
+
+  const cabinet = new THREE.Mesh(
+    new THREE.BoxGeometry(0.018, 0.30, 0.34),
+    new THREE.MeshStandardMaterial({ color: 0xb9c3c9, roughness: 0.78, metalness: 0.18 }),
+  );
+  cabinet.position.copy(pivot).add(new THREE.Vector3(0.045, 0, 0));
+
+  const collar = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.035, 0.035, 0.035, 30),
+    new THREE.MeshStandardMaterial({ color: 0x202a32, roughness: 0.55 }),
+  );
+  collar.position.copy(pivot).add(new THREE.Vector3(0.016, 0, 0));
+  collar.rotation.z = Math.PI / 2;
+
+  const handle = new THREE.Group();
+  handle.position.copy(pivot).add(new THREE.Vector3(-0.012, 0, 0));
+  const lever = new THREE.Mesh(
+    new THREE.BoxGeometry(0.025, 0.025, switchData.lever_length),
+    new THREE.MeshStandardMaterial({ color: 0x172027, roughness: 0.42 }),
+  );
+  lever.position.z = -switchData.lever_length / 2;
+  const leverTip = new THREE.Mesh(
+    new THREE.SphereGeometry(0.025, 20, 14),
+    new THREE.MeshStandardMaterial({ color: 0x252f36, roughness: 0.38 }),
+  );
+  leverTip.position.z = -switchData.lever_length;
+  handle.add(lever, leverTip);
+
+  const startMarker = new THREE.Mesh(
+    new THREE.SphereGeometry(0.018, 18, 12),
+    new THREE.MeshStandardMaterial({ color: 0x16a34a, emissive: 0x0c4f25 }),
+  );
+  startMarker.position.fromArray(xyzToScene(switchData.start_tip_xyz));
+  const endMarker = new THREE.Mesh(
+    new THREE.SphereGeometry(0.018, 18, 12),
+    new THREE.MeshStandardMaterial({ color: 0xdc2626, emissive: 0x641313 }),
+  );
+  endMarker.position.fromArray(xyzToScene(switchData.end_tip_xyz));
+
+  const fingertipMarker = new THREE.Mesh(
+    new THREE.SphereGeometry(0.014, 18, 12),
+    new THREE.MeshStandardMaterial({ color: 0x22d3ee, emissive: 0x0d5260 }),
+  );
+
+  panel.switchHandle = handle;
+  panel.fingertipMarker = fingertipMarker;
+  panel.switchGroup.add(cabinet, collar, handle, startMarker, endMarker, fingertipMarker);
+}
+
+function updateSwitchVisual(panel, frame) {
+  if (!panel.switchHandle) {
+    return;
+  }
+  panel.switchHandle.rotation.x = THREE.MathUtils.degToRad(Number(frame.switch_angle_deg || 0));
+  panel.fingertipMarker?.position.fromArray(xyzToScene(frame.tcp_pose.xyz));
+  if (panel.dom.switchStage) {
+    panel.dom.switchStage.textContent = frame.stage || "轨迹回放";
+    const contactLabel = frame.contact === "pushing" ? "推拨中" : frame.contact === "touch" ? "已接触" : "未接触";
+    panel.dom.contactState.textContent = `指尖：${contactLabel}`;
+  }
+}
+
+function exportSwitchTask(panel) {
+  const data = panel.lastSwitchData;
+  if (!data) return;
+  const jointNames = panel.chain.joint_names;
+  const first = data.waypoints[0];
+  const last = data.waypoints[data.waypoints.length - 1];
+  const keyframe = (name, frame, targetPosition) => ({
+    name,
+    time_s: frame.t,
+    switch_angle_deg: frame.switch_angle_deg,
+    target_fingertip_position_pelvis_m: targetPosition,
+    solved_fingertip_position_pelvis_m: frame.tcp_pose.xyz,
+    position_error_m: Math.hypot(
+      ...frame.tcp_pose.xyz.map((value, index) => value - targetPosition[index]),
+    ),
+    reference_fingertip_rpy_rad: frame.tcp_pose.rpy,
+    reference_joint_positions_rad: Object.fromEntries(
+      jointNames.map((name) => [name, frame.named_joints[name]]),
+    ),
+  });
+  const task = {
+    schema: "h2_switch_two_keyframe_ik_task/v2",
+    generated_at: new Date().toISOString(),
+    robot: "h2",
+    chain: "right_arm",
+    urdf: state.metadata.robot.urdf_path || state.metadata.robot.urdf_url,
+    coordinate_frame: "pelvis",
+    axis_convention: {
+      x: "forward from robot",
+      y: "left from robot (right is negative)",
+      z: "up from pelvis origin",
+    },
+    ground_height_note: "The UI ground height is converted to pelvis-frame z before export.",
+    units: {
+      cartesian_position: "m",
+      switch_angle: "deg",
+      cartesian_orientation_rpy: "rad",
+      joint_position: "rad",
+      time: "s",
+    },
+    switch_geometry: data.switch,
+    switch_position_input_ground_m: {
+      x_forward: Number(panel.dom.switchDistance.value),
+      y_left: Number(panel.dom.switchLateral.value),
+      z_height: Number(panel.dom.switchHeight.value),
+    },
+    resolved_api_request_pelvis_frame: panel.lastSwitchRequest,
+    trajectory_definition: {
+      required_keyframes: ["initial", "final"],
+      interpolation: data.switch.path_type,
+      intermediate_waypoints_are_optional: true,
+      switch_angle_positive_direction: "clockwise when viewed from the robot toward the panel",
+    },
+    keyframes: {
+      initial: keyframe("initial", first, data.switch.start_tip_xyz),
+      final: keyframe("final", last, data.switch.end_tip_xyz),
+    },
+    ik_requirements: {
+      primary_task: "track target_fingertip_position_pelvis_m",
+      position_weight: 1.0,
+      position_tolerance_m: 0.002,
+      posture_reference_mode: panel.lastSwitchRequest.use_natural_posture
+        ? "natural_pointing_preset"
+        : panel.lastSwitchRequest.use_current_posture
+          ? "current_joint_state"
+          : "built_in_safe_seed",
+      posture_reference_joints_rad: data.reference_posture.posture_reference_joints,
+      posture_weight: panel.lastSwitchRequest.posture_weight,
+      soft_orientation_weight: panel.lastSwitchRequest.orientation_weight,
+      adjacent_point_regularization_weight: 0.002,
+      fingertip_axis_preference: "+X points toward the panel during approach and push",
+      elbow_posture_preference: "right elbow below wrist when feasible; target margin 0.02-0.08 m",
+      posture_priority: ["collision_free", "fingertip_position", "elbow_down", "pointing_orientation", "joint_continuity"],
+      preferred_self_collision_clearance_m: 0.05,
+      note: "The exported joint trajectory is a reference solution, not a required IK result.",
+    },
+    joint_names: jointNames,
+    task_waypoints: data.waypoints.map((frame) => ({
+      index: frame.index,
+      time_s: frame.t,
+      stage: frame.stage,
+      contact: frame.contact,
+      switch_angle_deg: frame.switch_angle_deg,
+      fingertip_position_m: frame.tcp_pose.xyz,
+      reference_fingertip_rpy_rad: frame.tcp_pose.rpy,
+    })),
+    reference_joint_trajectory: data.waypoints.map((frame) => ({
+      index: frame.index,
+      time_s: frame.t,
+      positions_rad: jointNames.map((name) => frame.named_joints[name]),
+    })),
+    reference_posture: data.reference_posture,
+    reference_collision_summary: summarizeCollision(data.collision),
+  };
+  downloadText("h2_switch_two_keyframe_ik_task.json", JSON.stringify(task, null, 2), "application/json");
+}
+
+function exportSwitchJoints(panel) {
+  const data = panel.lastSwitchData;
+  if (!data) return;
+  const jointNames = panel.chain.joint_names;
+  const header = [
+    "index",
+    "time_s",
+    "stage",
+    "contact",
+    "waypoint_role",
+    "path_type",
+    "switch_angle_deg",
+    "fingertip_x_pelvis_m",
+    "fingertip_y_pelvis_m",
+    "fingertip_z_pelvis_m",
+    ...jointNames.map((name) => `${name}_rad`),
+  ];
+  const rows = data.waypoints.map((frame) => [
+    frame.index,
+    frame.t,
+    frame.stage,
+    frame.contact,
+    frame.index === 0 ? "initial" : frame.index === data.waypoints.length - 1 ? "final" : "intermediate",
+    data.switch.path_type,
+    frame.switch_angle_deg,
+    ...frame.tcp_pose.xyz,
+    ...jointNames.map((name) => frame.named_joints[name]),
+  ]);
+  const csv = `\uFEFF${[header, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n")}`;
+  downloadText("h2_switch_two_keyframe_reference_joints.csv", csv, "text/csv;charset=utf-8");
+}
+
+function csvCell(value) {
+  const text = String(value ?? "");
+  return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+function downloadText(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function replay(panel) {
   if (!panel.frames.length) {
     return;
@@ -702,6 +1063,7 @@ function applyFrame(panel, index) {
   if (frame.collision) {
     updateCollisionMetrics(panel, frame.collision, panel.currentCollision);
   }
+  updateSwitchVisual(panel, frame);
   updateFrameLabel();
   publishRenderState("轨迹帧更新");
 }

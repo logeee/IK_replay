@@ -39,6 +39,7 @@ http://localhost:8000
 - `POST /api/trajectory/plan`
 - `POST /api/collision/check`
 - `POST /api/demo/solve_and_plan`
+- `POST /api/demo/h2_switch_operation` H2 right-arm offline selector-switch demonstration
 - `POST /api/demo/plan` legacy-compatible alias for the original position-IK demo flow
 
 ## Project Shape
@@ -101,3 +102,24 @@ Add a new planner under `planners/` that implements `BaseTrajectoryPlanner.plan(
 ## Future Extensions
 
 VR input, replay-file input, ROS adapters, robot-state providers, mesh-level collision, and command executors should be added as optional adapters around the current API contract. They are not implemented in this version.
+
+## H2 Selector-Switch Demo
+
+Select H2 and use the highlighted robot-right-arm panel to solve two switch keyframes. Input
+the switch XYZ position in metres: X is forward from the robot, Y is left from the robot
+(right is negative), and Z is height above the ground. The default ground height is 1.70 m.
+Input the initial lever angle, final lever angle, and choose a Cartesian line or
+lever-centered arc between them. Green and red markers show the initial and final fingertip
+positions. Both keyframes and all intermediate samples use the built-in natural pointing
+posture by default. The solver weights are position 1.0 (validated at 2 mm), soft wrist
+orientation 0.08, posture 0.008, and adjacent-point regularization 0.002. The configured
+self-collision check remains active, and no command is sent to a physical robot.
+
+After planning, the panel can export two handoff artifacts:
+
+- `h2_switch_two_keyframe_ik_task.json`: explicit initial/final fingertip keyframes, switch
+  geometry, coordinate-frame convention, units, optional sampled path, recommended solver
+  weights, and the reference solution.
+- `h2_switch_two_keyframe_reference_joints.csv`: timestamped reference joint positions with
+  units in every Cartesian and joint column, for
+  comparison, plotting, or replay. These joints are not mandatory for a replacement solver.

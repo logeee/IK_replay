@@ -31,6 +31,8 @@ class NumericalIKSolver(BaseIKSolver):
         rotation_weight = float(options.get("rotation_weight", 0.2))
         regularization_weight = float(options.get("regularization_weight", 0.003))
         solve_orientation = bool(options.get("solve_orientation", True))
+        soft_orientation_weight = float(options.get("soft_orientation_weight", 0.0))
+        posture_weight = float(options.get("posture_weight", 0.0))
 
         q_current = self.robot_model.coerce_chain_joints(request.current_joints, request.chain_id)
         q_seed = (
@@ -40,6 +42,13 @@ class NumericalIKSolver(BaseIKSolver):
         )
         lower, upper = self.robot_model.joint_limits(request.chain_id, request.joint_names)
         q_seed = np.clip(q_seed, lower, upper)
+        posture_reference = options.get("posture_reference")
+        q_posture = (
+            self.robot_model.coerce_chain_joints(posture_reference, request.chain_id)
+            if posture_reference is not None
+            else q_seed
+        )
+        q_posture = np.clip(q_posture, lower, upper)
 
         target_matrix = transform_from_pose(request.target_pose)
         target_xyz = target_matrix[:3, 3]
@@ -52,8 +61,14 @@ class NumericalIKSolver(BaseIKSolver):
             if solve_orientation:
                 rot_error = _rotation_error_vector(tcp_matrix[:3, :3], target_rot) * rotation_weight
                 parts.append(rot_error)
+            elif soft_orientation_weight > 0.0:
+                parts.append(
+                    _rotation_error_vector(tcp_matrix[:3, :3], target_rot) * soft_orientation_weight
+                )
             if regularization_weight > 0.0:
                 parts.append((q - q_seed) * regularization_weight)
+            if posture_weight > 0.0:
+                parts.append((q - q_posture) * posture_weight)
             return np.concatenate(parts)
 
         result = least_squares(

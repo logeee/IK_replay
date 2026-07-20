@@ -16,6 +16,7 @@ from ik.dummy_solver import DummyIKSolver
 from ik.numerical_solver import NumericalIKSolver
 from planners.linear import LinearTrajectoryPlanner
 from planners.quintic import QuinticTrajectoryPlanner
+from planners.switch_operation import H2SwitchOperationPlanner
 
 
 WEB_DIR = PROJECT_ROOT / "web"
@@ -94,6 +95,28 @@ class LegacyDemoPayload(BaseModel):
     steps: int | None = None
 
 
+class SwitchOperationPayload(BaseModel):
+    robot: str = "h2"
+    chain_id: str = "right_arm"
+    current_joints: list[float] | dict[str, float] | None = None
+    duration: float = 8.0
+    steps: int = 120
+    turn_angle_deg: float = 45.0
+    approach_distance: float = 0.08
+    switch_distance_m: float = 0.40
+    switch_lateral_m: float = 0.08
+    switch_height_m: float = 0.43
+    lever_length: float = 0.075
+    fingertip_length: float = 0.15
+    use_current_posture: bool = True
+    use_natural_posture: bool = False
+    posture_weight: float = 0.008
+    orientation_weight: float = 0.08
+    start_angle_deg: float = -25.0
+    end_angle_deg: float = 25.0
+    path_type: str = "arc"
+
+
 config = load_app_config()
 robots = {robot_id: RobotModel(robot_config) for robot_id, robot_config in config.robots.items()}
 solvers = {
@@ -111,6 +134,7 @@ planners = {
     for robot_id, robot_model in robots.items()
 }
 collision_checkers = {robot_id: ConfigurableCollisionChecker(robot_model) for robot_id, robot_model in robots.items()}
+switch_planner = H2SwitchOperationPlanner(robots["h2"], solvers["h2"]["numerical"])
 
 app = FastAPI(title="IK Replay Debug Viewer", version="0.2.0")
 app.mount("/web", StaticFiles(directory=WEB_DIR), name="web")
@@ -149,6 +173,10 @@ def robot_metadata(robot: str | None = Query(default=None)) -> dict[str, Any]:
             chain_defaults[chain_id] = {
                 "default_target_pose": target_pose.to_dict(),
             }
+            if robot_id == "h2" and chain_id == "right_arm":
+                chain_defaults[chain_id]["switch_natural_posture"] = robot_model.named_chain_joints(
+                    H2SwitchOperationPlanner.NATURAL_POINTING_SEED, chain_id
+                )
 
         for chain_id, chain_data in chain_defaults.items():
             metadata["chains"][chain_id].update(chain_data)
@@ -327,6 +355,99 @@ def solve_and_plan(payload: DemoPayload) -> dict[str, Any]:
         }
     except HTTPException:
         raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/demo/h2_switch_operation")
+def h2_switch_operation(payload: SwitchOperationPayload) -> dict[str, Any]:
+    try:
+        if payload.robot != "h2" or payload.chain_id != "right_arm":
+            raise ValueError("the first switch-operation demo supports H2 right_arm only")
+        result = switch_planner.plan(
+            current_joints=(
+                payload.current_joints
+                if payload.current_joints is not None
+                else H2SwitchOperationPlanner.NATURAL_POINTING_SEED
+            ),
+            duration=payload.duration,
+            steps=payload.steps,
+            turn_angle_deg=payload.turn_angle_deg,
+            approach_distance=payload.approach_distance,
+            switch_distance_m=payload.switch_distance_m,
+            switch_lateral_m=payload.switch_lateral_m,
+            switch_height_m=payload.switch_height_m,
+            lever_length=payload.lever_length,
+            fingertip_length=payload.fingertip_length,
+            use_current_posture=payload.use_current_posture,
+            use_natural_posture=payload.use_natural_posture,
+            posture_weight=payload.posture_weight,
+            orientation_weight=payload.orientation_weight,
+            start_angle_deg=payload.start_angle_deg,
+            end_angle_deg=payload.end_angle_deg,
+            path_type=payload.path_type,
+            keyframe_only=True,
+        )
+        waypoint_dicts = [waypoint.to_dict() for waypoint in result.waypoints]
+        checks = collision_checkers["h2"].check_trajectory(
+            result.waypoints, "right_arm", result.fingertip_tcp
+        )
+        collision = collision_checkers["h2"].summarize_checks(checks)
+        for frame, check, stage, contact, lever_angle in zip(
+            waypoint_dicts,
+            checks,
+            result.stages,
+            result.contact_states,
+            result.lever_angles_deg,
+            strict=True,
+        ):
+            frame["collision"] = _frame_collision_summary(check)
+            frame["stage"] = stage
+            frame["contact"] = contact
+            frame["switch_angle_deg"] = lever_angle
+        contact_index = next(
+            (index for index, contact in enumerate(result.contact_states) if contact == "touch"),
+            0,
+        )
+        contact_links = result.waypoints[contact_index].link_poses
+        elbow_xyz = contact_links["right_elbow_link"].xyz
+        wrist_xyz = contact_links["right_wrist_yaw_link"].xyz
+        return {
+            "robot": "h2",
+            "chain_id": "right_arm",
+            "coordinate_frame": "pelvis",
+            "axis_convention": {"x": "forward", "y": "left", "z": "up"},
+            "units": {"position": "m", "joint_angle": "rad", "switch_angle": "deg", "time": "s"},
+            "duration": float(payload.duration),
+            "waypoint_count": len(waypoint_dicts),
+            "waypoints": waypoint_dicts,
+            "collision": collision,
+            "switch": {
+                "pivot_xyz": result.pivot_xyz,
+                "panel_normal": result.panel_normal,
+                "lever_length": result.lever_length,
+                "approach_distance": result.approach_distance,
+                "turn_angle_deg": result.turn_angle_deg,
+                "fingertip_tcp": result.fingertip_tcp.to_dict(),
+                "initial_label": "竖直",
+                "motion": "clockwise" if result.turn_angle_deg > 0 else "counterclockwise",
+                "start_tip_xyz": result.start_tip_xyz,
+                "end_tip_xyz": result.end_tip_xyz,
+                "path_type": result.path_type,
+            },
+            "reference_posture": {
+                "elbow_xyz": elbow_xyz,
+                "wrist_xyz": wrist_xyz,
+                "elbow_minus_wrist_z_m": float(elbow_xyz[2] - wrist_xyz[2]),
+                "elbow_below_wrist": bool(elbow_xyz[2] < wrist_xyz[2]),
+                "constraint_scale": result.constraint_scale,
+                "constraints_relaxed": bool(result.constraint_scale < 0.999),
+                "posture_reference_joints": robots["h2"].named_chain_joints(
+                    result.posture_reference_joints, "right_arm"
+                ),
+            },
+            "message": "H2 right-fingertip pendulum-switch replay; no command is sent to a robot.",
+        }
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

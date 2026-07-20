@@ -342,6 +342,65 @@ button:disabled {
   background: var(--accent-strong);
 }
 
+.switch-demo-section {
+  margin: 10px -8px 0;
+  padding: 14px 8px;
+  border: 1px solid #f0c36a;
+  border-radius: 9px;
+  background: linear-gradient(145deg, #fff9e9, #fffdf8);
+}
+
+.switch-button {
+  color: #ffffff;
+  border-color: #b45309;
+  background: #c35f0a;
+}
+
+.switch-button:hover {
+  background: #a94c06;
+}
+
+.switch-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 9px;
+  border-radius: 6px;
+  color: #63330c;
+  background: #ffedbd;
+  font-size: 12px;
+}
+
+.switch-export-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.switch-export-row button {
+  height: auto;
+  min-height: 32px;
+  padding: 6px 8px;
+  font-size: 11px;
+}
+
+.keyframe-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 3px;
+  border-radius: 50%;
+}
+
+.keyframe-dot.start {
+  background: #16a34a;
+}
+
+.keyframe-dot.end {
+  background: #dc2626;
+}
+
 .mini-actions,
 .transport {
   display: flex;
