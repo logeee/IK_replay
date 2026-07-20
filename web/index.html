@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>双臂 IK 调试回放台</title>
-    <link rel="stylesheet" href="/web/style.css?v=40" />
+    <link rel="stylesheet" href="/web/style.css?v=44" />
     <script type="importmap">
       {
         "imports": {
@@ -54,11 +54,11 @@
                 </label>
                 <label class="reach-offset">
                   <span>左移(cm)</span>
-                  <input id="reachStepLen" type="number" step="1" value="5" />
+                  <input id="reachStepLen" type="number" step="1" value="6" />
                 </label>
                 <label class="reach-offset">
                   <span>推力(N)</span>
-                  <input id="reachPushForce" type="number" step="1" min="0" max="40" value="15" />
+                  <input id="reachPushForce" type="number" step="1" min="0" max="40" value="25" />
                 </label>
               </div>
               <div class="reach-actions">
@@ -70,7 +70,13 @@
                 <select id="reachWaypointSel" class="reach-waypoint-sel">
                   <option value="">（直达）</option>
                 </select>
+                <button id="reachAddViaBtn" type="button" title="加入经由队列">＋</button>
+                <span>结束位点</span>
+                <select id="reachEndSel" class="reach-waypoint-sel">
+                  <option value="">（不收回）</option>
+                </select>
               </div>
+              <div id="reachViaList" class="reach-via-list hidden"></div>
               <div class="reach-actions">
                 <button id="reachHandMoveBtn" type="button" disabled>卸力摆位</button>
                 <button id="reachRecordBtn" type="button" disabled>录制路点</button>
@@ -99,6 +105,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=40"></script>
+    <script type="module" src="/web/main.js?v=44"></script>
   </body>
 </html>

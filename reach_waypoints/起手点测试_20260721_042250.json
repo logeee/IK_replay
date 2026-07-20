@@ -1,0 +1,14 @@
+{
+  "name": "起手点测试",
+  "chain_id": "right_arm",
+  "named_joints": {
+    "right_shoulder_pitch_joint": 0.26842960715293884,
+    "right_shoulder_roll_joint": -0.1819145530462265,
+    "right_shoulder_yaw_joint": -0.15846142172813416,
+    "right_elbow_joint": -0.16574783623218536,
+    "right_wrist_roll_joint": -0.3126744329929352,
+    "right_wrist_pitch_joint": -0.548637866973877,
+    "right_wrist_yaw_joint": -0.18310697376728058
+  },
+  "created_at": "2026-07-21 04:22:50"
+}

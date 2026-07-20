@@ -160,6 +160,9 @@ async function initReach() {
     scan: document.getElementById("reachScanBtn"),
     clearObs: document.getElementById("reachClearObsBtn"),
     waypointSel: document.getElementById("reachWaypointSel"),
+    addVia: document.getElementById("reachAddViaBtn"),
+    viaList: document.getElementById("reachViaList"),
+    endSel: document.getElementById("reachEndSel"),
     handMove: document.getElementById("reachHandMoveBtn"),
     record: document.getElementById("reachRecordBtn"),
     delWp: document.getElementById("reachDelWpBtn"),
@@ -181,6 +184,7 @@ async function initReach() {
   d.handMove.addEventListener("click", () => toggleHandMove());
   d.record.addEventListener("click", () => recordWaypoint());
   d.delWp.addEventListener("click", () => deleteWaypoint());
+  d.addVia.addEventListener("click", () => addViaWaypoint());
   state.helperRoot.add(reach.obstacleGroup, reach.planeGroup);
   await refreshObstacles();
   await refreshWaypoints();
@@ -348,11 +352,11 @@ async function runReachPlan() {
   const duration = Math.max(1, Number(reach.dom.duration.value || 6));
   panel.dom.duration.value = formatNumber(duration);
 
-  const viaWp = selectedWaypoint();
+  const viaWps = viaWaypoints();
   panel.solverOptions = { solve_orientation: false }; // 指尖是点目标，姿态放开
   try {
-    if (viaWp) {
-      await planViaWaypoint(panel, viaWp);
+    if (viaWps.length) {
+      await planViaWaypoints(panel, viaWps);
     } else {
       await planTrajectory(panel);
     }
@@ -371,6 +375,14 @@ async function runReachPlan() {
     sidestepOk = await appendSidestepPreview(panel, stepCm);
   }
 
+  // 收回段也并入预演（执行时同样按真机实际姿态就地重规划）
+  const endWpPreview = selectedEndWaypoint();
+  let returnOk = false;
+  if (ik?.success && endWpPreview && panel.frames.length > 1
+      && panel.currentCollision?.status !== "collision") {
+    returnOk = await appendReturnPreview(panel, endWpPreview);
+  }
+
   const collision = panel.currentCollision;
   const pt = pick.p_torso;
   const lines = [
@@ -379,9 +391,12 @@ async function runReachPlan() {
     `接近偏移 ${pick.approach_offset_m} m ` +
       (pick.offset_mode === "plane_normal" ? "沿表面法线（0 = 触碰，负 = 压入加力）"
                                            : "沿视线（平面拟合失败的兜底）"),
-    ...(viaWp ? [`经由路点「${viaWp.name}」两段规划`] : []),
+    ...(viaWps.length
+      ? [`经由 ${viaWps.map((w) => `「${w.name}」`).join("→")} 分段规划`] : []),
     ...(stepCm ? [`到位后沿面${stepCm > 0 ? "左" : "右"}移 ${Math.abs(stepCm)}cm` +
       (sidestepOk ? "（已并入预演）" : "（横移段规划失败）")] : []),
+    ...(endWpPreview ? [`结束后收回到「${endWpPreview.name}」` +
+      (returnOk ? "（已并入预演）" : "（收回段规划失败）")] : []),
     `IK: ${ik ? (ik.success ? "成功" : "未到达") : "失败"}` +
       (ik ? ` · 误差 ${Number(ik.error_mm).toFixed(1)} mm` : ""),
     `碰撞: ${collision?.status_label || "-"} · 轨迹点 ${panel.frames.length}`,
@@ -449,14 +464,26 @@ async function appendSidestepPreview(panel, stepCm) {
   }
 }
 
+// 横移方向 = 拟合平面的"左"（右移取反）再向下倾 SIDESTEP_TILT_DEG 度
+const SIDESTEP_TILT_DEG = 2;
+
+function sidestepDirection(sign) {
+  const t = (SIDESTEP_TILT_DEG * Math.PI) / 180;
+  const l = reach.plane.left_root;
+  const c = Math.cos(t);
+  const s = Math.sin(t);
+  // 先取实际移动方向（±左），再往下倾：保证右移时同样是"偏下"而不是偏上
+  return [l[0] * sign * c, l[1] * sign * c, l[2] * sign * c - s];
+}
+
 function planCartesianSidestep(startJoints, stepCm) {
   return fetchJson("/api/reach/plan_cartesian", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       start_joints: startJoints,
-      direction_root: reach.plane.left_root,
-      distance_m: stepCm / 100,
+      direction_root: sidestepDirection(Math.sign(stepCm)),
+      distance_m: Math.abs(stepCm) / 100,
       step_m: 0.01,
     }),
   });
@@ -541,7 +568,7 @@ async function sidestepReach(stepCm, options = {}) {
         // 沿移动方向的前馈力：接触旋钮后位置环刚度不够，靠它出力拨动
         ...(pushN > 0 ? {
           push: {
-            direction_root: plane.left_root.map((v) => v * Math.sign(stepCm)),
+            direction_root: sidestepDirection(Math.sign(stepCm)),
             force_n: pushN,
           },
         } : {}),
@@ -554,16 +581,123 @@ async function sidestepReach(stepCm, options = {}) {
   }
 }
 
-// 经由中间路点的两段规划：当前 → 路点（纯关节空间），路点 → 目标（IK 以路点为种子）
-async function planViaWaypoint(panel, wp) {
+// 预演用：从当前预演轨迹终点接着规划收回段并拼进回放
+// （真机执行时会按实际姿态就地重规划，见 returnToWaypoint）
+async function appendReturnPreview(panel, wp) {
+  const mainFrames = panel.frames;
+  const last = mainFrames[mainFrames.length - 1];
+  try {
+    const seg = await fetchJson("/api/trajectory/plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        robot: state.activeRobot,
+        chain_id: panel.chainId,
+        current_joints: last.named_joints,
+        target_joints: wp.named_joints,
+        tcp_offset: readPose(panel, "tcp"),
+        duration: 5,
+        steps: 30,
+        planner_type: panel.dom.planner.value,
+      }),
+    });
+    panel.frames = [...mainFrames, ...seg.waypoints.slice(1)];
+    panel.frameIndex = 0;
+    panel.currentCollision = combineCollisionSummaries(panel.currentCollision, seg.collision);
+    updateCollisionMetrics(panel, panel.currentCollision);
+    updateTrajectoryLine(panel);
+    visualizeCollision(panel, panel.currentCollision);
+    applyFrame(panel, 0);
+    return true;
+  } catch (error) {
+    console.error(error);
+    return false;
+  }
+}
+
+// 任务收尾：收回到选定的结束位点。推完开关后的真实姿态和预演会有偏差，
+// 所以不复用预演帧，而是按真机实测关节就地重新规划（纯关节空间插值，
+// 起点偏差自然在整段运动里被慢慢修掉——这段只是收手，精度要求不高）。
+async function returnToWaypoint(wp) {
+  const st = reach.status;
+  const panel = state.panels[st.chain_id];
+  if (!panel) {
+    return;
+  }
+  reachMsg(`收回到「${wp.name}」规划中…`);
+  let joints = readJointInputs(panel);
+  try {
+    const j = await fetchJson("/api/reach/joints");
+    if (j.ok) {
+      joints = j.named_joints;
+    }
+  } catch { /* 读不到真机就用面板值（纯模拟联调） */ }
+  let seg;
+  try {
+    seg = await fetchJson("/api/trajectory/plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        robot: state.activeRobot,
+        chain_id: panel.chainId,
+        current_joints: joints,
+        target_joints: wp.named_joints,
+        tcp_offset: readPose(panel, "tcp"),
+        duration: 5,
+        steps: 40,
+        planner_type: panel.dom.planner.value,
+      }),
+    });
+  } catch (error) {
+    reachMsg(`收回规划失败: ${error.message}`, "error");
+    return;
+  }
+  panel.frames = seg.waypoints;
+  panel.frameIndex = 0;
+  panel.currentCollision = seg.collision;
+  updateCollisionMetrics(panel, seg.collision);
+  updateTrajectoryLine(panel);
+  visualizeCollision(panel, seg.collision);
+  applyFrame(panel, 0);
+  if (seg.collision?.status === "collision") {
+    reachMsg("收回轨迹有碰撞，已停在当前位置（可手动卸力收回）", "error");
+    return;
+  }
+  if (!st.armed) {
+    replay(panel);
+    reachMsg(`收回段已预演（未接管手臂）`, "success");
+    return;
+  }
+  try {
+    await fetchJson("/api/reach/execute", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        waypoints: seg.waypoints.map((frame) => frame.named_joints),
+        duration: 5,
+      }),
+    });
+    reachMsg(`收回到「${wp.name}」中…`, "success");
+    await pollReachExec();
+  } catch (error) {
+    reachMsg(`收回执行失败: ${error.message}`, "error");
+  }
+}
+
+// 经由多个中间路点的分段规划：当前 → 路点1 → 路点2 → … → 目标。
+// 路点间是纯关节空间插值，末段以最后一个路点为种子解 IK。
+async function planViaWaypoints(panel, wps) {
   pause(panel);
-  setState(`经由「${wp.name}」两段规划中`, "warn");
+  const names = wps.map((w) => `「${w.name}」`).join("→");
+  setState(`经由 ${names} 分段规划中`, "warn");
   const currentJoints = readJointInputs(panel);
   const duration = Number(panel.dom.duration.value || 4);
   const steps = Math.max(20, Number(panel.dom.steps.value || 80));
-  const half = Math.max(10, Math.round(steps / 2));
+  const nSeg = wps.length + 1;
+  const segSteps = Math.max(10, Math.round(steps / nSeg));
+  const segDur = duration / nSeg;
 
-  const plan = (from, to, dur) => fetchJson("/api/trajectory/plan", {
+  const plan = (from, to) => fetchJson("/api/trajectory/plan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -572,35 +706,42 @@ async function planViaWaypoint(panel, wp) {
       current_joints: from,
       target_joints: to,
       tcp_offset: readPose(panel, "tcp"),
-      duration: dur,
-      steps: half,
+      duration: segDur,
+      steps: segSteps,
       planner_type: panel.dom.planner.value,
     }),
   });
 
   try {
-    // 段1：当前姿态 → 路点（不需要 IK）
-    const segA = await plan(currentJoints, wp.named_joints, duration / 2);
+    let frames = null;
+    let collision = null;
+    let from = currentJoints;
+    for (const wp of wps) {
+      const seg = await plan(from, wp.named_joints);
+      frames = frames ? [...frames, ...seg.waypoints.slice(1)] : seg.waypoints;
+      collision = combineCollisionSummaries(collision, seg.collision);
+      from = wp.named_joints;
+    }
 
-    // 段2：以路点为起点/种子解 IK，再规划到目标
-    setJointInputs(panel, wp.named_joints);
+    // 末段：以最后一个路点为起点/种子解 IK，再规划到目标
+    setJointInputs(panel, from);
     const ik = await solveIk(panel, { quiet: true });
     panel.currentIk = ik;
-    const segB = await plan(wp.named_joints, ik.target_joints, duration / 2);
+    const segEnd = await plan(from, ik.target_joints);
 
-    panel.frames = [...segA.waypoints, ...segB.waypoints.slice(1)];
+    panel.frames = [...frames, ...segEnd.waypoints.slice(1)];
     panel.frameIndex = 0;
-    panel.currentCollision = combineCollisionSummaries(segA.collision, segB.collision);
+    panel.currentCollision = combineCollisionSummaries(collision, segEnd.collision);
     updateCollisionMetrics(panel, panel.currentCollision);
     updateTrajectoryLine(panel);
     visualizeCollision(panel, panel.currentCollision);
     applyFrame(panel, 0);
-    setState(`经由「${wp.name}」轨迹已生成`, "success");
+    setState(`经由 ${wps.length} 个路点的轨迹已生成`, "success");
   } catch (error) {
     console.error(error);
     panel.frames = [];
     panel.currentIk = null;
-    setState("两段规划失败", "error");
+    setState("分段规划失败", "error");
   }
 }
 
@@ -712,20 +853,78 @@ async function refreshWaypoints() {
     return;
   }
   reach.waypoints = data.waypoints || [];
-  const sel = reach.dom.waypointSel;
-  const prev = sel.value;
-  sel.innerHTML = `<option value="">（直达）</option>` + reach.waypoints
-    .map((w) => `<option value="${w.file}">${w.name} · ${w.created_at || w.file}</option>`)
-    .join("");
-  if ([...sel.options].some((o) => o.value === prev)) {
-    sel.value = prev;
-  }
+  const fill = (sel, placeholder) => {
+    const prev = sel.value;
+    sel.innerHTML = `<option value="">${placeholder}</option>` + reach.waypoints
+      .map((w) => `<option value="${w.file}">${w.name} · ${w.created_at || w.file}</option>`)
+      .join("");
+    if ([...sel.options].some((o) => o.value === prev)) {
+      sel.value = prev;
+    }
+  };
+  fill(reach.dom.waypointSel, "（直达）");
+  fill(reach.dom.endSel, "（不收回）");
   reach.dom.delWp.disabled = !reach.waypoints.length;
+  // 路点文件可能被删除，清掉队列里的失效项
+  reach.viaList = (reach.viaList || []).filter((f) => reach.waypoints.some((w) => w.file === f));
+  renderViaList();
+}
+
+function waypointByFile(file) {
+  return file ? reach.waypoints?.find((w) => w.file === file) || null : null;
 }
 
 function selectedWaypoint() {
-  const file = reach.dom.waypointSel.value;
-  return file ? reach.waypoints?.find((w) => w.file === file) || null : null;
+  return waypointByFile(reach.dom.waypointSel.value);
+}
+
+function selectedEndWaypoint() {
+  return waypointByFile(reach.dom.endSel.value);
+}
+
+// ---- 经由队列：按加入顺序依次经过（空队列时退化为下拉框单选） ----
+
+function addViaWaypoint() {
+  const wp = selectedWaypoint();
+  if (!wp) {
+    reachMsg("先在下拉框选一个路点再按＋", "error");
+    return;
+  }
+  reach.viaList = reach.viaList || [];
+  reach.viaList.push(wp.file);
+  renderViaList();
+}
+
+function renderViaList() {
+  const box = reach.dom.viaList;
+  const list = reach.viaList || [];
+  if (!list.length) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return;
+  }
+  box.classList.remove("hidden");
+  box.innerHTML = "经由顺序: " + list.map((file, i) => {
+    const w = waypointByFile(file);
+    return `<span class="via-chip">${i + 1}. ${w ? w.name : file}` +
+      `<button type="button" data-i="${i}" title="移除">×</button></span>`;
+  }).join("");
+  box.querySelectorAll("button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      reach.viaList.splice(Number(btn.dataset.i), 1);
+      renderViaList();
+    });
+  });
+}
+
+// 规划要经过的路点序列：队列优先；队列为空则用下拉框的单选（老行为）
+function viaWaypoints() {
+  const fromQueue = (reach.viaList || []).map(waypointByFile).filter(Boolean);
+  if (fromQueue.length) {
+    return fromQueue;
+  }
+  const single = selectedWaypoint();
+  return single ? [single] : [];
 }
 
 async function toggleHandMove() {
@@ -897,13 +1096,15 @@ async function executeReach() {
   const sidestepNote = (stepCm && reach.plane)
     ? `到位后将沿电柜表面${stepCm > 0 ? "左" : "右"}移 ${Math.abs(stepCm).toFixed(0)}cm\n`
     : "";
+  const endWp = selectedEndWaypoint();
+  const endNote = endWp ? `结束后收回到「${endWp.name}」\n` : "";
   const pt = reach.lastPick.p_torso;
   const ok = window.confirm(
     "确认真机执行？手臂将开始运动！\n\n" +
     `目标(躯干系): [${pt.map((v) => v.toFixed(3)).join(", ")}] m\n` +
     `IK 误差: ${Number(ik?.error_mm || 0).toFixed(1)} mm\n` +
     `轨迹: ${mainFrames.length} 点 / ${duration}s\n` +
-    sidestepNote +
+    sidestepNote + endNote +
     "\n请确保周围无人无障碍，手不要放在运动路径上。");
   if (!ok) {
     return;
@@ -923,6 +1124,10 @@ async function executeReach() {
     // 到位后可选的沿面横移（左移(cm) ≠ 0 时；已在上面的确认框里一并确认过）
     if (stepCm && reach.plane && final?.message?.startsWith("完成")) {
       await sidestepReach(stepCm, { skipConfirm: true });
+    }
+    // 可选收尾：回到结束位点（主段没成功就不收，手臂留在原处等人处理）
+    if (endWp && final?.message?.startsWith("完成")) {
+      await returnToWaypoint(endWp);
     }
   } catch (error) {
     reachMsg(`执行请求失败: ${error.message}`, "error");
