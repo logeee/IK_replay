@@ -44,6 +44,12 @@ class ReachState:
         self.provider_reader = None        # 只读 lowstate 关节读取（未接管时用）
         self.joint_names: list[str] = []
         self.arm_lock = threading.Lock()
+        self.robot_model = None
+        self.collision_checker = None
+        self.obstacles: np.ndarray | None = None   # 体素中心（URDF 根系）
+        self.obstacle_voxel = 0.05
+        self.target_exclusion_m = 0.15
+        self.waypoints_dir: Path | None = None     # 中间路点落盘目录（每个路点一个 json）
         # 执行线程状态
         self.exec_lock = threading.Lock()
         self.exec_thread: threading.Thread | None = None
@@ -57,7 +63,7 @@ state = ReachState()
 
 
 def configure(*, camera, robot_model, robot_id: str, chain_id: str, calib_path: Path,
-              arm_factory=None, joints_reader=None) -> None:
+              collision_checker=None, arm_factory=None, joints_reader=None) -> None:
     """由 reach_server 调用。calib_path 是 handeye3d_result.json。"""
     calib = json.loads(Path(calib_path).read_text())
     T_cam2torso = np.asarray(calib["T_cam2base"], dtype=float).reshape(4, 4)
@@ -85,6 +91,9 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str, calib_path: 
     state.arm_factory = arm_factory
     state.provider_reader = joints_reader
     state.joint_names = robot_model.joint_names(chain_id)
+    state.robot_model = robot_model
+    state.collision_checker = collision_checker
+    state.waypoints_dir = Path(__file__).resolve().parent.parent / "reach_waypoints"
     state.enabled = True
 
 
@@ -114,6 +123,7 @@ async def reach_status():
         "T_cam2root": state.T_cam2root.tolist(),
         "arm_supported": state.arm_factory is not None,   # 有真机执行能力
         "armed": state.controller is not None,            # 前端已接管手臂
+        "hand_move": bool(state.controller and state.controller.status()["float"]),
         "joints_available": (state.controller is not None
                              or state.provider_reader is not None),
         "exec": _exec_status(),
@@ -169,6 +179,12 @@ async def reach_pick(body: dict):
     def to_frame(T, p):
         return (T[:3, :3] @ p + T[:3, 3]).tolist()
 
+    p_root_surface = to_frame(state.T_cam2root, p_cam)
+    # 目标附近的环境障碍豁免：指尖要贴近表面，目标周围一小块不算障碍
+    if state.collision_checker is not None:
+        state.collision_checker.set_environment_exclusions(
+            [(p_root_surface, state.target_exclusion_m)])
+
     return {
         "ok": True,
         "pixel": [u, v],
@@ -178,8 +194,205 @@ async def reach_pick(body: dict):
         "p_torso_surface": to_frame(state.T_cam2torso, p_cam),
         "p_torso": to_frame(state.T_cam2torso, p_cam_goal),
         "p_root": to_frame(state.T_cam2root, p_cam_goal),
-        "p_root_surface": to_frame(state.T_cam2root, p_cam),
+        "p_root_surface": p_root_surface,
     }
+
+
+# --------------- 环境障碍物（深度相机扫描） ---------------
+
+
+def _self_filter(points_root: np.ndarray, margin: float) -> np.ndarray:
+    """剔除属于机器人自身（手臂/躯干/头）的点，避免自己把自己当障碍。"""
+    checker = state.collision_checker
+    try:
+        q = [float(v) for v in _read_joints()]
+        joints = dict(zip(state.joint_names, q))
+    except Exception:
+        joints = {}
+    from core.types import Pose
+
+    transforms = state.robot_model.forward_kinematics(joints)
+    # 用标定的 p_tool 当 TCP，让 hand 胶囊/tcp 球覆盖到真实指尖，过滤更完整
+    tcp_pose = state.robot_model.tcp_pose(
+        joints, state.chain_id, Pose(xyz=list(state.p_tool)))
+    shapes = checker._build_shapes(transforms, state.chain_id, tcp_pose)
+
+    keep = np.ones(len(points_root), dtype=bool)
+    for shape in shapes:
+        d = shape.data
+        if shape.kind == "sphere":
+            dist = np.linalg.norm(points_root - np.asarray(d["center"]), axis=1) - d["radius"]
+        elif shape.kind == "capsule":
+            a, b = np.asarray(d["a"]), np.asarray(d["b"])
+            ab = b - a
+            denom = float(np.dot(ab, ab))
+            t = (np.clip((points_root - a) @ ab / denom, 0.0, 1.0)
+                 if denom > 1e-12 else np.zeros(len(points_root)))
+            dist = np.linalg.norm(points_root - (a + t[:, None] * ab), axis=1) - d["radius"]
+        elif shape.kind == "box":
+            R = np.asarray(d["rotation"])
+            local = (points_root - np.asarray(d["center"])) @ R
+            outside = np.maximum(np.abs(local) - np.asarray(d["half_extents"]), 0.0)
+            dist = np.linalg.norm(outside, axis=1)
+        else:
+            continue
+        keep &= dist > margin
+    return points_root[keep]
+
+
+@router.post("/scan_obstacles")
+async def reach_scan_obstacles(body: dict | None = None):
+    """扫一帧深度图 → 躯干系体素障碍物，注入碰撞检查。
+
+    Body(可选): {"voxel_m": 0.05, "max_range_m": 1.5, "self_margin_m": 0.10}
+    建议扫描时把手臂放低（移出电柜方向视野），残留的手臂点会被自体过滤兜底。
+    """
+    if state.collision_checker is None:
+        return JSONResponse({"ok": False, "error": "碰撞检查器未注入"}, status_code=409)
+    body = body or {}
+    voxel = float(body.get("voxel_m", 0.05))
+    max_range = float(body.get("max_range_m", 1.5))
+    self_margin = float(body.get("self_margin_m", 0.10))
+
+    snap = state.camera.depth_snapshot()
+    if snap is None:
+        return JSONResponse({"ok": False, "error": "还没有深度帧"}, status_code=502)
+    depth_mm, (fx, fy, cx, cy) = snap
+    h, w = depth_mm.shape
+
+    stride = max(1, int(round(max(h, w) / 240)))  # 采样到 ~240 列，够 5cm 体素用
+    d = depth_mm[::stride, ::stride].astype(float) / 1000.0
+    vs, us = np.mgrid[0:h:stride, 0:w:stride]
+    valid = (d > 0.15) & (d < max_range)
+    z = d[valid]
+    u = us[valid].astype(float)
+    v = vs[valid].astype(float)
+    pts_cam = np.stack([(u - cx) * z / fx, (v - cy) * z / fy, z], axis=1)
+
+    pts_root = pts_cam @ state.T_cam2root[:3, :3].T + state.T_cam2root[:3, 3]
+    pts_root = _self_filter(pts_root, self_margin)
+    if not len(pts_root):
+        return JSONResponse({"ok": False, "error": "过滤后没有剩余点（全是自身/超范围？）"},
+                            status_code=400)
+
+    # 体素化去重
+    idx = np.unique(np.floor(pts_root / voxel).astype(np.int64), axis=0)
+    centers = (idx + 0.5) * voxel
+
+    state.obstacles = centers
+    state.obstacle_voxel = voxel
+    state.collision_checker.set_environment(centers, radius=voxel * 0.75)
+    return {"ok": True, "count": int(len(centers)), "voxel_m": voxel,
+            "raw_points": int(len(pts_root))}
+
+
+@router.post("/clear_obstacles")
+async def reach_clear_obstacles():
+    if state.collision_checker is not None:
+        state.collision_checker.clear_environment()
+    state.obstacles = None
+    return {"ok": True, "count": 0}
+
+
+@router.get("/obstacles")
+async def reach_obstacles():
+    return {
+        "count": 0 if state.obstacles is None else int(len(state.obstacles)),
+        "voxel_m": state.obstacle_voxel,
+        "centers": [] if state.obstacles is None else state.obstacles.tolist(),
+    }
+
+
+# --------------- 中间路点（录制 / 落盘 / 复用） ---------------
+
+
+def _safe_waypoint_file(filename: str) -> Path | None:
+    """防路径穿越：只允许目录内的 *.json 纯文件名。"""
+    if not filename.endswith(".json") or "/" in filename or "\\" in filename or ".." in filename:
+        return None
+    return state.waypoints_dir / filename
+
+
+def _load_waypoints() -> list[dict]:
+    if not state.waypoints_dir.is_dir():
+        return []
+    items = []
+    for path in sorted(state.waypoints_dir.glob("*.json"),
+                       key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            data = json.loads(path.read_text())
+            data["file"] = path.name
+            items.append(data)
+        except (json.JSONDecodeError, OSError):
+            continue
+    return items
+
+
+@router.get("/waypoints")
+async def reach_waypoints():
+    return {"waypoints": _load_waypoints()}
+
+
+@router.post("/waypoints")
+async def reach_record_waypoint(body: dict):
+    """把真机当前关节角录制为命名路点，每个路点单独落盘为
+    reach_waypoints/<名字>_<时间戳>.json。Body: {"name": str}
+
+    典型流程：接管手臂 → 卸力 → 人手摆到中间位 → 恢复保持 → 录制。
+    """
+    name = str(body.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"ok": False, "error": "路点需要名字"}, status_code=400)
+    if "/" in name or "\\" in name or ".." in name:
+        return JSONResponse({"ok": False, "error": "名字不能包含路径分隔符"}, status_code=400)
+    try:
+        q = [float(v) for v in _read_joints()]
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"读不到真机关节: {exc}"}, status_code=503)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    item = {
+        "name": name,
+        "chain_id": state.chain_id,
+        "named_joints": dict(zip(state.joint_names, q)),
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    state.waypoints_dir.mkdir(parents=True, exist_ok=True)
+    path = state.waypoints_dir / f"{name}_{stamp}.json"
+    path.write_text(json.dumps(item, ensure_ascii=False, indent=2))
+    item["file"] = path.name
+    return {"ok": True, "waypoint": item}
+
+
+@router.delete("/waypoints/{filename}")
+async def reach_delete_waypoint(filename: str):
+    path = _safe_waypoint_file(filename)
+    if path is None:
+        return JSONResponse({"ok": False, "error": "非法文件名"}, status_code=400)
+    if not path.is_file():
+        return JSONResponse({"ok": False, "error": f"没有文件 {filename!r}"}, status_code=404)
+    path.unlink()
+    return {"ok": True}
+
+
+@router.post("/hand_move")
+async def reach_hand_move(body: dict | None = None):
+    """卸力开关（摆中间位用）。Body: {"on": bool}
+
+    on=true: kp=0 低阻尼，人可拖动手臂（会下坠，务必扶住！）
+    on=false: 在人放置的位置重新抓取并刚性保持。
+    """
+    if state.controller is None:
+        return JSONResponse({"ok": False, "error": "手臂未接管"}, status_code=409)
+    if state.exec_running:
+        return JSONResponse({"ok": False, "error": "轨迹执行中不能卸力"}, status_code=409)
+    on = bool((body or {}).get("on"))
+    if on:
+        if not state.controller.enter_hand_move():
+            return JSONResponse({"ok": False, "error": "点动模式中不能卸力，请先停止"},
+                                status_code=409)
+        return {"ok": True, "hand_move": True, "message": "已卸力，请扶住手臂后再拖动"}
+    state.controller.stop()  # 退出卸力：从人放置的位置抓取保持
+    return {"ok": True, "hand_move": False, "message": "已恢复刚性保持（当前位置）"}
 
 
 # --------------- 真机关节 / 执行 ---------------
@@ -325,8 +538,18 @@ def _exec_loop(q_list: list[np.ndarray], duration: float) -> None:
             time.sleep(0.1)
         ctl.disable_jog()
         state.exec_progress = 1.0
+        # 实测残差 = 指令目标 - 电机实测。明显偏大（>0.05 rad）通常是 kp 太低被重力压住
+        sag_note = ""
+        try:
+            time.sleep(0.3)
+            measured = np.asarray(ctl.read_measured())
+            desired = np.asarray(ctl.status()["desired_rad"])
+            sag = float(np.max(np.abs(desired - measured)))
+            sag_note = f"，实测残差 {sag:.3f} rad" + ("（偏大，考虑调高 --arm-kp）" if sag > 0.05 else "")
+        except Exception:
+            pass
         state.exec_message = ("已中止（保持当前位置）" if state.exec_cancel.is_set()
-                              else "完成（刚性保持在目标位）")
+                              else f"完成（刚性保持在目标位{sag_note}）")
     except Exception as exc:
         try:
             ctl.stop()

@@ -1,0 +1,14 @@
+{
+  "name": "H2中心点测试",
+  "chain_id": "right_arm",
+  "named_joints": {
+    "right_shoulder_pitch_joint": -0.36216437816619873,
+    "right_shoulder_roll_joint": -0.1576405018568039,
+    "right_shoulder_yaw_joint": -0.08507002145051956,
+    "right_elbow_joint": -0.5483142733573914,
+    "right_wrist_roll_joint": -0.07438609004020691,
+    "right_wrist_pitch_joint": -0.12281434237957001,
+    "right_wrist_yaw_joint": -0.02515488862991333
+  },
+  "created_at": "2026-07-21 01:31:20"
+}

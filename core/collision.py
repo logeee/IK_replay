@@ -85,11 +85,42 @@ class ConfigurableCollisionChecker:
         self.config = dict(robot_model.config.collision or {})
         self.enabled = bool(self.config.get("enabled", self.config))
         self.near_margin_m = float(self.config.get("near_margin_m", 0.05))
+        # 可选的环境障碍点云（URDF 根坐标系，运行时由外部注入，如深度相机扫描）
+        self.environment_points: np.ndarray | None = None
+        self.environment_radius: float = 0.03
+        # 豁免球列表 [(center, radius)]：这些区域内的环境点不参与检查（如抓取目标附近）
+        self.environment_exclusions: list[tuple[np.ndarray, float]] = []
+
+    def set_environment(self, points: np.ndarray | list, radius: float) -> None:
+        arr = np.asarray(points, dtype=float).reshape(-1, 3)
+        self.environment_points = arr if len(arr) else None
+        self.environment_radius = float(radius)
+
+    def clear_environment(self) -> None:
+        self.environment_points = None
+        self.environment_exclusions = []
+
+    def set_environment_exclusions(self, spheres: list[tuple[list | np.ndarray, float]]) -> None:
+        self.environment_exclusions = [
+            (np.asarray(center, dtype=float).reshape(3), float(radius))
+            for center, radius in spheres
+        ]
+
+    def _active_environment_points(self) -> np.ndarray | None:
+        points = self.environment_points
+        if points is None:
+            return None
+        mask = np.ones(len(points), dtype=bool)
+        for center, radius in self.environment_exclusions:
+            mask &= np.linalg.norm(points - center, axis=1) > radius
+        active = points[mask]
+        return active if len(active) else None
 
     def metadata(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
             "near_margin_m": self.near_margin_m,
+            "environment_point_count": 0 if self.environment_points is None else int(len(self.environment_points)),
             "body_shape_count": len(self.config.get("body") or []),
             "chains": {
                 chain_id: {
@@ -134,7 +165,7 @@ class ConfigurableCollisionChecker:
             "min_distance_mm": min_distance * 1000.0 if min_distance is not None else None,
             "pair": min_pair,
             "pairs": distances,
-            "shapes": {shape.name: shape.data | {"kind": shape.kind, "role": shape.role} for shape in shapes},
+            "shapes": {shape.name: _serializable_shape(shape) for shape in shapes},
         }
 
     def check_trajectory(
@@ -202,6 +233,14 @@ class ConfigurableCollisionChecker:
         chain_config = (self.config.get("chains") or {}).get(chain_id) or {}
         for item in chain_config.get("shapes") or []:
             shapes.append(self._build_shape(item, "chain", transforms, tcp_pose, chain_id))
+        env = self._active_environment_points()
+        if env is not None:
+            shapes.append(CollisionPrimitive(
+                name="environment",
+                role="body",
+                kind="cloud",
+                data={"points": env, "radius": self.environment_radius, "count": int(len(env))},
+            ))
         return shapes
 
     def _build_shape(
@@ -263,6 +302,15 @@ class ConfigurableCollisionChecker:
         return self._endpoint(raw, transforms, tcp_pose)
 
     def _endpoint(self, raw: dict[str, Any], transforms: dict[str, np.ndarray], tcp_pose: Pose) -> np.ndarray:
+        if raw.get("tcp_foot"):
+            # TCP 点向平面（link 原点 + link 系 axis 为法线）做垂线的垂足
+            spec = raw["tcp_foot"]
+            transform = self._link_transform(spec, transforms)
+            origin = transform[:3, 3]
+            axis = np.array(spec.get("axis", [1.0, 0.0, 0.0]), dtype=float)
+            normal = transform[:3, :3] @ (axis / np.linalg.norm(axis))
+            tcp = np.array(tcp_pose.xyz, dtype=float)
+            return tcp - float(np.dot(tcp - origin, normal)) * normal
         if raw.get("tcp"):
             base = np.array(tcp_pose.xyz, dtype=float) + np.array(raw.get("xyz", [0.0, 0.0, 0.0]), dtype=float)
         else:
@@ -339,7 +387,32 @@ class ConfigurableCollisionChecker:
             )
         if a.kind == "box" and b.kind in {"sphere", "capsule"}:
             return self._distance_between(b, a)
+        if b.kind == "cloud":
+            return self._distance_to_cloud(a, b)
+        if a.kind == "cloud":
+            return self._distance_to_cloud(b, a)
         raise ValueError(f"unsupported primitive pair: {a.kind}, {b.kind}")
+
+    @staticmethod
+    def _distance_to_cloud(shape: CollisionPrimitive, cloud: CollisionPrimitive) -> float:
+        """chain 几何体到环境点云的最小距离（向量化，点数几千也很快）。"""
+        points = cloud.data["points"]
+        cloud_radius = float(cloud.data["radius"])
+        if shape.kind == "sphere":
+            distances = np.linalg.norm(points - _as_array(shape.data["center"]), axis=1)
+            return float(distances.min()) - float(shape.data["radius"]) - cloud_radius
+        if shape.kind == "capsule":
+            a = _as_array(shape.data["a"])
+            b = _as_array(shape.data["b"])
+            ab = b - a
+            denom = float(np.dot(ab, ab))
+            if denom < 1e-12:
+                distances = np.linalg.norm(points - a, axis=1)
+            else:
+                t = np.clip((points - a) @ ab / denom, 0.0, 1.0)
+                distances = np.linalg.norm(points - (a + t[:, None] * ab), axis=1)
+            return float(distances.min()) - float(shape.data["radius"]) - cloud_radius
+        raise ValueError(f"unsupported primitive vs cloud: {shape.kind!r}")
 
     def _unconfigured_result(self, chain_id: str) -> dict[str, Any]:
         return {
@@ -354,6 +427,18 @@ class ConfigurableCollisionChecker:
             "pairs": [],
             "shapes": {},
         }
+
+
+def _serializable_shape(shape: CollisionPrimitive) -> dict[str, Any]:
+    """点云不逐点序列化（每个 waypoint 都带一份会撑爆响应），只留摘要。"""
+    if shape.kind == "cloud":
+        return {
+            "kind": shape.kind,
+            "role": shape.role,
+            "radius": shape.data["radius"],
+            "count": shape.data["count"],
+        }
+    return shape.data | {"kind": shape.kind, "role": shape.role}
 
 
 def _status_label(status: str) -> str:

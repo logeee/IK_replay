@@ -15,6 +15,10 @@
 
 正常启动（真相机 + DDS 只读；执行与否由页面决定）:
     python reach_server.py --camera-serial CP0BB53000FS --network-interface enp86s0
+
+环境障碍：页面「扫描障碍」把当前深度图转成躯干系体素（默认 5cm），
+注入碰撞检查——电柜等环境物体也参与轨迹校验。扫描时建议先把手臂放低
+（自体过滤会剔除画面里的手臂点，但移出视野更干净）；躯干/腰转动后需重扫。
 """
 
 from __future__ import annotations
@@ -51,6 +55,11 @@ def main() -> int:
     parser.add_argument("--network-interface", default=None, help="DDS 网卡，如 enp86s0")
     parser.add_argument("--arm-max-speed", type=float, default=0.2,
                         help="执行时的最大关节速度 rad/s（默认 0.2）")
+    parser.add_argument("--arm-kp", type=float, default=120.0,
+                        help="位置环刚度（默认 120）。手臂抬不到位/被重力压低就调大，"
+                             "常用 100~200；太大会变硬变猛，逐步加")
+    parser.add_argument("--arm-kd", type=float, default=2.5,
+                        help="阻尼（默认 2.5）。kp 调大后如有振颤就同步调大一点")
     args = parser.parse_args()
 
     if not args.calib.exists():
@@ -89,13 +98,16 @@ def main() -> int:
             from backend.arm import H2ArmController  # hand_eye_3D
 
             def arm_factory():
-                print("[reach] !!! 前端请求接管手臂：开始发布 rt/arm_sdk。")
+                print(f"[reach] !!! 前端请求接管手臂：开始发布 rt/arm_sdk "
+                      f"(kp={args.arm_kp}, kd={args.arm_kd})。")
                 return H2ArmController(arm=arm, network_interface=args.network_interface,
-                                       max_speed_rad_s=args.arm_max_speed)
+                                       max_speed_rad_s=args.arm_max_speed,
+                                       kp=args.arm_kp, kd=args.arm_kd)
 
     reach.configure(
         camera=camera, robot_model=robot_model, robot_id=args.robot,
         chain_id=args.chain, calib_path=args.calib,
+        collision_checker=app_module.collision_checkers[args.robot],
         arm_factory=arm_factory, joints_reader=joints_reader,
     )
     app_module.app.include_router(reach.router)

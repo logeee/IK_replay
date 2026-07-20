@@ -650,6 +650,16 @@ button:disabled {
   background: #fbe9e7;
 }
 
+.reach-waypoint-sel {
+  flex: 1;
+  min-width: 0;
+  background: #10151b;
+  color: #e8ecf2;
+  border: 1px solid #2a3540;
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+
 .reach-msg {
   min-height: 16px;
   font-size: 12px;

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>双臂 IK 调试回放台</title>
-    <link rel="stylesheet" href="/web/style.css?v=21" />
+    <link rel="stylesheet" href="/web/style.css?v=29" />
     <script type="importmap">
       {
         "imports": {
@@ -54,6 +54,21 @@
                 </label>
               </div>
               <div class="reach-actions">
+                <button id="reachScanBtn" type="button">扫描障碍</button>
+                <button id="reachClearObsBtn" type="button" disabled>清除障碍</button>
+              </div>
+              <div class="reach-offset-row">
+                <span>经由路点</span>
+                <select id="reachWaypointSel" class="reach-waypoint-sel">
+                  <option value="">（直达）</option>
+                </select>
+              </div>
+              <div class="reach-actions">
+                <button id="reachHandMoveBtn" type="button" disabled>卸力摆位</button>
+                <button id="reachRecordBtn" type="button" disabled>录制路点</button>
+                <button id="reachDelWpBtn" type="button" disabled>删路点</button>
+              </div>
+              <div class="reach-actions">
                 <button id="reachArmBtn" type="button" disabled>接管手臂</button>
                 <button id="reachReplanBtn" type="button" disabled>重新预演</button>
                 <button id="reachExecBtn" type="button" class="danger" disabled>真机执行</button>
@@ -76,6 +91,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=21"></script>
+    <script type="module" src="/web/main.js?v=29"></script>
   </body>
 </html>

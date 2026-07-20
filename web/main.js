@@ -118,6 +118,9 @@ const reach = {
   status: null,
   lastPick: null,
   dom: null,
+  obstacleGroup: new THREE.Group(),
+  flangeDebugGroup: null,
+  waypoints: [],
 };
 
 async function initReach() {
@@ -149,6 +152,12 @@ async function initReach() {
     replan: document.getElementById("reachReplanBtn"),
     exec: document.getElementById("reachExecBtn"),
     stop: document.getElementById("reachStopBtn"),
+    scan: document.getElementById("reachScanBtn"),
+    clearObs: document.getElementById("reachClearObsBtn"),
+    waypointSel: document.getElementById("reachWaypointSel"),
+    handMove: document.getElementById("reachHandMoveBtn"),
+    record: document.getElementById("reachRecordBtn"),
+    delWp: document.getElementById("reachDelWpBtn"),
     msg: document.getElementById("reachMsg"),
   };
   const d = reach.dom;
@@ -160,6 +169,15 @@ async function initReach() {
   d.replan.addEventListener("click", () => runReachPlan());
   d.exec.addEventListener("click", () => executeReach());
   d.stop.addEventListener("click", () => stopReach());
+  d.scan.addEventListener("click", () => scanObstacles());
+  d.clearObs.addEventListener("click", () => clearObstacles());
+  d.handMove.addEventListener("click", () => toggleHandMove());
+  d.record.addEventListener("click", () => recordWaypoint());
+  d.delWp.addEventListener("click", () => deleteWaypoint());
+  state.helperRoot.add(reach.obstacleGroup);
+  await refreshObstacles();
+  await refreshWaypoints();
+  showFlangeDebug();
   updateReachArmUi();
   const rms = status.calib?.rms_mm;
   reachMsg(`标定: ${status.calib?.solved_at || "?"} · RMS ${rms ? rms.toFixed(2) : "?"} mm · ` +
@@ -170,7 +188,7 @@ function updateReachArmUi() {
   const st = reach.status;
   const d = reach.dom;
   if (st.armed) {
-    d.badge.textContent = "已接管手臂";
+    d.badge.textContent = st.hand_move ? "已接管（卸力中）" : "已接管手臂";
     d.badge.classList.add("exec");
     d.arm.textContent = "释放手臂";
     d.arm.classList.add("danger");
@@ -182,6 +200,11 @@ function updateReachArmUi() {
   }
   d.arm.disabled = !st.arm_supported;
   d.stop.disabled = !st.armed;
+  d.handMove.disabled = !st.armed;
+  d.handMove.textContent = st.hand_move ? "恢复保持" : "卸力摆位";
+  d.handMove.classList.toggle("danger", !!st.hand_move);
+  // 录制只需要能读到关节（未接管也可以录，比如遥操作摆好后录）
+  d.record.disabled = !st.joints_available;
   if (!st.armed) {
     d.exec.disabled = true;
   }
@@ -292,9 +315,14 @@ async function runReachPlan() {
   const duration = Math.max(1, Number(reach.dom.duration.value || 6));
   panel.dom.duration.value = formatNumber(duration);
 
+  const viaWp = selectedWaypoint();
   panel.solverOptions = { solve_orientation: false }; // 指尖是点目标，姿态放开
   try {
-    await planTrajectory(panel);
+    if (viaWp) {
+      await planViaWaypoint(panel, viaWp);
+    } else {
+      await planTrajectory(panel);
+    }
   } finally {
     panel.solverOptions = null;
   }
@@ -306,10 +334,12 @@ async function runReachPlan() {
     `像素 [${pick.pixel}] · 深度 ${Math.round(pick.depth_mm)} mm`,
     `目标(躯干系) [${pt.map((v) => v.toFixed(3)).join(", ")}] m`,
     `接近偏移 ${pick.approach_offset_m} m（0 = 触碰表面）`,
+    ...(viaWp ? [`经由路点「${viaWp.name}」两段规划`] : []),
     `IK: ${ik ? (ik.success ? "成功" : "未到达") : "失败"}` +
       (ik ? ` · 误差 ${Number(ik.error_mm).toFixed(1)} mm` : ""),
     `碰撞: ${collision?.status_label || "-"} · 轨迹点 ${panel.frames.length}`,
   ];
+  lines.push(...describeReachCollision(panel, collision));
   reach.dom.info.textContent = lines.join("\n");
 
   const planned = ik?.success && panel.frames.length > 1 && collision?.status !== "collision";
@@ -325,6 +355,334 @@ async function runReachPlan() {
       ? "目标不可达（IK 未收敛），换个目标或调整姿态"
       : (collision?.status === "collision" ? "轨迹有碰撞，已禁止执行" : "规划失败"), "error");
   }
+}
+
+// 经由中间路点的两段规划：当前 → 路点（纯关节空间），路点 → 目标（IK 以路点为种子）
+async function planViaWaypoint(panel, wp) {
+  pause(panel);
+  setState(`经由「${wp.name}」两段规划中`, "warn");
+  const currentJoints = readJointInputs(panel);
+  const duration = Number(panel.dom.duration.value || 4);
+  const steps = Math.max(20, Number(panel.dom.steps.value || 80));
+  const half = Math.max(10, Math.round(steps / 2));
+
+  const plan = (from, to, dur) => fetchJson("/api/trajectory/plan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      robot: state.activeRobot,
+      chain_id: panel.chainId,
+      current_joints: from,
+      target_joints: to,
+      tcp_offset: readPose(panel, "tcp"),
+      duration: dur,
+      steps: half,
+      planner_type: panel.dom.planner.value,
+    }),
+  });
+
+  try {
+    // 段1：当前姿态 → 路点（不需要 IK）
+    const segA = await plan(currentJoints, wp.named_joints, duration / 2);
+
+    // 段2：以路点为起点/种子解 IK，再规划到目标
+    setJointInputs(panel, wp.named_joints);
+    const ik = await solveIk(panel, { quiet: true });
+    panel.currentIk = ik;
+    const segB = await plan(wp.named_joints, ik.target_joints, duration / 2);
+
+    panel.frames = [...segA.waypoints, ...segB.waypoints.slice(1)];
+    panel.frameIndex = 0;
+    panel.currentCollision = combineCollisionSummaries(segA.collision, segB.collision);
+    updateCollisionMetrics(panel, panel.currentCollision);
+    updateTrajectoryLine(panel);
+    visualizeCollision(panel, panel.currentCollision);
+    applyFrame(panel, 0);
+    setState(`经由「${wp.name}」轨迹已生成`, "success");
+  } catch (error) {
+    console.error(error);
+    panel.frames = [];
+    panel.currentIk = null;
+    setState("两段规划失败", "error");
+  }
+}
+
+function combineCollisionSummaries(a, b) {
+  if (!a || !b) {
+    return a || b || null;
+  }
+  const primary = (b.min_distance_m ?? 9e9) < (a.min_distance_m ?? 9e9) ? b : a;
+  const status = (a.status === "collision" || b.status === "collision") ? "collision"
+    : (a.status === "near" || b.status === "near") ? "near" : primary.status;
+  return {
+    ...primary,
+    status,
+    status_label: collisionStatusLabel(status),
+    collision_count: (a.collision_count || 0) + (b.collision_count || 0),
+    near_count: (a.near_count || 0) + (b.near_count || 0),
+    checks: [...(a.checks || []), ...(b.checks || [])],
+  };
+}
+
+// 调试：只画两个东西——法兰盘平面（手掌在腕上的安装面）和 TCP 点（p_tool 指尖）
+// 都挂在腕 link 下，随手臂一起动。
+function showFlangeDebug() {
+  const chainId = reach.status?.chain_id;
+  const pTool = reach.status?.p_tool;
+  const panel = state.panels[chainId];
+  if (!panel || !pTool) {
+    return;
+  }
+  const wristGroup = state.linkGroups.get(panel.chain.end_link);
+  const handGroup = state.linkGroups.get(chainId === "left_arm" ? "left_hand_link" : "right_hand_link");
+  if (!wristGroup) {
+    return;
+  }
+  if (reach.flangeDebugGroup) {
+    reach.flangeDebugGroup.removeFromParent();
+  }
+  const group = new THREE.Group();
+  reach.flangeDebugGroup = group;
+
+  // 法兰盘位置 = hand_link 原点在腕系下的坐标（URDF 里 right_hand_joint 的 origin，约 x=0.058）
+  const flangeLocal = new THREE.Vector3(0, 0, 0);
+  if (handGroup) {
+    wristGroup.updateWorldMatrix(true, false);
+    handGroup.updateWorldMatrix(true, false);
+    wristGroup.worldToLocal(handGroup.getWorldPosition(flangeLocal));
+  }
+  // 法兰盘平面法线 = 腕系 +x（hand_joint rpy 为 0，安装面即腕系 y-z 平面）
+  const normal = new THREE.Vector3(1, 0, 0);
+
+  const planeMat = new THREE.MeshBasicMaterial({
+    color: 0x35d07f, transparent: true, opacity: 0.35,
+    side: THREE.DoubleSide, depthTest: false,
+  });
+  const disc = new THREE.Mesh(new THREE.CircleGeometry(0.06, 40), planeMat);
+  disc.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal); // Circle 默认法线 +z
+  disc.position.copy(flangeLocal);
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.058, 0.062, 40),
+    new THREE.MeshBasicMaterial({ color: 0x35d07f, side: THREE.DoubleSide, depthTest: false }),
+  );
+  ring.quaternion.copy(disc.quaternion);
+  ring.position.copy(flangeLocal);
+  const flangeLabel = makeLabelSprite("法兰盘平面");
+  flangeLabel.position.copy(flangeLocal).add(new THREE.Vector3(0, 0, 0.09));
+  group.add(disc, ring, flangeLabel);
+
+  // TCP 点：标定出的 p_tool（腕系坐标，指尖）
+  const tcp = new THREE.Mesh(
+    new THREE.SphereGeometry(0.012, 20, 14),
+    new THREE.MeshBasicMaterial({ color: 0xff4444, depthTest: false }),
+  );
+  tcp.position.set(...pTool);
+  const tcpLabel = makeLabelSprite("TCP");
+  tcpLabel.position.set(pTool[0], pTool[1], pTool[2] + 0.05);
+  group.add(tcp, tcpLabel);
+
+  // hand 碰撞胶囊（TCP 向法兰盘平面的垂足 → TCP，半径同 h2.yaml 里的 0.04）：常驻显示
+  const tcpVec = new THREE.Vector3(...pTool);
+  // 垂足：把 TCP 沿平面法线（腕系 +x）投影到法兰平面上
+  const foot = tcpVec.clone().sub(
+    normal.clone().multiplyScalar(tcpVec.clone().sub(flangeLocal).dot(normal)));
+  const axis = tcpVec.clone().sub(foot);
+  const capMat = new THREE.MeshStandardMaterial({
+    color: 0x30343a, transparent: true, opacity: 0.45, roughness: 0.6,
+  });
+  const capRadius = 0.04;
+  const shaft = new THREE.Mesh(
+    new THREE.CylinderGeometry(capRadius, capRadius, Math.max(axis.length(), 1e-4), 20, 1, true), capMat);
+  shaft.position.copy(foot).lerp(tcpVec, 0.5);
+  shaft.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis.clone().normalize());
+  const capA = new THREE.Mesh(new THREE.SphereGeometry(capRadius, 18, 12), capMat);
+  capA.position.copy(foot);
+  const capB = new THREE.Mesh(new THREE.SphereGeometry(capRadius, 18, 12), capMat);
+  capB.position.copy(tcpVec);
+  group.add(shaft, capA, capB);
+
+  wristGroup.add(group);
+  publishRenderState("法兰/TCP 调试");
+}
+
+// ---- 中间路点：卸力摆位 → 录制落盘 → 规划时经由 ----
+
+async function refreshWaypoints() {
+  let data;
+  try {
+    data = await fetchJson("/api/reach/waypoints");
+  } catch {
+    return;
+  }
+  reach.waypoints = data.waypoints || [];
+  const sel = reach.dom.waypointSel;
+  const prev = sel.value;
+  sel.innerHTML = `<option value="">（直达）</option>` + reach.waypoints
+    .map((w) => `<option value="${w.file}">${w.name} · ${w.created_at || w.file}</option>`)
+    .join("");
+  if ([...sel.options].some((o) => o.value === prev)) {
+    sel.value = prev;
+  }
+  reach.dom.delWp.disabled = !reach.waypoints.length;
+}
+
+function selectedWaypoint() {
+  const file = reach.dom.waypointSel.value;
+  return file ? reach.waypoints?.find((w) => w.file === file) || null : null;
+}
+
+async function toggleHandMove() {
+  const on = !reach.status.hand_move;
+  if (on) {
+    const ok = window.confirm(
+      "确认卸力？\n\n手臂将失去支撑并下坠，请务必先用手扶住手臂！\n摆好位置后点「恢复保持」。");
+    if (!ok) {
+      return;
+    }
+  }
+  try {
+    const data = await fetchJson("/api/reach/hand_move", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ on }),
+    });
+    reach.status.hand_move = data.hand_move;
+    reachMsg(data.message, on ? "error" : "success");
+  } catch (error) {
+    reachMsg(`卸力操作失败: ${error.message}`, "error");
+  }
+  updateReachArmUi();
+}
+
+async function recordWaypoint() {
+  const name = window.prompt("路点名字（同名会覆盖）:", `中间点${(reach.waypoints?.length || 0) + 1}`);
+  if (!name?.trim()) {
+    return;
+  }
+  try {
+    const data = await fetchJson("/api/reach/waypoints", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    await refreshWaypoints();
+    reach.dom.waypointSel.value = data.waypoint.file;
+    reachMsg(`已录制路点「${data.waypoint.name}」→ reach_waypoints/${data.waypoint.file}`, "success");
+  } catch (error) {
+    reachMsg(`录制失败: ${error.message}`, "error");
+  }
+}
+
+async function deleteWaypoint() {
+  const wp = selectedWaypoint();
+  if (!wp) {
+    reachMsg("先在下拉框选中要删除的路点", "error");
+    return;
+  }
+  if (!window.confirm(`删除路点文件 ${wp.file}？`)) {
+    return;
+  }
+  try {
+    await fetchJson(`/api/reach/waypoints/${encodeURIComponent(wp.file)}`, { method: "DELETE" });
+    await refreshWaypoints();
+    reachMsg(`已删除路点「${wp.name}」`, "success");
+  } catch (error) {
+    reachMsg(`删除失败: ${error.message}`, "error");
+  }
+}
+
+async function scanObstacles() {
+  reach.dom.scan.disabled = true;
+  reachMsg("扫描环境障碍中…");
+  try {
+    const data = await fetchJson("/api/reach/scan_obstacles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    await refreshObstacles();
+    reachMsg(`障碍扫描完成：${data.count} 个体素（${(data.voxel_m * 100).toFixed(0)}cm），已加入碰撞检查`, "success");
+  } catch (error) {
+    reachMsg(`扫描失败: ${error.message}`, "error");
+  } finally {
+    reach.dom.scan.disabled = false;
+  }
+}
+
+async function clearObstacles() {
+  try {
+    await fetchJson("/api/reach/clear_obstacles", { method: "POST" });
+    await refreshObstacles();
+    reachMsg("环境障碍已清除", "success");
+  } catch (error) {
+    reachMsg(`清除失败: ${error.message}`, "error");
+  }
+}
+
+async function refreshObstacles() {
+  let data;
+  try {
+    data = await fetchJson("/api/reach/obstacles");
+  } catch {
+    return;
+  }
+  renderObstacles(data);
+  if (reach.dom) {
+    reach.dom.clearObs.disabled = !data.count;
+  }
+}
+
+function renderObstacles(data) {
+  if (!reach.obstacleGroup.parent) {
+    state.helperRoot.add(reach.obstacleGroup);
+  }
+  reach.obstacleGroup.clear();
+  if (!data.count) {
+    publishRenderState("障碍清除");
+    return;
+  }
+  const size = data.voxel_m;
+  const material = new THREE.MeshStandardMaterial({
+    color: 0x2f8fd9,
+    transparent: true,
+    opacity: 0.22,
+    depthWrite: false,
+    roughness: 0.8,
+  });
+  const instanced = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(size, size, size), material, data.count);
+  const m = new THREE.Matrix4();
+  data.centers.forEach((center, index) => {
+    m.setPosition(...xyzToScene(center));
+    instanced.setMatrixAt(index, m);
+  });
+  instanced.instanceMatrix.needsUpdate = true;
+  reach.obstacleGroup.add(instanced);
+  publishRenderState("障碍更新");
+}
+
+function describeReachCollision(panel, collision) {
+  if (!collision || (collision.status !== "collision" && collision.status !== "near")) {
+    return [];
+  }
+  const lines = [];
+  if (collision.pair) {
+    lines.push(`  ↳ 最近对象: ${shortCollisionName(collision.pair.a)} ↔ ` +
+      `${shortCollisionName(collision.pair.b)}` +
+      (Number.isFinite(Number(collision.min_distance_mm))
+        ? ` · 最小距离 ${Number(collision.min_distance_mm).toFixed(0)} mm` : ""));
+  }
+  const bad = panel.frames
+    .map((frame, idx) => ({ idx, status: frame.collision?.status }))
+    .filter((item) => item.status === "collision");
+  if (bad.length) {
+    const duration = Math.max(1, Number(reach.dom.duration.value || 6));
+    const t0 = (bad[0].idx / (panel.frames.length - 1)) * duration;
+    const t1 = (bad[bad.length - 1].idx / (panel.frames.length - 1)) * duration;
+    lines.push(`  ↳ 碰撞帧 ${bad.length}/${panel.frames.length}` +
+      `（约 ${t0.toFixed(1)}s ~ ${t1.toFixed(1)}s，3D 轨迹红点段）`);
+  }
+  return lines;
 }
 
 async function executeReach() {
@@ -594,6 +952,7 @@ function renderArmPanel(panelElement, side, entry) {
     targetHandMaterial: null,
     tcpGroup: createPoseMarker(color, 0.02),
     trajectoryGroup: new THREE.Group(),
+    collisionGroup: new THREE.Group(),
     skeletonGroup: new THREE.Group(),
     fkTimer: 0,
     dom: {
@@ -648,7 +1007,7 @@ function renderArmPanel(panelElement, side, entry) {
     object.userData.targetMarker = true;
   });
 
-  state.helperRoot.add(panel.targetGroup, panel.tcpGroup, panel.trajectoryGroup, panel.skeletonGroup);
+  state.helperRoot.add(panel.targetGroup, panel.tcpGroup, panel.trajectoryGroup, panel.collisionGroup, panel.skeletonGroup);
   state.panels[chainId] = panel;
   renderSelectors(panel);
   renderJointInputs(panel);
@@ -725,6 +1084,7 @@ function bindPanelEvents(panel) {
     syncJointInputsFromRobot(panel);
     panel.frames = [];
     panel.trajectoryGroup.clear();
+    panel.collisionGroup.clear();
     panel.currentIk = null;
     panel.currentCollision = null;
     updateCollisionMetrics(panel, null);
@@ -775,6 +1135,7 @@ function onJointEdit(panel) {
   panel.currentCollision = null;
   panel.frames = [];
   panel.trajectoryGroup.clear();
+  panel.collisionGroup.clear();
   updateCollisionMetrics(panel, null);
   applyJointInputsToRobot(panel);
   updateFrameLabel();
@@ -926,6 +1287,7 @@ async function planTrajectory(panel, options = {}) {
     panel.currentCollision = data.collision;
     updateCollisionMetrics(panel, data.collision);
     updateTrajectoryLine(panel);
+    visualizeCollision(panel, data.collision);
     applyFrame(panel, 0);
     const collisionKind = data.collision?.status;
     const hasCollisionAlert = collisionKind === "collision" || collisionKind === "near";
@@ -1059,6 +1421,87 @@ function updateTrajectoryLine(panel) {
     dot.position.fromArray(xyzToScene(panel.frames[idx].tcp_pose.xyz));
     panel.trajectoryGroup.add(dot);
   }
+}
+
+function visualizeCollision(panel, collision) {
+  panel.collisionGroup.clear();
+  const checks = collision?.checks || [];
+  const offending = checks.filter((c) => c.status === "collision");
+  const nearOnly = !offending.length;
+  const frames = offending.length
+    ? offending
+    : checks.filter((c) => c.status === "near");
+  if (!frames.length) {
+    return;
+  }
+
+  // 最严重的一帧：把相撞的两个几何体都画出来
+  const worst = frames.reduce((a, b) =>
+    (a.min_distance_m ?? 1e9) <= (b.min_distance_m ?? 1e9) ? a : b);
+  const color = nearOnly ? 0xd9ab34 : 0xc53f3f;
+  const strong = transparentMaterial(color, 0.4);
+  strong.depthWrite = false;
+  if (worst.pair && worst.shapes) {
+    for (const name of [worst.pair.a, worst.pair.b]) {
+      const shape = worst.shapes[name];
+      if (shape) {
+        panel.collisionGroup.add(primitiveMesh(shape, strong));
+      }
+    }
+  }
+
+  // 碰撞段：手臂侧几何体沿轨迹采样叠加，形成"扫过的红色体积"
+  if (!nearOnly && worst.pair) {
+    const faint = transparentMaterial(color, 0.12);
+    faint.depthWrite = false;
+    const step = Math.max(1, Math.floor(offending.length / 10));
+    for (let i = 0; i < offending.length; i += step) {
+      const check = offending[i];
+      const shape = check.shapes?.[check.pair?.a || worst.pair.a];
+      if (shape && check !== worst) {
+        panel.collisionGroup.add(primitiveMesh(shape, faint));
+      }
+    }
+  }
+  publishRenderState("碰撞可视化");
+}
+
+function primitiveMesh(shape, material) {
+  if (shape.kind === "sphere") {
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(shape.radius, 20, 14), material);
+    mesh.position.fromArray(xyzToScene(shape.center));
+    return mesh;
+  }
+  if (shape.kind === "box") {
+    const [hx, hy, hz] = shape.half_extents;
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2), material);
+    const r = shape.rotation;
+    const m = new THREE.Matrix4().set(
+      r[0][0], r[0][1], r[0][2], 0,
+      r[1][0], r[1][1], r[1][2], 0,
+      r[2][0], r[2][1], r[2][2], 0,
+      0, 0, 0, 1,
+    );
+    mesh.quaternion.setFromRotationMatrix(m);
+    mesh.position.fromArray(xyzToScene(shape.center));
+    return mesh;
+  }
+  if (shape.kind === "capsule") {
+    const group = new THREE.Group();
+    const a = new THREE.Vector3().fromArray(xyzToScene(shape.a));
+    const b = new THREE.Vector3().fromArray(xyzToScene(shape.b));
+    const length = a.distanceTo(b);
+    const capA = new THREE.Mesh(new THREE.SphereGeometry(shape.radius, 16, 12), material);
+    capA.position.copy(a);
+    const capB = new THREE.Mesh(new THREE.SphereGeometry(shape.radius, 16, 12), material);
+    capB.position.copy(b);
+    const cyl = new THREE.Mesh(new THREE.CylinderGeometry(shape.radius, shape.radius, Math.max(length, 1e-4), 16, 1, true), material);
+    cyl.position.copy(a).lerp(b, 0.5);
+    cyl.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
+    group.add(capA, capB, cyl);
+    return group;
+  }
+  return new THREE.Group();
 }
 
 function updateSkeleton(panel, linkPoses) {

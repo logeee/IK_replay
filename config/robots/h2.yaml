@@ -105,17 +105,19 @@ initial_joints:
 collision:
   enabled: true
   near_margin_m: 0.05
+  # 前后/高按 STL 网格实测 bbox + ~1.5cm 余量；左右(y)故意比网格窄
+  # （网格全宽含肩部凸缘，会把垂放的大臂也算成碰撞）
   body:
     - name: torso_box
       kind: box
       link: torso_link
-      xyz: [0.02, 0.0, 0.24]
+      xyz: [0.0, 0.0, 0.22]
       rpy: [0.0, 0.0, 0.0]
-      half_extents: [0.16, 0.105, 0.29]
+      half_extents: [0.115, 0.105, 0.25]
     - name: head_sphere
       kind: sphere
       link: torso_link
-      xyz: [0.03, 0.0, 0.58]
+      xyz: [0.015, 0.0, 0.53]
       radius: 0.16
   chains:
     right_arm:
@@ -138,6 +140,17 @@ collision:
             toward: right_hand_link
             t: 0.75
           radius: 0.045
+        # TCP 向法兰盘平面（right_hand_link 原点、法线为其 +x）做垂线，
+        # 垂足 → TCP 的粗胶囊：覆盖手掌/手指这段，参与和环境的碰撞
+        - name: hand
+          kind: capsule
+          a:
+            tcp_foot:
+              link: right_hand_link
+              axis: [1, 0, 0]
+          b:
+            tcp: true
+          radius: 0.04
         - name: tcp
           kind: sphere
           tcp: true
@@ -162,6 +175,15 @@ collision:
             toward: left_hand_link
             t: 0.75
           radius: 0.045
+        - name: hand
+          kind: capsule
+          a:
+            tcp_foot:
+              link: left_hand_link
+              axis: [1, 0, 0]
+          b:
+            tcp: true
+          radius: 0.04
         - name: tcp
           kind: sphere
           tcp: true
