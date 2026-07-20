@@ -108,6 +108,7 @@ def main() -> int:
         camera=camera, robot_model=robot_model, robot_id=args.robot,
         chain_id=args.chain, calib_path=args.calib,
         collision_checker=app_module.collision_checkers[args.robot],
+        ik_solver=app_module.solvers[args.robot]["numerical"],
         arm_factory=arm_factory, joints_reader=joints_reader,
     )
     app_module.app.include_router(reach.router)

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>双臂 IK 调试回放台</title>
-    <link rel="stylesheet" href="/web/style.css?v=29" />
+    <link rel="stylesheet" href="/web/style.css?v=38" />
     <script type="importmap">
       {
         "imports": {
@@ -45,12 +45,20 @@
               <div id="reachInfo" class="reach-info">在左侧相机画面中点击目标</div>
               <div class="reach-offset-row">
                 <label class="reach-offset">
-                  <span>接近偏移 (m)</span>
-                  <input id="reachOffset" type="number" step="0.01" min="0" value="0.03" />
+                  <span>接近偏移(m)</span>
+                  <input id="reachOffset" type="number" step="0.005" min="-0.05" value="0.015" />
                 </label>
                 <label class="reach-offset">
-                  <span>执行时长 (s)</span>
+                  <span>时长(s)</span>
                   <input id="reachDuration" type="number" step="1" min="1" value="6" />
+                </label>
+                <label class="reach-offset">
+                  <span>左移(cm)</span>
+                  <input id="reachStepLen" type="number" step="1" value="5" />
+                </label>
+                <label class="reach-offset">
+                  <span>推力(N)</span>
+                  <input id="reachPushForce" type="number" step="1" min="0" max="30" value="15" />
                 </label>
               </div>
               <div class="reach-actions">
@@ -91,6 +99,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=29"></script>
+    <script type="module" src="/web/main.js?v=38"></script>
   </body>
 </html>

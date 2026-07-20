@@ -49,6 +49,8 @@ class ReachState:
         self.obstacles: np.ndarray | None = None   # 体素中心（URDF 根系）
         self.obstacle_voxel = 0.05
         self.target_exclusion_m = 0.15
+        self.plane: dict | None = None             # 取点时拟合的目标表面平面（根系）
+        self.ik_solver = None                      # 笛卡尔直线插补用的 IK 求解器
         self.waypoints_dir: Path | None = None     # 中间路点落盘目录（每个路点一个 json）
         # 执行线程状态
         self.exec_lock = threading.Lock()
@@ -63,7 +65,8 @@ state = ReachState()
 
 
 def configure(*, camera, robot_model, robot_id: str, chain_id: str, calib_path: Path,
-              collision_checker=None, arm_factory=None, joints_reader=None) -> None:
+              collision_checker=None, ik_solver=None, arm_factory=None,
+              joints_reader=None) -> None:
     """由 reach_server 调用。calib_path 是 handeye3d_result.json。"""
     calib = json.loads(Path(calib_path).read_text())
     T_cam2torso = np.asarray(calib["T_cam2base"], dtype=float).reshape(4, 4)
@@ -93,6 +96,7 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str, calib_path: 
     state.joint_names = robot_model.joint_names(chain_id)
     state.robot_model = robot_model
     state.collision_checker = collision_checker
+    state.ik_solver = ik_solver
     state.waypoints_dir = Path(__file__).resolve().parent.parent / "reach_waypoints"
     state.enabled = True
 
@@ -154,13 +158,14 @@ async def reach_stream():
 async def reach_pick(body: dict):
     """Body: {"u": int, "v": int, "approach_offset_m": float?}
 
-    approach_offset_m：沿相机视线往回退的距离（指尖停在表面前方），默认 0.03。
+    approach_offset_m：沿相机视线往回退的距离（指尖停在表面前方），默认 0.015；
+    负值 = 指令位置压入表面，接触后位置误差消不掉，电机持续出力（掰开关用）。
     """
     if not state.enabled:
         return JSONResponse({"ok": False, "error": "reach 未启用"}, status_code=409)
     try:
         u, v = int(body["u"]), int(body["v"])
-        offset = float(body.get("approach_offset_m", 0.03))
+        offset = float(body.get("approach_offset_m", 0.015))
     except (KeyError, TypeError, ValueError):
         return JSONResponse({"ok": False, "error": "需要整数 u、v"}, status_code=400)
 
@@ -185,6 +190,9 @@ async def reach_pick(body: dict):
         state.collision_checker.set_environment_exclusions(
             [(p_root_surface, state.target_exclusion_m)])
 
+    # 拟合目标表面平面（横移一步的"左"方向以它定义）
+    state.plane = _fit_surface_plane(p_cam)
+
     return {
         "ok": True,
         "pixel": [u, v],
@@ -195,6 +203,57 @@ async def reach_pick(body: dict):
         "p_torso": to_frame(state.T_cam2torso, p_cam_goal),
         "p_root": to_frame(state.T_cam2root, p_cam_goal),
         "p_root_surface": p_root_surface,
+        "plane": state.plane,
+    }
+
+
+def _fit_surface_plane(p_cam_surface: np.ndarray, radius: float = 0.12) -> dict | None:
+    """在被点表面点周围拟合平面（SVD 最小二乘），返回根系下的
+    法线（指向机器人）、"左"方向（面向平面时的左，嵌在平面内）等。
+    拟合失败（点太少/平面水平）返回 None。"""
+    snap = state.camera.depth_snapshot()
+    if snap is None:
+        return None
+    depth_mm, (fx, fy, cx, cy) = snap
+    h, w = depth_mm.shape
+    stride = max(1, int(round(max(h, w) / 320)))
+    d = depth_mm[::stride, ::stride].astype(float) / 1000.0
+    vs, us = np.mgrid[0:h:stride, 0:w:stride]
+    valid = (d > 0.15) & (d < 3.0)
+    pts = np.stack([(us[valid] - cx) * d[valid] / fx,
+                    (vs[valid] - cy) * d[valid] / fy,
+                    d[valid]], axis=1)
+    near = pts[np.linalg.norm(pts - p_cam_surface, axis=1) < radius]
+    if len(near) < 50:
+        return None
+
+    center = near.mean(axis=0)
+    q = near - center
+    _, _, vt = np.linalg.svd(q, full_matrices=False)
+    n = vt[2]
+    rms = float(np.sqrt(np.mean((q @ n) ** 2)))
+    if float(np.dot(n, -center)) < 0:
+        n = -n  # 法线指向相机（即机器人一侧）
+
+    R = state.T_cam2root[:3, :3]
+    n_root = R @ n
+    center_root = R @ center + state.T_cam2root[:3, 3]
+    facing = -n_root                      # 机器人 → 平面
+    up = np.array([0.0, 0.0, 1.0])
+    left = np.cross(up, facing)           # 面向平面时的左手方向
+    norm = float(np.linalg.norm(left))
+    if norm < 1e-3:
+        return None                       # 平面接近水平，"左"无定义
+    left /= norm
+    left -= float(np.dot(left, n_root)) * n_root   # 嵌入平面内
+    left /= float(np.linalg.norm(left))
+    return {
+        "center_root": center_root.tolist(),
+        "normal_root": n_root.tolist(),
+        "left_root": left.tolist(),
+        "rms_mm": rms * 1000.0,
+        "points": int(len(near)),
+        "radius_m": radius,
     }
 
 
@@ -301,6 +360,80 @@ async def reach_obstacles():
         "voxel_m": state.obstacle_voxel,
         "centers": [] if state.obstacles is None else state.obstacles.tolist(),
     }
+
+
+# --------------- 笛卡尔直线插补（沿面横移用） ---------------
+
+
+@router.post("/plan_cartesian")
+async def reach_plan_cartesian(body: dict):
+    """指尖沿直线平移的轨迹：把总位移切成小步，逐步 IK（前一步做种子），
+    TCP 全程钉在直线上——不会像关节空间插值那样中途下沉再抬起。
+
+    Body: {"start_joints": named, "direction_root": [x,y,z], "distance_m": float,
+           "step_m": 0.01}
+    """
+    if state.ik_solver is None:
+        return JSONResponse({"ok": False, "error": "IK 求解器未注入"}, status_code=409)
+    from core.types import IKRequest, Pose
+
+    try:
+        start_named = {str(k): float(v) for k, v in dict(body["start_joints"]).items()}
+        direction = np.asarray(body["direction_root"], dtype=float).reshape(3)
+        distance = float(body["distance_m"])
+        step = abs(float(body.get("step_m", 0.01)))
+    except (KeyError, TypeError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": f"参数非法: {exc}"}, status_code=400)
+    norm = float(np.linalg.norm(direction))
+    if norm < 1e-9 or abs(distance) < 1e-6:
+        return JSONResponse({"ok": False, "error": "方向/距离为零"}, status_code=400)
+    direction /= norm
+
+    model = state.robot_model
+    tcp_offset = Pose(xyz=list(state.p_tool))
+    p0 = np.asarray(model.tcp_pose(start_named, state.chain_id, tcp_offset).xyz)
+    n_steps = max(2, int(np.ceil(abs(distance) / step)))
+
+    waypoints = [{"index": 0, "named_joints": start_named,
+                  "tcp_pose": {"xyz": p0.tolist(), "rpy": [0.0, 0.0, 0.0]}}]
+    q_prev = start_named
+    max_err = 0.0
+    for i in range(1, n_steps + 1):
+        target = p0 + direction * distance * (i / n_steps)
+        res = state.ik_solver.solve(IKRequest(
+            chain_id=state.chain_id,
+            current_joints=q_prev,
+            target_pose=Pose(xyz=target.tolist()),
+            tcp_offset=tcp_offset,
+            base_link=model.base_link(state.chain_id),
+            end_link=model.end_link(state.chain_id),
+            joint_names=state.joint_names,
+            seed=q_prev,
+            solver_options={"solve_orientation": False, "tolerance_mm": 3.0},
+        ))
+        if not res.success:
+            return JSONResponse(
+                {"ok": False,
+                 "error": f"第 {i}/{n_steps} 步 IK 未收敛（{res.error_mm:.1f} mm），"
+                          "直线可能超出可达范围"},
+                status_code=422)
+        max_err = max(max_err, float(res.error_mm))
+        q_prev = res.named_target_joints
+        waypoints.append({"index": i, "named_joints": q_prev,
+                          "tcp_pose": res.tcp_pose.to_dict()})
+
+    collision = None
+    if state.collision_checker is not None:
+        checks = state.collision_checker.check_trajectory(
+            waypoints, state.chain_id, tcp_offset)
+        collision = state.collision_checker.summarize_checks(checks)
+        for wp, check in zip(waypoints, checks):
+            wp["collision"] = {"status": check["status"],
+                               "status_label": check["status_label"],
+                               "min_distance_mm": check["min_distance_mm"]}
+
+    return {"ok": True, "waypoints": waypoints, "collision": collision,
+            "max_ik_error_mm": max_err, "steps": n_steps}
 
 
 # --------------- 中间路点（录制 / 落盘 / 复用） ---------------
@@ -462,11 +595,32 @@ async def reach_exec_status():
     return _exec_status()
 
 
+def _position_jacobian(named: dict[str, float]) -> np.ndarray:
+    """TCP 位置对该链关节的数值雅可比（3×n，根系）。"""
+    from core.types import Pose
+
+    tcp_offset = Pose(xyz=list(state.p_tool))
+    model = state.robot_model
+    p0 = np.asarray(model.tcp_pose(named, state.chain_id, tcp_offset).xyz)
+    J = np.zeros((3, len(state.joint_names)))
+    eps = 1e-4
+    for k, name in enumerate(state.joint_names):
+        q = dict(named)
+        q[name] = q.get(name, 0.0) + eps
+        J[:, k] = (np.asarray(model.tcp_pose(q, state.chain_id, tcp_offset).xyz) - p0) / eps
+    return J
+
+
 @router.post("/execute")
 async def reach_execute(body: dict):
     """执行已规划的关节轨迹（真机运动！前端须先经人确认）。
 
-    Body: {"waypoints": [named_joints, ...], "duration": float}
+    Body: {"waypoints": [named_joints, ...], "duration": float,
+           "push": {"direction_root": [x,y,z], "force_n": float}?}
+
+    push（可选）：执行期间在 TCP 上沿指定方向叠加前馈力（τ=JᵀF）。
+    纯位置控制的侧向刚度很低（~300 N/m），贴着旋钮也使不上力；
+    有了前馈力矩，接触后能持续出力把旋钮拨过去。
     """
     if state.controller is None:
         return JSONResponse(
@@ -481,6 +635,19 @@ async def reach_execute(body: dict):
                   for wp in waypoints]
     except (KeyError, TypeError, ValueError) as exc:
         return JSONResponse({"ok": False, "error": f"路点关节缺失/非法: {exc}"}, status_code=400)
+
+    push_tau = None
+    push = body.get("push")
+    if push:
+        try:
+            direction = np.asarray(push["direction_root"], dtype=float).reshape(3)
+            direction /= max(float(np.linalg.norm(direction)), 1e-9)
+            force = min(abs(float(push["force_n"])), 30.0)
+        except (KeyError, TypeError, ValueError) as exc:
+            return JSONResponse({"ok": False, "error": f"push 参数非法: {exc}"}, status_code=400)
+        if force > 1e-3:
+            J = _position_jacobian(dict(zip(state.joint_names, q_list[0])))
+            push_tau = J.T @ (direction * force)
 
     with state.exec_lock:
         if state.exec_running:
@@ -501,16 +668,33 @@ async def reach_execute(body: dict):
         state.exec_progress = 0.0
         state.exec_message = "执行中"
         state.exec_thread = threading.Thread(
-            target=_exec_loop, args=(q_list, duration), daemon=True)
+            target=_exec_loop, args=(q_list, duration, push_tau), daemon=True)
         state.exec_thread.start()
     return {"ok": True, **_exec_status()}
 
 
-def _exec_loop(q_list: list[np.ndarray], duration: float) -> None:
+def _exec_loop(q_list: list[np.ndarray], duration: float,
+               push_tau: np.ndarray | None = None) -> None:
     ctl = state.controller
     try:
         ctl.enable_jog()
+        # 重力前馈：上一段落点校正结束时"指令 = 目标 + 抗重力超调"，而本段
+        # 轨迹起点是实测位。若直接下发轨迹，指令会瞬间跳回实测（撤掉补偿），
+        # 手臂立刻下坠一个下垂量。这里把当前 指令-实测 差值作为前馈全程叠加。
+        try:
+            st0 = ctl.status()
+            ff = np.clip(np.asarray(st0["cmd_rad"]) - np.asarray(st0["measured_rad"]),
+                         -0.35, 0.35)
+        except Exception:
+            ff = np.zeros_like(q_list[0])
         n = len(q_list)
+        # 时长下限：限速滑动（矢量同步）跑完全程所需时间。短于它路点节拍会
+        # 一直超前于指令，falling-behind 的关节仍会扭曲路径，所以自动拉长。
+        travel = sum(float(np.max(np.abs(b - a))) for a, b in zip(q_list, q_list[1:]))
+        min_duration = travel / max(ctl.max_speed, 1e-6) * 1.1
+        if duration < min_duration:
+            duration = min_duration
+            state.exec_message = f"时长过短，按限速拉长到 {duration:.1f}s"
         dt = duration / max(n - 1, 1)
         t0 = time.monotonic()
         for i, q in enumerate(q_list):
@@ -518,7 +702,11 @@ def _exec_loop(q_list: list[np.ndarray], duration: float) -> None:
                 ctl.disable_jog()
                 state.exec_message = "已中止（保持当前位置）"
                 return
-            ctl.set_target(q)
+            ctl.set_target(q + ff)
+            if push_tau is not None:
+                # 前馈力矩渐入（前 30% 路点线性加满），避免突加力矩的抖动
+                scale = min(1.0, (i + 1) / max(1, round(0.3 * n)))
+                ctl.set_tau_ff(push_tau * scale)
             state.exec_progress = i / (n - 1)
             target_t = t0 + (i + 1) * dt
             while True:
@@ -536,20 +724,54 @@ def _exec_loop(q_list: list[np.ndarray], duration: float) -> None:
             if gap < 1e-3:
                 break
             time.sleep(0.1)
+
+        # 稳态误差校正（负反馈积分，"遥操作式顶目标"）：位置环刚度有限时
+        # 手臂被重力压低，实测到不了指令位。以 ~7Hz 测量误差并累积进超调量；
+        # 只在"上一次超调已送达"（desired≈cmd）的拍子上积分——指令在途时
+        # 自动暂停积分，天然防饱和。超调量有硬上限，防止顶死在障碍上。
+        # 推力模式：位置到不到位没有意义（被旋钮/表面顶着），不做落点校正，
+        # 收敛后再持续顶 1.5s 把旋钮拨到底，然后撤力刚性保持。
+        if push_tau is not None:
+            if not state.exec_cancel.is_set():
+                state.exec_message = "持续出力中"
+                deadline = time.monotonic() + 1.5
+                while time.monotonic() < deadline and not state.exec_cancel.is_set():
+                    time.sleep(0.05)
+            ctl.disable_jog()   # 同时清零前馈力矩
+            state.exec_progress = 1.0
+            state.exec_message = ("已中止（保持当前位置）" if state.exec_cancel.is_set()
+                                  else "完成（推力段结束，已撤力保持）")
+            return
+
+        sag = None
+        if not state.exec_cancel.is_set():
+            target = q_list[-1]
+            offset = ff.copy()   # 从重力前馈接着微调，而不是从零重新积
+            deadline = time.monotonic() + 8.0
+            while time.monotonic() < deadline and not state.exec_cancel.is_set():
+                status = ctl.status()
+                measured = np.asarray(status["measured_rad"] or ctl.read_measured().tolist())
+                err = target - measured
+                sag = float(np.max(np.abs(err)))
+                if sag < 0.02:  # ~1.1°，认为到位
+                    break
+                state.exec_message = f"落点校正中（残差 {sag:.3f} rad）"
+                delivered = float(np.max(np.abs(
+                    np.asarray(status["desired_rad"]) - np.asarray(status["cmd_rad"])))) < 5e-3
+                if delivered:
+                    offset = np.clip(offset + 0.7 * err, -0.35, 0.35)
+                    ctl.set_target(target + offset)
+                time.sleep(0.08)
+
         ctl.disable_jog()
         state.exec_progress = 1.0
-        # 实测残差 = 指令目标 - 电机实测。明显偏大（>0.05 rad）通常是 kp 太低被重力压住
         sag_note = ""
-        try:
-            time.sleep(0.3)
-            measured = np.asarray(ctl.read_measured())
-            desired = np.asarray(ctl.status()["desired_rad"])
-            sag = float(np.max(np.abs(desired - measured)))
-            sag_note = f"，实测残差 {sag:.3f} rad" + ("（偏大，考虑调高 --arm-kp）" if sag > 0.05 else "")
-        except Exception:
-            pass
+        if sag is not None:
+            sag_note = (f"，校正后残差 {sag:.3f} rad"
+                        + ("（仍偏大：超调已到上限，请调高 --arm-kp 或检查是否顶到障碍）"
+                           if sag > 0.05 else ""))
         state.exec_message = ("已中止（保持当前位置）" if state.exec_cancel.is_set()
-                              else f"完成（刚性保持在目标位{sag_note}）")
+                              else f"完成（刚性保持{sag_note}）")
     except Exception as exc:
         try:
             ctl.stop()

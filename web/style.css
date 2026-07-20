@@ -488,7 +488,7 @@ button:disabled {
   left: 18px;
   bottom: 62px;
   z-index: 10;
-  width: 560px;
+  width: 660px;
   max-width: calc(100% - 36px);
   border: 1px solid rgba(20, 31, 45, 0.14);
   border-radius: 9px;
@@ -577,7 +577,7 @@ button:disabled {
 }
 
 .reach-side {
-  flex: 1;
+  flex: 1.15;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -599,18 +599,28 @@ button:disabled {
 
 .reach-offset-row {
   display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 6px;
+  flex-wrap: nowrap;
+  align-items: flex-end;
 }
 
 .reach-offset {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.reach-offset span {
+  white-space: nowrap;
+  font-size: 11px;
+  color: #4a5a6b;
 }
 
 .reach-offset input {
-  width: 60px;
+  width: 100%;
+  min-width: 48px;
+  box-sizing: border-box;
   padding: 4px 6px;
   border: 1px solid #c9d5df;
   border-radius: 5px;

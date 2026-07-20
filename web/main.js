@@ -121,6 +121,11 @@ const reach = {
   obstacleGroup: new THREE.Group(),
   flangeDebugGroup: null,
   waypoints: [],
+  picking: false,
+  pendingClick: null,
+  plane: null,
+  planeGroup: new THREE.Group(),
+  execFrames: null, // 真机执行只跑主段（预演 frames 可能拼了横移预览段）
 };
 
 async function initReach() {
@@ -158,6 +163,8 @@ async function initReach() {
     handMove: document.getElementById("reachHandMoveBtn"),
     record: document.getElementById("reachRecordBtn"),
     delWp: document.getElementById("reachDelWpBtn"),
+    stepLen: document.getElementById("reachStepLen"),
+    pushForce: document.getElementById("reachPushForce"),
     msg: document.getElementById("reachMsg"),
   };
   const d = reach.dom;
@@ -174,7 +181,7 @@ async function initReach() {
   d.handMove.addEventListener("click", () => toggleHandMove());
   d.record.addEventListener("click", () => recordWaypoint());
   d.delWp.addEventListener("click", () => deleteWaypoint());
-  state.helperRoot.add(reach.obstacleGroup);
+  state.helperRoot.add(reach.obstacleGroup, reach.planeGroup);
   await refreshObstacles();
   await refreshWaypoints();
   showFlangeDebug();
@@ -261,20 +268,46 @@ async function onReachVideoClick(ev) {
   reach.dom.mark.style.top = `${ev.clientY - rect.top}px`;
   reach.dom.mark.classList.remove("hidden");
 
-  reachMsg("取点中…");
+  // 连续点击去重：只记录最新一次，正在计算时不重复触发；
+  // 当前轮算完后若发现有更新的点击，跳过旧结果直接算最新的。
+  reach.pendingClick = { u, v };
+  if (reach.picking) {
+    reachMsg("已更新目标，等待当前计算结束…");
+    return;
+  }
+  reach.picking = true;
   reach.dom.exec.disabled = true;
   try {
-    const data = await fetchJson("/api/reach/pick", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ u, v, approach_offset_m: Number(reach.dom.offset.value || 0) }),
-    });
-    reach.lastPick = data;
-    reach.dom.replan.disabled = false;
-    await runReachPlan();
-  } catch (error) {
-    reach.lastPick = null;
-    reachMsg(`取点失败: ${error.message}`, "error");
+    while (reach.pendingClick) {
+      const click = reach.pendingClick;
+      reach.pendingClick = null;
+      reachMsg("取点中…");
+      let data;
+      try {
+        data = await fetchJson("/api/reach/pick", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            u: click.u, v: click.v,
+            approach_offset_m: Number(reach.dom.offset.value || 0),
+          }),
+        });
+      } catch (error) {
+        reach.lastPick = null;
+        reachMsg(`取点失败: ${error.message}`, "error");
+        continue; // 若期间又点了新目标，继续算新的
+      }
+      if (reach.pendingClick) {
+        continue; // 已有更新的点击，旧结果不再规划
+      }
+      reach.lastPick = data;
+      reach.plane = data.plane || null;
+      visualizeSurfacePlane(data);
+      reach.dom.replan.disabled = false;
+      await runReachPlan();
+    }
+  } finally {
+    reach.picking = false;
   }
 }
 
@@ -328,13 +361,25 @@ async function runReachPlan() {
   }
 
   const ik = panel.currentIk;
+
+  // 横移段并入预演：执行时仍分两段（先到位校正，再按真机实际姿态重规划横移）
+  reach.execFrames = panel.frames;
+  const stepCm = Number(reach.dom.stepLen.value || 0);
+  let sidestepOk = false;
+  if (ik?.success && stepCm && reach.plane && panel.frames.length > 1
+      && panel.currentCollision?.status !== "collision") {
+    sidestepOk = await appendSidestepPreview(panel, stepCm);
+  }
+
   const collision = panel.currentCollision;
   const pt = pick.p_torso;
   const lines = [
     `像素 [${pick.pixel}] · 深度 ${Math.round(pick.depth_mm)} mm`,
     `目标(躯干系) [${pt.map((v) => v.toFixed(3)).join(", ")}] m`,
-    `接近偏移 ${pick.approach_offset_m} m（0 = 触碰表面）`,
+    `接近偏移 ${pick.approach_offset_m} m（0 = 触碰表面，负 = 压入表面加力）`,
     ...(viaWp ? [`经由路点「${viaWp.name}」两段规划`] : []),
+    ...(stepCm ? [`到位后沿面${stepCm > 0 ? "左" : "右"}移 ${Math.abs(stepCm)}cm` +
+      (sidestepOk ? "（已并入预演）" : "（横移段规划失败）")] : []),
     `IK: ${ik ? (ik.success ? "成功" : "未到达") : "失败"}` +
       (ik ? ` · 误差 ${Number(ik.error_mm).toFixed(1)} mm` : ""),
     `碰撞: ${collision?.status_label || "-"} · 轨迹点 ${panel.frames.length}`,
@@ -354,6 +399,152 @@ async function runReachPlan() {
     reachMsg(ik?.success === false
       ? "目标不可达（IK 未收敛），换个目标或调整姿态"
       : (collision?.status === "collision" ? "轨迹有碰撞，已禁止执行" : "规划失败"), "error");
+  }
+}
+
+// 拟合的目标表面平面 + "左"方向箭头（横移一步沿这个方向）
+function visualizeSurfacePlane(pick) {
+  reach.planeGroup.clear();
+  const plane = pick.plane;
+  if (!plane) {
+    return;
+  }
+  const center = new THREE.Vector3(...xyzToScene(pick.p_root_surface));
+  const normal = new THREE.Vector3(...plane.normal_root);
+  const left = new THREE.Vector3(...plane.left_root);
+
+  const patch = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.3, 0.3),
+    new THREE.MeshBasicMaterial({ color: 0x35a2d0, transparent: true, opacity: 0.18, side: THREE.DoubleSide, depthWrite: false }),
+  );
+  patch.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+  patch.position.copy(center);
+  const arrow = new THREE.ArrowHelper(left, center, 0.14, 0x35d07f, 0.04, 0.02);
+  const label = makeLabelSprite("左");
+  label.position.copy(center).addScaledVector(left, 0.18);
+  reach.planeGroup.add(patch, arrow, label);
+  publishRenderState("表面平面");
+}
+
+// 预演用：从主轨迹终点接着规划横移段并拼进回放（执行时会按真机实际姿态重规划）。
+// 横移用笛卡尔直线插补：指尖钉在直线上，不会像关节空间插值那样中途下沉。
+async function appendSidestepPreview(panel, stepCm) {
+  const mainFrames = panel.frames;
+  const last = mainFrames[mainFrames.length - 1];
+  try {
+    const seg = await planCartesianSidestep(last.named_joints, stepCm);
+    panel.frames = [...mainFrames, ...seg.waypoints.slice(1)];
+    panel.frameIndex = 0;
+    panel.currentCollision = combineCollisionSummaries(panel.currentCollision, seg.collision);
+    updateCollisionMetrics(panel, panel.currentCollision);
+    updateTrajectoryLine(panel);
+    visualizeCollision(panel, panel.currentCollision);
+    applyFrame(panel, 0);
+    return true;
+  } catch (error) {
+    console.error(error);
+    return false;
+  }
+}
+
+function planCartesianSidestep(startJoints, stepCm) {
+  return fetchJson("/api/reach/plan_cartesian", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      start_joints: startJoints,
+      direction_root: reach.plane.left_root,
+      distance_m: stepCm / 100,
+      step_m: 0.01,
+    }),
+  });
+}
+
+// 沿拟合平面横移（stepCm 正=左 负=右），从真机当前姿态就地规划执行
+async function sidestepReach(stepCm, options = {}) {
+  const st = reach.status;
+  const plane = reach.plane;
+  const panel = state.panels[st.chain_id];
+  if (!plane || !panel) {
+    reachMsg("还没有拟合出表面平面，无法横移", "error");
+    return;
+  }
+  const step = stepCm / 100;
+  const dirName = stepCm > 0 ? "左" : "右";
+  reachMsg(`${dirName}移 ${(Math.abs(step) * 100).toFixed(0)}cm 规划中…`);
+
+  // 起点 = 真机当前关节（读不到就用面板当前值，纯模拟联调用）
+  let joints = readJointInputs(panel);
+  if (st.joints_available) {
+    try {
+      const j = await fetchJson("/api/reach/joints");
+      if (j.ok) {
+        joints = j.named_joints;
+      }
+    } catch { /* 用面板值兜底 */ }
+  }
+  setJointInputs(panel, joints);
+  Object.assign(state.robotJointState, joints);
+  setRobotJoints(state.robotJointState, false);
+  writePose(panel, "tcp", { xyz: st.p_tool, rpy: [0, 0, 0] });
+
+  // 笛卡尔直线插补：指尖钉在"左"方向直线上（不会下沉绕行）
+  let seg;
+  try {
+    seg = await planCartesianSidestep(joints, stepCm);
+  } catch (error) {
+    reachMsg(`${dirName}移规划失败: ${error.message}`, "error");
+    return;
+  }
+  panel.frames = seg.waypoints;
+  panel.frameIndex = 0;
+  panel.currentCollision = seg.collision;
+  updateCollisionMetrics(panel, seg.collision);
+  updateTrajectoryLine(panel);
+  visualizeCollision(panel, seg.collision);
+  applyFrame(panel, 0);
+  if (panel.targetHandGroup) {
+    panel.targetHandGroup.visible = false;
+  }
+  if (seg.collision?.status === "collision") {
+    reachMsg(`${dirName}移轨迹有碰撞，已禁止执行`, "error");
+    return;
+  }
+  if (!st.armed) {
+    replay(panel);
+    reachMsg(`${dirName}移已预演（未接管手臂，无法真机执行）`, "success");
+    return;
+  }
+  const pushN = Math.max(0, Number(reach.dom.pushForce?.value || 0));
+  if (!options.skipConfirm) {
+    const ok = window.confirm(
+      `确认沿电柜表面${dirName}移 ${Math.abs(stepCm).toFixed(0)}cm？手臂将运动。\n` +
+      `直线插补 ${seg.steps} 步 · 最大 IK 误差 ${Number(seg.max_ik_error_mm).toFixed(1)} mm · ` +
+      `推力 ${pushN}N · 碰撞: ${seg.collision?.status_label || "-"}`);
+    if (!ok) {
+      return;
+    }
+  }
+  try {
+    await fetchJson("/api/reach/execute", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        waypoints: panel.frames.map((frame) => frame.named_joints),
+        duration: Math.max(2, Math.abs(stepCm) / 100 / 0.02),
+        // 沿移动方向的前馈力：接触旋钮后位置环刚度不够，靠它出力拨动
+        ...(pushN > 0 ? {
+          push: {
+            direction_root: plane.left_root.map((v) => v * Math.sign(stepCm)),
+            force_n: pushN,
+          },
+        } : {}),
+      }),
+    });
+    reachMsg(`${dirName}移执行中…`, "success");
+    await pollReachExec();
+  } catch (error) {
+    reachMsg(`${dirName}移执行失败: ${error.message}`, "error");
   }
 }
 
@@ -693,13 +884,21 @@ async function executeReach() {
   }
   const ik = panel.currentIk;
   const duration = Math.max(1, Number(reach.dom.duration.value || 6));
+  const stepCm = Number(reach.dom.stepLen.value || 0);
+  // 主段 = 取点规划的到位轨迹（预演 frames 可能已拼了横移预览段，真机不直接跑它）
+  const mainFrames = (reach.execFrames && reach.execFrames[0] === panel.frames[0])
+    ? reach.execFrames : panel.frames;
+  const sidestepNote = (stepCm && reach.plane)
+    ? `到位后将沿电柜表面${stepCm > 0 ? "左" : "右"}移 ${Math.abs(stepCm).toFixed(0)}cm\n`
+    : "";
   const pt = reach.lastPick.p_torso;
   const ok = window.confirm(
     "确认真机执行？手臂将开始运动！\n\n" +
     `目标(躯干系): [${pt.map((v) => v.toFixed(3)).join(", ")}] m\n` +
     `IK 误差: ${Number(ik?.error_mm || 0).toFixed(1)} mm\n` +
-    `轨迹: ${panel.frames.length} 点 / ${duration}s\n\n` +
-    "请确保周围无人无障碍，手不要放在运动路径上。");
+    `轨迹: ${mainFrames.length} 点 / ${duration}s\n` +
+    sidestepNote +
+    "\n请确保周围无人无障碍，手不要放在运动路径上。");
   if (!ok) {
     return;
   }
@@ -709,12 +908,16 @@ async function executeReach() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        waypoints: panel.frames.map((frame) => frame.named_joints),
+        waypoints: mainFrames.map((frame) => frame.named_joints),
         duration,
       }),
     });
     reachMsg("真机执行中…", "success");
-    await pollReachExec();
+    const final = await pollReachExec();
+    // 到位后可选的沿面横移（左移(cm) ≠ 0 时；已在上面的确认框里一并确认过）
+    if (stepCm && reach.plane && final?.message?.startsWith("完成")) {
+      await sidestepReach(stepCm, { skipConfirm: true });
+    }
   } catch (error) {
     reachMsg(`执行请求失败: ${error.message}`, "error");
     reach.dom.exec.disabled = false;
@@ -723,7 +926,7 @@ async function executeReach() {
 
 async function pollReachExec() {
   for (;;) {
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await new Promise((resolve) => setTimeout(resolve, 150));
     let status;
     try {
       status = await fetchJson("/api/reach/exec_status");
@@ -735,7 +938,7 @@ async function pollReachExec() {
     } else {
       reachMsg(status.message || "执行结束", status.message?.includes("错") ? "error" : "success");
       reach.dom.exec.disabled = false;
-      return;
+      return status;
     }
   }
 }
