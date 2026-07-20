@@ -308,6 +308,7 @@ class RobotModel:
             "links": sorted(self.links),
             "joints": sorted(self.joints),
             "root_links": self.root_links,
+            "viewer_frames": list(self.config.viewer_frames),
         }
 
 

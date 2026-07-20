@@ -480,3 +480,186 @@ button:disabled {
     align-items: stretch;
   }
 }
+
+/* ---- reach adapter：点击取目标面板 ---- */
+
+.reach-panel {
+  position: absolute;
+  left: 18px;
+  bottom: 62px;
+  z-index: 10;
+  width: 560px;
+  max-width: calc(100% - 36px);
+  border: 1px solid rgba(20, 31, 45, 0.14);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 32px rgba(17, 31, 46, 0.18);
+  overflow: hidden;
+}
+
+.reach-panel.hidden {
+  display: none;
+}
+
+.reach-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(20, 31, 45, 0.1);
+  background: #f2f6f9;
+  font-size: 13px;
+  color: #1d2a38;
+}
+
+.reach-header button {
+  margin-left: auto;
+  width: 26px;
+  height: 22px;
+  border: 1px solid rgba(20, 31, 45, 0.15);
+  border-radius: 5px;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.reach-badge {
+  padding: 2px 8px;
+  border-radius: 9px;
+  font-size: 11px;
+  background: #e4ecf2;
+  color: #43596d;
+}
+
+.reach-badge.exec {
+  background: #fbe9e7;
+  color: #b3362a;
+}
+
+.reach-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px;
+}
+
+.reach-body.hidden {
+  display: none;
+}
+
+.reach-video-wrap {
+  position: relative;
+  flex: 1.4;
+  min-width: 0;
+  border-radius: 7px;
+  overflow: hidden;
+  background: #0c1014;
+}
+
+.reach-video-wrap img {
+  display: block;
+  width: 100%;
+  cursor: crosshair;
+}
+
+.reach-mark {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border: 2px solid #ffb020;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  box-shadow: 0 0 8px rgba(255, 176, 32, 0.9);
+}
+
+.reach-mark.hidden {
+  display: none;
+}
+
+.reach-side {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  color: #213142;
+}
+
+.reach-info {
+  flex: 1;
+  padding: 8px;
+  border: 1px solid #d2dce4;
+  border-radius: 7px;
+  background: #f7fafc;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  font-family: ui-monospace, monospace;
+}
+
+.reach-offset-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.reach-offset {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reach-offset input {
+  width: 60px;
+  padding: 4px 6px;
+  border: 1px solid #c9d5df;
+  border-radius: 5px;
+}
+
+.reach-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.reach-actions button {
+  flex: 1;
+  min-height: 30px;
+  border: 1px solid rgba(20, 31, 45, 0.15);
+  border-radius: 6px;
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.reach-actions button:hover:not(:disabled) {
+  background: #eef3f6;
+}
+
+.reach-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.reach-actions button.danger {
+  color: #b3362a;
+  border-color: #e0b4ae;
+}
+
+.reach-actions button.danger:hover:not(:disabled) {
+  background: #fbe9e7;
+}
+
+.reach-msg {
+  min-height: 16px;
+  font-size: 12px;
+  color: #43596d;
+}
+
+.reach-msg.error {
+  color: #b3362a;
+}
+
+.reach-msg.success {
+  color: #1c8b4c;
+}

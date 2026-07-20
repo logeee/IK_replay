@@ -109,6 +109,286 @@ async function init() {
   dom.targetRotateButton.addEventListener("click", () => setTargetControlMode("rotate"));
   renderer.domElement.addEventListener("pointerdown", selectTargetFromPointer);
   await loadRobotData();
+  await initReach();
+}
+
+// ---- reach adapter：点击相机取目标 → IK 预演 → 确认后真机执行 ----
+
+const reach = {
+  status: null,
+  lastPick: null,
+  dom: null,
+};
+
+async function initReach() {
+  let status = null;
+  try {
+    status = await fetchJson("/api/reach/status");
+  } catch {
+    return; // 没挂 reach adapter，保持纯离线查看器
+  }
+  if (!status?.enabled) {
+    return;
+  }
+  reach.status = status;
+  if (status.robot && status.robot !== state.activeRobot) {
+    await loadRobotData(status.robot);
+  }
+
+  reach.dom = {
+    panel: document.getElementById("reachPanel"),
+    body: document.getElementById("reachBody"),
+    badge: document.getElementById("reachBadge"),
+    collapse: document.getElementById("reachCollapseBtn"),
+    video: document.getElementById("reachVideo"),
+    mark: document.getElementById("reachMark"),
+    info: document.getElementById("reachInfo"),
+    offset: document.getElementById("reachOffset"),
+    duration: document.getElementById("reachDuration"),
+    arm: document.getElementById("reachArmBtn"),
+    replan: document.getElementById("reachReplanBtn"),
+    exec: document.getElementById("reachExecBtn"),
+    stop: document.getElementById("reachStopBtn"),
+    msg: document.getElementById("reachMsg"),
+  };
+  const d = reach.dom;
+  d.panel.classList.remove("hidden");
+  d.video.src = "/api/reach/stream";
+  d.video.addEventListener("click", onReachVideoClick);
+  d.collapse.addEventListener("click", () => d.body.classList.toggle("hidden"));
+  d.arm.addEventListener("click", () => toggleReachArm());
+  d.replan.addEventListener("click", () => runReachPlan());
+  d.exec.addEventListener("click", () => executeReach());
+  d.stop.addEventListener("click", () => stopReach());
+  updateReachArmUi();
+  const rms = status.calib?.rms_mm;
+  reachMsg(`标定: ${status.calib?.solved_at || "?"} · RMS ${rms ? rms.toFixed(2) : "?"} mm · ` +
+    `TCP=p_tool [${(status.p_tool || []).map((v) => v.toFixed(3)).join(", ")}] m`);
+}
+
+function updateReachArmUi() {
+  const st = reach.status;
+  const d = reach.dom;
+  if (st.armed) {
+    d.badge.textContent = "已接管手臂";
+    d.badge.classList.add("exec");
+    d.arm.textContent = "释放手臂";
+    d.arm.classList.add("danger");
+  } else {
+    d.badge.textContent = st.arm_supported ? "未接管（仅模拟）" : "仅模拟";
+    d.badge.classList.remove("exec");
+    d.arm.textContent = "接管手臂";
+    d.arm.classList.remove("danger");
+  }
+  d.arm.disabled = !st.arm_supported;
+  d.stop.disabled = !st.armed;
+  if (!st.armed) {
+    d.exec.disabled = true;
+  }
+}
+
+async function toggleReachArm() {
+  const st = reach.status;
+  const d = reach.dom;
+  if (!st.armed) {
+    const ok = window.confirm(
+      "确认接管手臂？\n\n接管后本程序将发布 rt/arm_sdk，手臂在当前姿态刚性保持。\n" +
+      "请确保没有其他程序（遥操作等）正在控制手臂，否则会抽搐！");
+    if (!ok) {
+      return;
+    }
+  } else {
+    const ok = window.confirm(
+      "确认释放手臂？\n\n控制权将交还本体控制器（权重 1 秒渐出）。\n请扶住手臂以防下坠。");
+    if (!ok) {
+      return;
+    }
+  }
+  d.arm.disabled = true;
+  try {
+    const data = await fetchJson(st.armed ? "/api/reach/disarm" : "/api/reach/arm", { method: "POST" });
+    reach.status.armed = data.armed;
+    reachMsg(data.message || "-", "success");
+  } catch (error) {
+    reachMsg(`操作失败: ${error.message}`, "error");
+  } finally {
+    d.arm.disabled = false;
+    updateReachArmUi();
+  }
+}
+
+function reachMsg(text, kind = "") {
+  reach.dom.msg.textContent = text;
+  reach.dom.msg.className = `reach-msg ${kind}`.trim();
+}
+
+async function onReachVideoClick(ev) {
+  const st = reach.status;
+  const img = reach.dom.video;
+  if (!st?.camera?.width || !img.clientWidth) {
+    return;
+  }
+  const rect = img.getBoundingClientRect();
+  const relX = (ev.clientX - rect.left) / rect.width;
+  const relY = (ev.clientY - rect.top) / rect.height;
+  const u = Math.round(relX * st.camera.width);
+  const v = Math.round(relY * st.camera.height);
+  // 按像素定位（图像与容器同顶同宽，容器可能被 flex 拉得更高，不能用百分比）
+  reach.dom.mark.style.left = `${ev.clientX - rect.left}px`;
+  reach.dom.mark.style.top = `${ev.clientY - rect.top}px`;
+  reach.dom.mark.classList.remove("hidden");
+
+  reachMsg("取点中…");
+  reach.dom.exec.disabled = true;
+  try {
+    const data = await fetchJson("/api/reach/pick", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ u, v, approach_offset_m: Number(reach.dom.offset.value || 0) }),
+    });
+    reach.lastPick = data;
+    reach.dom.replan.disabled = false;
+    await runReachPlan();
+  } catch (error) {
+    reach.lastPick = null;
+    reachMsg(`取点失败: ${error.message}`, "error");
+  }
+}
+
+async function runReachPlan() {
+  const st = reach.status;
+  const pick = reach.lastPick;
+  const panel = state.panels[st.chain_id];
+  if (!pick || !panel) {
+    reachMsg("请先在画面中点击目标", "error");
+    return;
+  }
+  reachMsg("解算 + 规划中…");
+  reach.dom.exec.disabled = true;
+
+  // IK 起点：优先真机当前关节角
+  if (st.joints_available) {
+    try {
+      const j = await fetchJson("/api/reach/joints");
+      if (j.ok) {
+        setJointInputs(panel, j.named_joints);
+        Object.assign(state.robotJointState, j.named_joints);
+        setRobotJoints(state.robotJointState, false);
+      }
+    } catch (error) {
+      reachMsg(`读真机关节失败（用面板当前值代替）: ${error.message}`, "error");
+    }
+  }
+
+  // TCP = 标定出的指尖偏移；目标 = 反投影点（URDF 根系 → 场景系）
+  writePose(panel, "tcp", { xyz: st.p_tool, rpy: [0, 0, 0] });
+  updateTargetHandPose(panel);
+  writePose(panel, "target", { xyz: xyzToScene(pick.p_root), rpy: readPose(panel, "target").rpy });
+  updateTargetMarker(panel);
+  if (panel.targetHandGroup) {
+    // 点目标不解姿态，"幽灵手"显示的朝向没有意义，纯属干扰
+    panel.targetHandGroup.visible = false;
+  }
+  const duration = Math.max(1, Number(reach.dom.duration.value || 6));
+  panel.dom.duration.value = formatNumber(duration);
+
+  panel.solverOptions = { solve_orientation: false }; // 指尖是点目标，姿态放开
+  try {
+    await planTrajectory(panel);
+  } finally {
+    panel.solverOptions = null;
+  }
+
+  const ik = panel.currentIk;
+  const collision = panel.currentCollision;
+  const pt = pick.p_torso;
+  const lines = [
+    `像素 [${pick.pixel}] · 深度 ${Math.round(pick.depth_mm)} mm`,
+    `目标(躯干系) [${pt.map((v) => v.toFixed(3)).join(", ")}] m`,
+    `接近偏移 ${pick.approach_offset_m} m（0 = 触碰表面）`,
+    `IK: ${ik ? (ik.success ? "成功" : "未到达") : "失败"}` +
+      (ik ? ` · 误差 ${Number(ik.error_mm).toFixed(1)} mm` : ""),
+    `碰撞: ${collision?.status_label || "-"} · 轨迹点 ${panel.frames.length}`,
+  ];
+  reach.dom.info.textContent = lines.join("\n");
+
+  const planned = ik?.success && panel.frames.length > 1 && collision?.status !== "collision";
+  if (planned) {
+    reach.dom.exec.disabled = !st.armed;
+    reachMsg(st.armed
+      ? "预演回放中，确认无误后点「真机执行」"
+      : "预演回放中（未接管手臂，先点「接管手臂」才能执行）", "success");
+    replay(panel);
+  } else {
+    reach.dom.exec.disabled = true;
+    reachMsg(ik?.success === false
+      ? "目标不可达（IK 未收敛），换个目标或调整姿态"
+      : (collision?.status === "collision" ? "轨迹有碰撞，已禁止执行" : "规划失败"), "error");
+  }
+}
+
+async function executeReach() {
+  const st = reach.status;
+  const panel = state.panels[st.chain_id];
+  if (!panel?.frames?.length || !reach.lastPick) {
+    return;
+  }
+  const ik = panel.currentIk;
+  const duration = Math.max(1, Number(reach.dom.duration.value || 6));
+  const pt = reach.lastPick.p_torso;
+  const ok = window.confirm(
+    "确认真机执行？手臂将开始运动！\n\n" +
+    `目标(躯干系): [${pt.map((v) => v.toFixed(3)).join(", ")}] m\n` +
+    `IK 误差: ${Number(ik?.error_mm || 0).toFixed(1)} mm\n` +
+    `轨迹: ${panel.frames.length} 点 / ${duration}s\n\n` +
+    "请确保周围无人无障碍，手不要放在运动路径上。");
+  if (!ok) {
+    return;
+  }
+  reach.dom.exec.disabled = true;
+  try {
+    await fetchJson("/api/reach/execute", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        waypoints: panel.frames.map((frame) => frame.named_joints),
+        duration,
+      }),
+    });
+    reachMsg("真机执行中…", "success");
+    await pollReachExec();
+  } catch (error) {
+    reachMsg(`执行请求失败: ${error.message}`, "error");
+    reach.dom.exec.disabled = false;
+  }
+}
+
+async function pollReachExec() {
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    let status;
+    try {
+      status = await fetchJson("/api/reach/exec_status");
+    } catch {
+      continue;
+    }
+    if (status.running) {
+      reachMsg(`真机执行中… ${(status.progress * 100).toFixed(0)}%`, "success");
+    } else {
+      reachMsg(status.message || "执行结束", status.message?.includes("错") ? "error" : "success");
+      reach.dom.exec.disabled = false;
+      return;
+    }
+  }
+}
+
+async function stopReach() {
+  try {
+    await fetchJson("/api/reach/stop", { method: "POST" });
+    reachMsg("已急停（手臂刚性保持当前位置）", "error");
+  } catch (error) {
+    reachMsg(`急停请求失败: ${error.message}`, "error");
+  }
 }
 
 async function loadRobotData(robotId = null) {
@@ -130,6 +410,7 @@ async function loadRobotData(robotId = null) {
     renderRobotSelector(metadata);
     renderPanels(metadata);
     await loadRobot(metadata.robot.urdf_url);
+    attachViewerFrames(metadata);
     for (const panel of Object.values(state.panels)) {
       setJointInputs(panel, panel.chain.default_current_joints);
       Object.assign(state.robotJointState, panel.chain.default_current_joints);
@@ -591,7 +872,7 @@ async function solveIk(panel, options = {}) {
     target_pose: poseToRobot(readPose(panel, "target")),
     tcp_offset: readPose(panel, "tcp"),
     solver: panel.dom.solver.value,
-    solver_options: {},
+    solver_options: panel.solverOptions || {},
   };
   try {
     const data = await fetchJson("/api/ik/solve", {
@@ -896,6 +1177,72 @@ async function loadRobot(urdfUrl) {
       attachChildren(joint.child);
     }
   }
+}
+
+function attachViewerFrames(metadata) {
+  for (const frame of metadata.viewer_frames || []) {
+    const linkGroup = state.linkGroups.get(frame.link);
+    if (!linkGroup) {
+      console.warn(`viewer_frames: link ${frame.link} 不存在，跳过 ${frame.name}`);
+      continue;
+    }
+    const group = new THREE.Group();
+    group.name = `viewer_frame_${frame.name || "unnamed"}`;
+    if (frame.T) {
+      const m = new THREE.Matrix4();
+      m.set(...frame.T.flat());
+      group.matrixAutoUpdate = false;
+      group.matrix.copy(m);
+    } else {
+      applyPose(group, { xyz: frame.xyz || [0, 0, 0], rpy: frame.rpy || [0, 0, 0] });
+    }
+    group.add(new THREE.AxesHelper(Number(frame.axis_length || 0.1)));
+    if (frame.frustum) {
+      group.add(buildFrustumLines(frame.frustum, frame.color || "#bf7fff"));
+    }
+    if (frame.name) {
+      group.add(makeLabelSprite(frame.name));
+    }
+    linkGroup.add(group);
+  }
+}
+
+function buildFrustumLines(frustum, color) {
+  const depth = Number(frustum.depth || 0.4);
+  const { fx, fy, cx, cy, width, height } = frustum;
+  const corners = [[0, 0], [width, 0], [width, height], [0, height]].map(
+    ([u, v]) => new THREE.Vector3(((u - cx) / fx) * depth, ((v - cy) / fy) * depth, depth),
+  );
+  const origin = new THREE.Vector3();
+  const points = [];
+  for (const corner of corners) {
+    points.push(origin.clone(), corner.clone());
+  }
+  for (let i = 0; i < 4; i += 1) {
+    points.push(corners[i].clone(), corners[(i + 1) % 4].clone());
+  }
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  return new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.75 }));
+}
+
+function makeLabelSprite(text) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 64;
+  const ctx = canvas.getContext("2d");
+  ctx.font = "bold 36px sans-serif";
+  ctx.fillStyle = "#e8ecf2";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, 128, 32);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: new THREE.CanvasTexture(canvas),
+    transparent: true,
+    depthTest: false,
+  }));
+  sprite.scale.set(0.2, 0.05, 1);
+  sprite.position.set(0, 0.05, 0);
+  return sprite;
 }
 
 function setRobotJoints(namedJoints) {

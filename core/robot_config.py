@@ -38,6 +38,8 @@ class RobotConfig:
     tcp_offsets: dict[str, Pose]
     initial_joints: dict[str, dict[str, float]]
     collision: dict[str, Any] = field(default_factory=dict)
+    # 挂在某个 link 上的静态标注 frame（如手眼标定出的相机位姿），原样传给前端
+    viewer_frames: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -127,6 +129,7 @@ def load_robot_config(path: str | Path) -> RobotConfig:
         tcp_offsets=tcp_offsets,
         initial_joints=initial_joints,
         collision=dict(cfg.get("collision") or {}),
+        viewer_frames=[dict(item) for item in cfg.get("viewer_frames") or []],
     )
 
 
