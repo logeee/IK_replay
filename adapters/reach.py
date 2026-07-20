@@ -158,8 +158,10 @@ async def reach_stream():
 async def reach_pick(body: dict):
     """Body: {"u": int, "v": int, "approach_offset_m": float?}
 
-    approach_offset_m：沿相机视线往回退的距离（指尖停在表面前方），默认 0.015；
-    负值 = 指令位置压入表面，接触后位置误差消不掉，电机持续出力（掰开关用）。
+    approach_offset_m：沿被点表面的法线、朝机器人方向后退的距离
+    （即垂直于障碍物平面的间隙），默认 0.015；负值 = 指令位置压入表面，
+    接触后位置误差消不掉，电机持续出力（掰开关用）。
+    平面拟合失败时退化为沿相机视线后退。
     """
     if not state.enabled:
         return JSONResponse({"ok": False, "error": "reach 未启用"}, status_code=409)
@@ -179,7 +181,18 @@ async def reach_pick(body: dict):
         return JSONResponse(
             {"ok": False, "error": f"目标离相机太近（{dist:.2f} m），无法应用接近偏移"},
             status_code=400)
-    p_cam_goal = p_cam * (1.0 - offset / dist)  # 沿视线退 offset
+
+    # 拟合目标表面平面（接近偏移沿它的法线退；横移的"左"方向也以它定义）
+    state.plane = _fit_surface_plane(p_cam)
+    if state.plane is not None:
+        # 沿表面法线（指向机器人一侧）退 offset：垂直于障碍物平面的真实间隙，
+        # 不受视线斜射角影响，也没有沿面的横向偏移
+        n_cam = np.asarray(state.plane["normal_cam"], dtype=float)
+        p_cam_goal = p_cam + offset * n_cam
+        offset_mode = "plane_normal"
+    else:
+        p_cam_goal = p_cam * (1.0 - offset / dist)  # 兜底：沿视线退
+        offset_mode = "camera_ray"
 
     def to_frame(T, p):
         return (T[:3, :3] @ p + T[:3, 3]).tolist()
@@ -190,15 +203,13 @@ async def reach_pick(body: dict):
         state.collision_checker.set_environment_exclusions(
             [(p_root_surface, state.target_exclusion_m)])
 
-    # 拟合目标表面平面（横移一步的"左"方向以它定义）
-    state.plane = _fit_surface_plane(p_cam)
-
     return {
         "ok": True,
         "pixel": [u, v],
         "depth_mm": result["depth_mm"],
         "p_camera": p_cam.tolist(),
         "approach_offset_m": offset,
+        "offset_mode": offset_mode,
         "p_torso_surface": to_frame(state.T_cam2torso, p_cam),
         "p_torso": to_frame(state.T_cam2torso, p_cam_goal),
         "p_root": to_frame(state.T_cam2root, p_cam_goal),
@@ -250,6 +261,7 @@ def _fit_surface_plane(p_cam_surface: np.ndarray, radius: float = 0.12) -> dict 
     return {
         "center_root": center_root.tolist(),
         "normal_root": n_root.tolist(),
+        "normal_cam": n.tolist(),   # 相机系法线（指向机器人一侧），接近偏移沿它退
         "left_root": left.tolist(),
         "rms_mm": rms * 1000.0,
         "points": int(len(near)),
@@ -642,7 +654,7 @@ async def reach_execute(body: dict):
         try:
             direction = np.asarray(push["direction_root"], dtype=float).reshape(3)
             direction /= max(float(np.linalg.norm(direction)), 1e-9)
-            force = min(abs(float(push["force_n"])), 30.0)
+            force = min(abs(float(push["force_n"])), 40.0)
         except (KeyError, TypeError, ValueError) as exc:
             return JSONResponse({"ok": False, "error": f"push 参数非法: {exc}"}, status_code=400)
         if force > 1e-3:
@@ -678,6 +690,10 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
     ctl = state.controller
     try:
         ctl.enable_jog()
+        # 分段限速：普通段（到位/横移慢滑）0.2 慢而稳；带推力的快拨段放行
+        # 到天花板（--arm-max-speed），借冲量越过旋钮卡点
+        if hasattr(ctl, "set_max_speed"):
+            ctl.set_max_speed(0.4 if push_tau is not None else 0.2)
         # 重力前馈：上一段落点校正结束时"指令 = 目标 + 抗重力超调"，而本段
         # 轨迹起点是实测位。若直接下发轨迹，指令会瞬间跳回实测（撤掉补偿），
         # 手臂立刻下坠一个下垂量。这里把当前 指令-实测 差值作为前馈全程叠加。
@@ -737,7 +753,27 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
                 deadline = time.monotonic() + 1.5
                 while time.monotonic() < deadline and not state.exec_cancel.is_set():
                     time.sleep(0.05)
-            ctl.disable_jog()   # 同时清零前馈力矩
+            # 撤力渐出：顶着的手臂/身体像压紧的弹簧，力矩瞬间清零会"啪"地
+            # 向反方向回弹。这里力矩 0.65s 线性泄掉，同时把位置指令收回到
+            # 实测位（限速滑动本身是平滑的），存的形变缓慢释放。
+            state.exec_message = "撤力中"
+            try:
+                ctl.set_target(ctl.read_measured())
+            except Exception:
+                pass
+            for s in np.linspace(1.0, 0.0, 13):
+                if state.exec_cancel.is_set():
+                    break
+                ctl.set_tau_ff(push_tau * float(s))
+                time.sleep(0.05)
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and not state.exec_cancel.is_set():
+                status = ctl.status()
+                if float(np.max(np.abs(np.asarray(status["desired_rad"])
+                                       - np.asarray(status["cmd_rad"])))) < 1e-3:
+                    break
+                time.sleep(0.05)
+            ctl.disable_jog()   # 兜底清零前馈力矩
             state.exec_progress = 1.0
             state.exec_message = ("已中止（保持当前位置）" if state.exec_cancel.is_set()
                                   else "完成（推力段结束，已撤力保持）")
@@ -748,19 +784,30 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
             target = q_list[-1]
             offset = ff.copy()   # 从重力前馈接着微调，而不是从零重新积
             deadline = time.monotonic() + 8.0
+            ok_since = None       # 连续达标的起点：防止摆过目标的瞬间被当成到位
+            last_integrate = 0.0
             while time.monotonic() < deadline and not state.exec_cancel.is_set():
                 status = ctl.status()
                 measured = np.asarray(status["measured_rad"] or ctl.read_measured().tolist())
                 err = target - measured
                 sag = float(np.max(np.abs(err)))
-                if sag < 0.02:  # ~1.1°，认为到位
-                    break
-                state.exec_message = f"落点校正中（残差 {sag:.3f} rad）"
+                now = time.monotonic()
+                if sag < 0.02:  # ~1.1°
+                    if ok_since is None:
+                        ok_since = now
+                    elif now - ok_since > 0.2:   # 稳定 0.2s 才算真到位
+                        break
+                else:
+                    ok_since = None
+                    state.exec_message = f"落点校正中（残差 {sag:.3f} rad）"
                 delivered = float(np.max(np.abs(
                     np.asarray(status["desired_rad"]) - np.asarray(status["cmd_rad"])))) < 5e-3
-                if delivered:
-                    offset = np.clip(offset + 0.7 * err, -0.35, 0.35)
+                # 积分节流：指令送达后还要给电机 ~0.25s 真正跟上来的时间，
+                # 否则对着尚未生效的旧误差重复积分会过冲、来回摆
+                if delivered and sag >= 0.02 and now - last_integrate > 0.25:
+                    offset = np.clip(offset + 0.5 * err, -0.35, 0.35)
                     ctl.set_target(target + offset)
+                    last_integrate = now
                 time.sleep(0.08)
 
         ctl.disable_jog()

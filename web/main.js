@@ -376,7 +376,9 @@ async function runReachPlan() {
   const lines = [
     `像素 [${pick.pixel}] · 深度 ${Math.round(pick.depth_mm)} mm`,
     `目标(躯干系) [${pt.map((v) => v.toFixed(3)).join(", ")}] m`,
-    `接近偏移 ${pick.approach_offset_m} m（0 = 触碰表面，负 = 压入表面加力）`,
+    `接近偏移 ${pick.approach_offset_m} m ` +
+      (pick.offset_mode === "plane_normal" ? "沿表面法线（0 = 触碰，负 = 压入加力）"
+                                           : "沿视线（平面拟合失败的兜底）"),
     ...(viaWp ? [`经由路点「${viaWp.name}」两段规划`] : []),
     ...(stepCm ? [`到位后沿面${stepCm > 0 ? "左" : "右"}移 ${Math.abs(stepCm)}cm` +
       (sidestepOk ? "（已并入预演）" : "（横移段规划失败）")] : []),
@@ -531,7 +533,11 @@ async function sidestepReach(stepCm, options = {}) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         waypoints: panel.frames.map((frame) => frame.named_joints),
-        duration: Math.max(2, Math.abs(stepCm) / 100 / 0.02),
+        // 带推力时快拨（0.06 m/s）：借冲量越过旋钮定位卡点，比慢慢顶有效；
+        // 无推力的普通横移保持慢滑（0.02 m/s）
+        duration: pushN > 0
+          ? Math.max(1, Math.abs(stepCm) / 100 / 0.06)
+          : Math.max(2, Math.abs(stepCm) / 100 / 0.02),
         // 沿移动方向的前馈力：接触旋钮后位置环刚度不够，靠它出力拨动
         ...(pushN > 0 ? {
           push: {

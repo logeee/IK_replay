@@ -53,8 +53,9 @@ def main() -> int:
     parser.add_argument("--no-robot", action="store_true",
                         help="不连 DDS（纯模拟联调，页面上无法接管手臂）")
     parser.add_argument("--network-interface", default=None, help="DDS 网卡，如 enp86s0")
-    parser.add_argument("--arm-max-speed", type=float, default=0.2,
-                        help="执行时的最大关节速度 rad/s（默认 0.2）")
+    parser.add_argument("--arm-max-speed", type=float, default=0.4,
+                        help="最大关节速度 rad/s（默认 0.4）。这是限速天花板，"
+                             "正常轨迹快慢仍由执行时长控制；带推力的快拨段需要它放行")
     parser.add_argument("--arm-kp", type=float, default=120.0,
                         help="位置环刚度（默认 120）。手臂抬不到位/被重力压低就调大，"
                              "常用 100~200；太大会变硬变猛，逐步加")
