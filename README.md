@@ -1,76 +1,174 @@
-# IK Replay Debug Viewer
+# IK 轨迹调试与回放工具
 
-Offline web tool for generic robot IK visualization and trajectory replay.
+这是一个离线运行的机器人逆运动学（IK）可视化与轨迹回放工具。项目可以加载 URDF，在浏览器中调整关节角和末端目标位姿，通过后端求解 IK、生成关节轨迹，并在 Three.js 三维场景中回放结果。
 
-The current version is intentionally offline. It loads a URDF, lets you edit joints and target TCP pose in the browser, calls a backend IK solver, plans a joint trajectory, and replays the result in a Three.js viewer. It does not connect to a robot, subscribe to robot state, run a data-recording workflow, use VR input, or send control commands.
+当前分支在通用 IK 调试能力的基础上，增加了 H2 机器人右臂拨动摆杆式开关的两关键动作规划功能。
 
-## What Is Included
+> 本项目只用于离线计算、调试和回放，不连接真实机器人，不订阅机器人状态，也不会向机器人下发控制命令。
 
-- URDF loading with relative mesh paths.
-- Generic `RobotModel` with FK and TCP pose calculation.
-- Replaceable IK solver interface.
-- Numerical IK solver for the first working version.
-- Replaceable trajectory planner interface.
-- Linear and quintic joint-space planners.
-- Browser 3D viewer with robot mesh, target marker, TCP marker, TCP path, replay controls, and debug output.
-- Configurable simplified collision regions with sphere, box, and capsule primitives.
-- YAML config for robot, chains, TCP, collision, solver, planner, and viewer defaults.
-- G1-D and H2 as example robots, not as core framework logic.
+## 主要功能
 
-## Run
+- 加载 URDF 机器人模型及相对路径网格资源。
+- 通用正运动学（FK）和 TCP 位姿计算。
+- 可替换的 IK 求解器接口，当前提供数值 IK 求解器。
+- 可替换的轨迹规划器接口，当前提供线性和五次多项式关节空间规划器。
+- 浏览器三维显示机器人、目标位姿、TCP、轨迹、骨架及碰撞状态。
+- 支持轨迹播放、暂停、单步和速度调节。
+- 使用球体、盒体和胶囊体进行简化碰撞检测。
+- 通过 YAML 配置机器人、运动链、TCP、碰撞体、求解器和规划器。
+- 提供 G1-D 和 H2 两个示例机器人。
+- 提供 H2 右手指尖拨动摆杆式开关的两关键动作 IK 与轨迹规划。
+- 导出供其他 IK 方案使用的 JSON 任务文件和参考关节 CSV。
+
+## 安装与启动
+
+建议使用 Python 3.10 或更高版本。
 
 ```bash
 pip install -r requirements.txt
-python3 app.py
+python app.py
 ```
 
-Open:
+也可以直接使用 Uvicorn：
+
+```bash
+python -m uvicorn app:app --host 127.0.0.1 --port 8000
+```
+
+启动后访问：
 
 ```text
-http://localhost:8000
+http://127.0.0.1:8000
 ```
+
+如果修改代码后页面没有变化，请重启 Uvicorn，并在浏览器中按 `Ctrl+F5` 强制刷新。
+
+## H2 开关两关键动作规划
+
+选择 H2 后，使用右臂面板中的“H2 开关两关键动作 IK”区域。该功能把一次拨动简化为两个必要动作：
+
+1. 初始动作：指尖位于开关拨杆的初始位置。
+2. 最终动作：指尖位于开关拨杆的最终位置。
+
+初始动作和最终动作之间可以选择：
+
+- `圆弧`：指尖沿拨杆绕转轴的实际圆弧运动。
+- `直线`：指尖在两个关键位置之间直接插值。
+
+页面中的绿色标记表示初始动作，红色标记表示最终动作。中间采样点用于可视化、连续求解和回放；对于同事实现的新 IK 方案，最核心的输入仍然是初始和最终两个关键动作。
+
+### 开关位置参数
+
+页面输入的长度单位均为米：
+
+| 参数 | 含义 | 正方向 |
+| --- | --- | --- |
+| X 前方距离（m） | 开关相对机器人的前后位置 | 向机器人前方为正 |
+| Y 左侧偏移（m） | 开关相对机器人的左右位置 | 向机器人左侧为正，右侧为负 |
+| Z 地面高度（m） | 开关转轴距离地面的高度 | 从地面向上为正 |
+
+Z 的页面默认值为 `1.70 m`。页面会根据当前加载的 H2 模型，把地面高度实时转换成后端使用的 `pelvis`（骨盆）坐标，不应直接把页面中的 Z 当作骨盆坐标。
+
+### 自然动作约束与推荐权重
+
+当前默认自然姿态用于让右肘尽量低于手腕，并让手指以较自然的指向姿态接触开关。推荐求解权重如下：
+
+| 约束项 | 默认值 | 说明 |
+| --- | ---: | --- |
+| 指尖位置权重 | `1.0` | 首要任务，跟踪拨杆末端位置 |
+| 手腕软姿态权重 | `0.08` | 保持手指朝向开关面板，不作为硬约束 |
+| 自然姿态权重 | `0.008` | 使解靠近预设的自然指向姿态 |
+| 相邻点连续性权重 | `0.002` | 减少轨迹中相邻关节解的跳变 |
+| 位置验收误差 | `0.002 m` | 指尖目标位置允许误差为 2 mm |
+
+如果自然姿态和可达性冲突，规划器会逐步降低软姿态约束，优先保证指尖位置。规划结果仍需结合碰撞检测、关节限位和真实机器人控制要求进行复核。
+
+## 导出文件说明
+
+规划成功后可以导出两个文件。
+
+### IK 任务 JSON
+
+文件名：
+
+```text
+h2_switch_two_keyframe_ik_task.json
+```
+
+这是交给同事重新实现或替换 IK 求解器时应优先使用的文件，主要包含：
+
+- 机器人、运动链和 URDF 信息。
+- `pelvis` 坐标系及 X/Y/Z 轴方向定义。
+- 页面输入的地面坐标和换算后的骨盆坐标。
+- 开关转轴、拨杆长度、初始角和最终角。
+- 初始与最终指尖目标位置。
+- 直线或圆弧插值方式。
+- 推荐 IK 权重、位置容差和约束优先级。
+- 当前求解器得到的参考关节角和参考轨迹。
+
+JSON 中的目标指尖位置是新 IK 求解器需要跟踪的任务输入；参考关节解只用于对照，不要求新求解器产生完全相同的关节角。
+
+### 参考关节 CSV
+
+文件名：
+
+```text
+h2_switch_two_keyframe_reference_joints.csv
+```
+
+CSV 适合用于绘图、数值对比和轨迹回放。文件包含时间、动作阶段、关键点类型、开关角度、指尖位置和各关节参考角度。
+
+- 笛卡尔位置列以 `_m` 结尾，单位为米。
+- 关节角列以 `_rad` 结尾，单位为弧度。
+- `waypoint_role` 为 `initial`、`intermediate` 或 `final`。
+
+CSV 是当前求解器的参考结果，不建议单独把它作为新 IK 求解器的任务定义；重新求解时应以 JSON 为主。
 
 ## API
 
-- `GET /`
-- `GET /api/robot/metadata`
-- `POST /api/fk`
-- `POST /api/ik/solve`
-- `POST /api/trajectory/plan`
-- `POST /api/collision/check`
-- `POST /api/demo/solve_and_plan`
-- `POST /api/demo/h2_switch_operation` H2 right-arm offline selector-switch demonstration
-- `POST /api/demo/plan` legacy-compatible alias for the original position-IK demo flow
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `GET` | `/` | 打开调试页面 |
+| `GET` | `/api/robot/metadata` | 获取机器人和运动链元数据 |
+| `POST` | `/api/fk` | 计算正运动学 |
+| `POST` | `/api/ik/solve` | 求解通用 IK |
+| `POST` | `/api/trajectory/plan` | 生成通用关节轨迹 |
+| `POST` | `/api/collision/check` | 检查轨迹碰撞状态 |
+| `POST` | `/api/demo/solve_and_plan` | 求解 IK 并规划轨迹 |
+| `POST` | `/api/demo/h2_switch_operation` | 规划 H2 右臂拨动开关动作 |
+| `POST` | `/api/demo/plan` | 兼容早期位置 IK 演示接口 |
 
-## Project Shape
+## 项目结构
 
 ```text
 IK_replay/
-├── app.py
-├── config/
-│   ├── default.yaml
-│   └── robots/
-│       ├── g1_d.yaml
-│       └── h2.yaml
-├── assets/robots/
-│   ├── g1_d/
-│   │   ├── robot.urdf
-│   │   └── meshes/
-│   └── h2/
-│       ├── robot.urdf
-│       └── meshes/
-├── core/
-├── ik/
-├── planners/
-├── web/
-└── examples/
+|-- app.py                    # FastAPI 服务和接口注册
+|-- requirements.txt          # Python 依赖
+|-- config/
+|   |-- default.yaml          # 默认机器人、求解器和规划器配置
+|   `-- robots/
+|       |-- g1_d.yaml
+|       `-- h2.yaml
+|-- assets/robots/
+|   |-- g1_d/
+|   |   |-- robot.urdf
+|   |   `-- meshes/
+|   `-- h2/
+|       |-- robot.urdf
+|       `-- meshes/
+|-- core/                     # 机器人模型、数据类型和配置加载
+|-- ik/                       # IK 求解器
+|-- planners/                 # 通用轨迹及 H2 开关轨迹规划器
+|-- collision/                # 简化碰撞检测
+|-- web/                      # Three.js 前端页面
+`-- examples/                 # 示例配置
 ```
 
-## Replacing The Robot
+## 添加或替换机器人
 
-Create a new robot YAML under `config/robots/`, then point `config/default.yaml` at it.
+在 `config/robots/` 下创建机器人 YAML，再在 `config/default.yaml` 的 `robots` 中注册。
 
-Required robot settings:
+机器人配置至少需要包含：
 
 - `robot.urdf_path`
 - `robot.mesh_root`
@@ -79,47 +177,53 @@ Required robot settings:
 - `chain.joints`
 - `tcp.offset_xyz`
 - `tcp.offset_rpy`
-- optional `collision.body` and `collision.chains.*.shapes`
 
-Do not put robot-specific joint names in `app.py`, `web/main.js`, or solver code.
+碰撞配置 `collision.body` 和 `collision.chains.*.shapes` 为可选项。通用逻辑中应尽量避免硬编码特定机器人的关节名称；机器人差异应优先放在 YAML 配置和独立规划器中。
 
-## Collision Regions
+## 碰撞检测
 
-URDF collision tags are not required. Each robot YAML can define approximate collision primitives:
+项目不要求 URDF 必须包含完整的 collision 标签。机器人 YAML 可以配置近似碰撞体：
 
-- `box`: linked oriented box with `half_extents`.
-- `sphere`: linked sphere or TCP sphere.
-- `capsule`: segment between two linked points.
+- `box`：跟随指定连杆的有向盒体，尺寸使用 `half_extents`。
+- `sphere`：跟随指定连杆或 TCP 的球体。
+- `capsule`：连接两个连杆参考点的胶囊体。
 
-The backend checks each configured arm primitive against configured body primitives and returns `safe`, `near`, `collision`, or `unconfigured`.
+后端会检查手臂碰撞体与身体碰撞体之间的距离，并返回以下状态：
 
-## Replacing IK Or Trajectory
+- `safe`：安全。
+- `near`：接近碰撞阈值。
+- `collision`：发生碰撞。
+- `unconfigured`：没有配置对应碰撞体。
 
-Add a new solver under `ik/` that implements `BaseIKSolver.solve(IKRequest) -> IKResult`, then register it in `app.py` and select it in config or the UI.
+当前为简化几何检测，不等同于真实机器人上的高精度网格碰撞检测。
 
-Add a new planner under `planners/` that implements `BaseTrajectoryPlanner.plan(TrajectoryRequest) -> list[Waypoint]`, then register it in `app.py` and select it in config or the UI.
+## 替换 IK 求解器或轨迹规划器
 
-## Future Extensions
+新增 IK 求解器时，在 `ik/` 下实现：
 
-VR input, replay-file input, ROS adapters, robot-state providers, mesh-level collision, and command executors should be added as optional adapters around the current API contract. They are not implemented in this version.
+```text
+BaseIKSolver.solve(IKRequest) -> IKResult
+```
 
-## H2 Selector-Switch Demo
+然后在 `app.py` 中注册，并通过配置或页面选择。
 
-Select H2 and use the highlighted robot-right-arm panel to solve two switch keyframes. Input
-the switch XYZ position in metres: X is forward from the robot, Y is left from the robot
-(right is negative), and Z is height above the ground. The default ground height is 1.70 m.
-Input the initial lever angle, final lever angle, and choose a Cartesian line or
-lever-centered arc between them. Green and red markers show the initial and final fingertip
-positions. Both keyframes and all intermediate samples use the built-in natural pointing
-posture by default. The solver weights are position 1.0 (validated at 2 mm), soft wrist
-orientation 0.08, posture 0.008, and adjacent-point regularization 0.002. The configured
-self-collision check remains active, and no command is sent to a physical robot.
+新增轨迹规划器时，在 `planners/` 下实现：
 
-After planning, the panel can export two handoff artifacts:
+```text
+BaseTrajectoryPlanner.plan(TrajectoryRequest) -> list[Waypoint]
+```
 
-- `h2_switch_two_keyframe_ik_task.json`: explicit initial/final fingertip keyframes, switch
-  geometry, coordinate-frame convention, units, optional sampled path, recommended solver
-  weights, and the reference solution.
-- `h2_switch_two_keyframe_reference_joints.csv`: timestamped reference joint positions with
-  units in every Cartesian and joint column, for
-  comparison, plotting, or replay. These joints are not mandatory for a replacement solver.
+然后在 `app.py` 中注册，并通过配置或页面选择。
+
+## 安全边界与后续工作
+
+当前版本适合算法验证和离线演示，不应直接作为真实机器人的控制程序。要接入真实机器人，还需要补充：
+
+- 真实机器人状态读取和坐标标定。
+- 更精确的自碰撞、环境碰撞和安全距离检测。
+- 关节速度、加速度、力矩及奇异位形约束。
+- 控制周期重采样和轨迹时间参数化。
+- ROS 或厂商控制接口适配。
+- 执行前确认、急停和故障恢复机制。
+
+VR 输入、遥操作记录、外部轨迹文件和真实机器人命令执行，应作为独立适配层接入，避免影响当前离线 IK 与回放核心。
