@@ -628,7 +628,11 @@ async def reach_execute(body: dict):
     """执行已规划的关节轨迹（真机运动！前端须先经人确认）。
 
     Body: {"waypoints": [named_joints, ...], "duration": float,
+           "max_speed_rad_s": float?,
            "push": {"direction_root": [x,y,z], "force_n": float}?}
+
+    max_speed_rad_s（可选）：本次执行的关节限速档（默认 0.2，收回段等
+    低精度动作可以给 0.4 提速），不会超过 --arm-max-speed 天花板。
 
     push（可选）：执行期间在 TCP 上沿指定方向叠加前馈力（τ=JᵀF）。
     纯位置控制的侧向刚度很低（~300 N/m），贴着旋钮也使不上力；
@@ -640,6 +644,7 @@ async def reach_execute(body: dict):
             status_code=409)
     waypoints = body.get("waypoints") or []
     duration = float(body.get("duration") or 4.0)
+    speed = float(np.clip(float(body.get("max_speed_rad_s") or 0.2), 0.05, 0.5))
     if len(waypoints) < 2:
         return JSONResponse({"ok": False, "error": "轨迹至少要有 2 个路点"}, status_code=400)
     try:
@@ -680,20 +685,20 @@ async def reach_execute(body: dict):
         state.exec_progress = 0.0
         state.exec_message = "执行中"
         state.exec_thread = threading.Thread(
-            target=_exec_loop, args=(q_list, duration, push_tau), daemon=True)
+            target=_exec_loop, args=(q_list, duration, push_tau, speed), daemon=True)
         state.exec_thread.start()
     return {"ok": True, **_exec_status()}
 
 
 def _exec_loop(q_list: list[np.ndarray], duration: float,
-               push_tau: np.ndarray | None = None) -> None:
+               push_tau: np.ndarray | None = None, speed: float = 0.2) -> None:
     ctl = state.controller
     try:
         ctl.enable_jog()
-        # 分段限速：普通段（到位/横移慢滑）0.2 慢而稳；带推力的快拨段放行
-        # 到天花板（--arm-max-speed），借冲量越过旋钮卡点
+        # 分段限速：普通段默认 0.2 慢而稳；带推力的快拨段放行到 0.4；
+        # 调用方也可以按段指定（如收回段 0.4），都不超 --arm-max-speed 天花板
         if hasattr(ctl, "set_max_speed"):
-            ctl.set_max_speed(0.4 if push_tau is not None else 0.2)
+            ctl.set_max_speed(max(0.4, speed) if push_tau is not None else speed)
         # 重力前馈：上一段落点校正结束时"指令 = 目标 + 抗重力超调"，而本段
         # 轨迹起点是实测位。若直接下发轨迹，指令会瞬间跳回实测（撤掉补偿），
         # 手臂立刻下坠一个下垂量。这里把当前 指令-实测 差值作为前馈全程叠加。

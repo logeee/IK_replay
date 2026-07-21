@@ -546,13 +546,78 @@ button:disabled {
   display: none;
 }
 
+.reach-video-col {
+  flex: 1.4;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.reach-video-col > button {
+  align-self: flex-start;
+  padding: 4px 12px;
+  border: 1px solid #c9d5df;
+  border-radius: 5px;
+  background: #f2f6f9;
+  cursor: pointer;
+  font-size: 12px;
+}
+
 .reach-video-wrap {
   position: relative;
-  flex: 1.4;
   min-width: 0;
   border-radius: 7px;
   overflow: hidden;
   background: #0c1014;
+}
+
+/* 全屏选点覆盖层 */
+.reach-fs-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  background: rgba(8, 12, 16, 0.96);
+}
+
+.reach-fs-overlay.hidden {
+  display: none;
+}
+
+.reach-fs-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  color: #dfe9f2;
+  font-size: 13px;
+}
+
+.reach-fs-bar button {
+  padding: 4px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  cursor: pointer;
+}
+
+.reach-fs-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px 16px;
+}
+
+.reach-fs-stage img {
+  max-width: 100%;
+  max-height: 100%;
+  cursor: crosshair;
 }
 
 .reach-video-wrap img {

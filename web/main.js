@@ -169,6 +169,11 @@ async function initReach() {
     stepLen: document.getElementById("reachStepLen"),
     pushForce: document.getElementById("reachPushForce"),
     msg: document.getElementById("reachMsg"),
+    fsBtn: document.getElementById("reachFullscreenBtn"),
+    fsOverlay: document.getElementById("reachFsOverlay"),
+    fsVideo: document.getElementById("reachFsVideo"),
+    fsMark: document.getElementById("reachFsMark"),
+    fsClose: document.getElementById("reachFsCloseBtn"),
   };
   const d = reach.dom;
   d.panel.classList.remove("hidden");
@@ -185,6 +190,9 @@ async function initReach() {
   d.record.addEventListener("click", () => recordWaypoint());
   d.delWp.addEventListener("click", () => deleteWaypoint());
   d.addVia.addEventListener("click", () => addViaWaypoint());
+  d.fsBtn.addEventListener("click", () => openReachFullscreen());
+  d.fsClose.addEventListener("click", () => closeReachFullscreen());
+  d.fsVideo.addEventListener("click", (ev) => onReachFullscreenClick(ev));
   state.helperRoot.add(reach.obstacleGroup, reach.planeGroup);
   await refreshObstacles();
   await refreshWaypoints();
@@ -256,22 +264,82 @@ function reachMsg(text, kind = "") {
   reach.dom.msg.className = `reach-msg ${kind}`.trim();
 }
 
-async function onReachVideoClick(ev) {
+// 显示坐标 → 相机像素坐标（img 可能被缩放显示）
+function reachPixelFromEvent(ev, img) {
   const st = reach.status;
-  const img = reach.dom.video;
   if (!st?.camera?.width || !img.clientWidth) {
-    return;
+    return null;
   }
   const rect = img.getBoundingClientRect();
   const relX = (ev.clientX - rect.left) / rect.width;
   const relY = (ev.clientY - rect.top) / rect.height;
-  const u = Math.round(relX * st.camera.width);
-  const v = Math.round(relY * st.camera.height);
-  // 按像素定位（图像与容器同顶同宽，容器可能被 flex 拉得更高，不能用百分比）
-  reach.dom.mark.style.left = `${ev.clientX - rect.left}px`;
-  reach.dom.mark.style.top = `${ev.clientY - rect.top}px`;
-  reach.dom.mark.classList.remove("hidden");
+  return {
+    u: Math.round(relX * st.camera.width),
+    v: Math.round(relY * st.camera.height),
+    relX,
+    relY,
+  };
+}
 
+// 在小窗画面上放黄圈标记（rel 是 0~1 的相对位置）
+function placeReachMark(relX, relY) {
+  const img = reach.dom.video;
+  // 按像素定位（图像与容器同顶同宽，容器可能被 flex 拉得更高，不能用百分比）
+  reach.dom.mark.style.left = `${relX * img.clientWidth}px`;
+  reach.dom.mark.style.top = `${relY * img.clientHeight}px`;
+  reach.dom.mark.classList.remove("hidden");
+}
+
+async function onReachVideoClick(ev) {
+  const px = reachPixelFromEvent(ev, reach.dom.video);
+  if (!px) {
+    return;
+  }
+  placeReachMark(px.relX, px.relY);
+  await submitReachPick(px.u, px.v);
+}
+
+// ---- 全屏选点：放大画面精确点击，确认后自动退回小窗并走原有取点流程 ----
+
+function openReachFullscreen() {
+  const d = reach.dom;
+  d.fsMark.classList.add("hidden");
+  d.fsVideo.src = "/api/reach/stream";   // 独立的一路 MJPEG，关闭时断开
+  d.fsOverlay.classList.remove("hidden");
+}
+
+function closeReachFullscreen() {
+  const d = reach.dom;
+  d.fsOverlay.classList.add("hidden");
+  d.fsVideo.src = "";                    // 断开这路视频流
+  d.fsMark.classList.add("hidden");
+}
+
+async function onReachFullscreenClick(ev) {
+  const d = reach.dom;
+  const px = reachPixelFromEvent(ev, d.fsVideo);
+  if (!px) {
+    return;
+  }
+  // 标记放在点击处（相对全屏舞台定位，图像在舞台里是居中的）
+  const imgRect = d.fsVideo.getBoundingClientRect();
+  const stageRect = d.fsVideo.parentElement.getBoundingClientRect();
+  d.fsMark.style.left = `${imgRect.left - stageRect.left + px.relX * imgRect.width}px`;
+  d.fsMark.style.top = `${imgRect.top - stageRect.top + px.relY * imgRect.height}px`;
+  d.fsMark.classList.remove("hidden");
+
+  const ok = window.confirm(`确定选这个点吗？像素 [${px.u}, ${px.v}]\n确定后退出全屏并开始取点规划。`);
+  if (!ok) {
+    d.fsMark.classList.add("hidden");   // 留在全屏里重新点
+    return;
+  }
+  closeReachFullscreen();
+  placeReachMark(px.relX, px.relY);     // 小窗上同步显示标记
+  await submitReachPick(px.u, px.v);
+}
+
+// 取点 + 规划（小窗点击和全屏选点共用入口）
+async function submitReachPick(u, v) {
   // 连续点击去重：只记录最新一次，正在计算时不重复触发；
   // 当前轮算完后若发现有更新的点击，跳过旧结果直接算最新的。
   reach.pendingClick = { u, v };
@@ -596,7 +664,7 @@ async function appendReturnPreview(panel, wp) {
         current_joints: last.named_joints,
         target_joints: wp.named_joints,
         tcp_offset: readPose(panel, "tcp"),
-        duration: 5,
+        duration: 2.5,
         steps: 30,
         planner_type: panel.dom.planner.value,
       }),
@@ -643,7 +711,7 @@ async function returnToWaypoint(wp) {
         current_joints: joints,
         target_joints: wp.named_joints,
         tcp_offset: readPose(panel, "tcp"),
-        duration: 5,
+        duration: 2.5,
         steps: 40,
         planner_type: panel.dom.planner.value,
       }),
@@ -674,7 +742,8 @@ async function returnToWaypoint(wp) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         waypoints: seg.waypoints.map((frame) => frame.named_joints),
-        duration: 5,
+        duration: 2.5,
+        max_speed_rad_s: 0.4,   // 收回只是收手，精度要求低，放行到快档
       }),
     });
     reachMsg(`收回到「${wp.name}」中…`, "success");

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>双臂 IK 调试回放台</title>
-    <link rel="stylesheet" href="/web/style.css?v=44" />
+    <link rel="stylesheet" href="/web/style.css?v=46" />
     <script type="importmap">
       {
         "imports": {
@@ -37,9 +37,12 @@
             <button id="reachCollapseBtn" type="button" title="收起/展开">—</button>
           </header>
           <div id="reachBody" class="reach-body">
-            <div class="reach-video-wrap">
-              <img id="reachVideo" alt="camera" />
-              <div id="reachMark" class="reach-mark hidden"></div>
+            <div class="reach-video-col">
+              <div class="reach-video-wrap">
+                <img id="reachVideo" alt="camera" />
+                <div id="reachMark" class="reach-mark hidden"></div>
+              </div>
+              <button id="reachFullscreenBtn" type="button">全屏选点</button>
             </div>
             <div class="reach-side">
               <div id="reachInfo" class="reach-info">在左侧相机画面中点击目标</div>
@@ -93,6 +96,17 @@
           </div>
         </div>
 
+        <div id="reachFsOverlay" class="reach-fs-overlay hidden">
+          <div class="reach-fs-bar">
+            <span>全屏选点：在画面中点击目标，确认后自动退出全屏</span>
+            <button id="reachFsCloseBtn" type="button">× 退出</button>
+          </div>
+          <div class="reach-fs-stage">
+            <img id="reachFsVideo" alt="camera fullscreen" />
+            <div id="reachFsMark" class="reach-mark hidden"></div>
+          </div>
+        </div>
+
         <div class="viewer-topbar">
           <span id="stateLabel">就绪</span>
           <span id="frameLabel">左 0/0 | 右 0/0</span>
@@ -105,6 +119,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=44"></script>
+    <script type="module" src="/web/main.js?v=46"></script>
   </body>
 </html>
