@@ -73,6 +73,10 @@
                   <span>推力(N)</span>
                   <input id="reachPushForce" type="number" step="1" min="0" max="40" value="25" />
                 </label>
+                <label class="reach-offset" title="仅左侧规划：平移段多抬这么高，进给段从上前方斜切入目标——抵消运动中1~3cm的跟踪下垂，目标贴着障碍下表面时不会从下面钻进去刮底。0 关闭">
+                  <span>中段抬高(cm)</span>
+                  <input id="reachLiftCm" type="number" step="0.5" min="0" value="2" />
+                </label>
               </div>
               <div class="reach-actions">
                 <button id="reachScanBtn" type="button">扫描障碍</button>
@@ -121,7 +125,10 @@
               </div>
               <div class="reach-actions">
                 <button id="reachArmBtn" type="button" disabled>接管手臂</button>
-                <button id="reachReplanBtn" type="button" disabled>重新预演</button>
+                <button id="reachReplanBtn" type="button" disabled
+                        title="现有逻辑：数值 IK 解到目标 + 直线/经由路点规划">右侧规划</button>
+                <button id="reachPlanLeftBtn" type="button" disabled
+                        title="平移在先、进出在后：先竖直+水平对齐到目标正前方（保持当前深度），最后一段才沿机器人前后方向往里伸；往外拔则先拔出到目标深度再平移">左侧规划</button>
                 <button id="reachExecBtn" type="button" class="danger" disabled>真机执行</button>
                 <button id="reachStopBtn" type="button" class="danger" disabled>急停</button>
               </div>
@@ -168,6 +175,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=69"></script>
+    <script type="module" src="/web/main.js?v=73"></script>
   </body>
 </html>

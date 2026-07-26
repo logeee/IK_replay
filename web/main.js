@@ -159,6 +159,7 @@ async function initReach() {
     duration: document.getElementById("reachDuration"),
     arm: document.getElementById("reachArmBtn"),
     replan: document.getElementById("reachReplanBtn"),
+    planLeft: document.getElementById("reachPlanLeftBtn"),
     exec: document.getElementById("reachExecBtn"),
     stop: document.getElementById("reachStopBtn"),
     scan: document.getElementById("reachScanBtn"),
@@ -202,6 +203,7 @@ async function initReach() {
   d.collapse.addEventListener("click", () => d.body.classList.toggle("hidden"));
   d.arm.addEventListener("click", () => toggleReachArm());
   d.replan.addEventListener("click", () => runReachPlan());
+  d.planLeft.addEventListener("click", () => planReachLeft());
   d.exec.addEventListener("click", () => executeReach());
   d.stop.addEventListener("click", () => stopReach());
   d.scan.addEventListener("click", () => scanObstacles());
@@ -518,7 +520,9 @@ async function submitReachPick(u, v) {
       reach.plane = data.plane || null;
       visualizeSurfacePlane(data);
       reach.dom.replan.disabled = false;
-      await runReachPlan();
+      reach.dom.planLeft.disabled = false;
+      // 取点后默认跑左侧规划（平移在先+中段抬高，不刮底）；「右侧规划」按钮保留老逻辑
+      await planReachLeft();
     }
   } finally {
     reach.picking = false;
@@ -633,6 +637,99 @@ async function runReachPlan() {
     reachMsg(ik?.success === false
       ? "目标不可达（IK 未收敛），换个目标或调整姿态"
       : (collision?.status === "collision" ? "轨迹有碰撞，已禁止执行" : "规划失败"), "error");
+  }
+}
+
+// 「左侧规划」：平移在先、进出在后（先竖直+水平对齐，最后才沿根系 ±x 进/出；
+// 拔出则相反：先拔出到目标深度再平移）。与「右侧规划」共用同一条执行链。
+async function planReachLeft() {
+  const st = reach.status;
+  const pick = reach.lastPick;
+  const panel = state.panels[st.chain_id];
+  if (!pick || !panel) {
+    reachMsg("请先在画面中点击目标", "error");
+    return;
+  }
+  reachMsg("左侧规划中（平移在先、进出在后）…");
+  reach.dom.exec.disabled = true;
+
+  // 起点：优先真机当前关节角（与右侧规划一致）
+  let joints = readJointInputs(panel);
+  if (st.joints_available) {
+    try {
+      const j = await fetchJson("/api/reach/joints");
+      if (j.ok) {
+        joints = j.named_joints;
+        setJointInputs(panel, joints);
+        Object.assign(state.robotJointState, joints);
+        setRobotJoints(state.robotJointState, false);
+      }
+    } catch (error) {
+      reachMsg(`读真机关节失败（用面板当前值代替）: ${error.message}`, "error");
+    }
+  }
+  writePose(panel, "tcp", { xyz: st.p_tool, rpy: [0, 0, 0] });
+  writePose(panel, "target", { xyz: xyzToScene(pick.p_root), rpy: readPose(panel, "target").rpy });
+  updateTargetMarker(panel);
+  if (panel.targetHandGroup) {
+    panel.targetHandGroup.visible = false;
+  }
+
+  let res;
+  try {
+    const liftCm = parseFloat(document.getElementById("reachLiftCm")?.value);
+    res = await fetchJson("/api/reach/plan_axis_last", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        start_joints: joints,
+        target_root: pick.p_root,
+        step_m: 0.02,   // 2cm 一步：直线上关节插值与笛卡尔线的偏差可忽略，IK 次数减半
+        check_collision: reachCollisionOn(),
+        lift_m: Number.isFinite(liftCm) ? Math.max(0, liftCm) / 100 : 0.02,
+      }),
+    });
+  } catch (error) {
+    reach.dom.exec.disabled = true;
+    reachMsg(`左侧规划失败: ${error.message}`, "error");
+    return;
+  }
+
+  panel.frames = res.waypoints;
+  panel.frameIndex = 0;
+  // 逐步 IK 每步都收敛才会走到这里，用最大步误差充当 IK 指标（供确认框显示）
+  panel.currentIk = { success: true, error_mm: res.max_ik_error_mm,
+                      error_rotation: 0, iterations: 0 };
+  panel.currentCollision = res.collision;
+  if (res.collision) {
+    updateCollisionMetrics(panel, res.collision);
+    visualizeCollision(panel, res.collision);
+  }
+  updateTrajectoryLine(panel);
+  applyFrame(panel, 0);
+  reach.execFrames = panel.frames;
+
+  const pt = pick.p_torso;
+  const order = res.mode === "push_in" ? "平移（竖直+水平）→ 进给（+x 往里伸）"
+                                       : "拔出（-x）→ 平移（竖直+水平）";
+  reach.dom.info.textContent = [
+    `左侧规划：${order}`,
+    `目标(躯干系) [${pt.map((v) => v.toFixed(3)).join(", ")}] m`,
+    `中间点(根系) [${res.mid_root.map((v) => v.toFixed(3)).join(", ")}] m`,
+    `最大 IK 步误差 ${Number(res.max_ik_error_mm).toFixed(1)} mm · 轨迹点 ${panel.frames.length}`,
+    `碰撞: ${res.collision?.status_label || "未检查"}`,
+  ].join("\n");
+
+  const planned = panel.frames.length > 1 && res.collision?.status !== "collision";
+  if (planned) {
+    reach.dom.exec.disabled = !st.armed;
+    reachMsg(st.armed
+      ? "左侧规划预演回放中，确认无误后点「真机执行」"
+      : "左侧规划预演回放中（未接管手臂，先点「接管手臂」才能执行）", "success");
+    replay(panel);
+  } else {
+    reach.dom.exec.disabled = true;
+    reachMsg(res.collision?.status === "collision" ? "轨迹有碰撞，已禁止执行" : "规划失败", "error");
   }
 }
 
@@ -1421,7 +1518,7 @@ async function toggleHandMove() {
   const on = !reach.status.hand_move;
   if (on) {
     const ok = window.confirm(
-      "确认卸力？\n\n手臂将失去支撑并下坠，请务必先用手扶住手臂！\n摆好位置后点「恢复保持」或按空格键。");
+      "确认卸力？\n\n重力前馈会让手臂近似失重（推到哪停哪），但补偿有偏差时仍可能缓慢飘移，请用手护住。\n摆好位置后点「恢复保持」或按空格键。");
     if (!ok) {
       return;
     }
