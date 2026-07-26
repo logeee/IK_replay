@@ -136,6 +136,8 @@
           <div class="reach-step-pop-hint">可先调参数或重新取点，再选择下一步</div>
           <div class="reach-step-pop-actions">
             <button id="reachNextSideBtn" type="button" class="primary">继续横移</button>
+            <button id="reachNextSideRBtn" type="button"
+                    title="与左移逻辑完全对称：同样的距离与贴面方向，符号取反">继续反向横移</button>
             <button id="reachNextPickBtn" type="button"
                     title="在画面里再点一个点，从当前姿态直接规划过去（不经过经由路点），到位后回到本弹窗">再次选点</button>
             <button id="reachNextReturnBtn" type="button">收回到结束位点</button>
@@ -166,6 +168,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=68"></script>
+    <script type="module" src="/web/main.js?v=69"></script>
   </body>
 </html>

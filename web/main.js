@@ -183,6 +183,7 @@ async function initReach() {
     collisionCheck: document.getElementById("reachCollisionCheck"),
     stepNext: document.getElementById("reachStepNext"),
     nextSide: document.getElementById("reachNextSideBtn"),
+    nextSideR: document.getElementById("reachNextSideRBtn"),
     nextPick: document.getElementById("reachNextPickBtn"),
     nextReturn: document.getElementById("reachNextReturnBtn"),
     nextDone: document.getElementById("reachNextDoneBtn"),
@@ -244,6 +245,7 @@ async function initReach() {
   d.seqSave.addEventListener("click", () => saveSequence());
   d.seqDel.addEventListener("click", () => deleteSequence());
   d.nextSide.addEventListener("click", () => stepNextSidestep());
+  d.nextSideR.addEventListener("click", () => stepNextSidestep(true));
   // 暂停期间改左移距离：刷新按钮文案并重新预取横移规划
   d.stepLen.addEventListener("change", () => {
     if (!d.stepNext.classList.contains("hidden")) {
@@ -1688,6 +1690,9 @@ function showStepNext() {
   d.nextSide.textContent = stepCm
     ? `继续${stepCm > 0 ? "左" : "右"}移 ${Math.abs(stepCm).toFixed(0)}cm`
     : "继续横移";
+  d.nextSideR.textContent = stepCm
+    ? `继续${stepCm > 0 ? "右" : "左"}移 ${Math.abs(stepCm).toFixed(0)}cm`
+    : "继续反向横移";
   const endWp = selectedEndWaypoint();
   d.nextReturn.textContent = endWp ? `收回到「${endWp.name}」` : "收回到结束位点";
   d.stepNext.classList.remove("hidden");
@@ -1730,7 +1735,8 @@ function hideStepNext() {
 
 function setStepNextBusy(busy) {
   const d = reach.dom;
-  [d.nextSide, d.nextReturn, d.nextDone].forEach((btn) => { btn.disabled = busy; });
+  [d.nextSide, d.nextSideR, d.nextReturn, d.nextDone]
+    .forEach((btn) => { btn.disabled = busy; });
 }
 
 // 「再次选点」= 人当视觉闭环：粗定位后躯干已扭到新姿态，用现在的相机再点一次
@@ -1743,12 +1749,14 @@ function stepNextRepick() {
   reachMsg("再次选点：全屏中点击新目标，确认后直接真机执行（Esc 返回）", "success");
 }
 
-async function stepNextSidestep() {
-  const stepCm = Number(reach.dom.stepLen.value || 0);
-  if (!stepCm) {
+// flip=true 为"反向横移"按钮：同一条链路，距离符号取反（左↔右完全对称）
+async function stepNextSidestep(flip = false) {
+  const raw = Number(reach.dom.stepLen.value || 0);
+  if (!raw) {
     reachMsg("左移(cm) 为 0，没有可执行的横移", "error");
     return;
   }
+  const stepCm = flip ? -raw : raw;
   if (!reach.plane) {
     reachMsg("还没有拟合出表面平面，无法横移", "error");
     return;

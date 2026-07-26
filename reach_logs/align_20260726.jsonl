@@ -191,3 +191,6 @@
 {"ts": "2026-07-26T19:00:21.317", "session": "20260726_185845", "event": "measure", "step": 12, "yaw_err_deg": -1.01, "pitch_err_deg": 7.235, "points": 25806, "waist_deg": [-1.083, -0.975, 1.279]}
 {"ts": "2026-07-26T19:00:21.319", "session": "20260726_185845", "event": "pulse", "step": 12, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [-1.083, -0.975, 1.279]}
 {"ts": "2026-07-26T19:00:21.319", "session": "20260726_185845", "event": "cancelled", "step": 12, "waist_deg": [-1.083, -0.975, 1.279]}
+{"ts": "2026-07-26T21:52:49.557", "session": "20260726_212533", "event": "start", "tol_deg": 2.8, "dmin": 0.4, "dmax": 1.0, "waist_deg": [-2.137, -0.375, 1.034]}
+{"ts": "2026-07-26T21:52:49.797", "session": "20260726_212533", "event": "measure", "step": 1, "yaw_err_deg": 1.934, "pitch_err_deg": 7.147, "points": 22460, "waist_deg": [-2.135, -0.375, 1.034]}
+{"ts": "2026-07-26T21:52:49.798", "session": "20260726_212533", "event": "done", "step": 1, "yaw_err_deg": 1.934, "waist_deg": [-2.135, -0.375, 1.034]}
