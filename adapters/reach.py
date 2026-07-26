@@ -45,6 +45,8 @@ class ReachState:
         self.arm_factory = None            # 无参函数 -> H2ArmController；None = 无法真机执行
         self.provider_reader = None        # 只读 lowstate 关节读取（未接管时用）
         self.torso_reader = None           # 只读腰关节 + IMU（躯干姿态诊断）
+        self.loco_client = None            # 高层 loco RPC（原地转身用），懒创建
+        self.loco_available = False        # 有 DDS（非 --no-robot）才可用
         self.base_link = "torso_link"
         self.pick_torso: dict | None = None        # 取点时刻的躯干姿态
         self.pick_target_torso: list[float] | None = None
@@ -108,6 +110,7 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str, calib_path: 
     state.arm_factory = arm_factory
     state.provider_reader = joints_reader
     state.torso_reader = torso_reader
+    state.loco_available = joints_reader is not None   # 有 DDS 连接才谈得上转身
     state.base_link = base_link
     state.joint_names = robot_model.joint_names(chain_id)
     state.robot_model = robot_model
@@ -356,6 +359,144 @@ def _fit_surface_plane(p_cam_surface: np.ndarray, radius: float = 0.12) -> dict 
         "points": int(len(near)),
         "radius_m": radius,
     }
+
+
+# --------------- 垂直度观测 + 腰 yaw 点动（perp.html 调试页） ---------------
+
+
+@router.get("/perpendicular")
+async def reach_perpendicular(dmin: float = 0.5, dmax: float = 1.0):
+    """用 [dmin, dmax] 深度范围内的点拟合柜面平面，给出垂直度指标。
+
+    深度不在该范围内的点视为异常（地面、远处背景、手臂等），不参与拟合。
+    yaw_err_deg > 0 表示法线偏向画面右侧（柜面左边更远）；两个角都为 0
+    即相机光轴与柜面严格垂直。
+    """
+    if not state.enabled:
+        return JSONResponse({"ok": False, "error": "reach 未启用"}, status_code=409)
+    snap = state.camera.depth_snapshot()
+    if snap is None:
+        return JSONResponse({"ok": False, "error": "拿不到深度帧"}, status_code=502)
+    depth_mm, (fx, fy, cx, cy) = snap
+    h, w = depth_mm.shape
+    stride = max(1, int(round(max(h, w) / 240)))
+    d = depth_mm[::stride, ::stride].astype(float) / 1000.0
+    vs, us = np.mgrid[0:h:stride, 0:w:stride]
+    measured = d > 0.05                       # 有回波的像素（0 = 无效）
+    valid = measured & (d > dmin) & (d < dmax)
+    n_meas = int(measured.sum())
+    if valid.sum() < 200:
+        return {"ok": False, "error": f"深度在 {dmin:.2f}~{dmax:.2f} m 内的点太少"
+                                      f"（{int(valid.sum())} 个），请靠近/对准柜面"}
+    pts = np.stack([(us[valid] - cx) * d[valid] / fx,
+                    (vs[valid] - cy) * d[valid] / fy,
+                    d[valid]], axis=1)
+
+    def fit(p):
+        c = p.mean(axis=0)
+        q = p - c
+        _, _, vt = np.linalg.svd(q, full_matrices=False)
+        n = vt[2]
+        return c, n, float(np.sqrt(np.mean((q @ n) ** 2)))
+
+    # 两遍拟合：第一遍全量，第二遍剔除 3σ 残差外点（柜门把手、边缘飞点）
+    center, n, rms = fit(pts)
+    resid = np.abs((pts - center) @ n)
+    inlier = resid < max(0.008, 3.0 * rms)
+    if inlier.sum() >= 200:
+        center, n, rms = fit(pts[inlier])
+    if float(np.dot(n, -center)) < 0:
+        n = -n                                # 法线指向相机一侧
+
+    # 相机系：x 右、y 下、z 前。垂直时 n = (0,0,-1)
+    yaw_err = math.degrees(math.atan2(float(n[0]), float(-n[2])))
+    pitch_err = math.degrees(math.atan2(float(n[1]), float(-n[2])))
+    tilt = math.degrees(math.acos(float(np.clip(-n[2], -1.0, 1.0))))
+    n_root = (state.T_cam2root[:3, :3] @ n).tolist()
+
+    out = {
+        "ok": True,
+        "yaw_err_deg": yaw_err,
+        "pitch_err_deg": pitch_err,
+        "tilt_deg": tilt,
+        "distance_m": float(abs(np.dot(n, center))),
+        "normal_cam": n.tolist(),
+        "normal_root": n_root,
+        "rms_mm": rms * 1000.0,
+        "points_used": int(inlier.sum()),
+        "in_range_ratio": float(valid.sum()) / max(1, n_meas),
+        "dmin": dmin,
+        "dmax": dmax,
+        "torso": _read_torso(),
+        "turn_available": state.loco_available,
+    }
+    return out
+
+
+TURN_RATE_DEG_S = 6.0      # 原地转身角速度
+TURN_MAX_DEG = 10.0        # 单次点动上限
+
+
+def _get_loco_client():
+    """高层 loco RPC 客户端（懒创建）。DDS 在服务启动时已由只读订阅初始化。"""
+    if state.loco_client is None:
+        from unitree_sdk2py.h2.loco.h2_loco_client import LocoClient
+
+        c = LocoClient()
+        if hasattr(c, "SetTimeout"):
+            c.SetTimeout(3.0)
+        c.Init()
+        state.loco_client = c
+    return state.loco_client
+
+
+@router.post("/turn")
+async def reach_turn(body: dict):
+    """原地转身点动（真机！全身动作）。Body: {"delta_deg": ±2} 或 {"stop": true}。
+
+    H2 的 rt/arm_sdk 混合通道只覆盖双臂（15~28），腰电机指令会被固件忽略
+    （已真机验证）；直接发 rt/lowcmd 又必须释放本体运控、机器人会失去平衡。
+    所以对准柜面的 yaw 调整走高层 SetVelocity：让本体运控自己用腿原地转，
+    平衡由它负责，与 arm_sdk 手臂控制可以共存（官方 VR 遥操即此组合）。
+    注意：转身会带动整条手臂，请先把手收回再调。
+    """
+    if not state.loco_available:
+        return JSONResponse({"ok": False, "error": "无 DDS 连接（--no-robot 模式）"},
+                            status_code=409)
+    try:
+        loco = _get_loco_client()
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"loco 客户端初始化失败: {exc}"},
+                            status_code=502)
+
+    if body.get("stop"):
+        try:
+            loco.StopMove()
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": f"停止失败: {exc}"}, status_code=502)
+        return {"ok": True, "stopped": True}
+
+    try:
+        delta = float(body["delta_deg"])
+    except (KeyError, TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "需要 delta_deg（度，正=左转）"},
+                            status_code=400)
+    delta = float(np.clip(delta, -TURN_MAX_DEG, TURN_MAX_DEG))
+    if abs(delta) < 0.05:
+        return {"ok": True, "delta_deg": 0.0, "duration_s": 0.0}
+    omega = math.radians(TURN_RATE_DEG_S) * (1.0 if delta > 0 else -1.0)
+    duration = abs(math.radians(delta)) / abs(omega)
+    try:
+        code = loco.SetVelocity(0.0, 0.0, omega, duration)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"SetVelocity 失败: {exc}"},
+                            status_code=502)
+    if code not in (0, None):
+        return JSONResponse({"ok": False, "error": f"SetVelocity 返回码 {code}"
+                                                   "（确认机器人在运动模式）"},
+                            status_code=502)
+    return {"ok": True, "delta_deg": delta,
+            "omega_deg_s": math.degrees(omega), "duration_s": duration}
 
 
 # --------------- 环境障碍物（深度相机扫描） ---------------

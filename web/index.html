@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>双臂 IK 调试回放台</title>
-    <link rel="stylesheet" href="/web/style.css?v=60" />
+    <link rel="stylesheet" href="/web/style.css?v=61" />
     <script type="importmap">
       {
         "imports": {
@@ -42,7 +42,11 @@
                 <img id="reachVideo" alt="camera" />
                 <div id="reachMark" class="reach-mark hidden"></div>
               </div>
-              <button id="reachFullscreenBtn" type="button">全屏选点</button>
+              <div class="reach-video-btns">
+                <button id="reachFullscreenBtn" type="button">全屏选点</button>
+                <a class="reach-perp-link" href="/web/perp.html" target="_blank"
+                   title="柜面法向 / 垂直指标实时观测 + 腰 yaw 点动">垂直度调试 ↗</a>
+              </div>
             </div>
             <div class="reach-side">
               <div id="reachInfo" class="reach-info">在左侧相机画面中点击目标</div>

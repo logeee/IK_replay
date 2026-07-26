@@ -554,14 +554,33 @@ button:disabled {
   gap: 6px;
 }
 
-.reach-video-col > button {
-  align-self: flex-start;
+.reach-video-btns {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.reach-video-btns > button {
   padding: 4px 12px;
   border: 1px solid #c9d5df;
   border-radius: 5px;
   background: #f2f6f9;
   cursor: pointer;
   font-size: 12px;
+}
+
+.reach-perp-link {
+  font-size: 12px;
+  color: #2a6fa8;
+  text-decoration: none;
+  border: 1px solid #c9d5df;
+  border-radius: 5px;
+  padding: 4px 10px;
+  background: #f2f6f9;
+}
+
+.reach-perp-link:hover {
+  background: #e6eef5;
 }
 
 .reach-video-wrap {

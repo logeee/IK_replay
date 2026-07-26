@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>垂直度调试 — 柜面法向观测 + 原地转身点动</title>
+<style>
+  :root {
+    --bg: #12151a; --panel: #1b2027; --line: #2c3440;
+    --fg: #e6e9ee; --dim: #8b95a3;
+    --ok: #4cc38a; --warn: #e5a54b; --bad: #e5644b; --accent: #4b9fe5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 12px;
+    padding: 10px 18px; border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 16px; margin: 0; }
+  header .sub { color: var(--dim); font-size: 12px; }
+  header a { color: var(--accent); margin-left: auto; font-size: 13px; }
+  .wrap { display: flex; gap: 14px; padding: 14px 18px; flex-wrap: wrap; }
+  .video { position: relative; flex: 1 1 520px; min-width: 380px; }
+  .video img { width: 100%; border: 1px solid var(--line); border-radius: 6px; display: block; }
+  .side { flex: 0 0 340px; display: flex; flex-direction: column; gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .card h2 { font-size: 13px; margin: 0 0 8px; color: var(--dim); font-weight: 600; }
+
+  .metric-big { display: flex; gap: 10px; }
+  .metric-big .m { flex: 1; text-align: center; padding: 8px 4px; border-radius: 6px; background: #14181e; }
+  .metric-big .v { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .metric-big .l { font-size: 11px; color: var(--dim); }
+  .v.ok { color: var(--ok); } .v.warn { color: var(--warn); } .v.bad { color: var(--bad); }
+
+  /* 水平仪：点越接近圆心越垂直 */
+  .bubble { position: relative; width: 150px; height: 150px; margin: 10px auto 2px;
+            border-radius: 50%; border: 1px solid var(--line);
+            background: radial-gradient(circle, #171c23 0%, #12151a 100%); }
+  .bubble .ring { position: absolute; inset: 33%; border: 1px dashed #3a4450; border-radius: 50%; }
+  .bubble .cross-h, .bubble .cross-v { position: absolute; background: #2c3440; }
+  .bubble .cross-h { left: 4%; right: 4%; top: 50%; height: 1px; }
+  .bubble .cross-v { top: 4%; bottom: 4%; left: 50%; width: 1px; }
+  .bubble .dot { position: absolute; width: 14px; height: 14px; border-radius: 50%;
+                 background: var(--warn); left: 50%; top: 50%;
+                 transform: translate(-50%, -50%);
+                 transition: left .25s, top .25s, background .25s; }
+  .bubble-cap { text-align: center; color: var(--dim); font-size: 11px; }
+
+  table.kv { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.kv td { padding: 2px 0; }
+  table.kv td:first-child { color: var(--dim); width: 45%; }
+  table.kv td:last-child { font-variant-numeric: tabular-nums; }
+
+  .row { display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+  .row label { color: var(--dim); font-size: 12px; }
+  input[type=number] { width: 64px; background: #14181e; color: var(--fg);
+                       border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; }
+  button { background: #232b35; color: var(--fg); border: 1px solid var(--line);
+           border-radius: 5px; padding: 5px 12px; cursor: pointer; font-size: 13px; }
+  button:hover { background: #2c3542; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: #2a5b86; border-color: #3a76ab; }
+  button.danger { background: #6e3630; border-color: #925047; }
+  .waist-jog { display: flex; gap: 6px; margin-top: 8px; }
+  .waist-jog button { flex: 1; font-variant-numeric: tabular-nums; }
+  #msg { min-height: 18px; font-size: 12px; color: var(--warn); margin-top: 6px; }
+  .status-line { font-size: 12.5px; color: var(--dim); margin-top: 4px; }
+  .status-line b { color: var(--fg); font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<header>
+  <h1>垂直度调试</h1>
+  <span class="sub">柜面法向观测（仅用 dmin~dmax 深度内的点拟合）＋ 原地转身点动</span>
+  <a href="/">← 回主页面</a>
+</header>
+
+<div class="wrap">
+  <div class="video">
+    <img id="stream" src="/api/reach/stream" alt="camera" />
+  </div>
+
+  <div class="side">
+    <div class="card">
+      <h2>垂直指标（相机光轴 vs 柜面法线）</h2>
+      <div class="metric-big">
+        <div class="m"><div class="v" id="yawErr">--</div><div class="l">yaw 偏差 °（左右）</div></div>
+        <div class="m"><div class="v" id="pitchErr">--</div><div class="l">pitch 偏差 °（俯仰）</div></div>
+        <div class="m"><div class="v" id="tilt">--</div><div class="l">总倾角 °</div></div>
+      </div>
+      <div class="bubble">
+        <div class="cross-h"></div><div class="cross-v"></div>
+        <div class="ring"></div>
+        <div class="dot" id="bubbleDot"></div>
+      </div>
+      <div class="bubble-cap">气泡进入虚线圈 ≈ 偏差 &lt; 3°，进圆心即垂直。点偏右 = 法线偏画面右侧（小步转身试拨方向）</div>
+    </div>
+
+    <div class="card">
+      <h2>平面拟合详情</h2>
+      <table class="kv">
+        <tr><td>柜面法向量（相机系）</td><td id="nCam">--</td></tr>
+        <tr><td>柜面法向量（根系）</td><td id="nRoot">--</td></tr>
+        <tr><td>相机到柜面距离</td><td id="dist">--</td></tr>
+        <tr><td>拟合点数 / 范围内占比</td><td id="pts">--</td></tr>
+        <tr><td>平面 RMS</td><td id="rms">--</td></tr>
+        <tr><td>腰 yaw / roll / pitch（实测）</td><td id="torso">--</td></tr>
+      </table>
+      <div class="row">
+        <label>深度范围</label>
+        <input id="dmin" type="number" step="0.05" min="0.1" max="3" value="0.5" /> ~
+        <input id="dmax" type="number" step="0.05" min="0.2" max="4" value="1.0" />
+        <label>m（范围外 = 异常点，剔除）</label>
+      </div>
+      <div id="fitMsg" class="status-line"></div>
+    </div>
+
+    <div class="card">
+      <h2>原地转身点动（真机！全身动作）</h2>
+      <div class="row">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input id="turnArm" type="checkbox" /> 允许转身（勾选后按钮生效）
+        </label>
+        <button id="turnStopBtn" class="danger">停止</button>
+      </div>
+      <div class="waist-jog">
+        <button class="jog" data-d="2" disabled>⟲ 左转2°</button>
+        <button class="jog" data-d="0.5" disabled>⟲ 左0.5°</button>
+        <button class="jog" data-d="-0.5" disabled>右0.5° ⟳</button>
+        <button class="jog" data-d="-2" disabled>右转2° ⟳</button>
+      </div>
+      <div class="status-line" id="turnState"></div>
+      <div class="status-line">H2 的 arm_sdk 不覆盖腰电机（真机已验证指令被忽略），yaw 对准改走
+        高层 SetVelocity 让本体运控用腿原地转，平衡由它负责。转身会带动手臂——
+        <b>先把手收回再调</b>；需要机器人处于运动模式。</div>
+      <div id="msg"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let turnAvailable = false;
+
+function fmt(v, digits = 2) {
+  return (v === null || v === undefined || Number.isNaN(v)) ? "--" : Number(v).toFixed(digits);
+}
+function setAngle(el, deg) {
+  el.textContent = fmt(deg, 1);
+  const a = Math.abs(deg);
+  el.className = "v " + (a < 1.5 ? "ok" : a < 4 ? "warn" : "bad");
+}
+
+async function poll() {
+  const dmin = Number($("dmin").value) || 0.5;
+  const dmax = Number($("dmax").value) || 1.0;
+  try {
+    const res = await fetch(`/api/reach/perpendicular?dmin=${dmin}&dmax=${dmax}`);
+    const data = await res.json();
+    if (!data.ok) {
+      $("fitMsg").textContent = data.error || "拟合失败";
+      ["yawErr", "pitchErr", "tilt"].forEach((id) => { $(id).textContent = "--"; $(id).className = "v"; });
+      return;
+    }
+    $("fitMsg").textContent = "";
+    setAngle($("yawErr"), data.yaw_err_deg);
+    setAngle($("pitchErr"), data.pitch_err_deg);
+    setAngle($("tilt"), data.tilt_deg);
+
+    // 气泡：满偏 10°，dot 偏移方向 = 法线在画面里指向的方向
+    const cap = 10, r = 68;
+    const dx = Math.max(-1, Math.min(1, data.yaw_err_deg / cap)) * r;
+    const dy = Math.max(-1, Math.min(1, data.pitch_err_deg / cap)) * r;
+    const dot = $("bubbleDot");
+    dot.style.left = `calc(50% + ${dx}px)`;
+    dot.style.top = `calc(50% + ${dy}px)`;
+    dot.style.background = Math.abs(data.tilt_deg) < 1.5
+      ? "var(--ok)" : Math.abs(data.tilt_deg) < 4 ? "var(--warn)" : "var(--bad)";
+
+    const v3 = (a) => `[${a.map((x) => Number(x).toFixed(3)).join(", ")}]`;
+    $("nCam").textContent = v3(data.normal_cam);
+    $("nRoot").textContent = v3(data.normal_root);
+    $("dist").textContent = `${fmt(data.distance_m, 3)} m`;
+    $("pts").textContent = `${data.points_used} / ${(data.in_range_ratio * 100).toFixed(0)}%`;
+    $("rms").textContent = `${fmt(data.rms_mm, 1)} mm`;
+    const t = data.torso;
+    $("torso").textContent = t && t.waist_rad
+      ? t.waist_rad.map((x) => (Number(x) * 180 / Math.PI).toFixed(1)).join(" / ") + " °" : "--";
+    turnAvailable = !!data.turn_available;
+    updateTurnButtons();
+  } catch (e) {
+    $("fitMsg").textContent = "服务不可达：" + e;
+  }
+}
+
+function updateTurnButtons() {
+  const armed = turnAvailable && $("turnArm").checked;
+  document.querySelectorAll(".jog").forEach((b) => { b.disabled = !armed; });
+  $("turnState").textContent = turnAvailable
+    ? (armed ? "已解锁：点按钮即真机转身（6°/s）" : "勾选「允许转身」解锁按钮")
+    : "无 DDS 连接，转身不可用";
+}
+
+async function turnPost(body) {
+  $("msg").textContent = "";
+  try {
+    const res = await fetch("/api/reach/turn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      $("msg").textContent = data.error || "操作失败";
+      return;
+    }
+    if (data.stopped) {
+      $("msg").textContent = "已发送停止";
+    } else {
+      $("msg").textContent = `转身 ${data.delta_deg}°（约 ${Number(data.duration_s).toFixed(1)}s）`;
+    }
+  } catch (e) {
+    $("msg").textContent = "请求失败：" + e;
+  }
+}
+
+$("turnArm").addEventListener("change", updateTurnButtons);
+$("turnStopBtn").addEventListener("click", () => turnPost({ stop: true }));
+document.querySelectorAll(".jog").forEach((b) => {
+  b.addEventListener("click", () => turnPost({ delta_deg: Number(b.dataset.d) }));
+});
+updateTurnButtons();
+
+poll();
+setInterval(poll, 600);
+</script>
+</body>
+</html>
