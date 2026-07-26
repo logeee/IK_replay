@@ -772,10 +772,119 @@ button:disabled {
   color: #43596d;
 }
 
+.reach-stepmode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #43596d;
+  cursor: pointer;
+  user-select: none;
+}
+
+.reach-stepmode input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  flex: none;
+  accent-color: #147d7e;
+  cursor: pointer;
+}
+
+/* 分段模式到位提示：悬浮在整页顶部居中，不挡操作（暂停期间还要调参数/重新取点） */
+.reach-step-pop {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 90;
+  min-width: 320px;
+  max-width: 480px;
+  padding: 14px 18px 12px;
+  border: 1px solid #e3b662;
+  border-radius: 10px;
+  background: #fffaf0;
+  box-shadow: 0 10px 30px rgba(20, 31, 45, 0.28);
+  animation: reach-step-pop-in 0.18s ease-out;
+}
+
+.reach-step-pop.hidden {
+  display: none;
+}
+
+@keyframes reach-step-pop-in {
+  from { opacity: 0; transform: translate(-50%, -8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+.reach-step-pop-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #6b4c0d;
+}
+
+.reach-step-pop-hint {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #9b7c3a;
+}
+
+.reach-step-pop-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.reach-step-pop-actions button {
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid #d3a851;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #6b4c0d;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.reach-step-pop-actions button.primary {
+  background: #f0b83f;
+  border-color: #cf9a2c;
+  color: #3d2c04;
+}
+
+.reach-step-pop-actions button.primary:hover:not(:disabled) {
+  background: #e8ad2e;
+}
+
+.reach-step-pop-actions button:hover:not(:disabled) {
+  background: #faf1dd;
+}
+
+.reach-step-pop-actions button.ghost {
+  border-color: #d8ccb2;
+  color: #8a7a55;
+}
+
+.reach-step-pop-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .reach-msg.error {
   color: #b3362a;
 }
 
 .reach-msg.success {
   color: #1c8b4c;
+}
+
+.reach-diag {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #6b7b88;
+  border-top: 1px dashed #d5dee5;
+  padding-top: 4px;
 }

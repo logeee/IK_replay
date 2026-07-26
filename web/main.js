@@ -126,6 +126,7 @@ const reach = {
   plane: null,
   planeGroup: new THREE.Group(),
   execFrames: null, // 真机执行只跑主段（预演 frames 可能拼了横移预览段）
+  finePick: false,  // 弹窗「再次选点」置位：下一次取点直达（跳过经由路点），执行时消费
 };
 
 async function initReach() {
@@ -168,7 +169,14 @@ async function initReach() {
     delWp: document.getElementById("reachDelWpBtn"),
     stepLen: document.getElementById("reachStepLen"),
     pushForce: document.getElementById("reachPushForce"),
+    stepMode: document.getElementById("reachStepMode"),
+    stepNext: document.getElementById("reachStepNext"),
+    nextSide: document.getElementById("reachNextSideBtn"),
+    nextPick: document.getElementById("reachNextPickBtn"),
+    nextReturn: document.getElementById("reachNextReturnBtn"),
+    nextDone: document.getElementById("reachNextDoneBtn"),
     msg: document.getElementById("reachMsg"),
+    diag: document.getElementById("reachDiag"),
     fsBtn: document.getElementById("reachFullscreenBtn"),
     fsOverlay: document.getElementById("reachFsOverlay"),
     fsVideo: document.getElementById("reachFsVideo"),
@@ -190,6 +198,10 @@ async function initReach() {
   d.record.addEventListener("click", () => recordWaypoint());
   d.delWp.addEventListener("click", () => deleteWaypoint());
   d.addVia.addEventListener("click", () => addViaWaypoint());
+  d.nextSide.addEventListener("click", () => stepNextSidestep());
+  d.nextPick.addEventListener("click", () => stepNextRepick());
+  d.nextReturn.addEventListener("click", () => stepNextReturn());
+  d.nextDone.addEventListener("click", () => hideStepNext());
   d.fsBtn.addEventListener("click", () => openReachFullscreen());
   d.fsClose.addEventListener("click", () => closeReachFullscreen());
   d.fsVideo.addEventListener("click", (ev) => onReachFullscreenClick(ev));
@@ -198,6 +210,7 @@ async function initReach() {
   await refreshWaypoints();
   showFlangeDebug();
   updateReachArmUi();
+  refreshReachDiag();
   const rms = status.calib?.rms_mm;
   reachMsg(`标定: ${status.calib?.solved_at || "?"} · RMS ${rms ? rms.toFixed(2) : "?"} mm · ` +
     `TCP=p_tool [${(status.p_tool || []).map((v) => v.toFixed(3)).join(", ")}] m`);
@@ -256,12 +269,54 @@ async function toggleReachArm() {
   } finally {
     d.arm.disabled = false;
     updateReachArmUi();
+    refreshReachDiag();
   }
 }
 
 function reachMsg(text, kind = "") {
   reach.dom.msg.textContent = text;
   reach.dom.msg.className = `reach-msg ${kind}`.trim();
+}
+
+// 每次真机动完刷新一次：跟随误差看重力前馈补够了没，躯干漂移看
+// "够不着"是手臂没到位还是躯干自己转了（两者的解法完全不同）
+async function refreshReachDiag() {
+  const box = reach.dom.diag;
+  if (!box) {
+    return;
+  }
+  let data;
+  try {
+    data = await fetchJson("/api/reach/diagnostics");
+  } catch {
+    return;
+  }
+  const arm = data.arm || {};
+  const parts = [];
+  if (arm.armed) {
+    const alpha = arm.grav_alpha ?? 0;
+    const tau = (arm.tau_grav_nm || []).map((v) => Math.abs(v));
+    parts.push(`重力前馈 α=${alpha}${tau.length ? ` · 峰值 ${Math.max(...tau).toFixed(1)} Nm` : ""}`);
+    if (arm.follow_error_max_deg != null) {
+      const err = arm.follow_error_max_deg;
+      parts.push(`跟随误差 ${err.toFixed(2)}°${Math.abs(err) > 1.5 ? "（偏大，考虑加 --arm-payload-kg）" : ""}`);
+    }
+  }
+  const drift = data.torso_drift;
+  if (drift) {
+    const rot = drift.torso_rotation_deg;
+    const shift = drift.target_shift_mm;
+    if (rot != null) {
+      parts.push(`躯干较取点时转了 ${rot.toFixed(1)}°`
+        + (shift != null ? ` → 目标漂移 ${shift.toFixed(0)} mm` : ""));
+    }
+    const waist = drift.waist_delta_deg || [];
+    if (waist.some((v) => Math.abs(v) > 0.3)) {
+      parts.push(`腰 ${waist.map((v) => v.toFixed(1)).join("/")}°`);
+    }
+  }
+  box.textContent = parts.join(" · ");
+  box.classList.toggle("hidden", parts.length === 0);
 }
 
 // 显示坐标 → 相机像素坐标（img 可能被缩放显示）
@@ -420,7 +475,9 @@ async function runReachPlan() {
   const duration = Math.max(1, Number(reach.dom.duration.value || 6));
   panel.dom.duration.value = formatNumber(duration);
 
-  const viaWps = viaWaypoints();
+  // 直达模式（弹窗「再次选点」）：精定位小距离移动，跳过经由路点直接规划
+  const direct = Boolean(reach.finePick);
+  const viaWps = direct ? [] : viaWaypoints();
   panel.solverOptions = { solve_orientation: false }; // 指尖是点目标，姿态放开
   try {
     if (viaWps.length) {
@@ -438,13 +495,13 @@ async function runReachPlan() {
   reach.execFrames = panel.frames;
   const stepCm = Number(reach.dom.stepLen.value || 0);
   let sidestepOk = false;
-  if (ik?.success && stepCm && reach.plane && panel.frames.length > 1
+  if (!direct && ik?.success && stepCm && reach.plane && panel.frames.length > 1
       && panel.currentCollision?.status !== "collision") {
     sidestepOk = await appendSidestepPreview(panel, stepCm);
   }
 
   // 收回段也并入预演（执行时同样按真机实际姿态就地重规划）
-  const endWpPreview = selectedEndWaypoint();
+  const endWpPreview = direct ? null : selectedEndWaypoint();
   let returnOk = false;
   if (ik?.success && endWpPreview && panel.frames.length > 1
       && panel.currentCollision?.status !== "collision") {
@@ -459,6 +516,7 @@ async function runReachPlan() {
     `接近偏移 ${pick.approach_offset_m} m ` +
       (pick.offset_mode === "plane_normal" ? "沿表面法线（0 = 触碰，负 = 压入加力）"
                                            : "沿视线（平面拟合失败的兜底）"),
+    ...(direct ? ["直达模式：从当前姿态直接规划（跳过经由路点）"] : []),
     ...(viaWps.length
       ? [`经由 ${viaWps.map((w) => `「${w.name}」`).join("→")} 分段规划`] : []),
     ...(stepCm ? [`到位后沿面${stepCm > 0 ? "左" : "右"}移 ${Math.abs(stepCm)}cm` +
@@ -628,6 +686,7 @@ async function sidestepReach(stepCm, options = {}) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         waypoints: panel.frames.map((frame) => frame.named_joints),
+        label: `${dirName}移${stepCm}cm${pushN > 0 ? `+${pushN}N` : ""}`,
         // 带推力时快拨（0.06 m/s）：借冲量越过旋钮定位卡点，比慢慢顶有效；
         // 无推力的普通横移保持慢滑（0.02 m/s）
         duration: pushN > 0
@@ -744,6 +803,7 @@ async function returnToWaypoint(wp) {
         waypoints: seg.waypoints.map((frame) => frame.named_joints),
         duration: 2.5,
         max_speed_rad_s: 0.4,   // 收回只是收手，精度要求低，放行到快档
+        label: `收回:${wp.name}`,
       }),
     });
     reachMsg(`收回到「${wp.name}」中…`, "success");
@@ -1159,14 +1219,17 @@ async function executeReach() {
   const ik = panel.currentIk;
   const duration = Math.max(1, Number(reach.dom.duration.value || 6));
   const stepCm = Number(reach.dom.stepLen.value || 0);
+  const stepMode = Boolean(reach.dom.stepMode?.checked);
   // 主段 = 取点规划的到位轨迹（预演 frames 可能已拼了横移预览段，真机不直接跑它）
   const mainFrames = (reach.execFrames && reach.execFrames[0] === panel.frames[0])
     ? reach.execFrames : panel.frames;
-  const sidestepNote = (stepCm && reach.plane)
-    ? `到位后将沿电柜表面${stepCm > 0 ? "左" : "右"}移 ${Math.abs(stepCm).toFixed(0)}cm\n`
-    : "";
+  const sidestepNote = stepMode
+    ? "分段模式：到位后暂停，横移/收回需手动点「继续」\n"
+    : (stepCm && reach.plane)
+      ? `到位后将沿电柜表面${stepCm > 0 ? "左" : "右"}移 ${Math.abs(stepCm).toFixed(0)}cm\n`
+      : "";
   const endWp = selectedEndWaypoint();
-  const endNote = endWp ? `结束后收回到「${endWp.name}」\n` : "";
+  const endNote = (endWp && !stepMode) ? `结束后收回到「${endWp.name}」\n` : "";
   const pt = reach.lastPick.p_torso;
   const ok = window.confirm(
     "确认真机执行？手臂将开始运动！\n\n" +
@@ -1178,6 +1241,9 @@ async function executeReach() {
   if (!ok) {
     return;
   }
+  hideStepNext();
+  const fine = Boolean(reach.finePick);
+  reach.finePick = false;   // 直达标志一次性消费：下次取点恢复经由路点
   reach.dom.exec.disabled = true;
   try {
     await fetchJson("/api/reach/execute", {
@@ -1186,21 +1252,97 @@ async function executeReach() {
       body: JSON.stringify({
         waypoints: mainFrames.map((frame) => frame.named_joints),
         duration,
+        label: fine ? "主轨迹(精定位)" : "主轨迹",
       }),
     });
     reachMsg("真机执行中…", "success");
     const final = await pollReachExec();
+    if (!final?.message?.startsWith("完成")) {
+      return; // 主段没成功：手臂留在原处等人处理，不自动接后续段
+    }
+    // 分段模式：到这里就停，后续横移/收回等人点「继续」
+    if (stepMode) {
+      showStepNext();
+      return;
+    }
     // 到位后可选的沿面横移（左移(cm) ≠ 0 时；已在上面的确认框里一并确认过）
-    if (stepCm && reach.plane && final?.message?.startsWith("完成")) {
+    if (stepCm && reach.plane) {
       await sidestepReach(stepCm, { skipConfirm: true });
     }
-    // 可选收尾：回到结束位点（主段没成功就不收，手臂留在原处等人处理）
-    if (endWp && final?.message?.startsWith("完成")) {
+    // 可选收尾：回到结束位点
+    if (endWp) {
       await returnToWaypoint(endWp);
     }
   } catch (error) {
     reachMsg(`执行请求失败: ${error.message}`, "error");
     reach.dom.exec.disabled = false;
+  }
+}
+
+// ---- 分段模式：主段到位后暂停，横移/收回由人逐段点击触发 ----
+// 暂停期间可以随时改左移(cm)/推力(N)等参数，点「继续横移」时按最新值执行，
+// 方便专注调某一段（比如反复调"手上去"的主段，不被后续动作打扰）。
+
+function showStepNext() {
+  const d = reach.dom;
+  const stepCm = Number(d.stepLen.value || 0);
+  d.nextSide.textContent = stepCm
+    ? `继续${stepCm > 0 ? "左" : "右"}移 ${Math.abs(stepCm).toFixed(0)}cm`
+    : "继续横移";
+  const endWp = selectedEndWaypoint();
+  d.nextReturn.textContent = endWp ? `收回到「${endWp.name}」` : "收回到结束位点";
+  d.stepNext.classList.remove("hidden");
+  reachMsg("主段到位，已暂停（分段模式）", "success");
+}
+
+function hideStepNext() {
+  reach.dom?.stepNext?.classList.add("hidden");
+}
+
+function setStepNextBusy(busy) {
+  const d = reach.dom;
+  [d.nextSide, d.nextReturn, d.nextDone].forEach((btn) => { btn.disabled = busy; });
+}
+
+// 「再次选点」= 人当视觉闭环：粗定位后躯干已扭到新姿态，用现在的相机再点一次
+// 开关，从当前姿态直达新点（几厘米的小移动），把躯干漂移和落点误差一起修掉。
+function stepNextRepick() {
+  reach.finePick = true;
+  hideStepNext();
+  reachMsg("再次选点：在画面中点击新目标，将从当前姿态直达（跳过经由路点）", "success");
+}
+
+async function stepNextSidestep() {
+  const stepCm = Number(reach.dom.stepLen.value || 0);
+  if (!stepCm) {
+    reachMsg("左移(cm) 为 0，没有可执行的横移", "error");
+    return;
+  }
+  if (!reach.plane) {
+    reachMsg("还没有拟合出表面平面，无法横移", "error");
+    return;
+  }
+  setStepNextBusy(true);
+  try {
+    await sidestepReach(stepCm, { skipConfirm: true });
+    showStepNext(); // 刷新按钮文案，保持暂停态：还可以再横移或收回
+  } finally {
+    setStepNextBusy(false);
+  }
+}
+
+async function stepNextReturn() {
+  const endWp = selectedEndWaypoint();
+  if (!endWp) {
+    reachMsg("先在「结束位点」下拉框选一个路点", "error");
+    return;
+  }
+  setStepNextBusy(true);
+  try {
+    await returnToWaypoint(endWp);
+    hideStepNext();
+  } finally {
+    setStepNextBusy(false);
   }
 }
 
@@ -1218,12 +1360,14 @@ async function pollReachExec() {
     } else {
       reachMsg(status.message || "执行结束", status.message?.includes("错") ? "error" : "success");
       reach.dom.exec.disabled = false;
+      refreshReachDiag();
       return status;
     }
   }
 }
 
 async function stopReach() {
+  hideStepNext();
   try {
     await fetchJson("/api/reach/stop", { method: "POST" });
     reachMsg("已急停（手臂刚性保持当前位置）", "error");

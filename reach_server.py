@@ -56,11 +56,27 @@ def main() -> int:
     parser.add_argument("--arm-max-speed", type=float, default=0.4,
                         help="最大关节速度 rad/s（默认 0.4）。这是限速天花板，"
                              "正常轨迹快慢仍由执行时长控制；带推力的快拨段需要它放行")
-    parser.add_argument("--arm-kp", type=float, default=120.0,
-                        help="位置环刚度（默认 120）。手臂抬不到位/被重力压低就调大，"
-                             "常用 100~200；太大会变硬变猛，逐步加")
-    parser.add_argument("--arm-kd", type=float, default=2.5,
-                        help="阻尼（默认 2.5）。kp 调大后如有振颤就同步调大一点")
+    parser.add_argument("--arm-kp", type=float, default=140.0,
+                        help="肩/肘位置环刚度（默认 140，与官方遥操一致）。"
+                             "有了重力前馈后不需要再靠大 kp 硬扛下垂")
+    parser.add_argument("--arm-kd", type=float, default=3.0,
+                        help="肩/肘阻尼（默认 3.0）。kp 调大后如有振颤就同步调大一点")
+    parser.add_argument("--arm-kp-wrist", type=float, default=50.0,
+                        help="腕部三关节刚度（默认 50）。腕电机额定只有 10Nm，"
+                             "跟肩同档会发抖")
+    parser.add_argument("--arm-kd-wrist", type=float, default=2.0, help="腕部阻尼（默认 2.0）")
+    parser.add_argument("--arm-grav-ff", type=float, default=1.0,
+                        help="重力前馈系数（默认 1.0 = 完整补偿，与官方遥操一致）。"
+                             "首次上真机想保守可先给 0.5~0.7 看有没有上飘；给 0 关闭")
+    parser.add_argument("--arm-payload-kg", type=float, default=0.0,
+                        help="URDF 之外的额外手部负载（kg）。换装的因时灵巧手比 URDF 里的"
+                             "官方手重就填差值，会加到手掌质心上一起补")
+    parser.add_argument("--arm-grav-in-float", action="store_true",
+                        help="卸力拖动时也给重力前馈：手臂近似失重、推到哪停哪，录路点"
+                             "省力得多。补过头会缓慢上飘，先确认 --arm-grav-ff 合适再开")
+    parser.add_argument("--arm-imu-gravity", action="store_true",
+                        help="用 IMU 实测姿态修正重力方向（躯干前倾/后仰时更准）。"
+                             "先看页面诊断里的 IMU 数值是否合理再开")
     args = parser.parse_args()
 
     if not args.calib.exists():
@@ -84,6 +100,7 @@ def main() -> int:
 
     arm = "right" if args.chain == "right_arm" else "left"
     joints_reader = None
+    torso_reader = None
     arm_factory = None
     if not args.no_robot:
         try:
@@ -91,6 +108,7 @@ def main() -> int:
 
             provider = H2PoseProvider(network_interface=args.network_interface, arm=arm)
             joints_reader = provider.read_arm_q
+            torso_reader = provider.read_torso_state
             print("[reach] rt/lowstate 只读订阅就绪（不发任何指令）")
         except Exception as exc:
             print(f"[reach] DDS 连接失败，退化为仅模拟模式: {exc}")
@@ -100,10 +118,19 @@ def main() -> int:
 
             def arm_factory():
                 print(f"[reach] !!! 前端请求接管手臂：开始发布 rt/arm_sdk "
-                      f"(kp={args.arm_kp}, kd={args.arm_kd})。")
-                return H2ArmController(arm=arm, network_interface=args.network_interface,
-                                       max_speed_rad_s=args.arm_max_speed,
-                                       kp=args.arm_kp, kd=args.arm_kd)
+                      f"(kp={args.arm_kp}/{args.arm_kp_wrist}, "
+                      f"kd={args.arm_kd}/{args.arm_kd_wrist}, "
+                      f"重力前馈 α={args.arm_grav_ff}, 负载 {args.arm_payload_kg}kg)。")
+                ctl = H2ArmController(arm=arm, network_interface=args.network_interface,
+                                      max_speed_rad_s=args.arm_max_speed,
+                                      kp=args.arm_kp, kd=args.arm_kd,
+                                      kp_wrist=args.arm_kp_wrist, kd_wrist=args.arm_kd_wrist,
+                                      grav_alpha=args.arm_grav_ff,
+                                      payload_kg=args.arm_payload_kg,
+                                      grav_in_float=args.arm_grav_in_float,
+                                      use_imu_gravity=args.arm_imu_gravity)
+                print(f"[reach] 重力前馈: {ctl.describe_gravity()}")
+                return ctl
 
     reach.configure(
         camera=camera, robot_model=robot_model, robot_id=args.robot,
@@ -111,11 +138,13 @@ def main() -> int:
         collision_checker=app_module.collision_checkers[args.robot],
         ik_solver=app_module.solvers[args.robot]["numerical"],
         arm_factory=arm_factory, joints_reader=joints_reader,
+        torso_reader=torso_reader,
     )
     app_module.app.include_router(reach.router)
     print(f"[reach] calib = {reach.state.calib_meta}")
     print(f"[reach] p_tool(TCP) = {reach.state.p_tool}")
     print(f"[reach] 真机执行能力 = {'可用（由页面「接管手臂」触发）' if arm_factory else '不可用'}")
+    print(f"[reach] 执行诊断日志 = {reach.state.log_dir}/reach_<日期>.jsonl（每段动作一行）")
     print(f"[reach] serving on http://{args.host}:{args.port}")
 
     import uvicorn

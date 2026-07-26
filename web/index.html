@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>双臂 IK 调试回放台</title>
-    <link rel="stylesheet" href="/web/style.css?v=46" />
+    <link rel="stylesheet" href="/web/style.css?v=50" />
     <script type="importmap">
       {
         "imports": {
@@ -85,6 +85,10 @@
                 <button id="reachRecordBtn" type="button" disabled>录制路点</button>
                 <button id="reachDelWpBtn" type="button" disabled>删路点</button>
               </div>
+              <label class="reach-stepmode" title="主段到位后暂停，横移/收回需手动点击才继续">
+                <input id="reachStepMode" type="checkbox" />
+                <span>分段模式（到位后暂停）</span>
+              </label>
               <div class="reach-actions">
                 <button id="reachArmBtn" type="button" disabled>接管手臂</button>
                 <button id="reachReplanBtn" type="button" disabled>重新预演</button>
@@ -92,7 +96,20 @@
                 <button id="reachStopBtn" type="button" class="danger" disabled>急停</button>
               </div>
               <div id="reachMsg" class="reach-msg"></div>
+              <div id="reachDiag" class="reach-diag hidden"></div>
             </div>
+          </div>
+        </div>
+
+        <div id="reachStepNext" class="reach-step-pop hidden">
+          <div class="reach-step-pop-title">主段已到位，暂停中</div>
+          <div class="reach-step-pop-hint">可先调参数或重新取点，再选择下一步</div>
+          <div class="reach-step-pop-actions">
+            <button id="reachNextSideBtn" type="button" class="primary">继续横移</button>
+            <button id="reachNextPickBtn" type="button"
+                    title="在画面里再点一个点，从当前姿态直接规划过去（不经过经由路点），到位后回到本弹窗">再次选点</button>
+            <button id="reachNextReturnBtn" type="button">收回到结束位点</button>
+            <button id="reachNextDoneBtn" type="button" class="ghost">结束</button>
           </div>
         </div>
 
@@ -119,6 +136,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=46"></script>
+    <script type="module" src="/web/main.js?v=50"></script>
   </body>
 </html>

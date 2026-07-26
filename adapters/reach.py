@@ -15,8 +15,10 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +44,15 @@ class ReachState:
         self.controller = None             # H2ArmController，仅在前端"接管"后创建
         self.arm_factory = None            # 无参函数 -> H2ArmController；None = 无法真机执行
         self.provider_reader = None        # 只读 lowstate 关节读取（未接管时用）
+        self.torso_reader = None           # 只读腰关节 + IMU（躯干姿态诊断）
+        self.base_link = "torso_link"
+        self.pick_torso: dict | None = None        # 取点时刻的躯干姿态
+        self.pick_target_torso: list[float] | None = None
+        self.pick_target_root: list[float] | None = None
+        self.pick_pixel: list[int] | None = None
+        self.torso_diag: dict | None = None        # 最近一次执行的躯干漂移诊断
+        self.log_dir: Path | None = None           # 每段执行落一行 JSONL
+        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.joint_names: list[str] = []
         self.arm_lock = threading.Lock()
         self.robot_model = None
@@ -59,6 +70,7 @@ class ReachState:
         self.exec_progress = 0.0
         self.exec_message = "空闲"
         self.exec_running = False
+        self.exec_phase = "idle"           # traj/converge/settle/push_hold/release
 
 
 state = ReachState()
@@ -66,7 +78,7 @@ state = ReachState()
 
 def configure(*, camera, robot_model, robot_id: str, chain_id: str, calib_path: Path,
               collision_checker=None, ik_solver=None, arm_factory=None,
-              joints_reader=None) -> None:
+              joints_reader=None, torso_reader=None) -> None:
     """由 reach_server 调用。calib_path 是 handeye3d_result.json。"""
     calib = json.loads(Path(calib_path).read_text())
     T_cam2torso = np.asarray(calib["T_cam2base"], dtype=float).reshape(4, 4)
@@ -93,11 +105,14 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str, calib_path: 
     }
     state.arm_factory = arm_factory
     state.provider_reader = joints_reader
+    state.torso_reader = torso_reader
+    state.base_link = base_link
     state.joint_names = robot_model.joint_names(chain_id)
     state.robot_model = robot_model
     state.collision_checker = collision_checker
     state.ik_solver = ik_solver
     state.waypoints_dir = Path(__file__).resolve().parent.parent / "reach_waypoints"
+    state.log_dir = Path(__file__).resolve().parent.parent / "reach_logs"
     state.enabled = True
 
 
@@ -108,6 +123,68 @@ def _read_joints():
     if state.provider_reader is not None:
         return state.provider_reader()
     raise RuntimeError("没有机器人状态源（mock 模式或 DDS 未连接）")
+
+
+# --------------- 躯干姿态诊断 ---------------
+#
+# 手臂 IK 全程在 torso_link 系下解算，目标点也是取点瞬间换算进 torso 系的。
+# 但开关长在世界里不动：只要躯干在"取点"到"到位"之间转了，同一个 torso 系
+# 坐标就不再指向那个开关了。本体控制器在运动模式下会为了平衡而动腰/踝，
+# 手臂抬起来时躯干可能后仰几度——这时手臂关节角完全到位，指尖照样偏。
+# 这组函数只负责如实测出"躯干转了多少、折算到指尖是多少毫米"，不做补偿。
+
+
+def _read_torso() -> dict | None:
+    if state.controller is not None and hasattr(state.controller, "read_torso_state"):
+        return state.controller.read_torso_state()
+    if state.torso_reader is not None:
+        return state.torso_reader()
+    return None
+
+
+def _torso_rotation(torso: dict) -> np.ndarray | None:
+    """躯干在世界系下的姿态 R = R_world←pelvis(IMU) · R_pelvis←torso(腰关节 FK)。"""
+    try:
+        waist = {f"{name}_joint": float(value)
+                 for name, value in zip(torso["waist_names"], torso["waist_rad"])}
+        R_pelvis_torso = state.robot_model.forward_kinematics(waist)[state.base_link][:3, :3]
+        w, x, y, z = [float(v) for v in torso["imu_quat"]]
+        norm = (w * w + x * x + y * y + z * z) ** 0.5
+        if norm < 1e-9:
+            return None
+        w, x, y, z = w / norm, x / norm, y / norm, z / norm
+        R_world_pelvis = np.array([
+            [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+            [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+            [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+        ])
+        return R_world_pelvis @ R_pelvis_torso
+    except Exception:
+        return None
+
+
+def _torso_drift(before: dict | None, after: dict | None) -> dict | None:
+    """取点时 vs 到位时的躯干姿态差，并折算成目标点在 torso 系里跑了多远。"""
+    if not before or not after:
+        return None
+    diag: dict[str, Any] = {
+        "waist_delta_deg": [round(math.degrees(b - a), 2) for a, b in
+                            zip(before["waist_rad"], after["waist_rad"])],
+        "waist_names": list(after.get("waist_names", [])),
+        "imu_rpy_delta_deg": [round(math.degrees(b - a), 2) for a, b in
+                              zip(before["imu_rpy"], after["imu_rpy"])],
+        "imu_rpy_deg": [round(math.degrees(v), 2) for v in after["imu_rpy"]],
+    }
+    R0, R1 = _torso_rotation(before), _torso_rotation(after)
+    if R0 is None or R1 is None:
+        return diag
+    dR = R1.T @ R0          # 取点时的 torso 坐标 → 现在的 torso 坐标
+    cos = (float(np.trace(dR)) - 1.0) / 2.0
+    diag["torso_rotation_deg"] = round(math.degrees(math.acos(max(-1.0, min(1.0, cos)))), 2)
+    if state.pick_target_torso is not None:
+        p = np.asarray(state.pick_target_torso, dtype=float)
+        diag["target_shift_mm"] = round(float(np.linalg.norm(dR @ p - p)) * 1000.0, 1)
+    return diag
 
 
 # --------------- 状态 / 视频流 ---------------
@@ -203,6 +280,14 @@ async def reach_pick(body: dict):
         state.collision_checker.set_environment_exclusions(
             [(p_root_surface, state.target_exclusion_m)])
 
+    # 记下此刻的躯干姿态：目标从这一刻起被"冻结"在 torso 系里，
+    # 之后躯干只要转了，同一坐标就不再对准那个开关（执行完会给出偏差）
+    state.pick_target_torso = to_frame(state.T_cam2torso, p_cam_goal)
+    state.pick_target_root = to_frame(state.T_cam2root, p_cam_goal)
+    state.pick_pixel = [u, v]
+    state.pick_torso = _read_torso()
+    state.torso_diag = None
+
     return {
         "ok": True,
         "pixel": [u, v],
@@ -211,7 +296,7 @@ async def reach_pick(body: dict):
         "approach_offset_m": offset,
         "offset_mode": offset_mode,
         "p_torso_surface": to_frame(state.T_cam2torso, p_cam),
-        "p_torso": to_frame(state.T_cam2torso, p_cam_goal),
+        "p_torso": state.pick_target_torso,
         "p_root": to_frame(state.T_cam2root, p_cam_goal),
         "p_root_surface": p_root_surface,
         "plane": state.plane,
@@ -599,6 +684,33 @@ def _exec_status() -> dict:
         "running": state.exec_running,
         "progress": state.exec_progress,
         "message": state.exec_message,
+        "torso_diag": state.torso_diag,
+    }
+
+
+@router.get("/diagnostics")
+async def reach_diagnostics():
+    """现场排查用：重力前馈在出多大力、躯干相对取点时刻漂了多少。"""
+    ctl = state.controller
+    arm: dict[str, Any] = {"armed": ctl is not None}
+    if ctl is not None:
+        st = ctl.status()
+        arm.update({k: st.get(k) for k in
+                    ("kp", "kd", "kp_wrist", "kd_wrist", "grav_alpha", "payload_kg",
+                     "grav_in_float", "use_imu_gravity", "tau_grav_nm", "tau_push_nm",
+                     "joint_names", "cmd_rad", "measured_rad", "desired_rad")})
+        if st.get("cmd_rad") and st.get("measured_rad"):
+            gap = np.asarray(st["cmd_rad"]) - np.asarray(st["measured_rad"])
+            # 跟随误差就是"下垂"的直接度量：重力前馈生效后应当从几度掉到零点几度
+            arm["follow_error_deg"] = [round(math.degrees(v), 2) for v in gap]
+            arm["follow_error_max_deg"] = round(math.degrees(float(np.max(np.abs(gap)))), 2)
+    now = _read_torso()
+    return {
+        "arm": arm,
+        "torso_now": now,
+        "torso_at_pick": state.pick_torso,
+        "torso_drift": _torso_drift(state.pick_torso, now),
+        "last_exec_drift": state.torso_diag,
     }
 
 
@@ -628,8 +740,10 @@ async def reach_execute(body: dict):
     """执行已规划的关节轨迹（真机运动！前端须先经人确认）。
 
     Body: {"waypoints": [named_joints, ...], "duration": float,
-           "max_speed_rad_s": float?,
+           "max_speed_rad_s": float?, "label": str?,
            "push": {"direction_root": [x,y,z], "force_n": float}?}
+
+    label（可选）：段名，只用于 reach_logs 里区分主轨迹/横移/收回。
 
     max_speed_rad_s（可选）：本次执行的关节限速档（默认 0.2，收回段等
     低精度动作可以给 0.4 提速），不会超过 --arm-max-speed 天花板。
@@ -645,6 +759,7 @@ async def reach_execute(body: dict):
     waypoints = body.get("waypoints") or []
     duration = float(body.get("duration") or 4.0)
     speed = float(np.clip(float(body.get("max_speed_rad_s") or 0.2), 0.05, 0.5))
+    label = str(body.get("label") or "reach")[:32]
     if len(waypoints) < 2:
         return JSONResponse({"ok": False, "error": "轨迹至少要有 2 个路点"}, status_code=400)
     try:
@@ -685,29 +800,262 @@ async def reach_execute(body: dict):
         state.exec_progress = 0.0
         state.exec_message = "执行中"
         state.exec_thread = threading.Thread(
-            target=_exec_loop, args=(q_list, duration, push_tau, speed), daemon=True)
+            target=_exec_loop, args=(q_list, duration, push_tau, speed, label), daemon=True)
         state.exec_thread.start()
     return {"ok": True, **_exec_status()}
 
 
-def _exec_loop(q_list: list[np.ndarray], duration: float,
-               push_tau: np.ndarray | None = None, speed: float = 0.2) -> None:
-    ctl = state.controller
+def _tcp_position(q) -> list[float] | None:
+    """一组关节角对应的指尖（TCP）位置，根系，米。"""
     try:
+        from core.types import Pose
+
+        named = dict(zip(state.joint_names, [float(v) for v in q]))
+        pose = state.robot_model.tcp_pose(named, state.chain_id, Pose(xyz=list(state.p_tool)))
+        return [float(v) for v in pose.xyz]
+    except Exception:
+        return None
+
+
+def _log_exec(kind: str, result: str, q_target, *, sag=None,
+              duration=None, speed=None, pushing: bool = False, push_tau=None,
+              trace=None, retarget=None) -> None:
+    """每段真机动作落一行 JSONL：reach_logs/reach_YYYYMMDD.jsonl。
+
+    调参靠的是横向对比（改了 α / payload / kp 之后到底好了多少），
+    而页面上的实时数字每次重新取点就被冲掉了，留不下证据。这里把一次
+    执行的"参数—误差—躯干姿态"三件套整段存下来，事后能直接拉出来比。
+    误差拆成三段，各自对应完全不同的病因：
+      ik_mm      规划本身的残差（IK 没收敛到点上）
+      track_mm   指令关节角 vs 实测关节角（下垂/摩擦，重力前馈治的就是它）
+      total_mm   取点目标 vs 实际指尖（前两者叠加，加上躯干漂移和标定误差）
+    """
+    if state.log_dir is None:
+        return
+    try:
+        ctl = state.controller
+        st = ctl.status() if ctl is not None else {}
+        target = np.asarray(q_target, dtype=float)
+        measured = np.asarray(st.get("measured_rad") or [], dtype=float)
+        cmd = np.asarray(st.get("cmd_rad") or [], dtype=float)
+        deg = np.degrees
+
+        rec: dict[str, Any] = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "session": state.session_id,
+            "segment": kind,
+            "result": result,
+            "params": {
+                "duration_s": duration,
+                "max_speed_rad_s": speed,
+                "pushing": pushing,
+                "grav_alpha": st.get("grav_alpha"),
+                "payload_kg": st.get("payload_kg"),
+                "kp": st.get("kp"), "kd": st.get("kd"),
+                "kp_wrist": st.get("kp_wrist"), "kd_wrist": st.get("kd_wrist"),
+                "use_imu_gravity": st.get("use_imu_gravity"),
+            },
+            "joint_names": state.joint_names,
+            "target_rad": target.tolist(),
+            "cmd_rad": cmd.tolist(),
+            "measured_rad": measured.tolist(),
+            "tau_grav_nm": st.get("tau_grav_nm"),
+            # 记的是本段申请的峰值推力，不是当前值：日志在撤力之后才写，
+            # 那时 status 里的推力已经归零了，记下来全是 0 没有意义
+            "tau_push_peak_nm": (None if push_tau is None
+                                 else [round(float(v), 3) for v in np.asarray(push_tau)]),
+            "settle_residual_rad": sag,
+        }
+        if measured.size == target.size and measured.size:
+            rec["reach_error_deg"] = [round(v, 3) for v in deg(target - measured)]
+            rec["reach_error_max_deg"] = round(float(np.max(np.abs(deg(target - measured)))), 3)
+        if cmd.size == measured.size and cmd.size:
+            # 跟随误差 = 指令 - 实测，纯 PD 下这就是重力压出来的下垂量
+            rec["follow_error_deg"] = [round(v, 3) for v in deg(cmd - measured)]
+            rec["follow_error_max_deg"] = round(float(np.max(np.abs(deg(cmd - measured)))), 3)
+
+        tcp_target = _tcp_position(target)
+        tcp_actual = _tcp_position(measured) if measured.size == target.size else None
+        rec["tcp"] = {
+            "pick_target_root": state.pick_target_root,
+            "planned_root": tcp_target,
+            "actual_root": tcp_actual,
+        }
+
+        def mm(a, b):
+            if a is None or b is None:
+                return None
+            return round(float(np.linalg.norm(np.asarray(a) - np.asarray(b))) * 1000.0, 1)
+
+        torso_end = _read_torso()
+        rec["tcp"]["ik_mm"] = mm(state.pick_target_root, tcp_target)
+        rec["tcp"]["track_mm"] = mm(tcp_target, tcp_actual)
+        rec["tcp"]["total_mm"] = mm(state.pick_target_root, tcp_actual)
+        # 验收指标：对"按结束时躯干姿态折算的真实开关位置"的误差。
+        # 开了重瞄后 total_mm 会一直 ≈ 漂移量（手臂故意不去旧目标了），
+        # 看这个才知道到底打没打中开关。
+        try:
+            R0 = _torso_rotation(state.pick_torso) if state.pick_torso else None
+            R1 = _torso_rotation(torso_end) if torso_end else None
+            if (R0 is not None and R1 is not None
+                    and state.pick_target_torso and state.pick_target_root):
+                p0 = np.asarray(state.pick_target_torso, dtype=float)
+                drifted = (np.asarray(state.pick_target_root, dtype=float)
+                           + ((R1.T @ R0) @ p0 - p0))
+                rec["tcp"]["drifted_target_root"] = [round(float(v), 4) for v in drifted]
+                rec["tcp"]["total_vs_drifted_mm"] = mm(drifted.tolist(), tcp_actual)
+        except Exception:
+            pass
+
+        rec["pick"] = {"pixel": state.pick_pixel, "target_torso": state.pick_target_torso}
+        rec["torso_at_pick"] = state.pick_torso
+        rec["torso_at_end"] = torso_end
+        rec["torso_drift"] = state.torso_diag
+        rec["retarget"] = retarget
+        # 快照拷贝：采样线程可能还在往里 append
+        rec["torso_trace"] = [dict(s) for s in list(trace)] if trace else None
+
+        state.log_dir.mkdir(parents=True, exist_ok=True)
+        path = state.log_dir / f"reach_{datetime.now():%Y%m%d}.jsonl"
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass    # 记日志永远不能把执行搞挂
+
+
+def _finish_torso_diag() -> str:
+    """执行结束时结算躯干漂移，写进 state 供页面展示，并返回一句话摘要。"""
+    diag = _torso_drift(state.pick_torso, _read_torso())
+    state.torso_diag = diag
+    if not diag:
+        return ""
+    shift = diag.get("target_shift_mm")
+    if shift is None:
+        return ""
+    note = f"；躯干较取点时转了 {diag.get('torso_rotation_deg', 0):.1f}°，目标漂移 {shift:.0f} mm"
+    return note + ("（超过 10mm，够不着多半是躯干在动而不是手臂没到位）"
+                   if shift > 10 else "")
+
+
+def _torso_retarget(q_target: np.ndarray) -> tuple[np.ndarray | None, dict | None]:
+    """settle 前的躯干漂移解析补偿。
+
+    目标点是取点瞬间冻结在 torso 系里的，而平衡控制器会因手臂前伸而
+    后仰/扭腰（真机实测 2.5° ≈ 30mm，见 reach_logs）。时间序列证明躯干
+    姿态在进 settle 前已经稳定，所以只需一次性：读当前躯干姿态 → 把冻结
+    目标旋转到当前 torso 系 → 重解 IK → 把修正后的目标一次性下发。
+
+    边界：只对"终点就是取点目标"的段生效（横移/收回段终点离取点很远，
+    自动跳过）；只能补旋转分量（腰编码器 + IMU），骨盆平移不可观测；
+    漂移超 60mm 视为测量异常放弃；重瞄导致的关节跳变超 0.25 rad 放弃。
+    """
+    try:
+        if (state.ik_solver is None or state.pick_torso is None
+                or state.pick_target_torso is None or state.pick_target_root is None):
+            return None, None
+        tcp_end = _tcp_position(q_target)
+        if tcp_end is None:
+            return None, None
+        if float(np.linalg.norm(np.asarray(tcp_end)
+                                - np.asarray(state.pick_target_root))) > 0.02:
+            return None, None   # 本段终点不是取点目标（横移/收回），不重瞄
+        now = _read_torso()
+        R0, R1 = _torso_rotation(state.pick_torso), _torso_rotation(now)
+        if R0 is None or R1 is None:
+            return None, None
+        p0 = np.asarray(state.pick_target_torso, dtype=float)
+        shift = (R1.T @ R0) @ p0 - p0
+        shift_mm = float(np.linalg.norm(shift)) * 1000.0
+        diag: dict[str, Any] = {"shift_mm": round(shift_mm, 1),
+                                "shift_xyz_mm": [round(v * 1000.0, 1) for v in shift],
+                                "applied": False}
+        if shift_mm < 3.0:
+            diag["reason"] = "漂移小于 3mm，无需补偿"
+            return None, diag
+        if shift_mm > 60.0:
+            diag["reason"] = "漂移超 60mm，疑似测量异常，维持原目标"
+            return None, diag
+
+        from core.types import IKRequest, Pose
+
+        model = state.robot_model
+        target_new = np.asarray(state.pick_target_root, dtype=float) + shift
+        seed = dict(zip(state.joint_names, [float(v) for v in q_target]))
+        res = state.ik_solver.solve(IKRequest(
+            chain_id=state.chain_id,
+            current_joints=seed,
+            target_pose=Pose(xyz=target_new.tolist()),
+            tcp_offset=Pose(xyz=list(state.p_tool)),
+            base_link=model.base_link(state.chain_id),
+            end_link=model.end_link(state.chain_id),
+            joint_names=state.joint_names,
+            seed=seed,
+            solver_options={"solve_orientation": False, "tolerance_mm": 3.0},
+        ))
+        if not res.success:
+            diag["reason"] = f"重瞄 IK 未收敛（{res.error_mm:.1f}mm），维持原目标"
+            return None, diag
+        q_new = np.asarray([float(res.named_target_joints[n]) for n in state.joint_names])
+        jump = float(np.max(np.abs(q_new - np.asarray(q_target, dtype=float))))
+        if jump > 0.25:
+            diag["reason"] = f"重瞄关节跳变 {jump:.2f} rad 过大，维持原目标"
+            return None, diag
+        diag.update(applied=True,
+                    ik_error_mm=round(float(res.error_mm), 2),
+                    target_new_root=[round(float(v), 4) for v in target_new],
+                    joint_jump_deg=round(math.degrees(jump), 2))
+        return q_new, diag
+    except Exception as exc:
+        return None, {"applied": False, "reason": f"补偿异常: {exc}"}
+
+
+def _start_torso_trace(ctl) -> tuple[list, threading.Event]:
+    """执行期间 5Hz 采样躯干姿态 + 手臂跟随误差，带阶段标签。
+
+    用来钉死"身体后仰到底发生在哪个阶段"：是轨迹回放时（手臂大幅抡出去，
+    平衡控制器在配平）还是收尾阶段（手臂只挪一两度）。每段动作的两个
+    快照分不清这件事，只有时间序列能。
+    """
+    samples: list[dict] = []
+    stop = threading.Event()
+
+    def run() -> None:
+        t0 = time.monotonic()
+        while not stop.is_set() and len(samples) < 600:
+            row: dict[str, Any] = {"t": round(time.monotonic() - t0, 2),
+                                   "phase": state.exec_phase}
+            torso = _read_torso()
+            if torso:
+                row["waist_deg"] = [round(math.degrees(v), 3) for v in torso["waist_rad"]]
+                row["imu_rpy_deg"] = [round(math.degrees(v), 3) for v in torso["imu_rpy"]]
+            try:
+                st = ctl.status()
+                gap = np.asarray(st["cmd_rad"]) - np.asarray(st["measured_rad"])
+                row["follow_sp_deg"] = round(math.degrees(float(gap[0])), 3)   # 肩俯仰
+                row["follow_max_deg"] = round(math.degrees(float(np.max(np.abs(gap)))), 3)
+            except Exception:
+                pass
+            samples.append(row)
+            stop.wait(0.2)
+
+    threading.Thread(target=run, name="reach-torso-trace", daemon=True).start()
+    return samples, stop
+
+
+def _exec_loop(q_list: list[np.ndarray], duration: float,
+               push_tau: np.ndarray | None = None, speed: float = 0.2,
+               label: str = "reach") -> None:
+    ctl = state.controller
+    trace, trace_stop = _start_torso_trace(ctl)
+    log = dict(duration=duration, speed=speed, pushing=push_tau is not None,
+               push_tau=push_tau, trace=trace)
+    try:
+        state.exec_phase = "traj"
         ctl.enable_jog()
         # 分段限速：普通段默认 0.2 慢而稳；带推力的快拨段放行到 0.4；
         # 调用方也可以按段指定（如收回段 0.4），都不超 --arm-max-speed 天花板
         if hasattr(ctl, "set_max_speed"):
             ctl.set_max_speed(max(0.4, speed) if push_tau is not None else speed)
-        # 重力前馈：上一段落点校正结束时"指令 = 目标 + 抗重力超调"，而本段
-        # 轨迹起点是实测位。若直接下发轨迹，指令会瞬间跳回实测（撤掉补偿），
-        # 手臂立刻下坠一个下垂量。这里把当前 指令-实测 差值作为前馈全程叠加。
-        try:
-            st0 = ctl.status()
-            ff = np.clip(np.asarray(st0["cmd_rad"]) - np.asarray(st0["measured_rad"]),
-                         -0.35, 0.35)
-        except Exception:
-            ff = np.zeros_like(q_list[0])
         n = len(q_list)
         # 时长下限：限速滑动（矢量同步）跑完全程所需时间。短于它路点节拍会
         # 一直超前于指令，falling-behind 的关节仍会扭曲路径，所以自动拉长。
@@ -722,8 +1070,9 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
             if state.exec_cancel.is_set():
                 ctl.disable_jog()
                 state.exec_message = "已中止（保持当前位置）"
+                _log_exec(label, "cancelled", q_list[-1], **log)
                 return
-            ctl.set_target(q + ff)
+            ctl.set_target(q)
             if push_tau is not None:
                 # 前馈力矩渐入（前 30% 路点线性加满），避免突加力矩的抖动
                 scale = min(1.0, (i + 1) / max(1, round(0.3 * n)))
@@ -737,6 +1086,7 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
                 time.sleep(min(remaining, 0.05))
         # 最终目标已下发；等限速滑动真正到位再冻结（时长偏短时控制器会滞后）
         state.exec_message = "收敛中"
+        state.exec_phase = "converge"
         deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline and not state.exec_cancel.is_set():
             status = ctl.status()
@@ -746,15 +1096,12 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
                 break
             time.sleep(0.1)
 
-        # 稳态误差校正（负反馈积分，"遥操作式顶目标"）：位置环刚度有限时
-        # 手臂被重力压低，实测到不了指令位。以 ~7Hz 测量误差并累积进超调量；
-        # 只在"上一次超调已送达"（desired≈cmd）的拍子上积分——指令在途时
-        # 自动暂停积分，天然防饱和。超调量有硬上限，防止顶死在障碍上。
-        # 推力模式：位置到不到位没有意义（被旋钮/表面顶着），不做落点校正，
-        # 收敛后再持续顶 1.5s 把旋钮拨到底，然后撤力刚性保持。
+        # 推力模式：位置到不到位没有意义（被旋钮/表面顶着），收敛后持续
+        # 顶 1.5s 把旋钮拨到底，然后撤力刚性保持。
         if push_tau is not None:
             if not state.exec_cancel.is_set():
                 state.exec_message = "持续出力中"
+                state.exec_phase = "push_hold"
                 deadline = time.monotonic() + 1.5
                 while time.monotonic() < deadline and not state.exec_cancel.is_set():
                     time.sleep(0.05)
@@ -762,6 +1109,7 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
             # 向反方向回弹。这里力矩 0.65s 线性泄掉，同时把位置指令收回到
             # 实测位（限速滑动本身是平滑的），存的形变缓慢释放。
             state.exec_message = "撤力中"
+            state.exec_phase = "release"
             try:
                 ctl.set_target(ctl.read_measured())
             except Exception:
@@ -778,59 +1126,60 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
                                        - np.asarray(status["cmd_rad"])))) < 1e-3:
                     break
                 time.sleep(0.05)
-            ctl.disable_jog()   # 兜底清零前馈力矩
+            ctl.disable_jog()   # 兜底清零主动出力
             state.exec_progress = 1.0
-            state.exec_message = ("已中止（保持当前位置）" if state.exec_cancel.is_set()
-                                  else "完成（推力段结束，已撤力保持）")
+            cancelled = state.exec_cancel.is_set()
+            state.exec_message = ("已中止（保持当前位置）" if cancelled
+                                  else f"完成（推力段结束，已撤力保持{_finish_torso_diag()}）")
+            _log_exec(label, "cancelled" if cancelled else "done", q_list[-1], **log)
             return
 
         sag = None
+        target = q_list[-1]
         if not state.exec_cancel.is_set():
-            target = q_list[-1]
-            offset = ff.copy()   # 从重力前馈接着微调，而不是从零重新积
-            deadline = time.monotonic() + 8.0
-            ok_since = None       # 连续达标的起点：防止摆过目标的瞬间被当成到位
-            last_integrate = 0.0
+            state.exec_phase = "settle"
+            # 躯干漂移补偿：平衡控制器此刻已稳定，按当前躯干姿态把冻结的
+            # 取点目标重投 + 重解 IK，一次性重瞄（限速滑动保证平滑）
+            q_re, retarget = _torso_retarget(target)
+            log["retarget"] = retarget
+            if q_re is not None:
+                target = q_re
+                ctl.set_target(target)
+                state.exec_message = f"躯干漂移补偿 {retarget['shift_mm']}mm，已重瞄"
+            # 外环积分已移除：重力下垂由重力前馈扛，目标误差靠二次取点修。
+            # 这里只等指令送达、给电机 ~0.3s 贴上来，然后测一次落点残差写日志。
+            deadline = time.monotonic() + 3.0
             while time.monotonic() < deadline and not state.exec_cancel.is_set():
                 status = ctl.status()
-                measured = np.asarray(status["measured_rad"] or ctl.read_measured().tolist())
-                err = target - measured
-                sag = float(np.max(np.abs(err)))
-                now = time.monotonic()
-                if sag < 0.02:  # ~1.1°
-                    if ok_since is None:
-                        ok_since = now
-                    elif now - ok_since > 0.2:   # 稳定 0.2s 才算真到位
-                        break
-                else:
-                    ok_since = None
-                    state.exec_message = f"落点校正中（残差 {sag:.3f} rad）"
                 delivered = float(np.max(np.abs(
-                    np.asarray(status["desired_rad"]) - np.asarray(status["cmd_rad"])))) < 5e-3
-                # 积分节流：指令送达后还要给电机 ~0.25s 真正跟上来的时间，
-                # 否则对着尚未生效的旧误差重复积分会过冲、来回摆
-                if delivered and sag >= 0.02 and now - last_integrate > 0.25:
-                    offset = np.clip(offset + 0.5 * err, -0.35, 0.35)
-                    ctl.set_target(target + offset)
-                    last_integrate = now
+                    np.asarray(status["desired_rad"]) - np.asarray(status["cmd_rad"])))) < 1e-3
+                if delivered:
+                    break
                 time.sleep(0.08)
+            if not state.exec_cancel.is_set():
+                time.sleep(0.3)
+                status = ctl.status()
+                measured = np.asarray(status["measured_rad"] or ctl.read_measured().tolist())
+                sag = float(np.max(np.abs(target - measured)))
 
         ctl.disable_jog()
         state.exec_progress = 1.0
-        sag_note = ""
-        if sag is not None:
-            sag_note = (f"，校正后残差 {sag:.3f} rad"
-                        + ("（仍偏大：超调已到上限，请调高 --arm-kp 或检查是否顶到障碍）"
-                           if sag > 0.05 else ""))
-        state.exec_message = ("已中止（保持当前位置）" if state.exec_cancel.is_set()
-                              else f"完成（刚性保持{sag_note}）")
+        sag_note = f"，落点残差 {sag:.3f} rad" if sag is not None else ""
+        cancelled = state.exec_cancel.is_set()
+        state.exec_message = ("已中止（保持当前位置）" if cancelled
+                              else f"完成（刚性保持{sag_note}{_finish_torso_diag()}）")
+        _log_exec(label, "cancelled" if cancelled else "done", target,
+                  sag=sag, **log)
     except Exception as exc:
         try:
             ctl.stop()
         except Exception:
             pass
         state.exec_message = f"执行出错已停止: {exc}"
+        _log_exec(label, f"error: {exc}", q_list[-1], **log)
     finally:
+        trace_stop.set()
+        state.exec_phase = "idle"
         state.exec_running = False
 
 
