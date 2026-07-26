@@ -121,12 +121,15 @@ const reach = {
   obstacleGroup: new THREE.Group(),
   flangeDebugGroup: null,
   waypoints: [],
+  sequences: [],
   picking: false,
   pendingClick: null,
   plane: null,
   planeGroup: new THREE.Group(),
   execFrames: null, // 真机执行只跑主段（预演 frames 可能拼了横移预览段）
   finePick: false,  // 弹窗「再次选点」置位：下一次取点直达（跳过经由路点），执行时消费
+  sideCache: null,  // 分段暂停时预取的横移规划 {stepCm, joints, seg}
+  sidesteps: [],    // 落盘的横移录制（免 IK 回放）
 };
 
 async function initReach() {
@@ -164,12 +167,17 @@ async function initReach() {
     addVia: document.getElementById("reachAddViaBtn"),
     viaList: document.getElementById("reachViaList"),
     endSel: document.getElementById("reachEndSel"),
+    seqSel: document.getElementById("reachSeqSel"),
+    seqRun: document.getElementById("reachSeqRunBtn"),
+    seqSave: document.getElementById("reachSeqSaveBtn"),
+    seqDel: document.getElementById("reachSeqDelBtn"),
     handMove: document.getElementById("reachHandMoveBtn"),
     record: document.getElementById("reachRecordBtn"),
     delWp: document.getElementById("reachDelWpBtn"),
     stepLen: document.getElementById("reachStepLen"),
     pushForce: document.getElementById("reachPushForce"),
     stepMode: document.getElementById("reachStepMode"),
+    collisionCheck: document.getElementById("reachCollisionCheck"),
     stepNext: document.getElementById("reachStepNext"),
     nextSide: document.getElementById("reachNextSideBtn"),
     nextPick: document.getElementById("reachNextPickBtn"),
@@ -198,7 +206,16 @@ async function initReach() {
   d.record.addEventListener("click", () => recordWaypoint());
   d.delWp.addEventListener("click", () => deleteWaypoint());
   d.addVia.addEventListener("click", () => addViaWaypoint());
+  d.seqRun.addEventListener("click", () => runSequence());
+  d.seqSave.addEventListener("click", () => saveSequence());
+  d.seqDel.addEventListener("click", () => deleteSequence());
   d.nextSide.addEventListener("click", () => stepNextSidestep());
+  // 暂停期间改左移距离：刷新按钮文案并重新预取横移规划
+  d.stepLen.addEventListener("change", () => {
+    if (!d.stepNext.classList.contains("hidden")) {
+      showStepNext();
+    }
+  });
   d.nextPick.addEventListener("click", () => stepNextRepick());
   d.nextReturn.addEventListener("click", () => stepNextReturn());
   d.nextDone.addEventListener("click", () => hideStepNext());
@@ -208,6 +225,8 @@ async function initReach() {
   state.helperRoot.add(reach.obstacleGroup, reach.planeGroup);
   await refreshObstacles();
   await refreshWaypoints();
+  await refreshSequences();
+  await refreshSidesteps();
   showFlangeDebug();
   updateReachArmUi();
   refreshReachDiag();
@@ -509,13 +528,16 @@ async function runReachPlan() {
 
   // 直达模式（弹窗「再次选点」）：精定位小距离移动，跳过经由路点直接规划
   const direct = Boolean(reach.finePick);
+  // 分段模式下横移/收回都是到位后手动触发、执行时就地重规划的，
+  // 取点时预演它们纯属白算（各多一轮插值+逐帧碰撞检查），跳过提速
+  const skipPreviews = direct || Boolean(reach.dom.stepMode?.checked);
   const viaWps = direct ? [] : viaWaypoints();
   panel.solverOptions = { solve_orientation: false }; // 指尖是点目标，姿态放开
   try {
     if (viaWps.length) {
       await planViaWaypoints(panel, viaWps);
     } else {
-      await planTrajectory(panel);
+      await planTrajectory(panel, { checkCollision: reachCollisionOn() });
     }
   } finally {
     panel.solverOptions = null;
@@ -527,13 +549,13 @@ async function runReachPlan() {
   reach.execFrames = panel.frames;
   const stepCm = Number(reach.dom.stepLen.value || 0);
   let sidestepOk = false;
-  if (!direct && ik?.success && stepCm && reach.plane && panel.frames.length > 1
+  if (!skipPreviews && ik?.success && stepCm && reach.plane && panel.frames.length > 1
       && panel.currentCollision?.status !== "collision") {
     sidestepOk = await appendSidestepPreview(panel, stepCm);
   }
 
   // 收回段也并入预演（执行时同样按真机实际姿态就地重规划）
-  const endWpPreview = direct ? null : selectedEndWaypoint();
+  const endWpPreview = skipPreviews ? null : selectedEndWaypoint();
   let returnOk = false;
   if (ik?.success && endWpPreview && panel.frames.length > 1
       && panel.currentCollision?.status !== "collision") {
@@ -552,7 +574,8 @@ async function runReachPlan() {
     ...(viaWps.length
       ? [`经由 ${viaWps.map((w) => `「${w.name}」`).join("→")} 分段规划`] : []),
     ...(stepCm ? [`到位后沿面${stepCm > 0 ? "左" : "右"}移 ${Math.abs(stepCm)}cm` +
-      (sidestepOk ? "（已并入预演）" : "（横移段规划失败）")] : []),
+      (skipPreviews ? "（分段模式：执行时再规划）"
+                    : sidestepOk ? "（已并入预演）" : "（横移段规划失败）")] : []),
     ...(endWpPreview ? [`结束后收回到「${endWpPreview.name}」` +
       (returnOk ? "（已并入预演）" : "（收回段规划失败）")] : []),
     `IK: ${ik ? (ik.success ? "成功" : "未到达") : "失败"}` +
@@ -643,8 +666,71 @@ function planCartesianSidestep(startJoints, stepCm) {
       direction_root: sidestepDirection(Math.sign(stepCm)),
       distance_m: Math.abs(stepCm) / 100,
       step_m: 0.01,
+      check_collision: reachCollisionOn(),
     }),
   });
+}
+
+// ---- 横移录制回放：逐点 IK 只算第一次，之后按"当前起点 + 录制关节增量"直接回放 ----
+
+async function refreshSidesteps() {
+  try {
+    reach.sidesteps = (await fetchJson("/api/reach/sidesteps")).sidesteps || [];
+  } catch { /* 后端没有该接口时静默降级为每次现算 */ }
+}
+
+// 按距离找录制（距离是查找键：6cm 的录制回放 6cm，没有对应录制自然退回现算）。
+// 防呆检查已按用户要求全部注释掉，由人保证工况一致（机器人正视电柜、起点姿态
+// 与录制时相近）。要恢复保护就取消下面两段注释。
+function matchSidestepRecording(stepCm, joints) {
+  const rec = (reach.sidesteps || []).find((r) => Number(r.step_cm) === stepCm);
+  if (!rec?.waypoints?.length) {
+    return null;
+  }
+  // 防呆一（已停用）：当前平面法向与录制时夹角 >10° 说明没正视电柜，不回放
+  // if (reach.plane) {
+  //   const dirNow = sidestepDirection(Math.sign(stepCm));
+  //   const d0 = rec.direction_root || [];
+  //   const dot = dirNow[0] * (d0[0] ?? 0) + dirNow[1] * (d0[1] ?? 0) + dirNow[2] * (d0[2] ?? 0);
+  //   if (dot < Math.cos((10 * Math.PI) / 180)) {
+  //     return null;
+  //   }
+  // }
+  // 防呆二（已停用）：起点关节和录制时偏差 >0.1 rad，增量回放不再近似直线，不回放
+  // const start = rec.waypoints[0].named_joints;
+  // const drift = Math.max(...Object.keys(start)
+  //   .map((k) => Math.abs(Number(joints[k] ?? 0) - Number(start[k]))));
+  // if (drift > 0.1) {
+  //   return null;
+  // }
+  return rec;
+}
+
+function buildSidestepReplay(rec, joints) {
+  const q0 = rec.waypoints[0].named_joints;
+  const waypoints = rec.waypoints.map((wp, i) => ({
+    index: i,
+    named_joints: Object.fromEntries(Object.keys(wp.named_joints).map((k) => [
+      k, Number(joints[k] ?? 0) + (Number(wp.named_joints[k]) - Number(q0[k] ?? 0)),
+    ])),
+    tcp_pose: wp.tcp_pose,   // 录制时的指尖线，起点略有平移时仅作示意
+  }));
+  return { waypoints, steps: waypoints.length - 1, max_ik_error_mm: 0,
+           collision: null, replayed: true };
+}
+
+function saveSidestepRecording(stepCm, seg) {
+  fetchJson("/api/reach/sidesteps", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      step_cm: stepCm,
+      direction_root: sidestepDirection(Math.sign(stepCm)),
+      waypoints: seg.waypoints.map((wp) => ({
+        named_joints: wp.named_joints, tcp_pose: wp.tcp_pose,
+      })),
+    }),
+  }).then(() => refreshSidesteps()).catch(() => {});
 }
 
 // 沿拟合平面横移（stepCm 正=左 负=右），从真机当前姿态就地规划执行
@@ -675,13 +761,28 @@ async function sidestepReach(stepCm, options = {}) {
   setRobotJoints(state.robotJointState, false);
   writePose(panel, "tcp", { xyz: st.p_tool, rpy: [0, 0, 0] });
 
-  // 笛卡尔直线插补：指尖钉在"左"方向直线上（不会下沉绕行）
-  let seg;
-  try {
-    seg = await planCartesianSidestep(joints, stepCm);
-  } catch (error) {
-    reachMsg(`${dirName}移规划失败: ${error.message}`, "error");
-    return;
+  // 取横移轨迹，按优先级：①录制回放（免 IK，瞬时）②弹窗预取 ③现算逐点 IK
+  let seg = null;
+  const rec = matchSidestepRecording(stepCm, joints);
+  if (rec) {
+    seg = buildSidestepReplay(rec, joints);
+  }
+  const cache = reach.sideCache;
+  reach.sideCache = null;
+  if (!seg && cache && cache.stepCm === stepCm) {
+    const drift = Math.max(...Object.keys(cache.joints)
+      .map((k) => Math.abs(Number(joints[k] ?? 0) - Number(cache.joints[k]))));
+    if (drift < 0.02) {
+      seg = cache.seg;
+    }
+  }
+  if (!seg) {
+    try {
+      seg = await planCartesianSidestep(joints, stepCm);
+    } catch (error) {
+      reachMsg(`${dirName}移规划失败: ${error.message}`, "error");
+      return;
+    }
   }
   panel.frames = seg.waypoints;
   panel.frameIndex = 0;
@@ -696,6 +797,9 @@ async function sidestepReach(stepCm, options = {}) {
   if (seg.collision?.status === "collision") {
     reachMsg(`${dirName}移轨迹有碰撞，已禁止执行`, "error");
     return;
+  }
+  if (!seg.replayed) {
+    saveSidestepRecording(stepCm, seg);   // 落盘录制：下次同工况免 IK 直接回放
   }
   if (!st.armed) {
     replay(panel);
@@ -733,7 +837,7 @@ async function sidestepReach(stepCm, options = {}) {
         } : {}),
       }),
     });
-    reachMsg(`${dirName}移执行中…`, "success");
+    reachMsg(`${dirName}移${seg.replayed ? "（回放录制轨迹）" : ""}执行中…`, "success");
     await pollReachExec();
   } catch (error) {
     reachMsg(`${dirName}移执行失败: ${error.message}`, "error");
@@ -758,6 +862,7 @@ async function appendReturnPreview(panel, wp) {
         duration: 2.5,
         steps: 30,
         planner_type: panel.dom.planner.value,
+        check_collision: reachCollisionOn(),
       }),
     });
     panel.frames = [...mainFrames, ...seg.waypoints.slice(1)];
@@ -778,12 +883,19 @@ async function appendReturnPreview(panel, wp) {
 // 所以不复用预演帧，而是按真机实测关节就地重新规划（纯关节空间插值，
 // 起点偏差自然在整段运动里被慢慢修掉——这段只是收手，精度要求不高）。
 async function returnToWaypoint(wp) {
+  return moveToWaypoint(wp, { verb: `收回到「${wp.name}」`, label: `收回:${wp.name}` });
+}
+
+// 前往路点：读真机实测关节 → 关节空间直线插值到路点（全程无 IK）→ 碰撞
+// 预检 → 执行。收回段和动作序列的每一段都走这里。返回是否成功到位。
+async function moveToWaypoint(wp, options = {}) {
   const st = reach.status;
   const panel = state.panels[st.chain_id];
   if (!panel) {
-    return;
+    return false;
   }
-  reachMsg(`收回到「${wp.name}」规划中…`);
+  const verb = options.verb || `前往「${wp.name}」`;
+  reachMsg(`${verb}规划中…`);
   let joints = readJointInputs(panel);
   try {
     const j = await fetchJson("/api/reach/joints");
@@ -802,14 +914,15 @@ async function returnToWaypoint(wp) {
         current_joints: joints,
         target_joints: wp.named_joints,
         tcp_offset: readPose(panel, "tcp"),
-        duration: 2.5,
+        duration: options.duration ?? 2.5,
         steps: 40,
         planner_type: panel.dom.planner.value,
+        check_collision: reachCollisionOn(),
       }),
     });
   } catch (error) {
-    reachMsg(`收回规划失败: ${error.message}`, "error");
-    return;
+    reachMsg(`${verb}规划失败: ${error.message}`, "error");
+    return false;
   }
   panel.frames = seg.waypoints;
   panel.frameIndex = 0;
@@ -819,13 +932,13 @@ async function returnToWaypoint(wp) {
   visualizeCollision(panel, seg.collision);
   applyFrame(panel, 0);
   if (seg.collision?.status === "collision") {
-    reachMsg("收回轨迹有碰撞，已停在当前位置（可手动卸力收回）", "error");
-    return;
+    reachMsg(`${verb}轨迹有碰撞，已停在当前位置（可手动卸力摆位）`, "error");
+    return false;
   }
   if (!st.armed) {
     replay(panel);
-    reachMsg(`收回段已预演（未接管手臂）`, "success");
-    return;
+    reachMsg(`${verb}已预演（未接管手臂，无法真机执行）`, "success");
+    return false;
   }
   try {
     await fetchJson("/api/reach/execute", {
@@ -833,15 +946,126 @@ async function returnToWaypoint(wp) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         waypoints: seg.waypoints.map((frame) => frame.named_joints),
-        duration: 2.5,
-        max_speed_rad_s: 0.4,   // 收回只是收手，精度要求低，放行到快档
-        label: `收回:${wp.name}`,
+        duration: options.duration ?? 2.5,
+        max_speed_rad_s: options.maxSpeed ?? 0.4,  // 回放段精度要求低，放行到快档
+        label: options.label || `前往:${wp.name}`,
       }),
     });
-    reachMsg(`收回到「${wp.name}」中…`, "success");
-    await pollReachExec();
+    reachMsg(`${verb}中…`, "success");
+    const final = await pollReachExec();
+    return Boolean(final?.message?.startsWith("完成"));
   } catch (error) {
-    reachMsg(`收回执行失败: ${error.message}`, "error");
+    reachMsg(`${verb}执行失败: ${error.message}`, "error");
+    return false;
+  }
+}
+
+// ---- 动作序列：一组路点按序回放（纯关节插值，无 IK），存盘后一键调用 ----
+
+async function refreshSequences() {
+  let data;
+  try {
+    data = await fetchJson("/api/reach/sequences");
+  } catch {
+    return;
+  }
+  reach.sequences = data.sequences || [];
+  const sel = reach.dom.seqSel;
+  const prev = sel.value;
+  sel.innerHTML = `<option value="">（未选择）</option>` + reach.sequences
+    .map((s) => `<option value="${s.file}">${s.name} · ${(s.waypoints || []).length}段</option>`)
+    .join("");
+  if ([...sel.options].some((o) => o.value === prev)) {
+    sel.value = prev;
+  }
+}
+
+// reach 各段规划是否做逐帧碰撞检查（默认关：录制/工况一致性由人保证，检查很慢）
+function reachCollisionOn() {
+  return Boolean(reach.dom?.collisionCheck?.checked);
+}
+
+function sequenceByFile(file) {
+  return file ? reach.sequences?.find((s) => s.file === file) || null : null;
+}
+
+async function saveSequence() {
+  const wps = viaWaypoints();
+  if (!wps.length) {
+    reachMsg("先用「＋」把路点按顺序加入经由队列，再存为序列", "error");
+    return;
+  }
+  const name = window.prompt(
+    `把以下顺序存为动作序列：\n${wps.map((w) => w.name).join(" → ")}\n\n序列名字:`);
+  if (!name || !name.trim()) {
+    return;
+  }
+  try {
+    await fetchJson("/api/reach/sequences", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim(), waypoints: wps.map((w) => w.file) }),
+    });
+    await refreshSequences();
+    reach.dom.seqSel.value = reach.sequences[0]?.file || "";
+    reachMsg(`序列「${name.trim()}」已保存（${wps.length} 段）`, "success");
+  } catch (error) {
+    reachMsg(`保存序列失败: ${error.message}`, "error");
+  }
+}
+
+async function deleteSequence() {
+  const seq = sequenceByFile(reach.dom.seqSel.value);
+  if (!seq) {
+    reachMsg("先在下拉框选一个序列", "error");
+    return;
+  }
+  if (!window.confirm(`删除序列「${seq.name}」？（路点本身不会被删）`)) {
+    return;
+  }
+  try {
+    await fetchJson(`/api/reach/sequences/${encodeURIComponent(seq.file)}`, { method: "DELETE" });
+    await refreshSequences();
+    reachMsg(`已删除序列「${seq.name}」`, "success");
+  } catch (error) {
+    reachMsg(`删除失败: ${error.message}`, "error");
+  }
+}
+
+// 执行序列：全部逻辑在后端 /api/reach/sequences/run（纯关节插值回放，
+// 无 IK、无碰撞检查——录制时人工验证过）。前端只是调用方之一，
+// 以后无界面的自动化封装直接 POST 同一个接口即可。
+async function runSequence() {
+  const seq = sequenceByFile(reach.dom.seqSel.value);
+  if (!seq) {
+    reachMsg("先在下拉框选一个动作序列", "error");
+    return;
+  }
+  const names = (seq.waypoints || [])
+    .map((f) => waypointByFile(f)?.name || f).join(" → ");
+  const ok = window.confirm(
+    `确认执行序列「${seq.name}」？手臂将开始运动！\n\n${names}\n` +
+    "纯关节回放：无 IK、无碰撞检查（录制时已验证），请确认工况一致。");
+  if (!ok) {
+    return;
+  }
+  reach.dom.seqRun.disabled = true;
+  try {
+    const res = await fetchJson("/api/reach/sequences/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file: seq.file }),
+    });
+    reachMsg(`序列「${seq.name}」执行中…（~${Number(res.duration_s).toFixed(1)}s）`, "success");
+    const final = await pollReachExec();
+    reachMsg(final?.message?.startsWith("完成")
+      ? `序列「${seq.name}」完成`
+      : (final?.message || "执行结束"),
+    final?.message?.startsWith("完成") ? "success" : "error");
+  } catch (error) {
+    reachMsg(`序列执行失败: ${error.message}`, "error");
+  } finally {
+    reach.dom.seqRun.disabled = false;
   }
 }
 
@@ -870,6 +1094,7 @@ async function planViaWaypoints(panel, wps) {
       duration: segDur,
       steps: segSteps,
       planner_type: panel.dom.planner.value,
+      check_collision: reachCollisionOn(),
     }),
   });
 
@@ -1326,6 +1551,36 @@ function showStepNext() {
   d.nextReturn.textContent = endWp ? `收回到「${endWp.name}」` : "收回到结束位点";
   d.stepNext.classList.remove("hidden");
   reachMsg("主段到位，已暂停（分段模式）", "success");
+  prefetchSidestep();   // 暂停期间手臂静止，趁人看落点的工夫先把横移段算好
+}
+
+// 横移预规划：逐点 IK 一次约 1s（纯 Python FK + 数值雅可比），6cm 要 ~6s。
+// 弹窗一出现就在后台算，点「继续横移」时若起点没动、距离没改则直接用。
+async function prefetchSidestep() {
+  reach.sideCache = null;
+  const stepCm = Number(reach.dom.stepLen.value || 0);
+  if (!stepCm || !reach.plane || !reach.status?.joints_available) {
+    return;
+  }
+  let joints = null;
+  try {
+    const j = await fetchJson("/api/reach/joints");
+    if (j.ok) {
+      joints = j.named_joints;
+    }
+  } catch {
+    return;
+  }
+  if (!joints) {
+    return;
+  }
+  if (matchSidestepRecording(stepCm, joints)) {
+    return;   // 已有可回放的录制（免 IK），不用预算
+  }
+  try {
+    const seg = await planCartesianSidestep(joints, stepCm);
+    reach.sideCache = { stepCm, joints, seg };
+  } catch { /* 预取失败就退回点击时现算 */ }
 }
 
 function hideStepNext() {
@@ -1938,6 +2193,7 @@ async function planTrajectory(panel, options = {}) {
       duration: Number(panel.dom.duration.value || 4),
       steps: Number(panel.dom.steps.value || 80),
       planner_type: panel.dom.planner.value,
+      check_collision: options.checkCollision ?? true,
     };
     const data = await fetchJson("/api/trajectory/plan", {
       method: "POST",

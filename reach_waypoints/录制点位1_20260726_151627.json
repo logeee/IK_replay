@@ -1,0 +1,14 @@
+{
+  "name": "录制点位1",
+  "chain_id": "right_arm",
+  "named_joints": {
+    "right_shoulder_pitch_joint": 0.14162051677703857,
+    "right_shoulder_roll_joint": -0.31969720125198364,
+    "right_shoulder_yaw_joint": 0.20506806671619415,
+    "right_elbow_joint": 1.2820065021514893,
+    "right_wrist_roll_joint": 0.004290352575480938,
+    "right_wrist_pitch_joint": 0.02359694056212902,
+    "right_wrist_yaw_joint": 9.58738019107841e-05
+  },
+  "created_at": "2026-07-26 15:16:27"
+}

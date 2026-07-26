@@ -772,6 +772,13 @@ button:disabled {
   color: #43596d;
 }
 
+.reach-toggles {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
 .reach-stepmode {
   display: inline-flex;
   align-items: center;

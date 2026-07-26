@@ -63,6 +63,8 @@ class ReachState:
         self.plane: dict | None = None             # 取点时拟合的目标表面平面（根系）
         self.ik_solver = None                      # 笛卡尔直线插补用的 IK 求解器
         self.waypoints_dir: Path | None = None     # 中间路点落盘目录（每个路点一个 json）
+        self.sequences_dir: Path | None = None     # 动作序列落盘目录（路点文件名的有序列表）
+        self.sidesteps_dir: Path | None = None     # 横移录制落盘目录（免 IK 回放）
         # 执行线程状态
         self.exec_lock = threading.Lock()
         self.exec_thread: threading.Thread | None = None
@@ -112,6 +114,8 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str, calib_path: 
     state.collision_checker = collision_checker
     state.ik_solver = ik_solver
     state.waypoints_dir = Path(__file__).resolve().parent.parent / "reach_waypoints"
+    state.sequences_dir = Path(__file__).resolve().parent.parent / "reach_sequences"
+    state.sidesteps_dir = Path(__file__).resolve().parent.parent / "reach_sidesteps"
     state.log_dir = Path(__file__).resolve().parent.parent / "reach_logs"
     state.enabled = True
 
@@ -520,7 +524,7 @@ async def reach_plan_cartesian(body: dict):
                           "tcp_pose": res.tcp_pose.to_dict()})
 
     collision = None
-    if state.collision_checker is not None:
+    if bool(body.get("check_collision", True)) and state.collision_checker is not None:
         checks = state.collision_checker.check_trajectory(
             waypoints, state.chain_id, tcp_offset)
         collision = state.collision_checker.summarize_checks(checks)
@@ -602,6 +606,188 @@ async def reach_delete_waypoint(filename: str):
         return JSONResponse({"ok": False, "error": f"没有文件 {filename!r}"}, status_code=404)
     path.unlink()
     return {"ok": True}
+
+
+# --------------- 动作序列（多个路点按序回放，一键调用，纯关节回放无 IK） ---------------
+
+
+def _safe_sequence_file(filename: str) -> Path | None:
+    if not filename.endswith(".json") or "/" in filename or "\\" in filename or ".." in filename:
+        return None
+    return state.sequences_dir / filename
+
+
+@router.get("/sequences")
+async def reach_sequences():
+    if state.sequences_dir is None or not state.sequences_dir.is_dir():
+        return {"sequences": []}
+    items = []
+    for path in sorted(state.sequences_dir.glob("*.json"),
+                       key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            data = json.loads(path.read_text())
+            data["file"] = path.name
+            items.append(data)
+        except (json.JSONDecodeError, OSError):
+            continue
+    return {"sequences": items}
+
+
+@router.post("/sequences")
+async def reach_save_sequence(body: dict):
+    """把一组路点按顺序存为动作序列。Body: {"name": str, "waypoints": [路点文件名...]}
+
+    序列只存路点文件名的引用；执行由前端逐段触发（关节空间插值回放，无 IK）。
+    """
+    name = str(body.get("name") or "").strip()
+    files = body.get("waypoints") or []
+    if not name:
+        return JSONResponse({"ok": False, "error": "序列需要名字"}, status_code=400)
+    if "/" in name or "\\" in name or ".." in name:
+        return JSONResponse({"ok": False, "error": "名字不能包含路径分隔符"}, status_code=400)
+    if not files:
+        return JSONResponse({"ok": False, "error": "序列至少要有 1 个路点"}, status_code=400)
+    for f in files:
+        p = _safe_waypoint_file(str(f))
+        if p is None or not p.is_file():
+            return JSONResponse({"ok": False, "error": f"路点文件不存在: {f}"}, status_code=400)
+    item = {
+        "name": name,
+        "chain_id": state.chain_id,
+        "waypoints": [str(f) for f in files],
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    state.sequences_dir.mkdir(parents=True, exist_ok=True)
+    path = state.sequences_dir / f"{name}_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    path.write_text(json.dumps(item, ensure_ascii=False, indent=2))
+    item["file"] = path.name
+    return {"ok": True, "sequence": item}
+
+
+@router.post("/sequences/run")
+async def reach_run_sequence(body: dict):
+    """一键执行已保存的动作序列。供无界面的自动化封装直接调用。
+
+    纯关节空间插值回放：无 IK、无碰撞检查（轨迹在录制时已人工验证，
+    工况一致性由调用方保证），所以本接口除了读一次真机关节外没有任何
+    计算耗时，请求即执行。
+
+    Body: {"file": str, "joint_speed": float=0.35, "max_speed_rad_s": float=0.4}
+    行为：从真机当前实测关节直接插值接入第一个路点，之后按序走完全部
+    路点，整条连续执行、段间不停顿；时长 = 总关节行程 / joint_speed。
+    进度用 GET /exec_status 轮询，POST /stop 急停。
+    """
+    if state.controller is None:
+        return JSONResponse({"ok": False, "error": "手臂未接管"}, status_code=409)
+    path = _safe_sequence_file(str(body.get("file") or ""))
+    if path is None or not path.is_file():
+        return JSONResponse({"ok": False, "error": "序列文件不存在"}, status_code=404)
+    try:
+        seq = json.loads(path.read_text())
+        targets = []
+        for fname in seq.get("waypoints") or []:
+            wp_path = _safe_waypoint_file(str(fname))
+            wp = json.loads(wp_path.read_text())
+            targets.append(np.asarray([float(wp["named_joints"][n])
+                                       for n in state.joint_names], dtype=float))
+        if not targets:
+            raise ValueError("序列不含路点")
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"序列/路点读取失败: {exc}"}, status_code=400)
+
+    joint_speed = float(np.clip(float(body.get("joint_speed") or 0.35), 0.05, 0.5))
+    speed = float(np.clip(float(body.get("max_speed_rad_s") or 0.4), 0.05, 0.5))
+
+    with state.exec_lock:
+        if state.exec_running:
+            return JSONResponse({"ok": False, "error": "已有轨迹在执行中"}, status_code=409)
+        try:
+            q0 = np.asarray(state.controller.read_measured(), dtype=float)
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": f"读不到真机关节: {exc}"}, status_code=503)
+        # 链式插值：帧距 ~0.04 rad；行程为零的段不产生帧（手已在起点时零耗时）
+        q_list = [q0]
+        prev = q0
+        total_travel = 0.0
+        for tgt in targets:
+            travel = float(np.max(np.abs(tgt - prev)))
+            total_travel += travel
+            n = max(1, int(np.ceil(travel / 0.04)))
+            for i in range(1, n + 1):
+                q_list.append(prev + (tgt - prev) * (i / n))
+            prev = tgt
+        duration = max(1.0, total_travel / joint_speed)
+        label = f"序列:{str(seq.get('name') or path.stem)}"[:32]
+
+        state.exec_cancel.clear()
+        state.exec_running = True
+        state.exec_progress = 0.0
+        state.exec_message = "执行中"
+        state.exec_thread = threading.Thread(
+            target=_exec_loop, args=(q_list, duration, None, speed, label), daemon=True)
+        state.exec_thread.start()
+    return {"ok": True, "duration_s": round(duration, 2),
+            "frames": len(q_list), **_exec_status()}
+
+
+@router.delete("/sequences/{filename}")
+async def reach_delete_sequence(filename: str):
+    path = _safe_sequence_file(filename)
+    if path is None:
+        return JSONResponse({"ok": False, "error": "非法文件名"}, status_code=400)
+    if not path.is_file():
+        return JSONResponse({"ok": False, "error": f"没有文件 {filename!r}"}, status_code=404)
+    path.unlink()
+    return {"ok": True}
+
+
+# --------------- 横移录制（免 IK 回放） ---------------
+# 逐点 IK 一次 6cm 要 ~6s（纯 Python FK + 数值雅可比）。机器人正视电柜时
+# 横移方向在根系里是常量、起点姿态也基本重复，所以把算好的整段路点存下来，
+# 以后同工况直接按"当前起点 + 录制关节增量"回放，免掉全部 IK。
+# 是否可回放由前端把关：距离一致 + 方向夹角 <10° + 起点关节偏差 <0.1 rad。
+
+
+@router.get("/sidesteps")
+async def reach_list_sidesteps():
+    if state.sidesteps_dir is None or not state.sidesteps_dir.is_dir():
+        return {"sidesteps": []}
+    items = []
+    for path in sorted(state.sidesteps_dir.glob("*.json")):
+        try:
+            data = json.loads(path.read_text())
+            data["file"] = path.name
+            items.append(data)
+        except (json.JSONDecodeError, OSError):
+            continue
+    return {"sidesteps": items}
+
+
+@router.post("/sidesteps")
+async def reach_save_sidestep(body: dict):
+    """保存一次横移规划（同距离覆盖旧的）。
+    Body: {"step_cm": float, "direction_root": [3], "waypoints": [{named_joints, tcp_pose}...]}
+    """
+    try:
+        step_cm = float(body["step_cm"])
+        direction = [float(v) for v in body["direction_root"]]
+        waypoints = list(body["waypoints"])
+        if len(waypoints) < 2:
+            raise ValueError("路点太少")
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"参数非法: {exc}"}, status_code=400)
+    item = {
+        "step_cm": step_cm,
+        "direction_root": direction,
+        "waypoints": waypoints,
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    state.sidesteps_dir.mkdir(parents=True, exist_ok=True)
+    tag = f"{'L' if step_cm > 0 else 'R'}{abs(step_cm):.0f}cm"
+    path = state.sidesteps_dir / f"sidestep_{tag}.json"
+    path.write_text(json.dumps(item, ensure_ascii=False))
+    item["file"] = path.name
+    return {"ok": True, "sidestep": item}
 
 
 @router.post("/hand_move")
