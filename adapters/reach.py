@@ -819,7 +819,7 @@ def _tcp_position(q) -> list[float] | None:
 
 def _log_exec(kind: str, result: str, q_target, *, sag=None,
               duration=None, speed=None, pushing: bool = False, push_tau=None,
-              trace=None, retarget=None) -> None:
+              trace=None) -> None:
     """每段真机动作落一行 JSONL：reach_logs/reach_YYYYMMDD.jsonl。
 
     调参靠的是横向对比（改了 α / payload / kp 之后到底好了多少），
@@ -911,7 +911,6 @@ def _log_exec(kind: str, result: str, q_target, *, sag=None,
         rec["torso_at_pick"] = state.pick_torso
         rec["torso_at_end"] = torso_end
         rec["torso_drift"] = state.torso_diag
-        rec["retarget"] = retarget
         # 快照拷贝：采样线程可能还在往里 append
         rec["torso_trace"] = [dict(s) for s in list(trace)] if trace else None
 
@@ -935,78 +934,6 @@ def _finish_torso_diag() -> str:
     note = f"；躯干较取点时转了 {diag.get('torso_rotation_deg', 0):.1f}°，目标漂移 {shift:.0f} mm"
     return note + ("（超过 10mm，够不着多半是躯干在动而不是手臂没到位）"
                    if shift > 10 else "")
-
-
-def _torso_retarget(q_target: np.ndarray) -> tuple[np.ndarray | None, dict | None]:
-    """settle 前的躯干漂移解析补偿。
-
-    目标点是取点瞬间冻结在 torso 系里的，而平衡控制器会因手臂前伸而
-    后仰/扭腰（真机实测 2.5° ≈ 30mm，见 reach_logs）。时间序列证明躯干
-    姿态在进 settle 前已经稳定，所以只需一次性：读当前躯干姿态 → 把冻结
-    目标旋转到当前 torso 系 → 重解 IK → 把修正后的目标一次性下发。
-
-    边界：只对"终点就是取点目标"的段生效（横移/收回段终点离取点很远，
-    自动跳过）；只能补旋转分量（腰编码器 + IMU），骨盆平移不可观测；
-    漂移超 60mm 视为测量异常放弃；重瞄导致的关节跳变超 0.25 rad 放弃。
-    """
-    try:
-        if (state.ik_solver is None or state.pick_torso is None
-                or state.pick_target_torso is None or state.pick_target_root is None):
-            return None, None
-        tcp_end = _tcp_position(q_target)
-        if tcp_end is None:
-            return None, None
-        if float(np.linalg.norm(np.asarray(tcp_end)
-                                - np.asarray(state.pick_target_root))) > 0.02:
-            return None, None   # 本段终点不是取点目标（横移/收回），不重瞄
-        now = _read_torso()
-        R0, R1 = _torso_rotation(state.pick_torso), _torso_rotation(now)
-        if R0 is None or R1 is None:
-            return None, None
-        p0 = np.asarray(state.pick_target_torso, dtype=float)
-        shift = (R1.T @ R0) @ p0 - p0
-        shift_mm = float(np.linalg.norm(shift)) * 1000.0
-        diag: dict[str, Any] = {"shift_mm": round(shift_mm, 1),
-                                "shift_xyz_mm": [round(v * 1000.0, 1) for v in shift],
-                                "applied": False}
-        if shift_mm < 3.0:
-            diag["reason"] = "漂移小于 3mm，无需补偿"
-            return None, diag
-        if shift_mm > 60.0:
-            diag["reason"] = "漂移超 60mm，疑似测量异常，维持原目标"
-            return None, diag
-
-        from core.types import IKRequest, Pose
-
-        model = state.robot_model
-        target_new = np.asarray(state.pick_target_root, dtype=float) + shift
-        seed = dict(zip(state.joint_names, [float(v) for v in q_target]))
-        res = state.ik_solver.solve(IKRequest(
-            chain_id=state.chain_id,
-            current_joints=seed,
-            target_pose=Pose(xyz=target_new.tolist()),
-            tcp_offset=Pose(xyz=list(state.p_tool)),
-            base_link=model.base_link(state.chain_id),
-            end_link=model.end_link(state.chain_id),
-            joint_names=state.joint_names,
-            seed=seed,
-            solver_options={"solve_orientation": False, "tolerance_mm": 3.0},
-        ))
-        if not res.success:
-            diag["reason"] = f"重瞄 IK 未收敛（{res.error_mm:.1f}mm），维持原目标"
-            return None, diag
-        q_new = np.asarray([float(res.named_target_joints[n]) for n in state.joint_names])
-        jump = float(np.max(np.abs(q_new - np.asarray(q_target, dtype=float))))
-        if jump > 0.25:
-            diag["reason"] = f"重瞄关节跳变 {jump:.2f} rad 过大，维持原目标"
-            return None, diag
-        diag.update(applied=True,
-                    ik_error_mm=round(float(res.error_mm), 2),
-                    target_new_root=[round(float(v), 4) for v in target_new],
-                    joint_jump_deg=round(math.degrees(jump), 2))
-        return q_new, diag
-    except Exception as exc:
-        return None, {"applied": False, "reason": f"补偿异常: {exc}"}
 
 
 def _start_torso_trace(ctl) -> tuple[list, threading.Event]:
@@ -1138,15 +1065,10 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
         target = q_list[-1]
         if not state.exec_cancel.is_set():
             state.exec_phase = "settle"
-            # 躯干漂移补偿：平衡控制器此刻已稳定，按当前躯干姿态把冻结的
-            # 取点目标重投 + 重解 IK，一次性重瞄（限速滑动保证平滑）
-            q_re, retarget = _torso_retarget(target)
-            log["retarget"] = retarget
-            if q_re is not None:
-                target = q_re
-                ctl.set_target(target)
-                state.exec_message = f"躯干漂移补偿 {retarget['shift_mm']}mm，已重瞄"
-            # 外环积分已移除：重力下垂由重力前馈扛，目标误差靠二次取点修。
+            # 躯干漂移不再在这里主动补偿（曾有"重瞄"逻辑：到位后按躯干姿态
+            # 变化重解 IK 再挪 2~3cm，观感是到位后突然跳一下）。现在漂移交给
+            # 分段模式的「再次选点」用当前相机实测修正，这里只测量、写日志。
+            # 外环积分同样已移除：重力下垂由重力前馈扛。
             # 这里只等指令送达、给电机 ~0.3s 贴上来，然后测一次落点残差写日志。
             deadline = time.monotonic() + 3.0
             while time.monotonic() < deadline and not state.exec_cancel.is_set():

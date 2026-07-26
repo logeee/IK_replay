@@ -203,7 +203,7 @@ async function initReach() {
   d.nextReturn.addEventListener("click", () => stepNextReturn());
   d.nextDone.addEventListener("click", () => hideStepNext());
   d.fsBtn.addEventListener("click", () => openReachFullscreen());
-  d.fsClose.addEventListener("click", () => closeReachFullscreen());
+  d.fsClose.addEventListener("click", () => cancelReachFullscreen());
   d.fsVideo.addEventListener("click", (ev) => onReachFullscreenClick(ev));
   state.helperRoot.add(reach.obstacleGroup, reach.planeGroup);
   await refreshObstacles();
@@ -361,6 +361,24 @@ function openReachFullscreen() {
   d.fsMark.classList.add("hidden");
   d.fsVideo.src = "/api/reach/stream";   // 独立的一路 MJPEG，关闭时断开
   d.fsOverlay.classList.remove("hidden");
+  window.addEventListener("keydown", onReachFullscreenKey);
+}
+
+function onReachFullscreenKey(ev) {
+  if (ev.key === "Escape") {
+    ev.preventDefault();
+    cancelReachFullscreen();
+  }
+}
+
+// 取消全屏选点（Esc / × 退出）：若是从暂停弹窗的「再次选点」进来的，
+// 等价于没点过——撤销直达标志并回到弹窗四选项。
+function cancelReachFullscreen() {
+  closeReachFullscreen();
+  if (reach.finePick) {
+    reach.finePick = false;
+    showStepNext();
+  }
 }
 
 function closeReachFullscreen() {
@@ -368,6 +386,7 @@ function closeReachFullscreen() {
   d.fsOverlay.classList.add("hidden");
   d.fsVideo.src = "";                    // 断开这路视频流
   d.fsMark.classList.add("hidden");
+  window.removeEventListener("keydown", onReachFullscreenKey);
 }
 
 async function onReachFullscreenClick(ev) {
@@ -383,14 +402,27 @@ async function onReachFullscreenClick(ev) {
   d.fsMark.style.top = `${imgRect.top - stageRect.top + px.relY * imgRect.height}px`;
   d.fsMark.classList.remove("hidden");
 
-  const ok = window.confirm(`确定选这个点吗？像素 [${px.u}, ${px.v}]\n确定后退出全屏并开始取点规划。`);
+  const ok = window.confirm(`确定选这个点吗？像素 [${px.u}, ${px.v}]\n` +
+    (reach.finePick ? "确定后退出全屏，规划通过将直接真机执行！"
+                    : "确定后退出全屏并开始取点规划。"));
   if (!ok) {
     d.fsMark.classList.add("hidden");   // 留在全屏里重新点
     return;
   }
+  const fine = reach.finePick;
   closeReachFullscreen();
   placeReachMark(px.relX, px.relY);     // 小窗上同步显示标记
   await submitReachPick(px.u, px.v);
+  // 精定位：规划可执行就直接上真机（全屏确认框已当过安全确认）
+  if (fine && reach.finePick) {
+    if (!reach.dom.exec.disabled) {
+      await executeReach({ skipConfirm: true });
+    } else {
+      reach.finePick = false;
+      showStepNext();   // 规划失败/有碰撞：回到弹窗重新选
+      reachMsg("精定位规划不可执行（IK 失败或有碰撞），已返回选择", "error");
+    }
+  }
 }
 
 // 取点 + 规划（小窗点击和全屏选点共用入口）
@@ -1210,7 +1242,7 @@ function describeReachCollision(panel, collision) {
   return lines;
 }
 
-async function executeReach() {
+async function executeReach(options = {}) {
   const st = reach.status;
   const panel = state.panels[st.chain_id];
   if (!panel?.frames?.length || !reach.lastPick) {
@@ -1231,7 +1263,8 @@ async function executeReach() {
   const endWp = selectedEndWaypoint();
   const endNote = (endWp && !stepMode) ? `结束后收回到「${endWp.name}」\n` : "";
   const pt = reach.lastPick.p_torso;
-  const ok = window.confirm(
+  // 精定位自动执行时跳过确认框：全屏选点的确认已当过安全确认
+  const ok = options.skipConfirm || window.confirm(
     "确认真机执行？手臂将开始运动！\n\n" +
     `目标(躯干系): [${pt.map((v) => v.toFixed(3)).join(", ")}] m\n` +
     `IK 误差: ${Number(ik?.error_mm || 0).toFixed(1)} mm\n` +
@@ -1306,10 +1339,12 @@ function setStepNextBusy(busy) {
 
 // 「再次选点」= 人当视觉闭环：粗定位后躯干已扭到新姿态，用现在的相机再点一次
 // 开关，从当前姿态直达新点（几厘米的小移动），把躯干漂移和落点误差一起修掉。
+// 交互：直接进全屏选点，确认即真机执行；Esc/退出则回到弹窗四选项。
 function stepNextRepick() {
   reach.finePick = true;
   hideStepNext();
-  reachMsg("再次选点：在画面中点击新目标，将从当前姿态直达（跳过经由路点）", "success");
+  openReachFullscreen();
+  reachMsg("再次选点：全屏中点击新目标，确认后直接真机执行（Esc 返回）", "success");
 }
 
 async function stepNextSidestep() {
