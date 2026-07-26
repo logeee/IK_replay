@@ -96,7 +96,7 @@
         <div class="ring"></div>
         <div class="dot" id="bubbleDot"></div>
       </div>
-      <div class="bubble-cap">气泡进入虚线圈 ≈ 偏差 &lt; 3°，进圆心即垂直。点偏右 = 法线偏画面右侧（小步转身试拨方向）</div>
+      <div class="bubble-cap">气泡进入虚线圈 ≈ 偏差 &lt; 3°，进圆心即垂直。点偏右 = 左转修正，点偏左 = 右转修正（真机已验证）</div>
     </div>
 
     <div class="card">
@@ -111,7 +111,7 @@
       </table>
       <div class="row">
         <label>深度范围</label>
-        <input id="dmin" type="number" step="0.05" min="0.1" max="3" value="0.5" /> ~
+        <input id="dmin" type="number" step="0.05" min="0.1" max="3" value="0.4" /> ~
         <input id="dmax" type="number" step="0.05" min="0.2" max="4" value="1.0" />
         <label>m（范围外 = 异常点，剔除）</label>
       </div>
@@ -132,6 +132,11 @@
         <button class="jog" data-d="-0.5" disabled>右0.5° ⟳</button>
         <button class="jog" data-d="-2" disabled>右转2° ⟳</button>
       </div>
+      <div class="row">
+        <button id="alignBtn" class="primary" disabled
+                title="闭环伺服：测偏差→定长脉冲→再测。阈值自动选：手臂收回 0.35°，前伸 2.8°">◎ 一键对中</button>
+        <span class="status-line" style="margin:0" id="alignState"></span>
+      </div>
       <div class="status-line" id="turnState"></div>
       <div class="status-line">H2 的 arm_sdk 不覆盖腰电机（真机已验证指令被忽略），yaw 对准改走
         高层 SetVelocity 让本体运控用腿原地转，平衡由它负责。转身会带动手臂——
@@ -144,6 +149,7 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let turnAvailable = false;
+let aligning = false;
 
 function fmt(v, digits = 2) {
   return (v === null || v === undefined || Number.isNaN(v)) ? "--" : Number(v).toFixed(digits);
@@ -154,8 +160,13 @@ function setAngle(el, deg) {
   el.className = "v " + (a < 1.5 ? "ok" : a < 4 ? "warn" : "bad");
 }
 
+let pollBusy = false;   // 防重入：上一轮没回来就跳过，避免卡顿时请求堆积
 async function poll() {
-  const dmin = Number($("dmin").value) || 0.5;
+  if (pollBusy) {
+    return;
+  }
+  pollBusy = true;
+  const dmin = Number($("dmin").value) || 0.4;
   const dmax = Number($("dmax").value) || 1.0;
   try {
     const res = await fetch(`/api/reach/perpendicular?dmin=${dmin}&dmax=${dmax}`);
@@ -163,9 +174,11 @@ async function poll() {
     if (!data.ok) {
       $("fitMsg").textContent = data.error || "拟合失败";
       ["yawErr", "pitchErr", "tilt"].forEach((id) => { $(id).textContent = "--"; $(id).className = "v"; });
+      document.querySelector("table.kv").style.opacity = "0.35";  // 表中是旧值，置灰防误读
       return;
     }
     $("fitMsg").textContent = "";
+    document.querySelector("table.kv").style.opacity = "";
     setAngle($("yawErr"), data.yaw_err_deg);
     setAngle($("pitchErr"), data.pitch_err_deg);
     setAngle($("tilt"), data.tilt_deg);
@@ -190,15 +203,21 @@ async function poll() {
     $("torso").textContent = t && t.waist_rad
       ? t.waist_rad.map((x) => (Number(x) * 180 / Math.PI).toFixed(1)).join(" / ") + " °" : "--";
     turnAvailable = !!data.turn_available;
+    aligning = !!(data.align && data.align.running);
+    $("alignState").textContent = (data.align && data.align.message) || "";
     updateTurnButtons();
   } catch (e) {
     $("fitMsg").textContent = "服务不可达：" + e;
+  } finally {
+    pollBusy = false;
   }
 }
 
 function updateTurnButtons() {
   const armed = turnAvailable && $("turnArm").checked;
-  document.querySelectorAll(".jog").forEach((b) => { b.disabled = !armed; });
+  document.querySelectorAll(".jog").forEach((b) => { b.disabled = !armed || aligning; });
+  $("alignBtn").disabled = !armed;
+  $("alignBtn").textContent = aligning ? "■ 停止对中" : "◎ 一键对中";
   $("turnState").textContent = turnAvailable
     ? (armed ? "已解锁：点按钮即真机转身（6°/s）" : "勾选「允许转身」解锁按钮")
     : "无 DDS 连接，转身不可用";
@@ -220,7 +239,8 @@ async function turnPost(body) {
     if (data.stopped) {
       $("msg").textContent = "已发送停止";
     } else {
-      $("msg").textContent = `转身 ${data.delta_deg}°（约 ${Number(data.duration_s).toFixed(1)}s）`;
+      const warn = data.warning ? `（${data.warning}）` : "";
+      $("msg").textContent = `转身 ${data.delta_deg}°（约 ${Number(data.duration_s).toFixed(1)}s）${warn}`;
     }
   } catch (e) {
     $("msg").textContent = "请求失败：" + e;
@@ -228,7 +248,39 @@ async function turnPost(body) {
 }
 
 $("turnArm").addEventListener("change", updateTurnButtons);
-$("turnStopBtn").addEventListener("click", () => turnPost({ stop: true }));
+$("turnStopBtn").addEventListener("click", () => {
+  turnPost({ stop: true });
+  alignPost({ stop: true });
+});
+$("alignBtn").addEventListener("click", async () => {
+  if (aligning) {
+    await alignPost({ stop: true });
+  } else {
+    await alignPost({
+      start: true,
+      dmin: Number($("dmin").value) || 0.4,
+      dmax: Number($("dmax").value) || 1.0,
+    });
+  }
+  aligning = !aligning;
+  updateTurnButtons();
+});
+
+async function alignPost(body) {
+  try {
+    const res = await fetch("/api/reach/align_yaw", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      $("msg").textContent = data.error || "对中操作失败";
+    }
+  } catch (e) {
+    $("msg").textContent = "请求失败：" + e;
+  }
+}
 document.querySelectorAll(".jog").forEach((b) => {
   b.addEventListener("click", () => turnPost({ delta_deg: Number(b.dataset.d) }));
 });

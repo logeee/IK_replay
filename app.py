@@ -16,6 +16,7 @@ from ik.dummy_solver import DummyIKSolver
 from ik.numerical_solver import NumericalIKSolver
 from planners.linear import LinearTrajectoryPlanner
 from planners.quintic import QuinticTrajectoryPlanner
+from planners.rrt import RRTConnectTrajectoryPlanner
 
 
 WEB_DIR = PROJECT_ROOT / "web"
@@ -103,14 +104,16 @@ solvers = {
     }
     for robot_id, robot_model in robots.items()
 }
+collision_checkers = {robot_id: ConfigurableCollisionChecker(robot_model) for robot_id, robot_model in robots.items()}
 planners = {
     robot_id: {
         "linear": LinearTrajectoryPlanner(robot_model),
         "quintic": QuinticTrajectoryPlanner(robot_model),
+        # 避障规划：直线撞了才起树，碰撞检查复用同一个 checker（含环境体素）
+        "rrt": RRTConnectTrajectoryPlanner(robot_model, collision_checkers[robot_id]),
     }
     for robot_id, robot_model in robots.items()
 }
-collision_checkers = {robot_id: ConfigurableCollisionChecker(robot_model) for robot_id, robot_model in robots.items()}
 
 app = FastAPI(title="IK Replay Debug Viewer", version="0.2.0")
 app.mount("/web", StaticFiles(directory=WEB_DIR), name="web")

@@ -74,6 +74,9 @@ def main() -> int:
     parser.add_argument("--arm-grav-in-float", action="store_true",
                         help="卸力拖动时也给重力前馈：手臂近似失重、推到哪停哪，录路点"
                              "省力得多。补过头会缓慢上飘，先确认 --arm-grav-ff 合适再开")
+    parser.add_argument("--tool-out-mm", type=float, default=10.0,
+                        help="TCP（标定的 p_tool 指上点）沿法兰盘法线（腕系 +x）"
+                             "向外的附加偏移，毫米（默认 10 = 补到真正指尖）。给 0 关闭")
     parser.add_argument("--arm-imu-gravity", action="store_true",
                         help="用 IMU 实测姿态修正重力方向（躯干前倾/后仰时更准）。"
                              "先看页面诊断里的 IMU 数值是否合理再开")
@@ -138,7 +141,7 @@ def main() -> int:
         collision_checker=app_module.collision_checkers[args.robot],
         ik_solver=app_module.solvers[args.robot]["numerical"],
         arm_factory=arm_factory, joints_reader=joints_reader,
-        torso_reader=torso_reader,
+        torso_reader=torso_reader, tool_out_mm=args.tool_out_mm,
     )
     app_module.app.include_router(reach.router)
     print(f"[reach] calib = {reach.state.calib_meta}")

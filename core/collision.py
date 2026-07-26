@@ -88,6 +88,10 @@ class ConfigurableCollisionChecker:
         # 可选的环境障碍点云（URDF 根坐标系，运行时由外部注入，如深度相机扫描）
         self.environment_points: np.ndarray | None = None
         self.environment_radius: float = 0.03
+        # 可选的环境平面：柜面等平整障碍直接用拟合平面表示，零膨胀、距离
+        # 解析精确。可带边界（矩形）——柜面是有限宽的，无限半空间会把柜子
+        # 侧面以外的空区域也拦掉。每项为 dict，见 set_environment_planes。
+        self.environment_planes: list[dict[str, Any]] = []
         # 豁免球列表 [(center, radius)]：这些区域内的环境点不参与检查（如抓取目标附近）
         self.environment_exclusions: list[tuple[np.ndarray, float]] = []
 
@@ -96,8 +100,35 @@ class ConfigurableCollisionChecker:
         self.environment_points = arr if len(arr) else None
         self.environment_radius = float(radius)
 
+    def set_environment_planes(self, planes: list[dict]) -> None:
+        """每项: {"point", "normal"} 必填；可选 {"dir", "u_range", "v_range"}
+        给平面加矩形边界——u 沿 dir、v 沿 normal×dir（都相对 point 计），
+        超出边界的区域不算障碍。不带边界即无限半空间。normal 指向自由侧。
+        """
+        self.environment_planes = []
+        for raw in planes:
+            n = np.asarray(raw["normal"], dtype=float).reshape(3)
+            n = n / (np.linalg.norm(n) or 1.0)
+            item: dict[str, Any] = {
+                "point": np.asarray(raw["point"], dtype=float).reshape(3),
+                "normal": n,
+            }
+            if raw.get("dir") is not None and raw.get("u_range") is not None:
+                u = np.asarray(raw["dir"], dtype=float).reshape(3)
+                u = u / (np.linalg.norm(u) or 1.0)
+                v = np.cross(n, u)
+                v = v / (np.linalg.norm(v) or 1.0)
+                item["dir"] = u
+                item["v_axis"] = v
+                item["u_range"] = (float(raw["u_range"][0]), float(raw["u_range"][1]))
+                vr = raw.get("v_range")
+                item["v_range"] = (float(vr[0]), float(vr[1])) if vr is not None \
+                    else (-1e9, 1e9)
+            self.environment_planes.append(item)
+
     def clear_environment(self) -> None:
         self.environment_points = None
+        self.environment_planes = []
         self.environment_exclusions = []
 
     def set_environment_exclusions(self, spheres: list[tuple[list | np.ndarray, float]]) -> None:
@@ -121,6 +152,7 @@ class ConfigurableCollisionChecker:
             "enabled": self.enabled,
             "near_margin_m": self.near_margin_m,
             "environment_point_count": 0 if self.environment_points is None else int(len(self.environment_points)),
+            "environment_plane_count": len(self.environment_planes),
             "body_shape_count": len(self.config.get("body") or []),
             "chains": {
                 chain_id: {
@@ -240,6 +272,17 @@ class ConfigurableCollisionChecker:
                 role="body",
                 kind="cloud",
                 data={"points": env, "radius": self.environment_radius, "count": int(len(env))},
+            ))
+        for i, plane in enumerate(self.environment_planes):
+            name = "environment_wall" if len(self.environment_planes) == 1 \
+                else f"environment_wall_{i}"
+            data = {k: (_to_list(v) if isinstance(v, np.ndarray) else v)
+                    for k, v in plane.items()}
+            shapes.append(CollisionPrimitive(
+                name=name,
+                role="body",
+                kind="plane",
+                data=data,
             ))
         return shapes
 
@@ -391,7 +434,54 @@ class ConfigurableCollisionChecker:
             return self._distance_to_cloud(a, b)
         if a.kind == "cloud":
             return self._distance_to_cloud(b, a)
+        if b.kind == "plane":
+            return self._distance_to_plane(a, b)
+        if a.kind == "plane":
+            return self._distance_to_plane(b, a)
         raise ValueError(f"unsupported primitive pair: {a.kind}, {b.kind}")
+
+    def _distance_to_plane(self, shape: CollisionPrimitive, plane: CollisionPrimitive) -> float:
+        """chain 几何体到环境平面的有符号距离（法线指向自由侧，负=穿墙）。
+
+        解析精确、零膨胀。平面可带矩形边界（柜面是有限大的）：边界内按
+        垂距，边界外按到矩形最近点的欧氏距离（恒正——绕过柜边是允许的）。
+        豁免球同样生效——形状最近点在墙面上的垂足落在任一豁免球内
+        （如抓取目标附近）时，该平面不参与检查。
+        """
+        p0 = _as_array(plane.data["point"])
+        n = _as_array(plane.data["normal"])
+        udir = plane.data.get("dir")
+        u = _as_array(udir) if udir is not None else None
+        vax = _as_array(plane.data["v_axis"]) if u is not None else None
+        ur = plane.data.get("u_range")
+        vr = plane.data.get("v_range")
+
+        def point_distance(p: np.ndarray) -> tuple[float, np.ndarray]:
+            w = float(np.dot(n, p - p0))
+            if u is None:
+                return w, p - w * n
+            uu = float(np.dot(u, p - p0))
+            vv = float(np.dot(vax, p - p0))
+            uc = min(max(uu, ur[0]), ur[1])
+            vc = min(max(vv, vr[0]), vr[1])
+            if uc == uu and vc == vv:
+                return w, p - w * n
+            foot = p0 + uc * u + vc * vax
+            return float(np.linalg.norm(p - foot)), foot
+
+        if shape.kind == "sphere":
+            d, foot = point_distance(_as_array(shape.data["center"]))
+        elif shape.kind == "capsule":
+            a = _as_array(shape.data["a"])
+            b = _as_array(shape.data["b"])
+            d, foot = min((point_distance(_lerp(a, b, i / 11)) for i in range(12)),
+                          key=lambda item: item[0])
+        else:
+            raise ValueError(f"unsupported primitive vs plane: {shape.kind!r}")
+        for center, radius in self.environment_exclusions:
+            if float(np.linalg.norm(foot - center)) <= radius:
+                return 9.99   # 豁免区内：按远距离处理（有限值，便于 JSON 序列化）
+        return d - float(shape.data["radius"])
 
     @staticmethod
     def _distance_to_cloud(shape: CollisionPrimitive, cloud: CollisionPrimitive) -> float:

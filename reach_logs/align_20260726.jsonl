@@ -1,0 +1,193 @@
+{"ts": "2026-07-26T17:44:36.949", "session": "20260726_174415", "event": "start", "tol_deg": 0.2, "dmin": 0.5, "dmax": 1.0, "waist_deg": [0.988, 0.563, 1.034]}
+{"ts": "2026-07-26T17:44:37.158", "session": "20260726_174415", "event": "measure", "step": 1, "yaw_err_deg": 7.038, "pitch_err_deg": 5.548, "points": 24235, "waist_deg": [0.991, 0.562, 1.035]}
+{"ts": "2026-07-26T17:44:37.159", "session": "20260726_174415", "event": "pulse", "step": 1, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [0.99, 0.562, 1.035]}
+{"ts": "2026-07-26T17:44:39.172", "session": "20260726_174415", "event": "measure", "step": 2, "yaw_err_deg": 5.667, "pitch_err_deg": 5.693, "points": 24448, "waist_deg": [1.03, 0.561, 1.023]}
+{"ts": "2026-07-26T17:44:39.174", "session": "20260726_174415", "event": "pulse", "step": 2, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [1.029, 0.561, 1.023]}
+{"ts": "2026-07-26T17:44:41.192", "session": "20260726_174415", "event": "measure", "step": 3, "yaw_err_deg": 4.547, "pitch_err_deg": 5.729, "points": 24440, "waist_deg": [1.073, 0.553, 1.013]}
+{"ts": "2026-07-26T17:44:41.193", "session": "20260726_174415", "event": "pulse", "step": 3, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [1.072, 0.554, 1.013]}
+{"ts": "2026-07-26T17:44:43.192", "session": "20260726_174415", "event": "measure", "step": 4, "yaw_err_deg": 2.835, "pitch_err_deg": 5.806, "points": 23819, "waist_deg": [1.882, 0.541, 0.989]}
+{"ts": "2026-07-26T17:44:43.193", "session": "20260726_174415", "event": "pulse", "step": 4, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [1.882, 0.541, 0.989]}
+{"ts": "2026-07-26T17:44:45.208", "session": "20260726_174415", "event": "measure", "step": 5, "yaw_err_deg": 1.629, "pitch_err_deg": 5.867, "points": 23418, "waist_deg": [1.958, 0.516, 0.958]}
+{"ts": "2026-07-26T17:44:45.209", "session": "20260726_174415", "event": "pulse", "step": 5, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [1.958, 0.516, 0.958]}
+{"ts": "2026-07-26T17:44:47.244", "session": "20260726_174415", "event": "measure", "step": 6, "yaw_err_deg": 0.602, "pitch_err_deg": 5.935, "points": 23025, "waist_deg": [1.97, 0.507, 0.946]}
+{"ts": "2026-07-26T17:44:47.248", "session": "20260726_174415", "event": "pulse", "step": 6, "delta_deg": 0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [1.972, 0.507, 0.946]}
+{"ts": "2026-07-26T17:44:49.062", "session": "20260726_174415", "event": "measure", "step": 7, "yaw_err_deg": 0.42, "pitch_err_deg": 5.969, "points": 22957, "waist_deg": [1.98, 0.506, 0.943]}
+{"ts": "2026-07-26T17:44:49.068", "session": "20260726_174415", "event": "pulse", "step": 7, "delta_deg": 0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [1.98, 0.507, 0.943]}
+{"ts": "2026-07-26T17:44:50.856", "session": "20260726_174415", "event": "measure", "step": 8, "yaw_err_deg": 0.361, "pitch_err_deg": 5.97, "points": 22942, "waist_deg": [1.98, 0.509, 0.945]}
+{"ts": "2026-07-26T17:44:50.858", "session": "20260726_174415", "event": "pulse", "step": 8, "delta_deg": 0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [1.981, 0.509, 0.945]}
+{"ts": "2026-07-26T17:44:52.627", "session": "20260726_174415", "event": "measure", "step": 9, "yaw_err_deg": 0.315, "pitch_err_deg": 5.99, "points": 22998, "waist_deg": [1.983, 0.511, 0.946]}
+{"ts": "2026-07-26T17:44:52.628", "session": "20260726_174415", "event": "pulse", "step": 9, "delta_deg": 0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [1.983, 0.511, 0.946]}
+{"ts": "2026-07-26T17:44:54.449", "session": "20260726_174415", "event": "measure", "step": 10, "yaw_err_deg": 0.303, "pitch_err_deg": 6.012, "points": 22982, "waist_deg": [1.984, 0.506, 0.942]}
+{"ts": "2026-07-26T17:44:54.464", "session": "20260726_174415", "event": "pulse", "step": 10, "delta_deg": 0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [1.982, 0.507, 0.943]}
+{"ts": "2026-07-26T17:44:56.260", "session": "20260726_174415", "event": "measure", "step": 11, "yaw_err_deg": 0.28, "pitch_err_deg": 6.016, "points": 22976, "waist_deg": [1.985, 0.507, 0.943]}
+{"ts": "2026-07-26T17:44:56.272", "session": "20260726_174415", "event": "pulse", "step": 11, "delta_deg": 0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [1.984, 0.507, 0.943]}
+{"ts": "2026-07-26T17:44:58.065", "session": "20260726_174415", "event": "measure", "step": 12, "yaw_err_deg": 0.281, "pitch_err_deg": 6.003, "points": 22962, "waist_deg": [1.979, 0.507, 0.943]}
+{"ts": "2026-07-26T17:44:58.072", "session": "20260726_174415", "event": "pulse", "step": 12, "delta_deg": 0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [1.98, 0.507, 0.943]}
+{"ts": "2026-07-26T17:44:59.861", "session": "20260726_174415", "event": "measure", "step": 13, "yaw_err_deg": 0.254, "pitch_err_deg": 6.012, "points": 22958, "waist_deg": [1.981, 0.509, 0.944]}
+{"ts": "2026-07-26T17:44:59.873", "session": "20260726_174415", "event": "pulse", "step": 13, "delta_deg": 0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [1.983, 0.509, 0.944]}
+{"ts": "2026-07-26T17:45:01.648", "session": "20260726_174415", "event": "measure", "step": 14, "yaw_err_deg": 0.224, "pitch_err_deg": 6.015, "points": 22929, "waist_deg": [1.986, 0.509, 0.944]}
+{"ts": "2026-07-26T17:45:01.650", "session": "20260726_174415", "event": "pulse", "step": 14, "delta_deg": 0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [1.985, 0.51, 0.945]}
+{"ts": "2026-07-26T17:45:03.414", "session": "20260726_174415", "event": "measure", "step": 15, "yaw_err_deg": 0.192, "pitch_err_deg": 6.016, "points": 22966, "waist_deg": [1.988, 0.511, 0.945]}
+{"ts": "2026-07-26T17:45:03.415", "session": "20260726_174415", "event": "done", "step": 15, "yaw_err_deg": 0.192, "waist_deg": [1.988, 0.511, 0.945]}
+{"ts": "2026-07-26T17:47:06.230", "session": "20260726_174648", "event": "start", "tol_deg": 0.35, "dmin": 0.5, "dmax": 1.0, "waist_deg": [0.995, 0.599, 1.047]}
+{"ts": "2026-07-26T17:47:06.406", "session": "20260726_174648", "event": "measure", "step": 1, "yaw_err_deg": 6.504, "pitch_err_deg": 5.834, "points": 24054, "waist_deg": [0.993, 0.599, 1.048]}
+{"ts": "2026-07-26T17:47:06.407", "session": "20260726_174648", "event": "pulse", "step": 1, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [0.993, 0.598, 1.048]}
+{"ts": "2026-07-26T17:47:07.897", "session": "20260726_174648", "event": "measure", "step": 2, "yaw_err_deg": 4.979, "pitch_err_deg": 5.927, "points": 24145, "waist_deg": [1.038, 0.604, 1.037]}
+{"ts": "2026-07-26T17:47:07.898", "session": "20260726_174648", "event": "pulse", "step": 2, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [1.038, 0.604, 1.037]}
+{"ts": "2026-07-26T17:47:09.439", "session": "20260726_174648", "event": "measure", "step": 3, "yaw_err_deg": 3.726, "pitch_err_deg": 6.05, "points": 23789, "waist_deg": [1.089, 0.599, 1.028]}
+{"ts": "2026-07-26T17:47:09.442", "session": "20260726_174648", "event": "pulse", "step": 3, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [1.088, 0.599, 1.028]}
+{"ts": "2026-07-26T17:47:10.942", "session": "20260726_174648", "event": "measure", "step": 4, "yaw_err_deg": 2.209, "pitch_err_deg": 6.064, "points": 23461, "waist_deg": [1.901, 0.562, 0.997]}
+{"ts": "2026-07-26T17:47:10.944", "session": "20260726_174648", "event": "pulse", "step": 4, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [1.902, 0.562, 0.997]}
+{"ts": "2026-07-26T17:47:12.439", "session": "20260726_174648", "event": "measure", "step": 5, "yaw_err_deg": 1.106, "pitch_err_deg": 6.118, "points": 23181, "waist_deg": [1.973, 0.523, 0.965]}
+{"ts": "2026-07-26T17:47:12.440", "session": "20260726_174648", "event": "pulse", "step": 5, "delta_deg": 0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [1.973, 0.524, 0.965]}
+{"ts": "2026-07-26T17:47:13.682", "session": "20260726_174648", "event": "measure", "step": 6, "yaw_err_deg": 0.992, "pitch_err_deg": 6.096, "points": 23167, "waist_deg": [1.978, 0.521, 0.96]}
+{"ts": "2026-07-26T17:47:13.683", "session": "20260726_174648", "event": "pulse", "step": 6, "delta_deg": 0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [1.978, 0.521, 0.96]}
+{"ts": "2026-07-26T17:47:14.951", "session": "20260726_174648", "event": "measure", "step": 7, "yaw_err_deg": 0.955, "pitch_err_deg": 6.091, "points": 23162, "waist_deg": [1.977, 0.522, 0.959]}
+{"ts": "2026-07-26T17:47:14.952", "session": "20260726_174648", "event": "pulse", "step": 7, "delta_deg": 0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [1.977, 0.521, 0.959]}
+{"ts": "2026-07-26T17:47:16.201", "session": "20260726_174648", "event": "measure", "step": 8, "yaw_err_deg": 0.865, "pitch_err_deg": 6.099, "points": 23164, "waist_deg": [1.983, 0.523, 0.959]}
+{"ts": "2026-07-26T17:47:16.204", "session": "20260726_174648", "event": "pulse", "step": 8, "delta_deg": 0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [1.983, 0.523, 0.959]}
+{"ts": "2026-07-26T17:47:17.485", "session": "20260726_174648", "event": "measure", "step": 9, "yaw_err_deg": 0.81, "pitch_err_deg": 6.107, "points": 23098, "waist_deg": [1.983, 0.521, 0.955]}
+{"ts": "2026-07-26T17:47:17.503", "session": "20260726_174648", "event": "pulse", "step": 9, "delta_deg": 0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [1.984, 0.521, 0.956]}
+{"ts": "2026-07-26T17:47:18.786", "session": "20260726_174648", "event": "measure", "step": 10, "yaw_err_deg": 0.68, "pitch_err_deg": 6.099, "points": 23087, "waist_deg": [1.979, 0.519, 0.953]}
+{"ts": "2026-07-26T17:47:18.793", "session": "20260726_174648", "event": "pulse", "step": 10, "delta_deg": 0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [1.98, 0.518, 0.953]}
+{"ts": "2026-07-26T17:47:20.063", "session": "20260726_174648", "event": "measure", "step": 11, "yaw_err_deg": 0.537, "pitch_err_deg": 6.11, "points": 23018, "waist_deg": [1.979, 0.515, 0.95]}
+{"ts": "2026-07-26T17:47:20.065", "session": "20260726_174648", "event": "pulse", "step": 11, "delta_deg": 0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [1.979, 0.515, 0.951]}
+{"ts": "2026-07-26T17:47:21.331", "session": "20260726_174648", "event": "measure", "step": 12, "yaw_err_deg": 0.344, "pitch_err_deg": 6.11, "points": 22937, "waist_deg": [1.982, 0.511, 0.947]}
+{"ts": "2026-07-26T17:47:21.332", "session": "20260726_174648", "event": "done", "step": 12, "yaw_err_deg": 0.344, "waist_deg": [1.982, 0.512, 0.947]}
+{"ts": "2026-07-26T17:59:18.129", "session": "20260726_175835", "event": "start", "tol_deg": 0.35, "dmin": 0.5, "dmax": 1.0, "waist_deg": [0.074, 0.535, 1.734]}
+{"ts": "2026-07-26T17:59:18.343", "session": "20260726_175835", "event": "measure", "step": 1, "yaw_err_deg": -5.302, "pitch_err_deg": 3.245, "points": 3303, "waist_deg": [0.071, 0.535, 1.734]}
+{"ts": "2026-07-26T17:59:18.345", "session": "20260726_175835", "event": "pulse", "step": 1, "delta_deg": -2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [0.071, 0.535, 1.734]}
+{"ts": "2026-07-26T17:59:19.845", "session": "20260726_175835", "event": "measure", "step": 2, "yaw_err_deg": -3.992, "pitch_err_deg": 2.763, "points": 3523, "waist_deg": [0.048, 0.488, 1.835]}
+{"ts": "2026-07-26T17:59:19.847", "session": "20260726_175835", "event": "pulse", "step": 2, "delta_deg": -2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [0.05, 0.488, 1.836]}
+{"ts": "2026-07-26T17:59:21.365", "session": "20260726_175835", "event": "measure", "step": 3, "yaw_err_deg": -3.257, "pitch_err_deg": 2.53, "points": 3889, "waist_deg": [0.03, 0.458, 1.897]}
+{"ts": "2026-07-26T17:59:21.367", "session": "20260726_175835", "event": "pulse", "step": 3, "delta_deg": -2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [0.031, 0.459, 1.897]}
+{"ts": "2026-07-26T17:59:22.874", "session": "20260726_175835", "event": "measure", "step": 4, "yaw_err_deg": -2.68, "pitch_err_deg": 2.32, "points": 4338, "waist_deg": [0.021, 0.397, 2.056]}
+{"ts": "2026-07-26T17:59:22.875", "session": "20260726_175835", "event": "pulse", "step": 4, "delta_deg": -2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [0.023, 0.397, 2.056]}
+{"ts": "2026-07-26T17:59:24.380", "session": "20260726_175835", "event": "measure", "step": 5, "yaw_err_deg": -1.891, "pitch_err_deg": 2.079, "points": 5484, "waist_deg": [0.01, 0.505, 2.208]}
+{"ts": "2026-07-26T17:59:24.381", "session": "20260726_175835", "event": "pulse", "step": 5, "delta_deg": -2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [0.01, 0.505, 2.208]}
+{"ts": "2026-07-26T17:59:25.891", "session": "20260726_175835", "event": "measure", "step": 6, "yaw_err_deg": -1.371, "pitch_err_deg": 2.693, "points": 6507, "waist_deg": [0.021, 0.598, 2.31]}
+{"ts": "2026-07-26T17:59:25.892", "session": "20260726_175835", "event": "pulse", "step": 6, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [0.021, 0.598, 2.31]}
+{"ts": "2026-07-26T17:59:27.137", "session": "20260726_175835", "event": "measure", "step": 7, "yaw_err_deg": -1.304, "pitch_err_deg": 3.11, "points": 7233, "waist_deg": [0.007, 0.606, 2.315]}
+{"ts": "2026-07-26T17:59:27.138", "session": "20260726_175835", "event": "pulse", "step": 7, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [0.007, 0.606, 2.315]}
+{"ts": "2026-07-26T17:59:28.394", "session": "20260726_175835", "event": "measure", "step": 8, "yaw_err_deg": -1.195, "pitch_err_deg": 3.243, "points": 7436, "waist_deg": [0.006, 0.609, 2.317]}
+{"ts": "2026-07-26T17:59:28.396", "session": "20260726_175835", "event": "pulse", "step": 8, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [0.007, 0.609, 2.317]}
+{"ts": "2026-07-26T17:59:29.673", "session": "20260726_175835", "event": "measure", "step": 9, "yaw_err_deg": -1.08, "pitch_err_deg": 3.188, "points": 7556, "waist_deg": [0.01, 0.608, 2.317]}
+{"ts": "2026-07-26T17:59:29.675", "session": "20260726_175835", "event": "pulse", "step": 9, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [0.009, 0.608, 2.317]}
+{"ts": "2026-07-26T17:59:30.935", "session": "20260726_175835", "event": "measure", "step": 10, "yaw_err_deg": -1.051, "pitch_err_deg": 3.292, "points": 7779, "waist_deg": [0.014, 0.606, 2.318]}
+{"ts": "2026-07-26T17:59:30.938", "session": "20260726_175835", "event": "pulse", "step": 10, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [0.014, 0.606, 2.317]}
+{"ts": "2026-07-26T17:59:32.186", "session": "20260726_175835", "event": "measure", "step": 11, "yaw_err_deg": -1.016, "pitch_err_deg": 3.47, "points": 8025, "waist_deg": [0.015, 0.609, 2.32]}
+{"ts": "2026-07-26T17:59:32.188", "session": "20260726_175835", "event": "pulse", "step": 11, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [0.015, 0.609, 2.32]}
+{"ts": "2026-07-26T17:59:33.420", "session": "20260726_175835", "event": "measure", "step": 12, "yaw_err_deg": -0.934, "pitch_err_deg": 3.547, "points": 8165, "waist_deg": [0.009, 0.611, 2.322]}
+{"ts": "2026-07-26T17:59:33.421", "session": "20260726_175835", "event": "pulse", "step": 12, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [0.009, 0.611, 2.322]}
+{"ts": "2026-07-26T17:59:34.665", "session": "20260726_175835", "event": "measure", "step": 13, "yaw_err_deg": -0.837, "pitch_err_deg": 3.636, "points": 8318, "waist_deg": [0.006, 0.62, 2.331]}
+{"ts": "2026-07-26T17:59:34.666", "session": "20260726_175835", "event": "pulse", "step": 13, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [0.006, 0.62, 2.331]}
+{"ts": "2026-07-26T17:59:35.913", "session": "20260726_175835", "event": "measure", "step": 14, "yaw_err_deg": -0.7, "pitch_err_deg": 3.912, "points": 8748, "waist_deg": [0.004, 0.631, 2.344]}
+{"ts": "2026-07-26T17:59:35.914", "session": "20260726_175835", "event": "pulse", "step": 14, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [0.004, 0.631, 2.344]}
+{"ts": "2026-07-26T17:59:37.172", "session": "20260726_175835", "event": "measure", "step": 15, "yaw_err_deg": -0.642, "pitch_err_deg": 4.028, "points": 8918, "waist_deg": [0.007, 0.638, 2.353]}
+{"ts": "2026-07-26T17:59:37.173", "session": "20260726_175835", "event": "pulse", "step": 15, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [0.008, 0.638, 2.353]}
+{"ts": "2026-07-26T17:59:38.257", "session": "20260726_175835", "event": "give_up", "yaw_err_deg": -0.642, "waist_deg": [0.006, 0.636, 2.354]}
+{"ts": "2026-07-26T18:04:53.373", "session": "20260726_175835", "event": "start", "tol_deg": 0.35, "dmin": 0.5, "dmax": 1.0, "waist_deg": [0.064, -0.29, 2.989]}
+{"ts": "2026-07-26T18:04:53.673", "session": "20260726_175835", "event": "measure", "step": 1, "yaw_err_deg": -7.27, "pitch_err_deg": 7.462, "points": 20498, "waist_deg": [0.067, -0.29, 2.989]}
+{"ts": "2026-07-26T18:04:53.784", "session": "20260726_175835", "event": "pulse", "step": 1, "delta_deg": -2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [0.066, -0.291, 2.989]}
+{"ts": "2026-07-26T18:04:55.475", "session": "20260726_175835", "event": "measure", "step": 2, "yaw_err_deg": -7.075, "pitch_err_deg": 7.45, "points": 20568, "waist_deg": [0.059, -0.292, 2.986]}
+{"ts": "2026-07-26T18:04:58.480", "session": "20260726_175835", "event": "pulse", "step": 2, "delta_deg": -2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [0.056, -0.293, 2.987]}
+{"ts": "2026-07-26T18:05:00.032", "session": "20260726_175835", "event": "measure", "step": 3, "yaw_err_deg": -7.261, "pitch_err_deg": 7.437, "points": 20510, "waist_deg": [0.059, -0.291, 2.988]}
+{"ts": "2026-07-26T18:05:03.037", "session": "20260726_175835", "event": "pulse", "step": 3, "delta_deg": -2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [0.056, -0.291, 2.986]}
+{"ts": "2026-07-26T18:05:04.649", "session": "20260726_175835", "event": "measure", "step": 4, "yaw_err_deg": -7.252, "pitch_err_deg": 7.458, "points": 20505, "waist_deg": [0.066, -0.29, 2.987]}
+{"ts": "2026-07-26T18:05:07.661", "session": "20260726_175835", "event": "pulse", "step": 4, "delta_deg": -2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [0.054, -0.293, 2.986]}
+{"ts": "2026-07-26T18:05:09.204", "session": "20260726_175835", "event": "measure", "step": 5, "yaw_err_deg": -7.24, "pitch_err_deg": 7.45, "points": 20522, "waist_deg": [0.055, -0.292, 2.986]}
+{"ts": "2026-07-26T18:05:09.309", "session": "20260726_175835", "event": "pulse", "step": 5, "delta_deg": -2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [0.052, -0.293, 2.986]}
+{"ts": "2026-07-26T18:05:10.892", "session": "20260726_175835", "event": "measure", "step": 6, "yaw_err_deg": -7.077, "pitch_err_deg": 7.478, "points": 20640, "waist_deg": [0.035, -0.292, 2.986]}
+{"ts": "2026-07-26T18:05:13.920", "session": "20260726_175835", "event": "pulse", "step": 6, "delta_deg": -2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [-1.923, -0.269, 1.661]}
+{"ts": "2026-07-26T18:05:15.549", "session": "20260726_175835", "event": "measure", "step": 7, "yaw_err_deg": 4.478, "pitch_err_deg": 6.962, "points": 21937, "waist_deg": [-0.871, -0.278, 1.753]}
+{"ts": "2026-07-26T18:05:18.552", "session": "20260726_175835", "event": "pulse", "step": 7, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [-0.897, -0.295, 3.131]}
+{"ts": "2026-07-26T18:05:20.149", "session": "20260726_175835", "event": "measure", "step": 8, "yaw_err_deg": -7.374, "pitch_err_deg": 7.674, "points": 20526, "waist_deg": [0.029, -0.293, 3.133]}
+{"ts": "2026-07-26T18:05:20.155", "session": "20260726_175835", "event": "sign_flip", "step": 8, "waist_deg": [0.031, -0.294, 3.133]}
+{"ts": "2026-07-26T18:05:23.158", "session": "20260726_175835", "event": "pulse", "step": 8, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [0.736, -0.212, 3.565]}
+{"ts": "2026-07-26T18:05:23.891", "session": "20260726_175835", "event": "cancelled", "step": 8, "waist_deg": [0.934, -0.211, 3.566]}
+{"ts": "2026-07-26T18:05:58.214", "session": "20260726_175835", "event": "start", "tol_deg": 0.35, "dmin": 0.5, "dmax": 1.0, "waist_deg": [-0.039, -0.074, 0.645]}
+{"ts": "2026-07-26T18:05:58.505", "session": "20260726_175835", "event": "measure", "step": 1, "yaw_err_deg": 4.771, "pitch_err_deg": 7.097, "points": 21955, "waist_deg": [-0.031, -0.076, 0.646]}
+{"ts": "2026-07-26T18:06:01.510", "session": "20260726_175835", "event": "pulse", "step": 1, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [-0.019, -0.078, 0.668]}
+{"ts": "2026-07-26T18:06:03.098", "session": "20260726_175835", "event": "measure", "step": 2, "yaw_err_deg": 4.11, "pitch_err_deg": 7.277, "points": 22216, "waist_deg": [-0.017, -0.077, 0.668]}
+{"ts": "2026-07-26T18:06:06.102", "session": "20260726_175835", "event": "pulse", "step": 2, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [-0.008, -0.077, 0.684]}
+{"ts": "2026-07-26T18:06:07.736", "session": "20260726_175835", "event": "measure", "step": 3, "yaw_err_deg": 3.422, "pitch_err_deg": 7.355, "points": 22351, "waist_deg": [-0.003, -0.077, 0.685]}
+{"ts": "2026-07-26T18:06:10.741", "session": "20260726_175835", "event": "pulse", "step": 3, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [0.01, -0.08, 0.694]}
+{"ts": "2026-07-26T18:06:12.298", "session": "20260726_175835", "event": "measure", "step": 4, "yaw_err_deg": 2.886, "pitch_err_deg": 7.471, "points": 22438, "waist_deg": [0.007, -0.082, 0.695]}
+{"ts": "2026-07-26T18:06:12.402", "session": "20260726_175835", "event": "pulse", "step": 4, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [0.007, -0.083, 0.695]}
+{"ts": "2026-07-26T18:06:13.968", "session": "20260726_175835", "event": "measure", "step": 5, "yaw_err_deg": 2.219, "pitch_err_deg": 7.505, "points": 22585, "waist_deg": [0.038, -0.119, 0.736]}
+{"ts": "2026-07-26T18:06:14.064", "session": "20260726_175835", "event": "pulse", "step": 5, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [0.032, -0.12, 0.736]}
+{"ts": "2026-07-26T18:06:15.671", "session": "20260726_175835", "event": "measure", "step": 6, "yaw_err_deg": 1.469, "pitch_err_deg": 7.569, "points": 22820, "waist_deg": [0.086, -0.134, 0.786]}
+{"ts": "2026-07-26T18:06:15.778", "session": "20260726_175835", "event": "pulse", "step": 6, "delta_deg": 0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [0.076, -0.133, 0.786]}
+{"ts": "2026-07-26T18:06:17.133", "session": "20260726_175835", "event": "measure", "step": 7, "yaw_err_deg": 1.848, "pitch_err_deg": 7.579, "points": 22775, "waist_deg": [0.016, -0.132, 0.797]}
+{"ts": "2026-07-26T18:06:17.137", "session": "20260726_175835", "event": "sign_flip", "step": 7, "waist_deg": [0.016, -0.131, 0.796]}
+{"ts": "2026-07-26T18:06:20.142", "session": "20260726_175835", "event": "pulse", "step": 7, "delta_deg": -2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [-0.113, -0.131, 0.795]}
+{"ts": "2026-07-26T18:06:21.736", "session": "20260726_175835", "event": "measure", "step": 8, "yaw_err_deg": 2.989, "pitch_err_deg": 7.687, "points": 22620, "waist_deg": [-0.108, -0.131, 0.794]}
+{"ts": "2026-07-26T18:06:21.738", "session": "20260726_175835", "event": "sign_flip", "step": 8, "waist_deg": [-0.108, -0.131, 0.795]}
+{"ts": "2026-07-26T18:06:24.746", "session": "20260726_175835", "event": "pulse", "step": 8, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [0.003, -0.128, 0.81]}
+{"ts": "2026-07-26T18:06:26.347", "session": "20260726_175835", "event": "measure", "step": 9, "yaw_err_deg": 2.042, "pitch_err_deg": 7.663, "points": 22696, "waist_deg": [0.005, -0.128, 0.809]}
+{"ts": "2026-07-26T18:06:26.461", "session": "20260726_175835", "event": "pulse", "step": 9, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [0.0, -0.128, 0.809]}
+{"ts": "2026-07-26T18:06:28.103", "session": "20260726_175835", "event": "measure", "step": 10, "yaw_err_deg": 1.327, "pitch_err_deg": 7.716, "points": 22920, "waist_deg": [0.048, -0.123, 0.819]}
+{"ts": "2026-07-26T18:06:31.108", "session": "20260726_175835", "event": "pulse", "step": 10, "delta_deg": 0.5, "duration_s": 0.083, "rpc_code": 3104, "waist_deg": [0.015, -0.12, 0.823]}
+{"ts": "2026-07-26T18:06:32.457", "session": "20260726_175835", "event": "measure", "step": 11, "yaw_err_deg": 1.442, "pitch_err_deg": 7.798, "points": 22846, "waist_deg": [0.015, -0.12, 0.823]}
+{"ts": "2026-07-26T18:06:35.464", "session": "20260726_175835", "event": "pulse", "step": 11, "delta_deg": 0.5, "duration_s": 0.083, "rpc_code": 3104, "waist_deg": [0.016, -0.118, 0.826]}
+{"ts": "2026-07-26T18:06:36.055", "session": "20260726_175835", "event": "cancelled", "step": 11, "waist_deg": [0.014, -0.118, 0.826]}
+{"ts": "2026-07-26T18:47:56.290", "session": "20260726_181346", "event": "start", "tol_deg": 2.8, "dmin": 0.3, "dmax": 1.0, "waist_deg": [-3.248, -0.013, 3.672]}
+{"ts": "2026-07-26T18:47:56.518", "session": "20260726_181346", "event": "measure", "step": 1, "yaw_err_deg": 14.601, "pitch_err_deg": 6.694, "points": 28390, "waist_deg": [-3.246, -0.014, 3.672]}
+{"ts": "2026-07-26T18:47:59.529", "session": "20260726_181346", "event": "pulse", "step": 1, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [-3.24, -0.012, 3.672]}
+{"ts": "2026-07-26T18:48:01.096", "session": "20260726_181346", "event": "measure", "step": 2, "yaw_err_deg": 14.573, "pitch_err_deg": 6.631, "points": 28410, "waist_deg": [-3.24, -0.011, 3.672]}
+{"ts": "2026-07-26T18:48:04.103", "session": "20260726_181346", "event": "pulse", "step": 2, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [-3.246, -0.011, 3.671]}
+{"ts": "2026-07-26T18:48:05.670", "session": "20260726_181346", "event": "measure", "step": 3, "yaw_err_deg": 14.554, "pitch_err_deg": 6.562, "points": 28391, "waist_deg": [-3.242, -0.015, 3.669]}
+{"ts": "2026-07-26T18:48:08.672", "session": "20260726_181346", "event": "pulse", "step": 3, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [-3.24, -0.008, 3.67]}
+{"ts": "2026-07-26T18:48:10.265", "session": "20260726_181346", "event": "measure", "step": 4, "yaw_err_deg": 14.564, "pitch_err_deg": 6.557, "points": 28406, "waist_deg": [-3.244, -0.009, 3.671]}
+{"ts": "2026-07-26T18:48:13.272", "session": "20260726_181346", "event": "pulse", "step": 4, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [-3.237, -0.003, 3.672]}
+{"ts": "2026-07-26T18:48:14.907", "session": "20260726_181346", "event": "measure", "step": 5, "yaw_err_deg": 14.557, "pitch_err_deg": 6.48, "points": 28358, "waist_deg": [-3.242, -0.004, 3.672]}
+{"ts": "2026-07-26T18:48:17.912", "session": "20260726_181346", "event": "pulse", "step": 5, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [-3.241, 0.004, 3.674]}
+{"ts": "2026-07-26T18:48:19.521", "session": "20260726_181346", "event": "measure", "step": 6, "yaw_err_deg": 14.531, "pitch_err_deg": 6.418, "points": 28359, "waist_deg": [-3.247, 0.004, 3.673]}
+{"ts": "2026-07-26T18:48:22.532", "session": "20260726_181346", "event": "pulse", "step": 6, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [-3.233, 0.002, 3.671]}
+{"ts": "2026-07-26T18:48:24.096", "session": "20260726_181346", "event": "measure", "step": 7, "yaw_err_deg": 14.48, "pitch_err_deg": 6.379, "points": 28366, "waist_deg": [-3.234, 0.002, 3.671]}
+{"ts": "2026-07-26T18:48:27.098", "session": "20260726_181346", "event": "pulse", "step": 7, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [-3.241, 0.004, 3.671]}
+{"ts": "2026-07-26T18:48:28.743", "session": "20260726_181346", "event": "measure", "step": 8, "yaw_err_deg": 14.474, "pitch_err_deg": 6.353, "points": 28351, "waist_deg": [-3.255, -0.036, 3.643]}
+{"ts": "2026-07-26T18:48:28.927", "session": "20260726_181346", "event": "pulse", "step": 8, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 0, "waist_deg": [-3.382, -0.407, 3.42]}
+{"ts": "2026-07-26T18:48:30.544", "session": "20260726_181346", "event": "measure", "step": 9, "yaw_err_deg": 8.155, "pitch_err_deg": 4.517, "points": 23240, "waist_deg": [-3.976, 0.207, 4.264]}
+{"ts": "2026-07-26T18:48:33.550", "session": "20260726_181346", "event": "pulse", "step": 9, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [-5.032, -1.364, 5.014]}
+{"ts": "2026-07-26T18:48:35.051", "session": "20260726_181346", "event": "measure", "step": 10, "yaw_err_deg": 20.901, "pitch_err_deg": 2.899, "points": 21277, "waist_deg": [-2.343, -0.864, 4.002]}
+{"ts": "2026-07-26T18:48:35.051", "session": "20260726_181346", "event": "sign_flip", "step": 10, "waist_deg": [-2.343, -0.864, 4.002]}
+{"ts": "2026-07-26T18:48:38.053", "session": "20260726_181346", "event": "pulse", "step": 10, "delta_deg": -2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [-3.005, -0.002, 2.038]}
+{"ts": "2026-07-26T18:48:39.666", "session": "20260726_181346", "event": "measure", "step": 11, "yaw_err_deg": 19.268, "pitch_err_deg": 4.821, "points": 22704, "waist_deg": [-3.008, 0.002, 2.037]}
+{"ts": "2026-07-26T18:48:42.673", "session": "20260726_181346", "event": "pulse", "step": 11, "delta_deg": -2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [-3.031, 0.007, 2.039]}
+{"ts": "2026-07-26T18:48:44.283", "session": "20260726_181346", "event": "measure", "step": 12, "yaw_err_deg": 20.49, "pitch_err_deg": 5.019, "points": 22290, "waist_deg": [-3.03, 0.006, 2.04]}
+{"ts": "2026-07-26T18:48:44.287", "session": "20260726_181346", "event": "sign_flip", "step": 12, "waist_deg": [-3.032, 0.007, 2.04]}
+{"ts": "2026-07-26T18:48:47.292", "session": "20260726_181346", "event": "pulse", "step": 12, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [-2.163, 0.276, 4.851]}
+{"ts": "2026-07-26T18:48:48.861", "session": "20260726_181346", "event": "measure", "step": 13, "yaw_err_deg": 13.996, "pitch_err_deg": 5.786, "points": 18999, "waist_deg": [-3.178, 0.251, 4.831]}
+{"ts": "2026-07-26T18:48:51.865", "session": "20260726_181346", "event": "pulse", "step": 13, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [-4.968, -1.153, 4.655]}
+{"ts": "2026-07-26T18:48:53.407", "session": "20260726_181346", "event": "measure", "step": 14, "yaw_err_deg": 5.679, "pitch_err_deg": 4.765, "points": 22130, "waist_deg": [-5.062, -1.103, 4.068]}
+{"ts": "2026-07-26T18:48:56.416", "session": "20260726_181346", "event": "pulse", "step": 14, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [-5.008, -1.1, 3.984]}
+{"ts": "2026-07-26T18:48:57.976", "session": "20260726_181346", "event": "measure", "step": 15, "yaw_err_deg": 4.576, "pitch_err_deg": 4.854, "points": 22299, "waist_deg": [-5.005, -1.084, 3.905]}
+{"ts": "2026-07-26T18:49:00.997", "session": "20260726_181346", "event": "pulse", "step": 15, "delta_deg": 2.0, "duration_s": 0.333, "rpc_code": 3104, "waist_deg": [-4.975, -1.067, 3.548]}
+{"ts": "2026-07-26T18:49:02.335", "session": "20260726_181346", "event": "give_up", "yaw_err_deg": 4.576, "waist_deg": [-4.974, -1.066, 3.544]}
+{"ts": "2026-07-26T19:00:07.365", "session": "20260726_185845", "event": "start", "tol_deg": 0.35, "dmin": 0.3, "dmax": 1.0, "waist_deg": [-1.081, -0.964, 1.281]}
+{"ts": "2026-07-26T19:00:07.525", "session": "20260726_185845", "event": "measure", "step": 1, "yaw_err_deg": -1.146, "pitch_err_deg": 7.194, "points": 25722, "waist_deg": [-1.079, -0.966, 1.281]}
+{"ts": "2026-07-26T19:00:07.527", "session": "20260726_185845", "event": "pulse", "step": 1, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [-1.079, -0.966, 1.281]}
+{"ts": "2026-07-26T19:00:08.797", "session": "20260726_185845", "event": "measure", "step": 2, "yaw_err_deg": -1.098, "pitch_err_deg": 7.221, "points": 25772, "waist_deg": [-1.082, -0.971, 1.28]}
+{"ts": "2026-07-26T19:00:08.810", "session": "20260726_185845", "event": "pulse", "step": 2, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [-1.083, -0.971, 1.28]}
+{"ts": "2026-07-26T19:00:10.044", "session": "20260726_185845", "event": "measure", "step": 3, "yaw_err_deg": -1.063, "pitch_err_deg": 7.225, "points": 25795, "waist_deg": [-1.086, -0.971, 1.278]}
+{"ts": "2026-07-26T19:00:10.046", "session": "20260726_185845", "event": "pulse", "step": 3, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [-1.086, -0.971, 1.278]}
+{"ts": "2026-07-26T19:00:11.298", "session": "20260726_185845", "event": "measure", "step": 4, "yaw_err_deg": -1.071, "pitch_err_deg": 7.219, "points": 25798, "waist_deg": [-1.082, -0.972, 1.279]}
+{"ts": "2026-07-26T19:00:11.300", "session": "20260726_185845", "event": "pulse", "step": 4, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [-1.082, -0.971, 1.279]}
+{"ts": "2026-07-26T19:00:12.542", "session": "20260726_185845", "event": "measure", "step": 5, "yaw_err_deg": -1.037, "pitch_err_deg": 7.238, "points": 25828, "waist_deg": [-1.085, -0.972, 1.278]}
+{"ts": "2026-07-26T19:00:12.543", "session": "20260726_185845", "event": "pulse", "step": 5, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [-1.084, -0.972, 1.279]}
+{"ts": "2026-07-26T19:00:13.792", "session": "20260726_185845", "event": "measure", "step": 6, "yaw_err_deg": -1.039, "pitch_err_deg": 7.228, "points": 25791, "waist_deg": [-1.088, -0.974, 1.279]}
+{"ts": "2026-07-26T19:00:13.795", "session": "20260726_185845", "event": "pulse", "step": 6, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [-1.088, -0.975, 1.28]}
+{"ts": "2026-07-26T19:00:15.030", "session": "20260726_185845", "event": "measure", "step": 7, "yaw_err_deg": -1.022, "pitch_err_deg": 7.22, "points": 25818, "waist_deg": [-1.086, -0.975, 1.279]}
+{"ts": "2026-07-26T19:00:15.032", "session": "20260726_185845", "event": "pulse", "step": 7, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [-1.085, -0.976, 1.279]}
+{"ts": "2026-07-26T19:00:16.282", "session": "20260726_185845", "event": "measure", "step": 8, "yaw_err_deg": -1.026, "pitch_err_deg": 7.24, "points": 25785, "waist_deg": [-1.089, -0.979, 1.28]}
+{"ts": "2026-07-26T19:00:16.296", "session": "20260726_185845", "event": "pulse", "step": 8, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [-1.09, -0.98, 1.28]}
+{"ts": "2026-07-26T19:00:17.536", "session": "20260726_185845", "event": "measure", "step": 9, "yaw_err_deg": -1.024, "pitch_err_deg": 7.248, "points": 25819, "waist_deg": [-1.089, -0.978, 1.277]}
+{"ts": "2026-07-26T19:00:17.537", "session": "20260726_185845", "event": "pulse", "step": 9, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [-1.088, -0.978, 1.277]}
+{"ts": "2026-07-26T19:00:18.787", "session": "20260726_185845", "event": "measure", "step": 10, "yaw_err_deg": -1.014, "pitch_err_deg": 7.236, "points": 25793, "waist_deg": [-1.088, -0.975, 1.278]}
+{"ts": "2026-07-26T19:00:18.797", "session": "20260726_185845", "event": "pulse", "step": 10, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [-1.088, -0.975, 1.278]}
+{"ts": "2026-07-26T19:00:20.054", "session": "20260726_185845", "event": "measure", "step": 11, "yaw_err_deg": -1.011, "pitch_err_deg": 7.242, "points": 25815, "waist_deg": [-1.088, -0.977, 1.278]}
+{"ts": "2026-07-26T19:00:20.056", "session": "20260726_185845", "event": "pulse", "step": 11, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [-1.088, -0.978, 1.278]}
+{"ts": "2026-07-26T19:00:21.317", "session": "20260726_185845", "event": "measure", "step": 12, "yaw_err_deg": -1.01, "pitch_err_deg": 7.235, "points": 25806, "waist_deg": [-1.083, -0.975, 1.279]}
+{"ts": "2026-07-26T19:00:21.319", "session": "20260726_185845", "event": "pulse", "step": 12, "delta_deg": -0.5, "duration_s": 0.083, "rpc_code": 0, "waist_deg": [-1.083, -0.975, 1.279]}
+{"ts": "2026-07-26T19:00:21.319", "session": "20260726_185845", "event": "cancelled", "step": 12, "waist_deg": [-1.083, -0.975, 1.279]}

@@ -167,10 +167,13 @@ async function initReach() {
     addVia: document.getElementById("reachAddViaBtn"),
     viaList: document.getElementById("reachViaList"),
     endSel: document.getElementById("reachEndSel"),
+    gotoSel: document.getElementById("reachGotoSel"),
+    gotoBtn: document.getElementById("reachGotoBtn"),
     seqSel: document.getElementById("reachSeqSel"),
     seqRun: document.getElementById("reachSeqRunBtn"),
     seqSave: document.getElementById("reachSeqSaveBtn"),
     seqDel: document.getElementById("reachSeqDelBtn"),
+    seqMargin: document.getElementById("reachSeqMargin"),
     handMove: document.getElementById("reachHandMoveBtn"),
     record: document.getElementById("reachRecordBtn"),
     delWp: document.getElementById("reachDelWpBtn"),
@@ -203,10 +206,41 @@ async function initReach() {
   d.scan.addEventListener("click", () => scanObstacles());
   d.clearObs.addEventListener("click", () => clearObstacles());
   d.handMove.addEventListener("click", () => toggleHandMove());
+  // 卸力摆位时按空格 = 恢复保持（一只手扶着手臂时够不着鼠标）
+  window.addEventListener("keydown", (e) => {
+    if (e.code !== "Space" || !reach.status?.hand_move) {
+      return;
+    }
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA"
+              || t.tagName === "SELECT" || t.isContentEditable)) {
+      return;
+    }
+    e.preventDefault();   // 别让空格滚动页面
+    toggleHandMove();     // hand_move=true → 走"恢复保持"分支，无确认弹窗
+  });
   d.record.addEventListener("click", () => recordWaypoint());
   d.delWp.addEventListener("click", () => deleteWaypoint());
   d.addVia.addEventListener("click", () => addViaWaypoint());
-  d.seqRun.addEventListener("click", () => runSequence());
+  // 路点当终点：不从图像取点，从当前姿态直接去选中路点（关节插值，无 IK）
+  d.gotoBtn.addEventListener("click", async () => {
+    const wp = waypointByFile(d.gotoSel.value);
+    if (!wp) {
+      reachMsg("先在「路点终点」下拉框选一个路点", "error");
+      return;
+    }
+    if (reach.status.armed
+        && !window.confirm(`确认真机运动到路点「${wp.name}」？\n（从当前姿态关节插值直达）`)) {
+      return;
+    }
+    d.gotoBtn.disabled = true;
+    try {
+      await moveToWaypoint(wp);
+    } finally {
+      d.gotoBtn.disabled = false;
+    }
+  });
+  d.seqRun.addEventListener("click", (e) => runSequence(e.shiftKey));
   d.seqSave.addEventListener("click", () => saveSequence());
   d.seqDel.addEventListener("click", () => deleteSequence());
   d.nextSide.addEventListener("click", () => stepNextSidestep());
@@ -1032,10 +1066,11 @@ async function deleteSequence() {
   }
 }
 
-// 执行序列：全部逻辑在后端 /api/reach/sequences/run（纯关节插值回放，
-// 无 IK、无碰撞检查——录制时人工验证过）。前端只是调用方之一，
+// 执行序列：全部逻辑在后端 /api/reach/sequences/run。首次运行会用
+// 「直线优先、撞了才 RRT」规划无碰撞轨迹并录进序列文件，之后直接
+// 回放录制轨迹（免 RRT/IK/碰撞检查，请求即执行）。前端只是调用方之一，
 // 以后无界面的自动化封装直接 POST 同一个接口即可。
-async function runSequence() {
+async function runSequence(replan = false) {
   const seq = sequenceByFile(reach.dom.seqSel.value);
   if (!seq) {
     reachMsg("先在下拉框选一个动作序列", "error");
@@ -1044,19 +1079,51 @@ async function runSequence() {
   const names = (seq.waypoints || [])
     .map((f) => waypointByFile(f)?.name || f).join(" → ");
   const ok = window.confirm(
-    `确认执行序列「${seq.name}」？手臂将开始运动！\n\n${names}\n` +
-    "纯关节回放：无 IK、无碰撞检查（录制时已验证），请确认工况一致。");
+    `确认执行序列「${seq.name}」？\n\n${names}\n` +
+    (replan
+      ? "【Shift】丢弃已录轨迹重新 RRT 规划：先仿真回放，确认后再按一次 ▶ 才真机执行。"
+      : "首次运行只规划并仿真回放（确认后再按一次 ▶ 执行）；已录制则手臂立即开始运动！\n" +
+        "按住 Shift 点 ▶ 可强制重新规划。"));
   if (!ok) {
     return;
   }
+  const marginM = (Number(reach.dom.seqMargin?.value) || 0) / 100;
   reach.dom.seqRun.disabled = true;
   try {
-    const res = await fetchJson("/api/reach/sequences/run", {
+    const resp = await fetch("/api/reach/sequences/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ file: seq.file }),
+      body: JSON.stringify({ file: seq.file, replan, margin_m: marginM }),
     });
-    reachMsg(`序列「${seq.name}」执行中…（~${Number(res.duration_s).toFixed(1)}s）`, "success");
+    const res = await resp.json();
+    if (!resp.ok || !res.ok) {
+      // 规划失败时后端会指出撞的路点：把该姿态摆进三维视图并标红碰撞处
+      if (res.bad_waypoint?.named_joints) {
+        await showBadTargetPose(res.bad_waypoint.named_joints);
+        reachMsg(`${res.error || "序列执行失败"}（已在三维视图中标出）`, "error");
+      } else {
+        reachMsg(`序列执行失败: ${res.error || resp.statusText}`, "error");
+      }
+      return;
+    }
+    if (res.preview) {
+      // 规划完成但未执行：把轨迹装进三维视图自动回放，用户确认后再按 ▶
+      const panel = state.panels[reach.status?.chain_id];
+      if (panel && res.preview_frames?.length) {
+        pause(panel);
+        panel.frames = res.preview_frames;
+        panel.frameIndex = 0;
+        updateTrajectoryLine(panel);
+        applyFrame(panel, 0);
+        panel.playing = true;
+        panel.lastFrameTime = performance.now();
+      }
+      reachMsg(`已规划并录制（${res.frames} 帧，执行约 ${Number(res.duration_s).toFixed(1)}s）。` +
+        "正在三维视图仿真回放——确认无误后再按一次 ▶ 即真机执行", "warn");
+      return;
+    }
+    const how = res.replayed ? "回放录制轨迹" : "RRT 规划完成并已录制";
+    reachMsg(`序列「${seq.name}」执行中…（${how}，~${Number(res.duration_s).toFixed(1)}s）`, "success");
     const final = await pollReachExec();
     reachMsg(final?.message?.startsWith("完成")
       ? `序列「${seq.name}」完成`
@@ -1067,6 +1134,40 @@ async function runSequence() {
   } finally {
     reach.dom.seqRun.disabled = false;
   }
+}
+
+// 把"撞的目标姿态"摆到三维视图里并渲染碰撞标记：借用 /api/trajectory/plan
+// （起点=终点=该姿态，2 帧）拿到带碰撞详情的帧，复用既有可视化管线
+async function showBadTargetPose(namedJoints) {
+  const st = reach.status;
+  const panel = state.panels[st.chain_id];
+  if (!panel) {
+    return;
+  }
+  try {
+    const seg = await fetchJson("/api/trajectory/plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        robot: state.activeRobot,
+        chain_id: panel.chainId,
+        current_joints: namedJoints,
+        target_joints: namedJoints,
+        tcp_offset: readPose(panel, "tcp"),
+        duration: 0.1,
+        steps: 2,
+        planner_type: "linear",
+        check_collision: true,
+      }),
+    });
+    panel.frames = seg.waypoints;
+    panel.frameIndex = 0;
+    panel.currentCollision = seg.collision;
+    updateCollisionMetrics(panel, seg.collision);
+    updateTrajectoryLine(panel);
+    visualizeCollision(panel, seg.collision);
+    applyFrame(panel, 0);
+  } catch { /* 可视化失败不影响错误提示 */ }
 }
 
 // 经由多个中间路点的分段规划：当前 → 路点1 → 路点2 → … → 目标。
@@ -1250,6 +1351,7 @@ async function refreshWaypoints() {
   };
   fill(reach.dom.waypointSel, "（直达）");
   fill(reach.dom.endSel, "（不收回）");
+  fill(reach.dom.gotoSel, "（路点终点）");
   reach.dom.delWp.disabled = !reach.waypoints.length;
   // 路点文件可能被删除，清掉队列里的失效项
   reach.viaList = (reach.viaList || []).filter((f) => reach.waypoints.some((w) => w.file === f));
@@ -1317,7 +1419,7 @@ async function toggleHandMove() {
   const on = !reach.status.hand_move;
   if (on) {
     const ok = window.confirm(
-      "确认卸力？\n\n手臂将失去支撑并下坠，请务必先用手扶住手臂！\n摆好位置后点「恢复保持」。");
+      "确认卸力？\n\n手臂将失去支撑并下坠，请务必先用手扶住手臂！\n摆好位置后点「恢复保持」或按空格键。");
     if (!ok) {
       return;
     }
@@ -1383,7 +1485,11 @@ async function scanObstacles() {
       body: JSON.stringify({}),
     });
     await refreshObstacles();
-    reachMsg(`障碍扫描完成：${data.count} 个体素（${(data.voxel_m * 100).toFixed(0)}cm），已加入碰撞检查`, "success");
+    const wallNote = data.wall_count
+      ? `，拟合墙面补全 ${data.wall_count} 个（红色，含视野下方）`
+      : "，未拟合出墙面（点太散或没对着柜子）";
+    reachMsg(`障碍扫描完成：${data.count} 个体素（${(data.voxel_m * 100).toFixed(0)}cm）`
+      + `${wallNote}，已全部加入碰撞检查`, "success");
   } catch (error) {
     reachMsg(`扫描失败: ${error.message}`, "error");
   } finally {
@@ -1410,7 +1516,7 @@ async function refreshObstacles() {
   }
   renderObstacles(data);
   if (reach.dom) {
-    reach.dom.clearObs.disabled = !data.count;
+    reach.dom.clearObs.disabled = !data.count && !data.wall_count;
   }
 }
 
@@ -1419,27 +1525,62 @@ function renderObstacles(data) {
     state.helperRoot.add(reach.obstacleGroup);
   }
   reach.obstacleGroup.clear();
-  if (!data.count) {
+  if (!data.count && !data.wall_count) {
     publishRenderState("障碍清除");
     return;
   }
   const size = data.voxel_m;
-  const material = new THREE.MeshStandardMaterial({
-    color: 0x2f8fd9,
-    transparent: true,
-    opacity: 0.22,
-    depthWrite: false,
-    roughness: 0.8,
-  });
-  const instanced = new THREE.InstancedMesh(
-    new THREE.BoxGeometry(size, size, size), material, data.count);
-  const m = new THREE.Matrix4();
-  data.centers.forEach((center, index) => {
-    m.setPosition(...xyzToScene(center));
-    instanced.setMatrixAt(index, m);
-  });
-  instanced.instanceMatrix.needsUpdate = true;
-  reach.obstacleGroup.add(instanced);
+  const addVoxels = (centers, color, opacity) => {
+    if (!centers?.length) {
+      return;
+    }
+    const material = new THREE.MeshStandardMaterial({
+      color,
+      transparent: true,
+      opacity,
+      depthWrite: false,
+      roughness: 0.8,
+    });
+    const instanced = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(size, size, size), material, centers.length);
+    const m = new THREE.Matrix4();
+    centers.forEach((center, index) => {
+      m.setPosition(...xyzToScene(center));
+      instanced.setMatrixAt(index, m);
+    });
+    instanced.instanceMatrix.needsUpdate = true;
+    reach.obstacleGroup.add(instanced);
+  };
+  addVoxels(data.centers, 0x2f8fd9, 0.28);          // 蓝：相机实际扫到的
+  addVoxels(data.wall_centers, 0xd94b3a, 0.30);     // 红：拟合竖直墙补全（含视野下方）
+
+  // 红色半透明平面：把"竖直墙"画成连续面，比体素更容易认（你标注的那条）。
+  // 本查看器是 Z-up（地面 XY），PlaneGeometry 默认法线 +Z、铺在本地 XY。
+  const plane = data.wall_plane;
+  if (plane?.width_m > 0.05 && plane?.height_m > 0.05) {
+    const geo = new THREE.PlaneGeometry(plane.width_m, plane.height_m);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xd94b3a,
+      transparent: true,
+      opacity: 0.22,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    const n = new THREE.Vector3(...plane.normal).normalize();     // 水平法向
+    const up = new THREE.Vector3(0, 0, 1);                        // 机器人/场景竖直
+    const xAxis = new THREE.Vector3().crossVectors(up, n);
+    if (xAxis.lengthSq() < 1e-8) {
+      xAxis.set(1, 0, 0);
+    } else {
+      xAxis.normalize();
+    }
+    const yAxis = new THREE.Vector3().crossVectors(n, xAxis).normalize();
+    mesh.quaternion.setFromRotationMatrix(
+      new THREE.Matrix4().makeBasis(xAxis, yAxis, n));
+    mesh.position.set(...xyzToScene(plane.center));
+    reach.obstacleGroup.add(mesh);
+  }
   publishRenderState("障碍更新");
 }
 
@@ -2975,7 +3116,8 @@ async function fetchJson(url, options) {
   if (!response.ok) {
     let detail = response.statusText;
     try {
-      detail = (await response.json()).detail || detail;
+      const body = await response.json();
+      detail = body.detail || body.error || detail;   // reach 接口用 error 字段
     } catch {
       detail = await response.text();
     }

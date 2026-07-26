@@ -46,6 +46,12 @@
                 <button id="reachFullscreenBtn" type="button">全屏选点</button>
                 <a class="reach-perp-link" href="/web/perp.html" target="_blank"
                    title="柜面法向 / 垂直指标实时观测 + 腰 yaw 点动">垂直度调试 ↗</a>
+                <select id="reachGotoSel" class="reach-waypoint-sel"
+                        title="不从图像取点，把录制路点直接当终点">
+                  <option value="">（路点终点）</option>
+                </select>
+                <button id="reachGotoBtn" type="button"
+                        title="从当前姿态直接运动到选中路点（关节插值，无 IK）">▶ 前往</button>
               </div>
             </div>
             <div class="reach-side">
@@ -90,10 +96,13 @@
                   <option value="">（未选择）</option>
                 </select>
                 <button id="reachSeqRunBtn" type="button"
-                        title="按顺序依次运动到序列中的每个路点（纯关节回放，无 IK）">▶</button>
+                        title="首次/Shift=RRT 规划并仿真回放（确认后再按一次执行）；已录制则直接真机回放">▶</button>
                 <button id="reachSeqSaveBtn" type="button"
                         title="把当前经由队列按顺序存为序列">存</button>
                 <button id="reachSeqDelBtn" type="button" title="删除选中的序列">×</button>
+                <input id="reachSeqMargin" type="number" value="1" step="0.5"
+                       style="width:52px"
+                       title="墙面退让（cm）：正=墙向机器人逼近（更保守），负=墙向后退让（允许更贴近柜面）。只影响 RRT 重规划，不影响录播" />
               </div>
               <div class="reach-actions">
                 <button id="reachHandMoveBtn" type="button" disabled>卸力摆位</button>
@@ -157,6 +166,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=60"></script>
+    <script type="module" src="/web/main.js?v=68"></script>
   </body>
 </html>

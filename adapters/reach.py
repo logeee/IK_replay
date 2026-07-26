@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+import multiprocessing as mp
 import threading
 import time
 from datetime import datetime
@@ -47,6 +48,11 @@ class ReachState:
         self.torso_reader = None           # 只读腰关节 + IMU（躯干姿态诊断）
         self.loco_client = None            # 高层 loco RPC（原地转身用），懒创建
         self.loco_available = False        # 有 DDS（非 --no-robot）才可用
+        # 一键对中（yaw 闭环伺服）
+        self.align_thread: threading.Thread | None = None
+        self.align_cancel = threading.Event()
+        self.align_running = False
+        self.align_message = ""
         self.base_link = "torso_link"
         self.pick_torso: dict | None = None        # 取点时刻的躯干姿态
         self.pick_target_torso: list[float] | None = None
@@ -59,7 +65,9 @@ class ReachState:
         self.arm_lock = threading.Lock()
         self.robot_model = None
         self.collision_checker = None
-        self.obstacles: np.ndarray | None = None   # 体素中心（URDF 根系）
+        self.obstacles: np.ndarray | None = None   # 扫描体素中心（URDF 根系）
+        self.wall: np.ndarray | None = None        # 拟合墙面补全体素（含视野下方）
+        self.wall_plane: dict | None = None        # 拟合墙面几何（前端画红色平面用）
         self.obstacle_voxel = 0.05
         self.target_exclusion_m = 0.15
         self.plane: dict | None = None             # 取点时拟合的目标表面平面（根系）
@@ -82,8 +90,13 @@ state = ReachState()
 
 def configure(*, camera, robot_model, robot_id: str, chain_id: str, calib_path: Path,
               collision_checker=None, ik_solver=None, arm_factory=None,
-              joints_reader=None, torso_reader=None) -> None:
-    """由 reach_server 调用。calib_path 是 handeye3d_result.json。"""
+              joints_reader=None, torso_reader=None, tool_out_mm: float = 0.0) -> None:
+    """由 reach_server 调用。calib_path 是 handeye3d_result.json。
+
+    tool_out_mm: 标定的 p_tool 点（当时选在手指上，离真正指尖还差一点）
+    沿法兰盘法线向外的附加偏移。法兰盘平面 = 手掌安装面 = 腕系 y-z 平面，
+    其法线严格为腕系 +x，"向外" = +x（远离法兰、指向指尖方向）。
+    """
     calib = json.loads(Path(calib_path).read_text())
     T_cam2torso = np.asarray(calib["T_cam2base"], dtype=float).reshape(4, 4)
     base_link = calib.get("base_link", "torso_link")
@@ -99,13 +112,16 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str, calib_path: 
     state.chain_id = chain_id
     state.T_cam2torso = T_cam2torso
     state.T_cam2root = T_root_torso @ T_cam2torso
-    state.p_tool = [float(v) for v in calib["p_tool_wrist_m"]]
+    p_tool = [float(v) for v in calib["p_tool_wrist_m"]]
+    p_tool[0] += float(tool_out_mm) / 1000.0   # 沿法兰法线（腕系 +x）向外
+    state.p_tool = p_tool
     state.calib_meta = {
         "path": str(calib_path),
         "base_link": base_link,
         "solved_at": calib.get("solved_at"),
         "rms_mm": calib.get("residual_mm", {}).get("rms"),
         "num_samples": calib.get("num_samples"),
+        "tool_out_mm": float(tool_out_mm),
     }
     state.arm_factory = arm_factory
     state.provider_reader = joints_reader
@@ -198,7 +214,7 @@ def _torso_drift(before: dict | None, after: dict | None) -> dict | None:
 
 
 @router.get("/status")
-async def reach_status():
+def reach_status():
     if not state.enabled:
         return {"enabled": False}
     return {
@@ -219,7 +235,7 @@ async def reach_status():
 
 
 @router.get("/stream")
-async def reach_stream():
+def reach_stream():
     def gen():
         while True:
             data = state.camera.get_jpeg()
@@ -239,7 +255,7 @@ async def reach_stream():
 
 
 @router.post("/pick")
-async def reach_pick(body: dict):
+def reach_pick(body: dict):
     """Body: {"u": int, "v": int, "approach_offset_m": float?}
 
     approach_offset_m：沿被点表面的法线、朝机器人方向后退的距离
@@ -365,7 +381,7 @@ def _fit_surface_plane(p_cam_surface: np.ndarray, radius: float = 0.12) -> dict 
 
 
 @router.get("/perpendicular")
-async def reach_perpendicular(dmin: float = 0.5, dmax: float = 1.0):
+def reach_perpendicular(dmin: float = 0.3, dmax: float = 1.0):
     """用 [dmin, dmax] 深度范围内的点拟合柜面平面，给出垂直度指标。
 
     深度不在该范围内的点视为异常（地面、远处背景、手臂等），不参与拟合。
@@ -374,9 +390,18 @@ async def reach_perpendicular(dmin: float = 0.5, dmax: float = 1.0):
     """
     if not state.enabled:
         return JSONResponse({"ok": False, "error": "reach 未启用"}, status_code=409)
+    out = _fit_view_plane(dmin, dmax)
+    out["torso"] = _read_torso()
+    out["turn_available"] = state.loco_available
+    out["align"] = {"running": state.align_running, "message": state.align_message}
+    return out
+
+
+def _fit_view_plane(dmin: float, dmax: float) -> dict:
+    """整幅深度图（限定深度范围）拟合平面，返回垂直度指标。失败时 ok=False。"""
     snap = state.camera.depth_snapshot()
     if snap is None:
-        return JSONResponse({"ok": False, "error": "拿不到深度帧"}, status_code=502)
+        return {"ok": False, "error": "拿不到深度帧"}
     depth_mm, (fx, fy, cx, cy) = snap
     h, w = depth_mm.shape
     stride = max(1, int(round(max(h, w) / 240)))
@@ -414,7 +439,7 @@ async def reach_perpendicular(dmin: float = 0.5, dmax: float = 1.0):
     tilt = math.degrees(math.acos(float(np.clip(-n[2], -1.0, 1.0))))
     n_root = (state.T_cam2root[:3, :3] @ n).tolist()
 
-    out = {
+    return {
         "ok": True,
         "yaw_err_deg": yaw_err,
         "pitch_err_deg": pitch_err,
@@ -427,10 +452,7 @@ async def reach_perpendicular(dmin: float = 0.5, dmax: float = 1.0):
         "in_range_ratio": float(valid.sum()) / max(1, n_meas),
         "dmin": dmin,
         "dmax": dmax,
-        "torso": _read_torso(),
-        "turn_available": state.loco_available,
     }
-    return out
 
 
 TURN_RATE_DEG_S = 6.0      # 原地转身角速度
@@ -451,7 +473,7 @@ def _get_loco_client():
 
 
 @router.post("/turn")
-async def reach_turn(body: dict):
+def reach_turn(body: dict):
     """原地转身点动（真机！全身动作）。Body: {"delta_deg": ±2} 或 {"stop": true}。
 
     H2 的 rt/arm_sdk 混合通道只覆盖双臂（15~28），腰电机指令会被固件忽略
@@ -462,6 +484,9 @@ async def reach_turn(body: dict):
     """
     if not state.loco_available:
         return JSONResponse({"ok": False, "error": "无 DDS 连接（--no-robot 模式）"},
+                            status_code=409)
+    if state.align_running and not body.get("stop"):
+        return JSONResponse({"ok": False, "error": "一键对中进行中，先停止它"},
                             status_code=409)
     try:
         loco = _get_loco_client()
@@ -491,12 +516,183 @@ async def reach_turn(body: dict):
     except Exception as exc:
         return JSONResponse({"ok": False, "error": f"SetVelocity 失败: {exc}"},
                             status_code=502)
+    if code == RPC_TIMEOUT_CODE:
+        # 应答超时 ≠ 没执行：运控忙时常见，指令多半已生效
+        return {"ok": True, "delta_deg": delta, "omega_deg_s": math.degrees(omega),
+                "duration_s": duration, "warning": "RPC 应答超时，指令可能已执行"}
     if code not in (0, None):
-        return JSONResponse({"ok": False, "error": f"SetVelocity 返回码 {code}"
-                                                   "（确认机器人在运动模式）"},
+        return JSONResponse({"ok": False, "error": f"SetVelocity 返回码 {code}"},
                             status_code=502)
     return {"ok": True, "delta_deg": delta,
             "omega_deg_s": math.degrees(omega), "duration_s": duration}
+
+
+# --------------- 一键对中（yaw 闭环伺服） ---------------
+
+ALIGN_TOL_STRICT_DEG = 0.35  # 手臂收回时的收敛阈值
+ALIGN_TOL_FALLBACK_DEG = 0.4  # 步数用尽时的兜底：残差在此内按"基本对中"收尾
+ALIGN_TOL_RAISED_DEG = 2.8   # 手臂前伸时：运控持续配平、读数呼吸式波动，追不到 0.8
+ARM_RAISED_TCP_X = 0.25      # TCP 前伸超过这个距离（米，根系）视为"手抬起来了"
+ALIGN_MAX_STEPS = 15
+# 脉冲幅度只用真机验证过能可靠执行的两档（人手点按收敛就是这么干的）。
+# 连续伺服两次翻车的教训：转动中相机测量滞后必穿靶；腰编码器做代理，
+# 停车后运控又会在腰/腿之间重分配旋转，读数对不上相机。所以：
+# 测量只在静止时做，动作只用定长脉冲，简单且和人手一样快。
+PULSE_BIG_DEG = 2.0        # |偏差| ≥ 1.5° 用大脉冲
+PULSE_SMALL_DEG = 0.5      # 其余用小脉冲
+PULSE_BIG_BELOW = 1.5
+RPC_TIMEOUT_CODE = 3104    # unitree rpc：应答超时（指令多半已执行，不算失败）
+
+
+def _arm_raised() -> bool:
+    """手臂是否前伸（TCP 在根系向前超过阈值）。读不到关节时按未抬处理。"""
+    try:
+        tcp = _tcp_position([float(v) for v in _read_joints()])
+        return tcp is not None and tcp[0] > ARM_RAISED_TCP_X
+    except Exception:
+        return False
+ALIGN_SETTLE_S = 1.0       # 每步转完后等运控稳定再测
+
+
+def _align_log(entry: dict) -> None:
+    """对中过程逐步落盘：reach_logs/align_<日期>.jsonl，事后分析用。"""
+    try:
+        state.log_dir.mkdir(parents=True, exist_ok=True)
+        entry = {"ts": datetime.now().isoformat(timespec="milliseconds"),
+                 "session": state.session_id, **entry}
+        torso = _read_torso()
+        if torso and torso.get("waist_rad"):
+            entry["waist_deg"] = [round(math.degrees(v), 3)
+                                  for v in torso["waist_rad"]]
+        path = state.log_dir / f"align_{datetime.now():%Y%m%d}.jsonl"
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _align_loop(tol: float, dmin: float, dmax: float) -> None:
+    """人手同款打法：静止测偏差 → 定长脉冲（0.5° 或 2°）→ 等稳 → 再测。
+
+    修正方向：真机实测 yaw_err > 0（法线偏画面右）时左转（正角）是对的。
+    保留自适应反号兜底：某步之后偏差反而变大就翻方向。
+    每步的测量与动作都写入 reach_logs/align_<日期>.jsonl。
+    """
+    loco = _get_loco_client()
+    sign = 1.0
+    prev_err: float | None = None
+    _align_log({"event": "start", "tol_deg": tol, "dmin": dmin, "dmax": dmax})
+    try:
+        for step in range(1, ALIGN_MAX_STEPS + 1):
+            if state.align_cancel.is_set():
+                state.align_message = "已中止"
+                _align_log({"event": "cancelled", "step": step})
+                return
+            fitres = _fit_view_plane(dmin, dmax)
+            if not fitres.get("ok"):
+                state.align_message = f"对中失败：{fitres.get('error')}"
+                _align_log({"event": "fit_fail", "step": step,
+                            "error": fitres.get("error")})
+                return
+            err = float(fitres["yaw_err_deg"])
+            _align_log({"event": "measure", "step": step,
+                        "yaw_err_deg": round(err, 3),
+                        "pitch_err_deg": round(float(fitres["pitch_err_deg"]), 3),
+                        "points": fitres.get("points_used")})
+            if abs(err) <= tol:
+                state.align_message = f"对中完成：yaw 偏差 {err:+.2f}°（{step - 1} 步）"
+                _align_log({"event": "done", "step": step, "yaw_err_deg": round(err, 3)})
+                return
+            if prev_err is not None and abs(err) > abs(prev_err) + 0.3:
+                sign = -sign     # 上一步把偏差转大了 → 方向反了
+                _align_log({"event": "sign_flip", "step": step})
+            prev_err = err
+
+            size = PULSE_BIG_DEG if abs(err) >= PULSE_BIG_BELOW else PULSE_SMALL_DEG
+            delta = size * (1.0 if sign * err > 0 else -1.0)
+            state.align_message = f"第 {step} 步：偏差 {err:+.2f}° → 脉冲 {delta:+.1f}°"
+            omega = math.radians(TURN_RATE_DEG_S) * (1.0 if delta > 0 else -1.0)
+            duration = abs(math.radians(delta)) / abs(omega)
+            code = loco.SetVelocity(0.0, 0.0, omega, duration)
+            _align_log({"event": "pulse", "step": step, "delta_deg": delta,
+                        "duration_s": round(duration, 3), "rpc_code": code})
+            if code == RPC_TIMEOUT_CODE:
+                # 应答超时 ≠ 没执行：运控忙（如手臂前伸配平）时常见，
+                # 指令多半已生效，照常等稳再测，让闭环自己判断
+                state.align_message += "（RPC 应答超时，按已执行继续）"
+            elif code not in (0, None):
+                state.align_message = f"对中失败：SetVelocity 返回码 {code}"
+                return
+            if state.align_cancel.wait(duration + ALIGN_SETTLE_S):
+                state.align_message = "已中止"
+                _align_log({"event": "cancelled", "step": step})
+                return
+        if prev_err is not None and abs(prev_err) <= max(ALIGN_TOL_FALLBACK_DEG, tol):
+            state.align_message = (f"基本对中：偏差 {prev_err:+.2f}°"
+                                   f"（未达 {tol}°，但已在兜底 "
+                                   f"{ALIGN_TOL_FALLBACK_DEG}° 内）")
+            _align_log({"event": "done_fallback", "yaw_err_deg": round(prev_err, 3)})
+        else:
+            state.align_message = (f"未收敛：{ALIGN_MAX_STEPS} 步后偏差仍 "
+                                   f"{prev_err:+.2f}°（阈值 {tol}°）")
+            _align_log({"event": "give_up",
+                        "yaw_err_deg": None if prev_err is None else round(prev_err, 3)})
+    except Exception as exc:
+        state.align_message = f"对中异常：{exc}"
+        _align_log({"event": "exception", "error": str(exc)})
+    finally:
+        try:
+            loco.StopMove()
+        except Exception:
+            pass
+        state.align_running = False
+
+
+@router.post("/align_yaw")
+def reach_align_yaw(body: dict):
+    """一键对中（真机！）。Body: {"start": true, "tol_deg"?, "dmin"?, "dmax"?}
+    或 {"stop": true}。闭环转身直到相机光轴与柜面法线的 yaw 偏差进入阈值。"""
+    if body.get("stop"):
+        state.align_cancel.set()
+        try:
+            if state.loco_client is not None:
+                state.loco_client.StopMove()
+        except Exception:
+            pass
+        return {"ok": True, "stopped": True}
+
+    if not state.loco_available:
+        return JSONResponse({"ok": False, "error": "无 DDS 连接（--no-robot 模式）"},
+                            status_code=409)
+    if state.align_running:
+        return JSONResponse({"ok": False, "error": "对中已在进行中"}, status_code=409)
+    if state.exec_running:
+        return JSONResponse({"ok": False, "error": "手臂轨迹执行中，禁止转身"},
+                            status_code=409)
+    try:
+        _get_loco_client()
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"loco 客户端初始化失败: {exc}"},
+                            status_code=502)
+
+    if "tol_deg" in body:
+        tol = float(body["tol_deg"])
+        tol_note = f"指定阈值 {tol}°"
+    elif _arm_raised():
+        tol = ALIGN_TOL_RAISED_DEG
+        tol_note = f"手臂前伸，阈值放宽到 {tol}°"
+    else:
+        tol = ALIGN_TOL_STRICT_DEG
+        tol_note = f"手臂收回，严格阈值 {tol}°"
+    dmin = float(body.get("dmin", 0.3))
+    dmax = float(body.get("dmax", 1.0))
+    state.align_cancel = threading.Event()
+    state.align_running = True
+    state.align_message = f"对中开始（{tol_note}）…"
+    state.align_thread = threading.Thread(
+        target=_align_loop, args=(tol, dmin, dmax), name="reach-align", daemon=True)
+    state.align_thread.start()
+    return {"ok": True, "started": True, "tol_deg": tol}
 
 
 # --------------- 环境障碍物（深度相机扫描） ---------------
@@ -542,7 +738,7 @@ def _self_filter(points_root: np.ndarray, margin: float) -> np.ndarray:
 
 
 @router.post("/scan_obstacles")
-async def reach_scan_obstacles(body: dict | None = None):
+def reach_scan_obstacles(body: dict | None = None):
     """扫一帧深度图 → 躯干系体素障碍物，注入碰撞检查。
 
     Body(可选): {"voxel_m": 0.05, "max_range_m": 1.5, "self_margin_m": 0.10}
@@ -580,27 +776,139 @@ async def reach_scan_obstacles(body: dict | None = None):
     idx = np.unique(np.floor(pts_root / voxel).astype(np.int64), axis=0)
     centers = (idx + 0.5) * voxel
 
+    # 拟合竖直墙面并向下补全：相机只能看到柜面上半部分，视野之下没有
+    # 体素，手在低处照样会撞。柜面理论上竖直 → 在水平投影上 RANSAC 拟合
+    # 直线（对旁边的杂物鲁棒），从地面补到扫描顶部，一起进碰撞环境。
+    wall, wall_plane = _fit_wall_voxels(pts_root, voxel, _ground_z())
+
     state.obstacles = centers
+    state.wall = wall
+    state.wall_plane = wall_plane
     state.obstacle_voxel = voxel
-    state.collision_checker.set_environment(centers, radius=voxel * 0.75)
+    if wall_plane is not None:
+        # 拟合成功：碰撞环境只用这面【解析平面】（半空间，零膨胀）。
+        # 体素球表示会把几毫米厚的柜面加厚成 ~7.5cm 的球层（球半径
+        # 0.75*voxel + 相邻球重叠），近柜规划基本无路可走；平面距离
+        # 精确到毫米。体素 centers/wall 仅留作前端可视化。
+        state.collision_checker.set_environment([], radius=voxel * 0.75)
+        cz = wall_plane["center"][2]
+        ext = 0.10   # 柜面可能比相机视野宽：矩形边界各外扩 10cm
+        state.collision_checker.set_environment_planes([{
+            "point": wall_plane["center"],
+            "normal": wall_plane["normal"],
+            "dir": wall_plane["dir"],
+            "u_range": [wall_plane["u_range"][0] - ext,
+                        wall_plane["u_range"][1] + ext],
+            "v_range": [wall_plane["z_range"][0] - cz,
+                        wall_plane["z_range"][1] - cz + ext],
+        }])
+    else:
+        # 兜底：没拟合出主导墙面（没对着柜子/杂物太多）退回体素球
+        state.collision_checker.set_environment(centers, radius=voxel * 0.75)
+        state.collision_checker.set_environment_planes([])
     return {"ok": True, "count": int(len(centers)), "voxel_m": voxel,
+            "wall_count": 0 if wall is None else int(len(wall)),
+            "plane_only": wall_plane is not None,
             "raw_points": int(len(pts_root))}
 
 
+def _ground_z() -> float:
+    """地面在根系（骨盆）下方的高度：全零姿态最低连杆 z 再留 5cm 余量。"""
+    try:
+        transforms = state.robot_model.forward_kinematics({})
+        return float(min(T[2, 3] for T in transforms.values())) - 0.05
+    except Exception:
+        return -0.9   # H2 骨盆离地约 0.8m 的兜底值
+
+
+def _fit_wall_voxels(pts_root: np.ndarray, voxel: float, z_floor: float
+                     ) -> tuple[np.ndarray | None, dict | None]:
+    """从扫描点拟合竖直墙面，返回 (补全体素中心, 平面几何)；失败 (None, None)。
+
+    做法：点云投影到水平面（x,y），RANSAC 拟合直线（= 竖直平面的迹线），
+    内点的横向范围决定墙宽，z 从地面（z_floor，根系为骨盆、地面在负半轴）
+    一直铺到扫描最高点。
+    """
+    if len(pts_root) < 80:
+        return None, None
+    xy = pts_root[:, :2]
+    rng = np.random.default_rng(0)
+    best_inliers = None
+    n = len(xy)
+    for _ in range(200):
+        i, j = rng.integers(0, n, size=2)
+        d = xy[j] - xy[i]
+        norm = float(np.hypot(*d))
+        if norm < 0.05:
+            continue
+        # 直线法向（水平面内）
+        nvec = np.array([-d[1], d[0]]) / norm
+        dist = np.abs((xy - xy[i]) @ nvec)
+        inliers = dist < 0.03
+        if best_inliers is None or inliers.sum() > best_inliers.sum():
+            best_inliers = inliers
+    if best_inliers is None or best_inliers.sum() < max(60, 0.3 * n):
+        return None, None   # 没有占主导的竖直面（可能没对着柜子）
+
+    pin = pts_root[best_inliers]
+    # 内点最小二乘精修：直线方向 = xy 协方差主轴
+    center_xy = pin[:, :2].mean(axis=0)
+    q = pin[:, :2] - center_xy
+    _, _, vt = np.linalg.svd(q, full_matrices=False)
+    dir_xy = vt[0] / np.linalg.norm(vt[0])
+    n_xy = np.array([-dir_xy[1], dir_xy[0]])   # 水平法向
+    # 法线指向机器人一侧（根原点在法线负侧 → 翻号）
+    if float(np.dot(n_xy, -center_xy)) < 0:
+        n_xy = -n_xy
+
+    t = q @ dir_xy                       # 沿墙横向坐标
+    t_lo, t_hi = float(t.min()), float(t.max())
+    z_top = float(pin[:, 2].max())
+    if z_top <= z_floor + 0.1:
+        return None, None
+
+    ts = np.arange(t_lo, t_hi + voxel / 2, voxel)
+    zs = np.arange(z_floor + voxel / 2, z_top, voxel)
+    if not len(ts) or not len(zs):
+        return None, None
+    grid_t, grid_z = np.meshgrid(ts, zs)
+    wall = np.empty((grid_t.size, 3))
+    wall[:, 0] = center_xy[0] + grid_t.ravel() * dir_xy[0]
+    wall[:, 1] = center_xy[1] + grid_t.ravel() * dir_xy[1]
+    wall[:, 2] = grid_z.ravel()
+    plane = {
+        "center": [float(center_xy[0]), float(center_xy[1]),
+                   float((z_top + z_floor) / 2)],
+        "normal": [float(n_xy[0]), float(n_xy[1]), 0.0],
+        "dir": [float(dir_xy[0]), float(dir_xy[1]), 0.0],
+        "width_m": float(t_hi - t_lo),
+        "height_m": float(z_top - z_floor),
+        # 碰撞用的矩形边界：u 沿 dir（相对 center），z 为绝对高度
+        "u_range": [float(t_lo), float(t_hi)],
+        "z_range": [float(z_floor), float(z_top)],
+    }
+    return wall, plane
+
+
 @router.post("/clear_obstacles")
-async def reach_clear_obstacles():
+def reach_clear_obstacles():
     if state.collision_checker is not None:
         state.collision_checker.clear_environment()
     state.obstacles = None
+    state.wall = None
+    state.wall_plane = None
     return {"ok": True, "count": 0}
 
 
 @router.get("/obstacles")
-async def reach_obstacles():
+def reach_obstacles():
     return {
         "count": 0 if state.obstacles is None else int(len(state.obstacles)),
         "voxel_m": state.obstacle_voxel,
         "centers": [] if state.obstacles is None else state.obstacles.tolist(),
+        "wall_count": 0 if state.wall is None else int(len(state.wall)),
+        "wall_centers": [] if state.wall is None else state.wall.tolist(),
+        "wall_plane": state.wall_plane,
     }
 
 
@@ -608,7 +916,7 @@ async def reach_obstacles():
 
 
 @router.post("/plan_cartesian")
-async def reach_plan_cartesian(body: dict):
+def reach_plan_cartesian(body: dict):
     """指尖沿直线平移的轨迹：把总位移切成小步，逐步 IK（前一步做种子），
     TCP 全程钉在直线上——不会像关节空间插值那样中途下沉再抬起。
 
@@ -704,12 +1012,12 @@ def _load_waypoints() -> list[dict]:
 
 
 @router.get("/waypoints")
-async def reach_waypoints():
+def reach_waypoints():
     return {"waypoints": _load_waypoints()}
 
 
 @router.post("/waypoints")
-async def reach_record_waypoint(body: dict):
+def reach_record_waypoint(body: dict):
     """把真机当前关节角录制为命名路点，每个路点单独落盘为
     reach_waypoints/<名字>_<时间戳>.json。Body: {"name": str}
 
@@ -739,7 +1047,7 @@ async def reach_record_waypoint(body: dict):
 
 
 @router.delete("/waypoints/{filename}")
-async def reach_delete_waypoint(filename: str):
+def reach_delete_waypoint(filename: str):
     path = _safe_waypoint_file(filename)
     if path is None:
         return JSONResponse({"ok": False, "error": "非法文件名"}, status_code=400)
@@ -759,7 +1067,7 @@ def _safe_sequence_file(filename: str) -> Path | None:
 
 
 @router.get("/sequences")
-async def reach_sequences():
+def reach_sequences():
     if state.sequences_dir is None or not state.sequences_dir.is_dir():
         return {"sequences": []}
     items = []
@@ -775,7 +1083,7 @@ async def reach_sequences():
 
 
 @router.post("/sequences")
-async def reach_save_sequence(body: dict):
+def reach_save_sequence(body: dict):
     """把一组路点按顺序存为动作序列。Body: {"name": str, "waypoints": [路点文件名...]}
 
     序列只存路点文件名的引用；执行由前端逐段触发（关节空间插值回放，无 IK）。
@@ -805,17 +1113,78 @@ async def reach_save_sequence(body: dict):
     return {"ok": True, "sequence": item}
 
 
+SEQ_REPLAY_DRIFT_RAD = 0.5   # 起点漂移超过它才重新规划（正常复用不会触发）
+
+
+def _sequence_plan_worker(conn, q0_list, target_lists, target_names, margin):
+    """fork 子进程里跑序列 RRT 规划（独享 GIL，不被控制环/相机线程拖慢）。
+
+    fork 继承父进程内存：robot_model、collision_checker（含墙平面/豁免球）
+    直接可用；对 checker 的改动只影响子进程副本。结果经管道回传：
+    ("ok", frames) 或 ("err", 消息)。子进程不碰 DDS/相机。
+    """
+    try:
+        from core.types import Pose
+        from planners.rrt import densify, rrt_connect_path
+
+        tcp_offset = Pose(xyz=list(state.p_tool))
+        checker = state.collision_checker
+        q0 = np.asarray(q0_list, dtype=float)
+        targets = [np.asarray(t, dtype=float) for t in target_lists]
+
+        if checker is not None:
+            # 路点是人工验证过的，可能本来就贴着柜面——在其 TCP 周围开豁免球
+            spheres = list(checker.environment_exclusions)
+            for tgt in targets:
+                tcp = _tcp_position(tgt.tolist())
+                if tcp:
+                    spheres.append((tcp, state.target_exclusion_m))
+            checker.set_environment_exclusions(spheres)
+            if checker.enabled:
+                # 预检仅作日志：端点碰撞按误报豁免（见 rrt_connect_path）
+                for name, tgt in [("当前姿态", q0)] + list(zip(target_names, targets)):
+                    chk = checker.check_state(tgt.tolist(), state.chain_id, tcp_offset)
+                    if chk["status"] != "collision":
+                        continue
+                    pair = chk.get("pair") or {}
+                    depth = abs(float(chk.get("min_distance_mm") or 0.0))
+                    print(f"[reach] 路点「{name}」模型碰撞已豁免: "
+                          f"{pair.get('a', '?')} ↔ {pair.get('b', '?')}"
+                          f"（嵌入 {depth:.0f}mm，实际到过的姿态视为误报）")
+
+        full: list[np.ndarray] = [q0]
+        for i, (name, tgt) in enumerate(zip(target_names, targets), 1):
+            try:
+                leg = rrt_connect_path(
+                    state.robot_model, checker, state.chain_id,
+                    full[-1], tgt, tcp_offset,
+                    {"margin_m": margin, "timeout_s": 20.0})
+            except ValueError as exc:
+                conn.send(("err", f"第{i}段（→「{name}」）{exc}"))
+                return
+            full.extend(leg[1:])
+        q_list = densify(full, frame_rad=0.04)
+        conn.send(("ok", [[float(v) for v in q] for q in q_list]))
+    except Exception as exc:  # noqa: BLE001 —— 子进程任何崩溃都回传给父进程
+        conn.send(("err", f"规划子进程异常: {exc}"))
+    finally:
+        conn.close()
+
+
 @router.post("/sequences/run")
-async def reach_run_sequence(body: dict):
+def reach_run_sequence(body: dict):
     """一键执行已保存的动作序列。供无界面的自动化封装直接调用。
 
-    纯关节空间插值回放：无 IK、无碰撞检查（轨迹在录制时已人工验证，
-    工况一致性由调用方保证），所以本接口除了读一次真机关节外没有任何
-    计算耗时，请求即执行。
+    执行方式（v2）：第一次运行用「直线优先、撞了才 RRT-Connect」逐段规划出
+    无碰撞轨迹，并把完整轨迹帧录进序列文件（trajectory 字段）；之后运行直接
+    回放录制轨迹——不算 RRT、不算 IK、不做碰撞检查，请求即执行。
+    起点与录制起点漂移超过 0.5 rad（说明工况变了）才触发一次重新规划。
 
-    Body: {"file": str, "joint_speed": float=0.35, "max_speed_rad_s": float=0.4}
-    行为：从真机当前实测关节直接插值接入第一个路点，之后按序走完全部
-    路点，整条连续执行、段间不停顿；时长 = 总关节行程 / joint_speed。
+    Body: {"file": str, "joint_speed": float=0.35, "max_speed_rad_s": float=0.4,
+           "replan": bool=false,    # replan=true 强制丢弃录制轨迹重规划
+           "margin_m": float=0.01}  # 墙面退让：正=墙逼近(更保守)，负=墙后退
+    首次规划（或 replan）不直接执行：把轨迹录进文件并回传 preview 帧给前端
+    仿真回放，用户确认后再次调用走"录播"路径才真机执行。
     进度用 GET /exec_status 轮询，POST /stop 急停。
     """
     if state.controller is None:
@@ -826,11 +1195,13 @@ async def reach_run_sequence(body: dict):
     try:
         seq = json.loads(path.read_text())
         targets = []
+        target_names = []
         for fname in seq.get("waypoints") or []:
             wp_path = _safe_waypoint_file(str(fname))
             wp = json.loads(wp_path.read_text())
             targets.append(np.asarray([float(wp["named_joints"][n])
                                        for n in state.joint_names], dtype=float))
+            target_names.append(str(wp.get("name") or fname))
         if not targets:
             raise ValueError("序列不含路点")
     except Exception as exc:
@@ -838,6 +1209,7 @@ async def reach_run_sequence(body: dict):
 
     joint_speed = float(np.clip(float(body.get("joint_speed") or 0.35), 0.05, 0.5))
     speed = float(np.clip(float(body.get("max_speed_rad_s") or 0.4), 0.05, 0.5))
+    margin = float(np.clip(float(body.get("margin_m", 0.01)), -0.05, 0.05))
 
     with state.exec_lock:
         if state.exec_running:
@@ -846,18 +1218,83 @@ async def reach_run_sequence(body: dict):
             q0 = np.asarray(state.controller.read_measured(), dtype=float)
         except Exception as exc:
             return JSONResponse({"ok": False, "error": f"读不到真机关节: {exc}"}, status_code=503)
-        # 链式插值：帧距 ~0.04 rad；行程为零的段不产生帧（手已在起点时零耗时）
-        q_list = [q0]
-        prev = q0
-        total_travel = 0.0
-        for tgt in targets:
-            travel = float(np.max(np.abs(tgt - prev)))
-            total_travel += travel
-            n = max(1, int(np.ceil(travel / 0.04)))
-            for i in range(1, n + 1):
-                q_list.append(prev + (tgt - prev) * (i / n))
-            prev = tgt
+
+        # ---- 优先回放录制轨迹（免 RRT/IK/碰撞检查，零计算耗时） ----
+        planned = False
+        q_list: list[np.ndarray] | None = None
+        rec = seq.get("trajectory")
+        if rec and not bool(body.get("replan")):
+            frames = [np.asarray(f, dtype=float) for f in rec.get("frames") or []]
+            if frames and frames[0].shape == q0.shape:
+                drift = float(np.max(np.abs(frames[0] - q0)))
+                if drift <= SEQ_REPLAY_DRIFT_RAD:
+                    q_list = [q0] + frames   # 从当前实测平滑接入第一帧
+                # 漂移太大 → 落到下面重新规划
+
+        if q_list is None:
+            # ---- 首次（或工况变了）：fork 子进程跑 RRT。规划是纯 Python
+            # 计算，在服务进程里会和 50Hz 控制环/相机线程抢 GIL（离线 2s 的
+            # 问题在线 6s 都解不完）；子进程独享 GIL，恢复 2s 级 ----
+            ctx = mp.get_context("fork")
+            rx, tx = ctx.Pipe(duplex=False)
+            proc = ctx.Process(target=_sequence_plan_worker, daemon=True,
+                               args=(tx, q0.tolist(),
+                                     [t.tolist() for t in targets],
+                                     target_names, margin))
+            proc.start()
+            tx.close()
+            if rx.poll(60.0):
+                plan_status, payload = rx.recv()
+            else:
+                plan_status, payload = "err", "规划子进程 60s 无响应"
+            proc.join(timeout=1.0)
+            if proc.is_alive():
+                proc.kill()
+            if plan_status != "ok":
+                print(f"[reach] 序列规划失败: {payload}")
+                return JSONResponse({"ok": False, "error": f"规划失败: {payload}"},
+                                    status_code=422)
+            q_list = [np.asarray(f, dtype=float) for f in payload]
+            planned = True
+            try:
+                seq["trajectory"] = {
+                    "frames": [[round(float(v), 5) for v in q] for q in q_list],
+                    "joint_names": list(state.joint_names),
+                    "recorded_at": datetime.now().isoformat(timespec="seconds"),
+                    "planner": "line-else-rrt",
+                }
+                path.write_text(json.dumps(seq, ensure_ascii=False, indent=1))
+            except Exception as exc:
+                print(f"[reach] 序列轨迹录制失败: {exc}")
+
+        total_travel = sum(float(np.max(np.abs(b - a)))
+                           for a, b in zip(q_list, q_list[1:]))
         duration = max(1.0, total_travel / joint_speed)
+
+        if planned:
+            # 刚规划出来的轨迹不直接执行：回传抽稀后的帧给前端仿真回放，
+            # 用户看过确认后再按一次 ▶ ——那时轨迹已录进文件，走录播路径执行
+            from core.types import Pose
+            tcp_offset = Pose(xyz=list(state.p_tool))
+            stride = max(1, len(q_list) // 150)
+            picks = list(range(0, len(q_list), stride))
+            if picks[-1] != len(q_list) - 1:
+                picks.append(len(q_list) - 1)
+            frames_preview = []
+            for k in picks:
+                joints = [float(v) for v in q_list[k]]
+                frames_preview.append({
+                    "named_joints": state.robot_model.named_chain_joints(
+                        joints, state.chain_id),
+                    "tcp_pose": state.robot_model.tcp_pose(
+                        joints, state.chain_id, tcp_offset),
+                    "link_poses": state.robot_model.link_poses(
+                        joints, state.chain_id),
+                })
+            return {"ok": True, "preview": True, "planned": True,
+                    "replayed": False, "frames": len(q_list),
+                    "duration_s": round(duration, 2),
+                    "preview_frames": frames_preview}
         label = f"序列:{str(seq.get('name') or path.stem)}"[:32]
 
         state.exec_cancel.clear()
@@ -867,12 +1304,12 @@ async def reach_run_sequence(body: dict):
         state.exec_thread = threading.Thread(
             target=_exec_loop, args=(q_list, duration, None, speed, label), daemon=True)
         state.exec_thread.start()
-    return {"ok": True, "duration_s": round(duration, 2),
-            "frames": len(q_list), **_exec_status()}
+    return {"ok": True, "duration_s": round(duration, 2), "frames": len(q_list),
+            "planned": planned, "replayed": not planned, **_exec_status()}
 
 
 @router.delete("/sequences/{filename}")
-async def reach_delete_sequence(filename: str):
+def reach_delete_sequence(filename: str):
     path = _safe_sequence_file(filename)
     if path is None:
         return JSONResponse({"ok": False, "error": "非法文件名"}, status_code=400)
@@ -890,7 +1327,7 @@ async def reach_delete_sequence(filename: str):
 
 
 @router.get("/sidesteps")
-async def reach_list_sidesteps():
+def reach_list_sidesteps():
     if state.sidesteps_dir is None or not state.sidesteps_dir.is_dir():
         return {"sidesteps": []}
     items = []
@@ -905,7 +1342,7 @@ async def reach_list_sidesteps():
 
 
 @router.post("/sidesteps")
-async def reach_save_sidestep(body: dict):
+def reach_save_sidestep(body: dict):
     """保存一次横移规划（同距离覆盖旧的）。
     Body: {"step_cm": float, "direction_root": [3], "waypoints": [{named_joints, tcp_pose}...]}
     """
@@ -932,7 +1369,7 @@ async def reach_save_sidestep(body: dict):
 
 
 @router.post("/hand_move")
-async def reach_hand_move(body: dict | None = None):
+def reach_hand_move(body: dict | None = None):
     """卸力开关（摆中间位用）。Body: {"on": bool}
 
     on=true: kp=0 低阻尼，人可拖动手臂（会下坠，务必扶住！）
@@ -956,7 +1393,7 @@ async def reach_hand_move(body: dict | None = None):
 
 
 @router.get("/joints")
-async def reach_joints():
+def reach_joints():
     """当前真机该链关节角（named dict），作为 IK 起点。"""
     try:
         q = [float(v) for v in _read_joints()]
@@ -971,7 +1408,7 @@ async def reach_joints():
 
 
 @router.post("/arm")
-async def reach_arm():
+def reach_arm():
     """接管手臂：创建控制器、发布 rt/arm_sdk、在当前姿态刚性保持。
 
     真机会被立即接管！前端须先经人确认，且确保没有其他控制程序。
@@ -993,7 +1430,7 @@ async def reach_arm():
 
 
 @router.post("/disarm")
-async def reach_disarm():
+def reach_disarm():
     """释放手臂：权重渐出、交还本体控制器。调用前请扶住手臂。"""
     with state.arm_lock:
         if state.controller is None:
@@ -1016,7 +1453,7 @@ def _exec_status() -> dict:
 
 
 @router.get("/diagnostics")
-async def reach_diagnostics():
+def reach_diagnostics():
     """现场排查用：重力前馈在出多大力、躯干相对取点时刻漂了多少。"""
     ctl = state.controller
     arm: dict[str, Any] = {"armed": ctl is not None}
@@ -1042,7 +1479,7 @@ async def reach_diagnostics():
 
 
 @router.get("/exec_status")
-async def reach_exec_status():
+def reach_exec_status():
     return _exec_status()
 
 
@@ -1063,7 +1500,7 @@ def _position_jacobian(named: dict[str, float]) -> np.ndarray:
 
 
 @router.post("/execute")
-async def reach_execute(body: dict):
+def reach_execute(body: dict):
     """执行已规划的关节轨迹（真机运动！前端须先经人确认）。
 
     Body: {"waypoints": [named_joints, ...], "duration": float,
@@ -1433,7 +1870,7 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
 
 
 @router.post("/stop")
-async def reach_stop():
+def reach_stop():
     """急停：中止执行线程并冻结在当前指令位。"""
     if state.controller is None:
         return JSONResponse({"ok": False, "error": "手臂未接管"}, status_code=409)
