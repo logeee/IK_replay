@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import xml.etree.ElementTree as ET
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,8 @@ class RobotModel:
         self.parent_to_joints: dict[str, list[Joint]] = {}
         self.child_to_joint: dict[str, Joint] = {}
         self.root_links: list[str] = []
+        self._origin_cache: dict[str, np.ndarray] = {}   # 关节固定 origin，见 _joint_origin
+        self._closure_cache: dict[frozenset[str], set[str]] = {}
         self._load_urdf()
         self._validate_config()
 
@@ -203,46 +206,98 @@ class RobotModel:
             for idx, name in enumerate(self.joint_names(chain_id))
         ]
 
-    def forward_kinematics(self, joint_values: dict[str, float] | None = None) -> dict[str, np.ndarray]:
+    def forward_kinematics(
+        self,
+        joint_values: dict[str, float] | None = None,
+        only_links: Iterable[str] | None = None,
+    ) -> dict[str, np.ndarray]:
+        """全身 FK；给了 only_links 就只算这些 link 及其祖先链。
+
+        H2 有 34 个 link，碰撞检查只用到躯干+双臂那十几个，腿和头纯属白算。
+        规划器每步都要 FK，裁剪掉无关子树是直接的省法。返回的 dict 在裁剪
+        模式下只含被访问到的 link——取不存在的 link 会在调用方明确报错，
+        不会静默给出错误结果。
+        """
         values = joint_values or {}
         transforms: dict[str, np.ndarray] = {}
+        allowed = None if only_links is None else self._link_closure(frozenset(only_links))
 
         def visit_link(link_name: str, parent_transform: np.ndarray) -> None:
             transforms[link_name] = parent_transform
             for joint in self.parent_to_joints.get(link_name, []):
+                if allowed is not None and joint.child not in allowed:
+                    continue
                 value = float(values.get(joint.name, 0.0))
                 visit_link(joint.child, parent_transform @ self._joint_transform(joint, value))
 
         for root_link in self.root_links:
-            visit_link(root_link, np.eye(4, dtype=float))
+            if allowed is None or root_link in allowed:
+                visit_link(root_link, np.eye(4, dtype=float))
         return transforms
 
+    def _link_closure(self, targets: frozenset[str]) -> set[str]:
+        """目标 link 连同它们到根的祖先——FK 必须走到的最小 link 集合。"""
+        cached = self._closure_cache.get(targets)
+        if cached is None:
+            need: set[str] = set()
+            for name in targets:
+                cur: str | None = name
+                while cur is not None and cur not in need:
+                    need.add(cur)
+                    joint = self.child_to_joint.get(cur)
+                    cur = joint.parent if joint is not None else None
+            cached = need
+            self._closure_cache[targets] = cached
+        return cached
+
+    def _joint_origin(self, joint: Joint) -> np.ndarray:
+        """关节的固定 origin 变换（URDF 静态数据，只算一次）。
+
+        以前每次 FK 都重算：一次 FK 走 66 个关节，每个都要现搭 3 个 3x3
+        旋转矩阵再连乘——这是 FK 0.65ms 的主要来源。缓存后固定关节直接
+        返回，可动关节也省掉 origin 部分。返回的矩阵设为只读，防止调用方
+        误改污染缓存（现有调用方都是 `parent @ 它`，产生新数组，安全）。
+        """
+        cached = self._origin_cache.get(joint.name)
+        if cached is None:
+            cached = transform_from_xyz_rpy(joint.xyz, joint.rpy)
+            cached.flags.writeable = False
+            self._origin_cache[joint.name] = cached
+        return cached
+
     def _joint_transform(self, joint: Joint, value: float) -> np.ndarray:
-        origin = transform_from_xyz_rpy(joint.xyz, joint.rpy)
+        origin = self._joint_origin(joint)
         if joint.joint_type in {"revolute", "continuous"}:
             motion = transform_from_rotation_translation(axis_angle_matrix(joint.axis, value), np.zeros(3))
         elif joint.joint_type == "prismatic":
             motion = translation_matrix(joint.axis * value)
         else:
-            motion = np.eye(4, dtype=float)
+            return origin          # 固定关节：绝大多数，省掉一次 4x4 乘法
         return origin @ motion
 
     def link_pose(self, joints: JointValues | np.ndarray, link_name: str, chain_id: str) -> Pose:
-        transforms = self.forward_kinematics(self.named_chain_joints(joints, chain_id))
+        transforms = self.forward_kinematics(
+            self.named_chain_joints(joints, chain_id), only_links=[link_name])
         if link_name not in transforms:
             raise ValueError(f"link {link_name!r} not found in FK result")
         return pose_from_matrix(transforms[link_name])
 
     def tcp_pose(self, joints: JointValues | np.ndarray, chain_id: str, tcp_offset: Pose | None = None) -> Pose:
         offset = tcp_offset or self.tcp_offset(chain_id)
-        transforms = self.forward_kinematics(self.named_chain_joints(joints, chain_id))
-        tcp_matrix = transforms[self.end_link(chain_id)] @ transform_from_pose(offset)
+        end = self.end_link(chain_id)
+        transforms = self.forward_kinematics(
+            self.named_chain_joints(joints, chain_id), only_links=[end])
+        tcp_matrix = transforms[end] @ transform_from_pose(offset)
         return pose_from_matrix(tcp_matrix)
 
     def tcp_matrix(self, joints: JointValues | np.ndarray, chain_id: str, tcp_offset: Pose | None = None) -> np.ndarray:
         offset = tcp_offset or self.tcp_offset(chain_id)
-        transforms = self.forward_kinematics(self.named_chain_joints(joints, chain_id))
-        return transforms[self.end_link(chain_id)] @ transform_from_pose(offset)
+        # 只要末端一个 link：IK 的每次残差回调都走这里（一次求解上百次），
+        # 顺手算腿和头是纯浪费。
+        end = self.end_link(chain_id)
+        transforms = self.forward_kinematics(
+            self.named_chain_joints(joints, chain_id), only_links=[end])
+        return transforms[end] @ transform_from_pose(offset)
 
     def link_poses(
         self,

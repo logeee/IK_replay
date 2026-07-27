@@ -684,7 +684,9 @@ async function planReachLeft() {
       body: JSON.stringify({
         start_joints: joints,
         target_root: pick.p_root,
-        step_m: 0.02,   // 2cm 一步：直线上关节插值与笛卡尔线的偏差可忽略，IK 次数减半
+        // 1cm 一步，别放宽：2cm 时关节插值与笛卡尔直线的偏差肉眼可见地
+        // 影响到位精度。提速要从 FK/碰撞本身省，不能拿路径保真度换。
+        step_m: 0.01,
         check_collision: reachCollisionOn(),
         lift_m: Number.isFinite(liftCm) ? Math.max(0, liftCm) / 100 : 0.02,
       }),

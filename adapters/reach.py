@@ -457,6 +457,12 @@ def _fit_view_plane(dmin: float, dmax: float) -> dict:
 
 TURN_RATE_DEG_S = 6.0      # 原地转身角速度
 TURN_MAX_DEG = 10.0        # 单次点动上限
+# 按住键盘连续转身：每次心跳发一个这么长的速度脉冲，前端 ~0.3s 心跳一次，
+# 脉冲之间相互覆盖 → 连续转；心跳断了（松键/断网/页面崩）固件转完残余
+# 脉冲即自动停 —— 等价于摇杆的"松手即停"死人开关。
+TURN_HOLD_PULSE_S = 0.8
+TURN_HOLD_RATE_DEG_S = 12.0        # 按住模式默认转速（前端可传 rate_deg_s 覆盖）
+TURN_HOLD_RATE_RANGE = (2.0, 30.0)  # 前端可调范围；点动/对中仍用上面验证过的 6°/s
 
 
 def _get_loco_client():
@@ -500,6 +506,34 @@ def reach_turn(body: dict):
         except Exception as exc:
             return JSONResponse({"ok": False, "error": f"停止失败: {exc}"}, status_code=502)
         return {"ok": True, "stopped": True}
+
+    # 按住模式：{"hold_dir": 1|-1}，正=左转。每次调用发一个短速度脉冲，
+    # 由前端心跳维持连续性（见 TURN_HOLD_PULSE_S 注释）。
+    hold_dir = body.get("hold_dir")
+    if hold_dir is not None:
+        try:
+            direction = 1.0 if float(hold_dir) > 0 else -1.0
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "hold_dir 需为 ±1"},
+                                status_code=400)
+        try:
+            rate = float(body.get("rate_deg_s") or TURN_HOLD_RATE_DEG_S)
+        except (TypeError, ValueError):
+            rate = TURN_HOLD_RATE_DEG_S
+        rate = float(np.clip(rate, *TURN_HOLD_RATE_RANGE))
+        omega = math.radians(rate) * direction
+        try:
+            code = loco.SetVelocity(0.0, 0.0, omega, TURN_HOLD_PULSE_S)
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": f"SetVelocity 失败: {exc}"},
+                                status_code=502)
+        if code not in (0, None, RPC_TIMEOUT_CODE):
+            return JSONResponse({"ok": False, "error": f"SetVelocity 返回码 {code}"},
+                                status_code=502)
+        return {"ok": True, "hold_dir": int(direction),
+                "omega_deg_s": math.degrees(omega), "pulse_s": TURN_HOLD_PULSE_S,
+                **({"warning": "RPC 应答超时，指令可能已执行"}
+                   if code == RPC_TIMEOUT_CODE else {})}
 
     try:
         delta = float(body["delta_deg"])

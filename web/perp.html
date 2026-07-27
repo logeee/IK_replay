@@ -132,6 +132,9 @@
         <button class="jog" data-d="-0.5" disabled>右0.5° ⟳</button>
         <button class="jog" data-d="-2" disabled>右转2° ⟳</button>
       </div>
+      <div class="status-line">键盘 <b>←</b> / <b>→</b>：按住持续转，松开立即停——像打半杆一样。速度
+        <input id="holdRate" type="number" step="1" min="2" max="30" value="12"
+               style="width:52px" /> °/s（范围 2~30，即时生效，下次打开页面记住上次的值）</div>
       <div class="row">
         <button id="alignBtn" class="primary" disabled
                 title="闭环伺服：测偏差→定长脉冲→再测。阈值自动选：手臂收回 0.35°，前伸 2.8°">◎ 一键对中</button>
@@ -205,6 +208,7 @@ async function poll() {
     turnAvailable = !!data.turn_available;
     aligning = !!(data.align && data.align.running);
     $("alignState").textContent = (data.align && data.align.message) || "";
+    if (holdDir !== 0 && !turnArmed()) stopHold();  // 对中启动/连接断开时兜底松杆
     updateTurnButtons();
   } catch (e) {
     $("fitMsg").textContent = "服务不可达：" + e;
@@ -218,9 +222,12 @@ function updateTurnButtons() {
   document.querySelectorAll(".jog").forEach((b) => { b.disabled = !armed || aligning; });
   $("alignBtn").disabled = !armed;
   $("alignBtn").textContent = aligning ? "■ 停止对中" : "◎ 一键对中";
-  $("turnState").textContent = turnAvailable
-    ? (armed ? "已解锁：点按钮即真机转身（6°/s）" : "勾选「允许转身」解锁按钮")
-    : "无 DDS 连接，转身不可用";
+  if (holdDir === 0) {
+    $("turnState").textContent = turnAvailable
+      ? (armed ? "已解锁：点按钮点动（6°/s），或按住 ← / → 键持续转（速度可调，松开即停）"
+               : "勾选「允许转身」解锁按钮")
+      : "无 DDS 连接，转身不可用";
+  }
 }
 
 async function turnPost(body) {
@@ -247,8 +254,90 @@ async function turnPost(body) {
   }
 }
 
-$("turnArm").addEventListener("change", updateTurnButtons);
+// —— 按住键盘 ← / → 连续转身 ——
+// 按住期间每 300ms 发一次 {hold_dir:±1} 心跳，后端每次回一个 0.8s 速度脉冲，
+// 脉冲互相衔接 = 连续转；松键/失焦发 stop，心跳断了固件 0.8s 内也会自己停。
+let holdDir = 0;          // 0=未按住，1=左转，-1=右转
+let holdTimer = null;
+let holdInflight = false; // 上一拍心跳没回来就跳过这一拍，防止请求堆积
+
+function turnArmed() { return turnAvailable && $("turnArm").checked && !aligning; }
+
+function holdRate() {
+  const v = Number($("holdRate").value);
+  return Math.min(30, Math.max(2, Number.isFinite(v) && v > 0 ? v : 12));
+}
+// 记住上次用的速度
+const savedRate = Number(localStorage.getItem("perp_hold_rate"));
+if (Number.isFinite(savedRate) && savedRate >= 2 && savedRate <= 30) {
+  $("holdRate").value = savedRate;
+}
+$("holdRate").addEventListener("change", () => {
+  $("holdRate").value = holdRate();  // 越界值拉回范围内
+  localStorage.setItem("perp_hold_rate", holdRate());
+});
+
+async function holdBeat() {
+  if (holdDir === 0 || holdInflight) return;
+  holdInflight = true;
+  try {
+    const res = await fetch("/api/reach/turn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hold_dir: holdDir, rate_deg_s: holdRate() }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      $("msg").textContent = data.error || "连续转身失败";
+      stopHold(false);
+    }
+  } catch (e) {
+    $("msg").textContent = "请求失败：" + e;
+    stopHold(false);
+  } finally {
+    holdInflight = false;
+  }
+}
+
+function startHold(dir) {
+  if (!turnArmed() || holdDir === dir) return;
+  holdDir = dir;
+  $("turnState").textContent = dir > 0
+    ? `⟲ 持续左转中（${holdRate()}°/s）…… 松开 ← 即停`
+    : `持续右转中（${holdRate()}°/s）…… 松开 → 即停 ⟳`;
+  holdBeat();
+  holdTimer = setInterval(holdBeat, 300);
+}
+
+function stopHold(sendStop = true) {
+  if (holdDir === 0) return;
+  holdDir = 0;
+  clearInterval(holdTimer);
+  holdTimer = null;
+  if (sendStop) turnPost({ stop: true });
+  updateTurnButtons();
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.repeat) return;                       // 系统级自动重复，忽略
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+  if (e.key === "ArrowLeft") { e.preventDefault(); startHold(1); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); startHold(-1); }
+});
+document.addEventListener("keyup", (e) => {
+  if ((e.key === "ArrowLeft" && holdDir === 1) ||
+      (e.key === "ArrowRight" && holdDir === -1)) stopHold();
+});
+// 切窗口 / 页面隐藏时兜底停止
+window.addEventListener("blur", () => stopHold());
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopHold();
+});
+
+$("turnArm").addEventListener("change", () => { stopHold(); updateTurnButtons(); });
 $("turnStopBtn").addEventListener("click", () => {
+  stopHold(false);
   turnPost({ stop: true });
   alignPost({ stop: true });
 });

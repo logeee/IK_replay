@@ -7,7 +7,7 @@ import numpy as np
 
 from .robot_model import RobotModel
 from .types import JointValues, Pose
-from .utils import rpy_matrix
+from .utils import pose_from_matrix, rpy_matrix, transform_from_pose
 
 
 @dataclass(frozen=True)
@@ -94,6 +94,7 @@ class ConfigurableCollisionChecker:
         self.environment_planes: list[dict[str, Any]] = []
         # 豁免球列表 [(center, radius)]：这些区域内的环境点不参与检查（如抓取目标附近）
         self.environment_exclusions: list[tuple[np.ndarray, float]] = []
+        self._required_cache: dict[str, frozenset[str]] = {}   # 见 _required_links
 
     def set_environment(self, points: np.ndarray | list, radius: float) -> None:
         arr = np.asarray(points, dtype=float).reshape(-1, 3)
@@ -172,8 +173,14 @@ class ConfigurableCollisionChecker:
             return self._unconfigured_result(chain_id)
 
         self.robot_model.chain_config(chain_id)
-        transforms = self.robot_model.forward_kinematics(self.robot_model.named_chain_joints(joints, chain_id))
-        tcp_pose = self.robot_model.tcp_pose(joints, chain_id, tcp_offset)
+        transforms = self.robot_model.forward_kinematics(
+            self.robot_model.named_chain_joints(joints, chain_id),
+            only_links=self._required_links(chain_id))
+        # TCP 从上面这份 transforms 直接推，别再调 tcp_pose——它内部会把整套
+        # FK 重算一遍。规划器每步都调 check_state，这一处就占了近一半耗时。
+        offset = tcp_offset or self.robot_model.tcp_offset(chain_id)
+        tcp_pose = pose_from_matrix(
+            transforms[self.robot_model.end_link(chain_id)] @ transform_from_pose(offset))
         shapes = self._build_shapes(transforms, chain_id, tcp_pose)
         distances = self._pair_distances(shapes)
         min_pair = min(distances, key=lambda item: item["distance_m"]) if distances else None
@@ -252,6 +259,35 @@ class ConfigurableCollisionChecker:
             "pair": min_check["pair"] if min_check else None,
             "checks": checks,
         }
+
+    def _required_links(self, chain_id: str) -> frozenset[str]:
+        """这条链做碰撞检查真正要用到的 link（配置里所有 link/toward 字段 + 末端）。
+
+        FK 只算这些及其祖先，H2 上能把 34 个 link 砍到十几个。配置是静态的，
+        算一次缓存住。注意 `toward` 也是按名字取变换的（_endpoint 会拿它查
+        transforms），漏了它就会在插值型端点上报 unknown link。
+        """
+        cached = self._required_cache.get(chain_id)
+        if cached is None:
+            names: set[str] = {self.robot_model.end_link(chain_id)}
+
+            def collect(node: Any) -> None:
+                if isinstance(node, dict):
+                    for key in ("link", "toward"):
+                        value = node.get(key)
+                        if isinstance(value, str) and value:
+                            names.add(value)
+                    for value in node.values():
+                        collect(value)
+                elif isinstance(node, list):
+                    for value in node:
+                        collect(value)
+
+            collect(self.config.get("body") or [])
+            collect(((self.config.get("chains") or {}).get(chain_id) or {}).get("shapes") or [])
+            cached = frozenset(names)
+            self._required_cache[chain_id] = cached
+        return cached
 
     def _build_shapes(
         self,
