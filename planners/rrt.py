@@ -60,9 +60,12 @@ def rrt_connect_path(model: RobotModel, checker, chain_id: str,
     # 躯干盒、指尖贴面板墙等）一律视为包围体偏保守的误报。把端点上已存在
     # 的碰撞对记入豁免表，整次规划对这些"对"不做否决；端点之外新出现的
     # 碰撞对照查不误。
+    # exempt_goal=False（取点规划用）：终点是【算出来的】姿态而非到过的
+    # 姿态，它的碰撞是真警报，不豁免——否则会规划出以碰撞收尾的路径。
+    endpoints = (q0, q1) if bool(opts.get("exempt_goal", True)) else (q0,)
     allowed: set[frozenset] = set()
     if checker is not None and getattr(checker, "enabled", False):
-        for q in (q0, q1):
+        for q in endpoints:
             st = checker.check_state([float(v) for v in q], chain_id, tcp_offset)
             for p in st.get("pairs") or []:
                 if float(p["distance_m"]) <= 0.0:

@@ -118,9 +118,9 @@
                   <input id="reachStepMode" type="checkbox" />
                   <span>分段模式（到位后暂停）</span>
                 </label>
-                <label class="reach-stepmode" title="对取点主段/收回段/横移段做逐帧碰撞检查（较慢），默认关闭">
+                <label class="reach-stepmode" title="对取点各段做逐帧碰撞检查（较慢）；左侧规划直线撞障时自动改用 RRT 绕障路径，绕不过去才禁止执行。默认关闭">
                   <input id="reachCollisionCheck" type="checkbox" />
-                  <span>碰撞检查</span>
+                  <span>碰撞检查+RRT绕障</span>
                 </label>
               </div>
               <div class="reach-actions">
@@ -175,6 +175,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=74"></script>
+    <script type="module" src="/web/main.js?v=77"></script>
   </body>
 </html>

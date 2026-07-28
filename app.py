@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+import time
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
@@ -247,8 +249,37 @@ def plan_trajectory(payload: TrajectoryPayload) -> dict[str, Any]:
         waypoint_dicts = [waypoint.to_dict() for waypoint in waypoints]
         collision_summary = None
         if payload.check_collision:
-            collision_checks = collision_checkers[robot_id].check_trajectory(waypoints, payload.chain_id, request.tcp_offset)
-            collision_summary = collision_checkers[robot_id].summarize_checks(collision_checks)
+            checker = collision_checkers[robot_id]
+            collision_checks = checker.check_trajectory(waypoints, payload.chain_id, request.tcp_offset)
+            collision_summary = checker.summarize_checks(collision_checks)
+            # 撞了才 RRT：勾了碰撞检查且规划路径撞障时，自动改用 RRT-Connect
+            # 绕障重规划（与左侧规划/序列执行同款策略）。终点是算出来的姿态
+            # （不是真机到过的），它本身撞障是真警报：不豁免、不绕，直接报对。
+            if collision_summary["status"] == "collision" and planner_name != "rrt":
+                goal_chk = checker.check_state(request.target_joints, payload.chain_id, request.tcp_offset)
+                if goal_chk["status"] == "collision":
+                    pair = goal_chk.get("pair") or {}
+                    collision_summary["rrt_error"] = (f"终点姿态本身撞障（{pair.get('a', '?')} ↔ "
+                                                      f"{pair.get('b', '?')}），无路可绕")
+                    print(f"[plan] {planner_name} 轨迹撞障，RRT 不适用: {collision_summary['rrt_error']}")
+                else:
+                    print(f"[plan] {planner_name} 轨迹撞障 → 转 RRT-Connect 绕障…")
+                    t0 = time.perf_counter()
+                    rrt_options = dict(request.planner_options or {})
+                    rrt_options.setdefault("timeout_s", 15.0)
+                    rrt_options["exempt_goal"] = False
+                    try:
+                        waypoints = planners[robot_id]["rrt"].plan(
+                            dataclasses.replace(request, planner_options=rrt_options))
+                    except ValueError as exc:
+                        collision_summary["rrt_error"] = str(exc)
+                        print(f"[plan] RRT 绕障失败（{time.perf_counter() - t0:.1f}s）: {exc}")
+                    else:
+                        print(f"[plan] RRT 绕障成功（{time.perf_counter() - t0:.1f}s）")
+                        planner_name = f"{planner_name}+rrt"
+                        waypoint_dicts = [waypoint.to_dict() for waypoint in waypoints]
+                        collision_checks = checker.check_trajectory(waypoints, payload.chain_id, request.tcp_offset)
+                        collision_summary = checker.summarize_checks(collision_checks)
             for waypoint, check in zip(waypoint_dicts, collision_checks, strict=True):
                 waypoint["collision"] = _frame_collision_summary(check)
         return {

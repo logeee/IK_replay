@@ -126,6 +126,11 @@
         </label>
         <button id="turnStopBtn" class="danger">停止</button>
       </div>
+      <div class="row">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input id="handUp" type="checkbox" /> 已抬手（右臂前伸）—— 只做标注，随每条转身/对中日志落盘，用于对比抬手前后的表现
+        </label>
+      </div>
       <div class="waist-jog">
         <button class="jog" data-d="2" disabled>⟲ 左转2°</button>
         <button class="jog" data-d="0.5" disabled>⟲ 左0.5°</button>
@@ -279,6 +284,13 @@ const savedRate = Number(localStorage.getItem("perp_hold_rate"));
 if (Number.isFinite(savedRate) && savedRate >= 2 && savedRate <= 30) {
   $("holdRate").value = savedRate;
 }
+
+// —— "已抬手"人工标注：勾选状态跟随每条转身/对中请求发给后端落日志 ——
+function handUp() { return $("handUp").checked; }
+$("handUp").checked = localStorage.getItem("perp_hand_up") === "1";
+$("handUp").addEventListener("change", () => {
+  localStorage.setItem("perp_hand_up", handUp() ? "1" : "0");
+});
 $("holdRate").addEventListener("change", () => {
   $("holdRate").value = holdRate();  // 越界值拉回范围内
   localStorage.setItem("perp_hold_rate", holdRate());
@@ -294,6 +306,7 @@ async function holdBeat() {
       body: JSON.stringify({
         hold_dir: holdDir,
         rate_deg_s: holdRate(),
+        hand_raised: handUp(),
         dmin: Number($("dmin").value) || 0.4,
         dmax: Number($("dmax").value) || 1.0,
       }),
@@ -391,6 +404,7 @@ $("alignBtn").addEventListener("click", async () => {
     await alignPost({
       start: true,
       mode: "hold",   // 新对中（打杆式）；去掉此行即回退旧版定长脉冲
+      hand_raised: handUp(),
       dmin: Number($("dmin").value) || 0.4,
       dmax: Number($("dmax").value) || 1.0,
     });
@@ -415,7 +429,9 @@ async function alignPost(body) {
   }
 }
 document.querySelectorAll(".jog").forEach((b) => {
-  b.addEventListener("click", () => turnPost({ delta_deg: Number(b.dataset.d) }));
+  b.addEventListener("click", () => turnPost({
+    delta_deg: Number(b.dataset.d), hand_raised: handUp(),
+  }));
 });
 updateTurnButtons();
 

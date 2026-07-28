@@ -1,0 +1,14 @@
+{
+  "name": "0.52预备",
+  "chain_id": "right_arm",
+  "named_joints": {
+    "right_shoulder_pitch_joint": -0.8512571454048157,
+    "right_shoulder_roll_joint": -0.3248983323574066,
+    "right_shoulder_yaw_joint": -0.0815766230225563,
+    "right_elbow_joint": 0.08166050910949707,
+    "right_wrist_roll_joint": -0.008442887105047703,
+    "right_wrist_pitch_joint": 0.09561014920473099,
+    "right_wrist_yaw_joint": 0.018851187080144882
+  },
+  "created_at": "2026-07-28 13:11:56"
+}

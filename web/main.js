@@ -222,6 +222,15 @@ async function initReach() {
     e.preventDefault();   // 别让空格滚动页面
     toggleHandMove();     // hand_move=true → 走"恢复保持"分支，无确认弹窗
   });
+  // 卸力摆位时鼠标右键 = 恢复保持（与空格等效；此状态下屏蔽右键菜单/视角平移）
+  window.addEventListener("contextmenu", (e) => {
+    if (!reach.status?.hand_move) {
+      return;               // 非卸力状态：右键保持原有行为（菜单/平移视角）
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    toggleHandMove();
+  }, true);
   d.record.addEventListener("click", () => recordWaypoint());
   d.delWp.addEventListener("click", () => deleteWaypoint());
   d.addVia.addEventListener("click", () => addViaWaypoint());
@@ -618,25 +627,33 @@ async function runReachPlan() {
                     : sidestepOk ? "（已并入预演）" : "（横移段规划失败）")] : []),
     ...(endWpPreview ? [`结束后收回到「${endWpPreview.name}」` +
       (returnOk ? "（已并入预演）" : "（收回段规划失败）")] : []),
+    ...(String(panel.currentPlanner || "").endsWith("+rrt")
+      ? ["直线撞障 → 已改用 RRT 绕障路径（形状请看预演）"] : []),
     `IK: ${ik ? (ik.success ? "成功" : "未到达") : "失败"}` +
       (ik ? ` · 误差 ${Number(ik.error_mm).toFixed(1)} mm` : ""),
-    `碰撞: ${collision?.status_label || "-"} · 轨迹点 ${panel.frames.length}`,
+    `碰撞: ${collision?.status_label || "-"} · 轨迹点 ${panel.frames.length}` +
+      (collision?.rrt_error ? `（RRT 绕障失败: ${collision.rrt_error}）` : ""),
   ];
   lines.push(...describeReachCollision(panel, collision));
   reach.dom.info.textContent = lines.join("\n");
 
+  const usedRrt = String(panel.currentPlanner || "").endsWith("+rrt");
   const planned = ik?.success && panel.frames.length > 1 && collision?.status !== "collision";
   if (planned) {
     reach.dom.exec.disabled = !st.armed;
+    const rrtNote = usedRrt ? "直线撞障，已自动改走 RRT 绕障路径——请在预演里确认形状。" : "";
     reachMsg(st.armed
-      ? "预演回放中，确认无误后点「真机执行」"
-      : "预演回放中（未接管手臂，先点「接管手臂」才能执行）", "success");
+      ? `${rrtNote}预演回放中，确认无误后点「真机执行」`
+      : `${rrtNote}预演回放中（未接管手臂，先点「接管手臂」才能执行）`,
+      usedRrt ? "warn" : "success");
     replay(panel);
   } else {
     reach.dom.exec.disabled = true;
     reachMsg(ik?.success === false
       ? "目标不可达（IK 未收敛），换个目标或调整姿态"
-      : (collision?.status === "collision" ? "轨迹有碰撞，已禁止执行" : "规划失败"), "error");
+      : (collision?.status === "collision"
+        ? `轨迹有碰撞，已禁止执行${collision?.rrt_error ? `（RRT 也绕不过去: ${collision.rrt_error}）` : ""}`
+        : "规划失败"), "error");
   }
 }
 
@@ -699,6 +716,7 @@ async function planReachLeft() {
 
   panel.frames = res.waypoints;
   panel.frameIndex = 0;
+  panel.currentPlanner = res.planner;
   // 逐步 IK 每步都收敛才会走到这里，用最大步误差充当 IK 指标（供确认框显示）
   panel.currentIk = { success: true, error_mm: res.max_ik_error_mm,
                       error_rotation: 0, iterations: 0 };
@@ -712,26 +730,34 @@ async function planReachLeft() {
   reach.execFrames = panel.frames;
 
   const pt = pick.p_torso;
-  const order = res.mode === "push_in" ? "平移（竖直+水平）→ 进给（+x 往里伸）"
-                                       : "拔出（-x）→ 平移（竖直+水平）";
+  const usedRrt = res.planner === "axis_last+rrt";
+  const order = usedRrt
+    ? "直线撞障 → 已改用 RRT 绕障路径（不再保证两段式形状）"
+    : res.mode === "push_in" ? "平移（竖直+水平）→ 进给（+x 往里伸）"
+                             : "拔出（-x）→ 平移（竖直+水平）";
   reach.dom.info.textContent = [
     `左侧规划：${order}`,
     `目标(躯干系) [${pt.map((v) => v.toFixed(3)).join(", ")}] m`,
     `中间点(根系) [${res.mid_root.map((v) => v.toFixed(3)).join(", ")}] m`,
     `最大 IK 步误差 ${Number(res.max_ik_error_mm).toFixed(1)} mm · 轨迹点 ${panel.frames.length}`,
-    `碰撞: ${res.collision?.status_label || "未检查"}`,
+    `碰撞: ${res.collision?.status_label || "未检查"}` +
+      (res.collision?.rrt_error ? `（RRT 绕障失败: ${res.collision.rrt_error}）` : ""),
   ].join("\n");
 
   const planned = panel.frames.length > 1 && res.collision?.status !== "collision";
   if (planned) {
     reach.dom.exec.disabled = !st.armed;
+    const rrtNote = usedRrt ? "直线撞障，已自动改走 RRT 绕障路径——请在预演里确认形状。" : "";
     reachMsg(st.armed
-      ? "左侧规划预演回放中，确认无误后点「真机执行」"
-      : "左侧规划预演回放中（未接管手臂，先点「接管手臂」才能执行）", "success");
+      ? `${rrtNote}左侧规划预演回放中，确认无误后点「真机执行」`
+      : `${rrtNote}左侧规划预演回放中（未接管手臂，先点「接管手臂」才能执行）`,
+      usedRrt ? "warn" : "success");
     replay(panel);
   } else {
     reach.dom.exec.disabled = true;
-    reachMsg(res.collision?.status === "collision" ? "轨迹有碰撞，已禁止执行" : "规划失败", "error");
+    reachMsg(res.collision?.status === "collision"
+      ? `轨迹有碰撞，已禁止执行${res.collision?.rrt_error ? `（RRT 也绕不过去: ${res.collision.rrt_error}）` : ""}`
+      : "规划失败", "error");
   }
 }
 
@@ -1520,7 +1546,7 @@ async function toggleHandMove() {
   const on = !reach.status.hand_move;
   if (on) {
     const ok = window.confirm(
-      "确认卸力？\n\n重力前馈会让手臂近似失重（推到哪停哪），但补偿有偏差时仍可能缓慢飘移，请用手护住。\n摆好位置后点「恢复保持」或按空格键。");
+      "确认卸力？\n\n重力前馈会让手臂近似失重（推到哪停哪），但补偿有偏差时仍可能缓慢飘移，请用手护住。\n摆好位置后点「恢复保持」、按空格键或点鼠标右键。");
     if (!ok) {
       return;
     }
@@ -2450,6 +2476,7 @@ async function planTrajectory(panel, options = {}) {
     });
     panel.frames = data.waypoints;
     panel.frameIndex = 0;
+    panel.currentPlanner = data.planner;   // 带 "+rrt" 后缀 = 撞障后自动绕障
     panel.currentCollision = data.collision;
     updateCollisionMetrics(panel, data.collision);
     updateTrajectoryLine(panel);
