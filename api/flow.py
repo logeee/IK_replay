@@ -3,11 +3,13 @@
 已部署的步骤（测平面/测距、腰部对齐、pick→规划→执行）直接走 reach_server；
 起手式按距离自动选（序列名带门槛，如「0.46起手式」需 ≥0.46m，太近报
 POSE_UNAVAILABLE）；收尾 = 插值到「起手点测试」路点后释放手臂。
-尚未部署的步骤（YOLO 场景判断/点位识别/复核）走 7002 人工确认台交互顶上：
-流程把问题推到网页，操作员回答后继续。以后某步的自动化就绪，把对应方法里
-"问人"换成"问模型"即可，编排本身不用动。
+场景判断和拨后复核走 7004 YOLO 服务（python -m api.yolo_server）：
+本 API 专做「就地 → 远方」——开始前识别「就地」= 要拨、「远方」= 无需拨；
+拨完识别「远方」= 成功、「就地」= 失败重试。YOLO 不可达或画面里没识别到
+这两类时，按次转 7002 人工确认台顶上。
+点位识别尚未自动化，仍走确认台点选。
 
-不给 console 时保持旧行为：未实现步骤抛 FlowError(NOT_IMPLEMENTED)。
+不给 console 时保持旧行为：人工顶不上的步骤抛 FlowError(NOT_IMPLEMENTED)。
 
 腰部对齐目标（按 2026-07-28 流程定义）：
   3️⃣ 粗对齐：平面指数（yaw）收进 -3 ~ -6°（target -4.5° ± 1.5°）
@@ -27,6 +29,7 @@ from typing import Any
 
 from .client import ReachClient
 from .console_client import ConsoleAbort, ConsoleClient
+from .yolo_client import YoloClient
 
 
 class ErrorCode(IntEnum):
@@ -70,6 +73,7 @@ class SwitchFlow:
     def __init__(self,
                  client: ReachClient | None = None,
                  console: ConsoleClient | None = None,
+                 yolo: YoloClient | None = None,
                  coarse_target_deg: float = -4.5,  # 3️⃣ 粗对齐目标（-3~-6 带中心）
                  coarse_tol_deg: float = 1.5,      # 3️⃣ 带半宽 → [-6, -3]
                  fine_target_deg: float = -3.0,    # 6️⃣ 保持目标
@@ -88,6 +92,7 @@ class SwitchFlow:
                  exec_timeout_s: float = 120.0):
         self.client = client or ReachClient()
         self.console = console
+        self.yolo = yolo
         self.coarse_target_deg = coarse_target_deg
         self.coarse_tol_deg = coarse_tol_deg
         self.fine_target_deg = fine_target_deg
@@ -209,6 +214,10 @@ class SwitchFlow:
             raise FlowError(ErrorCode.PRECONDITION,
                             f"确认台不可达（{self.console.base}）——"
                             f"先启动 python -m api.console")
+        if self.yolo is not None and not self.yolo.alive():
+            # 不算硬失败：场景判断/复核会按次转确认台，人工顶上
+            self._log(f"⚠ YOLO 服务不可达（{self.yolo.base}），"
+                      f"场景判断和复核将转人工确认台")
 
     def _release_if_flow_armed(self) -> None:
         """无需拨动等"没动过手臂"的提前退出：流程自己接管的就还回去。
@@ -436,14 +445,39 @@ class SwitchFlow:
             raise FlowError(ErrorCode.NOT_IMPLEMENTED, f"{what}未实现（且未接确认台）")
         return self.console
 
-    def detect_scene(self) -> dict:
-        """2️⃣ 是否需要拨动、往哪个方向拨。TODO：接 YOLO 后替换问人。
+    def _yolo_scene(self, tag: str) -> dict | None:
+        """问 YOLO 服务当前是就地还是远方。
 
-        目前只有「从右向左」的拨法真机验证过（左移+推力）；
-        「从左向右」未支持，流程直接退出。
+        返回 {"scene": "就地"|"远方", "conf": ...}；没配 YOLO、服务不可达
+        或画面里两类都没识别到 → 返回 None（调用方转人工）。
         """
+        if self.yolo is None:
+            return None
+        res = self.yolo.scene()
+        if res.get("ok") and res.get("scene") in ("就地", "远方"):
+            self._log(f"{tag}：YOLO 识别为「{res['scene']}」"
+                      f"（置信度 {res.get('conf')}）")
+            return {"scene": res["scene"], "conf": res.get("conf")}
+        self._log(f"{tag}：YOLO 没给出结论"
+                  f"（{res.get('error') or '画面里没识别到就地/远方'}），转人工")
+        return None
+
+    def detect_scene(self) -> dict:
+        """2️⃣ 是否需要拨动。本 API 专做「就地 → 远方」：
+
+        YOLO 识别「就地」→ 需要拨（方向即验证过的从右向左）；
+        「远方」→ 已在目标位，无需拨动直接结束。
+        YOLO 不可用/没结论 → 转确认台人工判断。
+        """
+        got = self._yolo_scene("2️⃣ 场景判断")
+        if got is not None:
+            if got["scene"] == "远方":
+                return {"need_flip": False, "source": "yolo",
+                        "conf": got["conf"]}
+            return {"need_flip": True, "direction": "rtl", "source": "yolo",
+                    "conf": got["conf"]}
         answer = self._need_console("YOLO 场景判断").choice(
-            "2️⃣ 场景判断（YOLO 未部署，请看相机画面人工判断）\n"
+            "2️⃣ 场景判断（YOLO 无结论，请看相机画面人工判断）\n"
             "开关需要拨动吗？往哪个方向拨？",
             ["需要：从右向左", "需要：从左向右", "无需拨动"])
         if answer == "无需拨动":
@@ -510,9 +544,15 @@ class SwitchFlow:
         return pts
 
     def verify_flip(self) -> bool:
-        """复核是否拨动成功。TODO：接 YOLO 后替换问人。"""
+        """复核：拨完后 YOLO 看到「远方」= 成功，「就地」= 失败重试。
+
+        YOLO 不可用/没结论 → 转确认台人工判断。
+        """
+        got = self._yolo_scene("复核")
+        if got is not None:
+            return got["scene"] == "远方"
         return self._need_console("拨动复核").yesno(
-            "复核（YOLO 未部署）：开关拨动成功了吗？")
+            "复核（YOLO 无结论）：开关拨动成功了吗？")
 
     DESCEND_WAYPOINT = "起手点测试"   # 复核成功后插值回落到这个已录路点
 

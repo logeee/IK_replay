@@ -12,6 +12,7 @@ import sys
 from .client import ReachClient
 from .console_client import ConsoleClient
 from .flow import SwitchFlow
+from .yolo_client import YoloClient
 
 
 def main() -> int:
@@ -22,6 +23,10 @@ def main() -> int:
                         help="人工确认台地址（python -m api.console 启动）")
     parser.add_argument("--no-console", action="store_true",
                         help="不用确认台：未部署步骤直接按 NOT_IMPLEMENTED 中止")
+    parser.add_argument("--yolo", default="http://127.0.0.1:7004",
+                        help="YOLO 推理服务地址（python -m api.yolo_server 启动）")
+    parser.add_argument("--no-yolo", action="store_true",
+                        help="不用 YOLO：场景判断和复核全走确认台人工")
     parser.add_argument("--coarse-target", type=float, default=-4.5,
                         help="3️⃣ 粗对齐目标角（°），带 = 目标±coarse-tol")
     parser.add_argument("--coarse-tol", type=float, default=1.5,
@@ -47,8 +52,10 @@ def main() -> int:
     args = parser.parse_args()
 
     console = None if args.no_console else ConsoleClient(args.console)
+    yolo = None if args.no_yolo else YoloClient(args.yolo)
     flow = SwitchFlow(client=ReachClient(args.base),
                       console=console,
+                      yolo=yolo,
                       coarse_target_deg=args.coarse_target,
                       coarse_tol_deg=args.coarse_tol,
                       fine_target_deg=args.fine_target,
