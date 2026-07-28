@@ -1709,7 +1709,9 @@ def reach_run_sequence(body: dict):
     执行方式（v2）：第一次运行用「直线优先、撞了才 RRT-Connect」逐段规划出
     无碰撞轨迹，并把完整轨迹帧录进序列文件（trajectory 字段）；之后运行直接
     回放录制轨迹——不算 RRT、不算 IK、不做碰撞检查，请求即执行。
-    起点与录制起点漂移超过 0.5 rad（说明工况变了）才触发一次重新规划。
+    起点与录制起点漂移超过 0.5 rad → 拒绝执行（409），绝不隐式重规划：
+    通用规划器不知道录制时人工绕开的障碍，覆盖已验证轨迹更是事故源。
+    只有「文件里还没有轨迹」或显式 replan=true 才会规划并写入文件。
 
     Body: {"file": str, "joint_speed": float=0.35, "max_speed_rad_s": float=0.4,
            "replan": bool=false,    # replan=true 强制丢弃录制轨迹重规划
@@ -1760,7 +1762,16 @@ def reach_run_sequence(body: dict):
                 drift = float(np.max(np.abs(frames[0] - q0)))
                 if drift <= SEQ_REPLAY_DRIFT_RAD:
                     q_list = [q0] + frames   # 从当前实测平滑接入第一帧
-                # 漂移太大 → 落到下面重新规划
+                else:
+                    # 起点漂移绝不隐式重规划：通用规划器不知道录制时人工
+                    # 绕开的障碍，而且重规划会覆盖文件里已验证的轨迹。
+                    return JSONResponse(
+                        {"ok": False,
+                         "error": f"起点与录制起点相差 {drift:.2f} rad"
+                                  f"（>{SEQ_REPLAY_DRIFT_RAD}），已拒绝执行。"
+                                  f"请先把手臂移回该序列的录制起点再运行；"
+                                  f"确要丢弃已录轨迹重新规划请显式传 replan=true"},
+                        status_code=409)
 
         if q_list is None:
             # ---- 首次（或工况变了）：fork 子进程跑 RRT。规划是纯 Python

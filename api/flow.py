@@ -5,9 +5,9 @@
 POSE_UNAVAILABLE）；收尾 = 插值到「起手点测试」路点后释放手臂。
 场景判断和拨后复核走 7004 YOLO 服务（python -m api.yolo_server）：
 本 API 专做「就地 → 远方」——开始前识别「就地」= 要拨、「远方」= 无需拨；
-拨完识别「远方」= 成功、「就地」= 失败重试。YOLO 不可达或画面里没识别到
-这两类时，按次转 7002 人工确认台顶上。
-点位识别尚未自动化，仍走确认台点选。
+拨完识别「远方」= 成功、「就地」= 失败重试。
+点位识别 = 「就地」框 + 固定相对偏移（标注数据实测与距离/角度无关）。
+YOLO 不可达或画面里没识别到目标时，按次转 7002 人工确认台顶上。
 
 不给 console 时保持旧行为：人工顶不上的步骤抛 FlowError(NOT_IMPLEMENTED)。
 
@@ -23,6 +23,7 @@ from __future__ import annotations
 import math
 import re
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any
@@ -111,6 +112,7 @@ class SwitchFlow:
         self.exec_timeout_s = exec_timeout_s
         self._current_pose: dict | None = None
         self._armed_by_flow = False   # 手臂是流程接管的（而非用户本来就接管着）
+        self.log_lines: deque[str] = deque(maxlen=300)   # 供调度服务透出进度
 
     # ------------------------------------------------------------------ 主流程
 
@@ -148,11 +150,18 @@ class SwitchFlow:
                     pose = self.choose_opening_pose(distance_m)
                     self._current_pose = pose   # 拨完插值回它配套的「终点」路点
                     self._log(f"起手式: {pose}")
-                    self.apply_opening_pose(pose)
+                    if round_no == 1:
+                        self.apply_opening_pose(pose)
+                    else:
+                        # 重试轮：上一轮结束时手臂已在「终点」高位附近，直接
+                        # 插值回终点路点即可——回放整条起手式会让手下去再上来，
+                        # 且起点漂移触发的重规划轨迹未经人工验证
+                        self._log("重试轮：跳过起手式回放，插值回终点路点作为起手位")
+                        self._goto_endpoint(f"重试第{round_no}轮")
 
                     self._log(f"═══ 6️⃣ 腰部细对齐并保持："
                               f"{self.fine_target_deg:+.1f}°±{self.fine_tol_deg}° ═══")
-                    self.waist_align(self.fine_target_deg, self.fine_tol_deg)
+                    self._fine_align_with_retry()
 
                     points = self._detect_points_held()
                     self._log(f"点位: {points}")
@@ -171,8 +180,10 @@ class SwitchFlow:
                     last_error = FlowError(ErrorCode.VERIFY_FAILED, "复核未通过")
                 except FlowError as exc:
                     if exc.code in (ErrorCode.NOT_IMPLEMENTED,
-                                    ErrorCode.POSE_UNAVAILABLE):
-                        raise    # 未实现/距离不够：重试也不会变，直接中止
+                                    ErrorCode.POSE_UNAVAILABLE,
+                                    ErrorCode.ALIGN_FAILED):
+                        # 未实现/距离不够/对不齐：重摆起手式也不会变，直接中止
+                        raise
                     self._log(f"本轮失败（{exc.code.name}: {exc.message}），回到 5️⃣")
                     last_error = exc
             raise last_error or FlowError(ErrorCode.VERIFY_FAILED, "重试轮数耗尽")
@@ -242,15 +253,21 @@ class SwitchFlow:
     def measure_distance(self) -> float:
         return float(self.measure_plane()["distance_m"])
 
-    def waist_align(self, target_deg: float, tol_deg: float) -> None:
-        """腰部调节：把平面指数收进 target_deg ± tol_deg。"""
+    def waist_align(self, target_deg: float, tol_deg: float,
+                    cmd_tol_deg: float | None = None) -> None:
+        """腰部调节：把平面指数收进 target_deg ± tol_deg。
+
+        cmd_tol_deg：发给服务器的收敛阈值（默认同 tol_deg）。重试时把它
+        收紧，让服务器收到带中心附近再停——否则它停在带边缘（如 1.99°），
+        流程复测因测量噪声量出 2.05° 又判失败，在边界上来回打转。
+        """
         yaw = float(self.measure_plane()["yaw_err_deg"])
         if abs(yaw - target_deg) <= tol_deg:
             self._log(f"平面指数已在带内（yaw {yaw:+.2f}°，"
                       f"目标 {target_deg:+.1f}°±{tol_deg}°），跳过")
             return
         res = self.client.align_yaw_start(self.dmin, self.dmax,
-                                          tol_deg=tol_deg,
+                                          tol_deg=cmd_tol_deg or tol_deg,
                                           target_deg=target_deg,
                                           mode=self.align_mode)
         if not res.get("ok"):
@@ -273,6 +290,25 @@ class SwitchFlow:
         self.client.align_yaw_stop()
         raise FlowError(ErrorCode.ALIGN_FAILED, f"对中超时（>{self.align_timeout_s}s）")
 
+    def _fine_align_with_retry(self, attempts: int = 3) -> None:
+        """6️⃣ 细对齐，失败原地重试——重摆起手式对腰部对齐毫无帮助。
+
+        重试时收紧服务器的收敛阈值（带半宽的一半），让它收到带中心附近，
+        避免停在带边缘被复测噪声判死。
+        """
+        for i in range(1, attempts + 1):
+            try:
+                self.waist_align(self.fine_target_deg, self.fine_tol_deg,
+                                 cmd_tol_deg=(self.fine_tol_deg / 2
+                                              if i > 1 else None))
+                return
+            except FlowError as exc:
+                if exc.code != ErrorCode.ALIGN_FAILED or i == attempts:
+                    raise
+                self._log(f"细对齐未达标（{exc.message}），"
+                          f"原地重试（第 {i}/{attempts - 1} 次，收紧阈值到 "
+                          f"±{self.fine_tol_deg / 2:.1f}°）")
+
     def _detect_points_held(self) -> list[dict]:
         """取点前复查保持带：取点期间腰若漂出 -3°±2° 就重新对齐再取。"""
         for attempt in (1, 2):
@@ -282,7 +318,8 @@ class SwitchFlow:
                 return points
             self._log(f"取点期间漂出保持带（yaw {yaw:+.2f}°），重新对齐后重新取点"
                       f"（第 {attempt} 次）")
-            self.waist_align(self.fine_target_deg, self.fine_tol_deg)
+            self.waist_align(self.fine_target_deg, self.fine_tol_deg,
+                             cmd_tol_deg=self.fine_tol_deg / 2)
         return self.detect_points()
 
     # 横移方向 = 拟合平面的"左"再向下倾 2°（同 main.js SIDESTEP_TILT_DEG）
@@ -290,11 +327,14 @@ class SwitchFlow:
     SIDESTEP_PUSH_SPEED = 0.06   # 带推力时快拨（m/s）：借冲量越过定位卡点
 
     def flip_switch(self, points: list[dict]) -> None:
-        """IK 执行拨动，完整复刻 index.html 真机验证过的链路和参数：
+        """IK 执行拨动：
 
-          取点（接近偏移 0）→ 左侧规划（中段抬高 2cm）→ 确认 →
-          主段到位（6s）→ 沿柜面左移 6cm + 前馈推力 25N（快拨 1s）→
-          关节插值回起手式配套的「终点」路点（如 0.46终点），之后交给复核
+          取点（接近偏移 0）→ 左侧规划（中段抬高 2cm）→
+          主段到位（6s）→ 沿柜面左移 6cm + 前馈推力 25N（快拨 1s）
+
+        拨完就地停住直接交给复核（拨动本身不要求到点精度，不再先插值回
+        「终点」路点）：成功 → 收尾直接回「起手点测试」；失败 → 重试轮
+        先插值回终点路点当起手位。规划就绪后直接真机执行，不经确认台。
         """
         for i, pt in enumerate(points, 1):
             u, v = int(pt["u"]), int(pt["v"])
@@ -323,13 +363,6 @@ class SwitchFlow:
             self._log(f"{tag} 预演就绪：{len(frames)} 路点，"
                       f"IK 误差 {plan.get('max_ik_error_mm')}mm")
 
-            if self.console is not None:
-                self.console.confirm(
-                    f"{tag} 预演就绪（{len(frames)} 路点，IK 误差 "
-                    f"{plan.get('max_ik_error_mm')}mm）。\n"
-                    f"确认后真机执行：到位 {self.reach_duration_s:.0f}s → "
-                    f"左移 {self.sidestep_cm:.0f}cm + 推力 "
-                    f"{self.push_force_n:.0f}N → 插值回终点路点")
             res = self.client.execute(
                 waypoints=[f["named_joints"] for f in frames],
                 duration=self.reach_duration_s, label="flow_reach")
@@ -339,7 +372,6 @@ class SwitchFlow:
             self._wait_exec(f"{tag} 到位")
 
             self._sidestep_flick(picked, tag)
-            self._goto_endpoint(tag)
 
     def _sidestep_flick(self, picked: dict, tag: str) -> None:
         """到位后的拨动本体：按真机实际姿态就地规划横移，带前馈推力执行。"""
@@ -394,11 +426,15 @@ class SwitchFlow:
                             f"配不出终点路点名")
         self._interp_to_waypoint(f"{m.group(1)}终点", tag)
 
-    def _interp_to_waypoint(self, wp_name: str, tag: str) -> None:
+    def _interp_to_waypoint(self, wp_name: str, tag: str,
+                            only_if_beyond_rad: float = 0.0,
+                            speed_rad_s: float | None = None) -> None:
         """关节空间插值到指定名字的已录路点。
 
         直接把 [当前姿态, 目标姿态] 交给 /execute 做关节插值，不走
         IK/规划——这些路点都是人工录制验证过的安全姿态。
+        only_if_beyond_rad > 0 时，当前已在目标附近（最大关节差 ≤ 该值）
+        就跳过不动。
         """
         wps = self.client.waypoints().get("waypoints") or []
         target = next((w for w in wps if str(w.get("name")) == wp_name), None)
@@ -413,9 +449,14 @@ class SwitchFlow:
         cur = joints["named_joints"]
         end = target["named_joints"]
         travel = max(abs(float(end[k]) - float(cur.get(k, 0.0))) for k in end)
-        duration = max(2.0, travel / max(self.endpoint_speed_rad_s, 0.05))
+        if only_if_beyond_rad > 0 and travel <= only_if_beyond_rad:
+            self._log(f"{tag} 已在「{wp_name}」附近"
+                      f"（最大关节差 {travel:.2f} rad），跳过插值")
+            return
+        speed = speed_rad_s or self.endpoint_speed_rad_s
+        duration = max(1.5, travel / max(speed, 0.05))
         res = self.client.execute(waypoints=[cur, end], duration=duration,
-                                  max_speed_rad_s=self.endpoint_speed_rad_s,
+                                  max_speed_rad_s=speed,
                                   label=f"flow_goto_{wp_name}"[:32])
         if not res.get("ok"):
             raise FlowError(ErrorCode.EXEC_FAILED,
@@ -513,52 +554,102 @@ class SwitchFlow:
         return {"name": seq["name"], "file": seq["file"],
                 "manual": False, "min_distance_m": thr}
 
+    # 所有起手式序列都从这个已录路点起录。起点漂移 >0.5 rad 时服务端会
+    # 重新规划（轨迹未经人工验证，还会覆盖文件里的录制），所以运行序列前
+    # 先插值回录制起点，保证走"录播"路径。
+    SEQ_START_WAYPOINT = "录制点位1"
+
     def apply_opening_pose(self, pose: dict) -> None:
-        """把手臂摆到起手式：序列走 /sequences/run（首次规划→确认→回放），
-        手动摆位则等确认台放行。"""
+        """把手臂摆到起手式：先插值回录制起点，再原样回放录制轨迹。"""
         if pose.get("manual"):
             self._need_console("起手式执行").confirm(
                 "请手动把手臂摆到起手式，摆好后确认")
             return
-        # 等价于调试页对该序列点「确定」：已有录制立即回放；起点漂移触发
-        # 重规划时（服务端只回 preview 不执行），自动再跑一次直接执行
+        self._interp_to_waypoint(self.SEQ_START_WAYPOINT, "起手式起点",
+                                 only_if_beyond_rad=0.4)
         res = self.client.run_sequence(pose["file"])
         if not res.get("ok"):
             raise FlowError(ErrorCode.EXEC_FAILED,
                             f"起手式序列启动失败: {res.get('error')}")
         if res.get("preview"):
-            self._log(f"起手式「{pose['name']}」起点变了已重新规划"
-                      f"（{res.get('frames')} 帧，约 {res.get('duration_s')}s），继续执行")
+            # preview 只剩一种可能：文件里还没有录制轨迹（全新序列的首次
+            # 规划）。服务端已把它录进文件，再跑一次走录播执行。
+            # （起点漂移如今是 409 报错，不会走到这里。）
+            self._log(f"起手式「{pose['name']}」首次规划完成"
+                      f"（{res.get('frames')} 帧，约 {res.get('duration_s')}s），"
+                      f"继续执行")
             res = self.client.run_sequence(pose["file"])
             if not res.get("ok") or res.get("preview"):
                 raise FlowError(ErrorCode.EXEC_FAILED,
                                 f"起手式回放失败: {res.get('error') or '仍在 preview'}")
         self._wait_exec(f"起手式「{pose['name']}」")
 
+    # 取点 = 「就地」框的固定相对偏移。40 个人工标注样本（d 0.44~0.73m、
+    # yaw -16~+15°）实测 au/av 与距离和角度都无关（残差 ±4px ≈ ±1.5mm）：
+    # 手柄凸出带来的视差被框宽的透视缩放自动补偿了。
+    POINT_AU = 1.230   # u = x1 + au×框宽（>1 即框右缘外侧，手柄位置）
+    POINT_AV = 0.543   # v = y1 + av×框高
+
+    DETECT_SETTLE_S = 2.0   # 到位/对齐后腰部还在自平衡，等它稳住再取点
+
     def detect_points(self) -> list[dict]:
-        """开关点位（像素坐标）。TODO：接 YOLO 后替换问人。"""
+        """开关点位（像素坐标）：YOLO「就地」框 + 固定相对偏移。
+
+        画面里没有「就地」框或 YOLO 不可用 → 转确认台人工点选。
+        """
+        if self.yolo is not None:
+            self._log(f"等 {self.DETECT_SETTLE_S:.0f}s 让躯干自平衡稳定后取点")
+            time.sleep(self.DETECT_SETTLE_S)
+            res = self.yolo.infer()
+            if res.get("ok"):
+                boxes = [b for b in res.get("boxes") or []
+                         if b.get("name") == "就地"]
+                if boxes:
+                    b = max(boxes, key=lambda x: x["conf"])
+                    x1, y1, x2, y2 = b["xyxy"]
+                    u = int(round(x1 + self.POINT_AU * (x2 - x1)))
+                    v = int(round(y1 + self.POINT_AV * (y2 - y1)))
+                    self._log(f"YOLO 取点：「就地」框 conf {b['conf']}"
+                              f"（共 {len(boxes)} 个，取最高）→ ({u},{v})")
+                    return [{"u": u, "v": v}]
+                self._log("YOLO 画面里没有「就地」框，取点转人工")
+            else:
+                self._log(f"YOLO 取点失败（{res.get('error')}），转人工")
         pts = self._need_console("YOLO 点位识别").points(
             "请在相机画面上点击要拨动的开关点位（可多个），点完提交")
         if not pts:
             raise FlowError(ErrorCode.YOLO_FAILED, "没有点位")
         return pts
 
-    def verify_flip(self) -> bool:
-        """复核：拨完后 YOLO 看到「远方」= 成功，「就地」= 失败重试。
+    VERIFY_SETTLE_S = 1.5   # 复核看到「就地」时，等这么久再复看一眼
 
+    def verify_flip(self) -> bool:
+        """复核：拨完立即问 YOLO，「远方」= 成功，「就地」= 失败重试。
+
+        看到「就地」不立即判死：手可能正遮着开关、撤力回弹还没停，等一等
+        再复看一眼，两次都是「就地」才算失败（误判失败要白跑一整轮）。
         YOLO 不可用/没结论 → 转确认台人工判断。
         """
         got = self._yolo_scene("复核")
         if got is not None:
-            return got["scene"] == "远方"
+            if got["scene"] == "远方":
+                return True
+            self._log(f"复核看到「就地」，等 {self.VERIFY_SETTLE_S}s "
+                      f"排除手臂未停稳/遮挡后再看一眼")
+            time.sleep(self.VERIFY_SETTLE_S)
+            got = self._yolo_scene("复核（二次）")
+            if got is not None:
+                return got["scene"] == "远方"
         return self._need_console("拨动复核").yesno(
             "复核（YOLO 无结论）：开关拨动成功了吗？")
 
     DESCEND_WAYPOINT = "起手点测试"   # 复核成功后插值回落到这个已录路点
+    DESCEND_SPEED_RAD_S = 0.6         # 收尾回落比常规插值快一倍
 
     def descend_fast(self, pose: dict | None) -> None:
-        """收尾：关节插值到「起手点测试」路点，然后释放手臂。"""
-        self._interp_to_waypoint(self.DESCEND_WAYPOINT, "收尾")
+        """收尾：快速关节插值到「起手点测试」路点，到位立即释放手臂。"""
+        self._interp_to_waypoint(self.DESCEND_WAYPOINT, "收尾",
+                                 speed_rad_s=self.DESCEND_SPEED_RAD_S)
         self._log("释放手臂")
         res = self.client.disarm()
         if not res.get("ok"):
@@ -573,6 +664,7 @@ class SwitchFlow:
                           detail={"elapsed_s": round(time.monotonic() - t0, 1),
                                   **detail})
 
-    @staticmethod
-    def _log(msg: str) -> None:
-        print(f"[{time.strftime('%H:%M:%S')}] [flow] {msg}", flush=True)
+    def _log(self, msg: str) -> None:
+        line = f"[{time.strftime('%H:%M:%S')}] [flow] {msg}"
+        print(line, flush=True)
+        self.log_lines.append(line)
