@@ -390,10 +390,13 @@ def reach_perpendicular(dmin: float = 0.3, dmax: float = 1.0):
     """
     if not state.enabled:
         return JSONResponse({"ok": False, "error": "reach 未启用"}, status_code=409)
+    _hold_check_stale()   # 顺带收尾心跳断掉的按住会话（见操作记录一节）
     out = _fit_view_plane(dmin, dmax)
     out["torso"] = _read_torso()
     out["turn_available"] = state.loco_available
     out["align"] = {"running": state.align_running, "message": state.align_message}
+    out["hold_record"] = {"active": _hold_group is not None,
+                          "group": _hold_group["name"] if _hold_group else None}
     return out
 
 
@@ -464,6 +467,157 @@ TURN_HOLD_PULSE_S = 0.8
 TURN_HOLD_RATE_DEG_S = 12.0        # 按住模式默认转速（前端可传 rate_deg_s 覆盖）
 TURN_HOLD_RATE_RANGE = (2.0, 30.0)  # 前端可调范围；点动/对中仍用上面验证过的 6°/s
 
+# --------------- 按住转身的操作记录（为自动纠偏学习采数据） ---------------
+# 每次"按住→松开"落一条样本到 reach_logs/hold_<日期>.jsonl：
+# 按住前/松开稳定后的柜面偏航角、方向、速度、时长、距离、腰角。
+# 攒够人工纠偏样本后，用它学"人打杆的习惯"（多大偏差按多久、何时松手），
+# 再写成自动纠偏。
+HOLD_LOG_SETTLE_S = 1.0   # 松开后等运控/相机稳定再测 after（同 ALIGN_SETTLE_S 道理）
+HOLD_STALE_S = 1.5        # 心跳断了这么久还没收到 stop → 按"超时"收尾该会话
+
+_hold_lock = threading.Lock()
+_hold_session: dict | None = None
+_hold_group: dict | None = None    # 前端"开始记录"创建的分组 {"name": str}，写进每条样本
+
+
+def _hold_measure(dmin: float, dmax: float) -> dict:
+    """记录用的轻量测量：柜面偏航角 + 距离 + 腰关节。失败字段置 None，不抛。"""
+    out: dict[str, Any] = {"yaw_err_deg": None, "distance_m": None}
+    try:
+        fit = _fit_view_plane(dmin, dmax)
+        if fit.get("ok"):
+            out["yaw_err_deg"] = round(float(fit["yaw_err_deg"]), 3)
+            out["distance_m"] = round(float(fit["distance_m"]), 3)
+    except Exception:
+        pass
+    try:
+        torso = _read_torso()
+        if torso and torso.get("waist_rad"):
+            out["waist_deg"] = [round(math.degrees(v), 3) for v in torso["waist_rad"]]
+    except Exception:
+        pass
+    return out
+
+
+def _hold_log(entry: dict) -> None:
+    """按住转身操作日志：reach_logs/hold_<日期>.jsonl。"""
+    try:
+        state.log_dir.mkdir(parents=True, exist_ok=True)
+        entry = {"ts": datetime.now().isoformat(timespec="milliseconds"),
+                 "session": state.session_id, **entry}
+        path = state.log_dir / f"hold_{datetime.now():%Y%m%d}.jsonl"
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _hold_note_beat(direction: float, rate: float, dmin: float, dmax: float) -> None:
+    """心跳到达：开新会话（先测 before）或延续当前会话。方向反打视为新会话。"""
+    global _hold_session
+    now = time.monotonic()
+    with _hold_lock:
+        sess = _hold_session
+        if sess is not None:
+            stale = now - sess["last_beat"] > HOLD_STALE_S
+            if stale or sess["dir"] != direction:
+                _hold_close_locked("timeout" if stale else "reversed")
+                sess = None
+        if sess is None:
+            _hold_session = {
+                "dir": direction, "rate": rate, "dmin": dmin, "dmax": dmax,
+                "t0": now, "last_beat": now, "beats": 1,
+                "group": _hold_group["name"] if _hold_group else None,
+                "before": _hold_measure(dmin, dmax),
+            }
+        else:
+            sess["last_beat"] = now
+            sess["beats"] += 1
+            sess["rate"] = rate    # 中途调速：记最后生效的值
+
+
+def _hold_close(reason: str) -> None:
+    with _hold_lock:
+        _hold_close_locked(reason)
+
+
+def _hold_close_locked(reason: str) -> None:
+    """收尾当前会话（须持有 _hold_lock）：后台延时测 after 并落盘。"""
+    global _hold_session
+    sess = _hold_session
+    _hold_session = None
+    if sess is None:
+        return
+    now = time.monotonic()
+    if reason == "stop":
+        duration = now - sess["t0"]              # 松键即停：按 stop 到达时刻算
+    else:
+        # 心跳断掉/反打：机器人把最后一个脉冲走完才停
+        duration = sess["last_beat"] - sess["t0"] + TURN_HOLD_PULSE_S
+    threading.Thread(target=_hold_write_entry,
+                     args=(sess, max(0.0, duration), reason), daemon=True).start()
+
+
+def _hold_write_entry(sess: dict, duration: float, reason: str) -> None:
+    time.sleep(HOLD_LOG_SETTLE_S)
+    after = _hold_measure(sess["dmin"], sess["dmax"])
+    before = sess["before"]
+    delta = None
+    if before.get("yaw_err_deg") is not None and after.get("yaw_err_deg") is not None:
+        delta = round(after["yaw_err_deg"] - before["yaw_err_deg"], 3)
+    _hold_log({
+        "event": "hold",
+        "group": sess.get("group"),                    # 开始/结束记录之间的分组名
+        "dir": int(sess["dir"]),                       # 1=左转 -1=右转
+        "rate_deg_s": sess["rate"],
+        "duration_s": round(duration, 3),
+        "beats": sess["beats"],
+        "end": reason,                                 # stop / timeout / reversed
+        "commanded_deg": round(sess["rate"] * duration * sess["dir"], 2),
+        "yaw_before_deg": before.get("yaw_err_deg"),
+        "yaw_after_deg": after.get("yaw_err_deg"),
+        "delta_yaw_deg": delta,
+        # 相机到柜面的垂直距离，按前/后各记一份：不同距离下的调节习惯
+        # 可能不同，学习时按距离分档要用
+        "distance_before_m": before.get("distance_m"),
+        "distance_after_m": after.get("distance_m"),
+        "waist_before_deg": before.get("waist_deg"),
+        "waist_after_deg": after.get("waist_deg"),
+        "settle_s": HOLD_LOG_SETTLE_S,
+    })
+
+
+def _hold_check_stale() -> None:
+    """由页面轮询顺带调用：心跳断掉又没等到 stop 的会话按超时收尾。"""
+    with _hold_lock:
+        sess = _hold_session
+        if sess is not None and time.monotonic() - sess["last_beat"] > HOLD_STALE_S:
+            _hold_close_locked("timeout")
+
+
+@router.post("/hold_record")
+def reach_hold_record(body: dict):
+    """记录分组开关：{"start": true, "label"?: str} / {"stop": true}。
+
+    开始后的每条 hold 样本都带 group 字段（默认组名 = 当前时刻），
+    并在日志里写 record_start / record_stop 标记行，方便按组切数据。
+    """
+    global _hold_group
+    with _hold_lock:
+        if body.get("stop"):
+            if _hold_group is not None:
+                _hold_log({"event": "record_stop", "group": _hold_group["name"]})
+                _hold_group = None
+            return {"ok": True, "active": False}
+        if body.get("start"):
+            name = str(body.get("label") or datetime.now().strftime("%H%M%S")).strip()
+            if _hold_group is not None:
+                _hold_log({"event": "record_stop", "group": _hold_group["name"]})
+            _hold_group = {"name": name}
+            _hold_log({"event": "record_start", "group": name})
+            return {"ok": True, "active": True, "group": name}
+    return JSONResponse({"ok": False, "error": "需要 start 或 stop"}, status_code=400)
+
 
 def _get_loco_client():
     """高层 loco RPC 客户端（懒创建）。DDS 在服务启动时已由只读订阅初始化。"""
@@ -501,6 +655,7 @@ def reach_turn(body: dict):
                             status_code=502)
 
     if body.get("stop"):
+        _hold_close("stop")   # 有按住会话就收尾记录（无会话时是空操作）
         try:
             loco.StopMove()
         except Exception as exc:
@@ -521,6 +676,11 @@ def reach_turn(body: dict):
         except (TypeError, ValueError):
             rate = TURN_HOLD_RATE_DEG_S
         rate = float(np.clip(rate, *TURN_HOLD_RATE_RANGE))
+        # 操作记录：首拍会先测一次柜面偏航角（机器人此刻还没动），
+        # dmin/dmax 用前端当前的深度范围，保证 before/after 同口径。
+        _hold_note_beat(direction, rate,
+                        float(body.get("dmin") or 0.4),
+                        float(body.get("dmax") or 1.0))
         omega = math.radians(rate) * direction
         try:
             code = loco.SetVelocity(0.0, 0.0, omega, TURN_HOLD_PULSE_S)
@@ -682,10 +842,133 @@ def _align_loop(tol: float, dmin: float, dmax: float) -> None:
         state.align_running = False
 
 
+# --------------- 新对中（打杆式，参数学自 hold_*.jsonl 的手动纠偏数据） ---------------
+# 2026-07-28 采集 60 次按键、0.41m/0.54m 两个距离，拟合结果几乎一致：
+#   实际角 ≈ 有效速率 × (按住时长 − 死区)；指令 6°/s 时有效速率 3.5~4.1°/s，
+#   死区 0.21~0.26s；<0.4s 的超短按响应完全随机（0.05°~1.3°）。
+# 策略照抄人手的两段式，但每杆时长用模型直接解出来，不靠试探：
+#   时长 = 死区 + |偏差|×GAIN / 有效速率 → 按完等稳再测 → 不够再补一杆。
+HOLD_ALIGN_CMD_DEG_S = 6.0    # 指令速度：数据在这个档采的，模型只对这个档成立
+HOLD_ALIGN_EFF_DEG_S = 3.8    # 有效速率（两距离拟合 4.1/3.5，取中偏保守）
+HOLD_ALIGN_DEAD_S = 0.24      # 死区：短于此基本不动
+HOLD_ALIGN_GAIN = 0.9         # 每杆只打目标的 9 折：宁欠勿过，过冲反打代价更大
+HOLD_ALIGN_MIN_HOLD_S = 0.35  # 超短杆不打——死区附近响应是随机数，打了白打
+HOLD_ALIGN_MAX_HOLD_S = 6.0   # 单杆上限（约一杆 22°，再大分两杆）
+HOLD_ALIGN_MAX_STEPS = 12     # 混合模式：大偏差 2~4 杆 + 小脉冲收尾若干步
+# 12:02 真机 6 轮的教训（align_20260728 第 4 轮）：小残差区间短杆响应随机
+# （0.45s 预计 0.8° 实际走 1.4°），冲过头→反号兜底被随机性误触发→震荡放弃。
+# 收尾策略 = 降速拉长："高速+超短时"落在死区/随机区（旧版 0.5° 脉冲折算
+# 0.083s，远短于 0.24s 死区，所以只抽搐不动），改用低速+正常时长——同样
+# 的角度时长翻倍且稳稳越过随机区，时间抖动折算的角度误差也减半。
+# 低速档的有效速率先按 6°/s 档等比折算，待真机日志校准。
+HOLD_ALIGN_FINE_DEG = 1.2         # |偏差| 小于此进入慢杆收尾
+HOLD_ALIGN_FINE_CMD_DEG_S = 3.0   # 收尾指令速度（半速）
+HOLD_ALIGN_FINE_EFF_DEG_S = HOLD_ALIGN_EFF_DEG_S * HOLD_ALIGN_FINE_CMD_DEG_S / HOLD_ALIGN_CMD_DEG_S
+HOLD_ALIGN_FLIP_MIN_DEG = 1.5     # 反号兜底只在大杆后允许触发
+
+
+def _align_loop_hold(tol: float, dmin: float, dmax: float) -> None:
+    """新对中：静止测偏差 → 一杆按模型算好时长 → 等稳 → 再测。
+
+    与旧版（定长 0.5°/2° 脉冲逐步磨）的区别：时长连续可变、带死区补偿，
+    正常情况 2~3 杆收敛。方向约定与旧版相同（yaw_err>0 → 左转），同样保留
+    "偏差变大就反号"的兜底。逐步日志写 align_<日期>.jsonl，mode=hold。
+    """
+    loco = _get_loco_client()
+    sign = 1.0
+    prev_err: float | None = None
+    prev_expect = 0.0     # 上一杆的预计角，用于限制反号兜底只在大杆后触发
+    _align_log({"event": "start", "mode": "hold", "tol_deg": tol,
+                "dmin": dmin, "dmax": dmax})
+    try:
+        for step in range(1, HOLD_ALIGN_MAX_STEPS + 1):
+            if state.align_cancel.is_set():
+                state.align_message = "已中止"
+                _align_log({"event": "cancelled", "mode": "hold", "step": step})
+                return
+            fitres = _fit_view_plane(dmin, dmax)
+            if not fitres.get("ok"):
+                state.align_message = f"新对中失败：{fitres.get('error')}"
+                _align_log({"event": "fit_fail", "mode": "hold", "step": step,
+                            "error": fitres.get("error")})
+                return
+            err = float(fitres["yaw_err_deg"])
+            _align_log({"event": "measure", "mode": "hold", "step": step,
+                        "yaw_err_deg": round(err, 3),
+                        "points": fitres.get("points_used")})
+            if abs(err) <= tol:
+                state.align_message = (f"新对中完成：yaw 偏差 {err:+.2f}°"
+                                       f"（{step - 1} 步）")
+                _align_log({"event": "done", "mode": "hold", "step": step,
+                            "yaw_err_deg": round(err, 3)})
+                return
+            # 反号兜底只信"大杆"的结果：短杆/小脉冲的响应本身随机，
+            # 偏差涨一点不代表方向错（第 4 轮真机就是被这个误触发震荡的）
+            if (prev_err is not None and abs(err) > abs(prev_err) + 0.3
+                    and abs(prev_expect) >= HOLD_ALIGN_FLIP_MIN_DEG):
+                sign = -sign
+                _align_log({"event": "sign_flip", "mode": "hold", "step": step})
+            prev_err = err
+            direction = 1.0 if sign * err > 0 else -1.0
+
+            if abs(err) < HOLD_ALIGN_FINE_DEG:
+                # 小残差：降速慢杆收尾。同样的角度时长翻倍，稳稳越过死区
+                # 和短杆随机区，分辨率比高速档细一倍
+                hold_s = (HOLD_ALIGN_DEAD_S
+                          + abs(err) * HOLD_ALIGN_GAIN / HOLD_ALIGN_FINE_EFF_DEG_S)
+                hold_s = float(np.clip(hold_s, HOLD_ALIGN_MIN_HOLD_S + 0.05, 1.2))
+                omega = math.radians(HOLD_ALIGN_FINE_CMD_DEG_S) * direction
+                prev_expect = (hold_s - HOLD_ALIGN_DEAD_S) * HOLD_ALIGN_FINE_EFF_DEG_S * direction
+                state.align_message = (f"第 {step} 步：偏差 {err:+.2f}° → "
+                                       f"慢杆 {hold_s:.2f}s（预计 {prev_expect:+.1f}°）")
+            else:
+                hold_s = (HOLD_ALIGN_DEAD_S
+                          + abs(err) * HOLD_ALIGN_GAIN / HOLD_ALIGN_EFF_DEG_S)
+                hold_s = float(np.clip(hold_s, HOLD_ALIGN_MIN_HOLD_S,
+                                       HOLD_ALIGN_MAX_HOLD_S))
+                omega = math.radians(HOLD_ALIGN_CMD_DEG_S) * direction
+                prev_expect = (hold_s - HOLD_ALIGN_DEAD_S) * HOLD_ALIGN_EFF_DEG_S * direction
+                state.align_message = (f"第 {step} 步：偏差 {err:+.2f}° → "
+                                       f"按 {hold_s:.2f}s（预计 {prev_expect:+.1f}°）")
+            code = loco.SetVelocity(0.0, 0.0, omega, hold_s)
+            _align_log({"event": "hold", "mode": "hold", "step": step,
+                        "hold_s": round(hold_s, 3),
+                        "expect_deg": round(prev_expect, 2), "rpc_code": code})
+            if code == RPC_TIMEOUT_CODE:
+                state.align_message += "（RPC 应答超时，按已执行继续）"
+            elif code not in (0, None):
+                state.align_message = f"新对中失败：SetVelocity 返回码 {code}"
+                return
+            if state.align_cancel.wait(hold_s + ALIGN_SETTLE_S):
+                state.align_message = "已中止"
+                _align_log({"event": "cancelled", "mode": "hold", "step": step})
+                return
+        if prev_err is not None and abs(prev_err) <= max(ALIGN_TOL_FALLBACK_DEG, tol):
+            state.align_message = (f"基本对中：偏差 {prev_err:+.2f}°"
+                                   f"（未达 {tol}°，但已在兜底内）")
+            _align_log({"event": "done_fallback", "mode": "hold",
+                        "yaw_err_deg": round(prev_err, 3)})
+        else:
+            state.align_message = (f"未收敛：{HOLD_ALIGN_MAX_STEPS} 杆后偏差仍 "
+                                   f"{prev_err:+.2f}°（阈值 {tol}°）")
+            _align_log({"event": "give_up", "mode": "hold",
+                        "yaw_err_deg": None if prev_err is None else round(prev_err, 3)})
+    except Exception as exc:
+        state.align_message = f"新对中异常：{exc}"
+        _align_log({"event": "exception", "mode": "hold", "error": str(exc)})
+    finally:
+        try:
+            loco.StopMove()
+        except Exception:
+            pass
+        state.align_running = False
+
+
 @router.post("/align_yaw")
 def reach_align_yaw(body: dict):
-    """一键对中（真机！）。Body: {"start": true, "tol_deg"?, "dmin"?, "dmax"?}
-    或 {"stop": true}。闭环转身直到相机光轴与柜面法线的 yaw 偏差进入阈值。"""
+    """一键对中（真机！）。Body: {"start": true, "mode"?: "hold", "tol_deg"?,
+    "dmin"?, "dmax"?} 或 {"stop": true}。mode="hold" 用新对中（打杆式），
+    否则用旧版定长脉冲。闭环转身直到 yaw 偏差进入阈值。"""
     if body.get("stop"):
         state.align_cancel.set()
         try:
@@ -720,13 +1003,16 @@ def reach_align_yaw(body: dict):
         tol_note = f"手臂收回，严格阈值 {tol}°"
     dmin = float(body.get("dmin", 0.3))
     dmax = float(body.get("dmax", 1.0))
+    use_hold = body.get("mode") == "hold"
+    loop = _align_loop_hold if use_hold else _align_loop
     state.align_cancel = threading.Event()
     state.align_running = True
-    state.align_message = f"对中开始（{tol_note}）…"
+    state.align_message = f"{'新' if use_hold else ''}对中开始（{tol_note}）…"
     state.align_thread = threading.Thread(
-        target=_align_loop, args=(tol, dmin, dmax), name="reach-align", daemon=True)
+        target=loop, args=(tol, dmin, dmax), name="reach-align", daemon=True)
     state.align_thread.start()
-    return {"ok": True, "started": True, "tol_deg": tol}
+    return {"ok": True, "started": True, "tol_deg": tol,
+            "mode": "hold" if use_hold else "pulse"}
 
 
 # --------------- 环境障碍物（深度相机扫描） ---------------

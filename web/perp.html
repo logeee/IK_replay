@@ -136,8 +136,12 @@
         <input id="holdRate" type="number" step="1" min="2" max="30" value="12"
                style="width:52px" /> °/s（范围 2~30，即时生效，下次打开页面记住上次的值）</div>
       <div class="row">
+        <button id="recBtn">▶ 开始记录</button>
+        <span class="status-line" style="margin:0" id="recState">未在记录（操作仍会落日志，但不带组名）</span>
+      </div>
+      <div class="row">
         <button id="alignBtn" class="primary" disabled
-                title="闭环伺服：测偏差→定长脉冲→再测。阈值自动选：手臂收回 0.35°，前伸 2.8°">◎ 一键对中</button>
+                title="新对中（打杆式，参数学自手动纠偏数据）：测偏差→按模型算好时长一杆到位→再测。阈值自动选：手臂收回 0.35°，前伸 2.8°">◎ 新对中</button>
         <span class="status-line" style="margin:0" id="alignState"></span>
       </div>
       <div class="status-line" id="turnState"></div>
@@ -209,6 +213,9 @@ async function poll() {
     aligning = !!(data.align && data.align.running);
     $("alignState").textContent = (data.align && data.align.message) || "";
     if (holdDir !== 0 && !turnArmed()) stopHold();  // 对中启动/连接断开时兜底松杆
+    recActive = !!(data.hold_record && data.hold_record.active);
+    recGroup = (data.hold_record && data.hold_record.group) || "";
+    updateRecButton();
     updateTurnButtons();
   } catch (e) {
     $("fitMsg").textContent = "服务不可达：" + e;
@@ -221,7 +228,7 @@ function updateTurnButtons() {
   const armed = turnAvailable && $("turnArm").checked;
   document.querySelectorAll(".jog").forEach((b) => { b.disabled = !armed || aligning; });
   $("alignBtn").disabled = !armed;
-  $("alignBtn").textContent = aligning ? "■ 停止对中" : "◎ 一键对中";
+  $("alignBtn").textContent = aligning ? "■ 停止对中" : "◎ 新对中";
   if (holdDir === 0) {
     $("turnState").textContent = turnAvailable
       ? (armed ? "已解锁：点按钮点动（6°/s），或按住 ← / → 键持续转（速度可调，松开即停）"
@@ -284,7 +291,12 @@ async function holdBeat() {
     const res = await fetch("/api/reach/turn", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ hold_dir: holdDir, rate_deg_s: holdRate() }),
+      body: JSON.stringify({
+        hold_dir: holdDir,
+        rate_deg_s: holdRate(),
+        dmin: Number($("dmin").value) || 0.4,
+        dmax: Number($("dmax").value) || 1.0,
+      }),
     });
     const data = await res.json();
     if (!data.ok) {
@@ -335,6 +347,37 @@ document.addEventListener("visibilitychange", () => {
   if (document.hidden) stopHold();
 });
 
+// —— 记录分组：开始/结束之间的每条 hold 样本带组名，方便按调试轮次切数据 ——
+let recActive = false;
+let recGroup = "";
+
+function updateRecButton() {
+  $("recBtn").textContent = recActive ? "■ 结束记录" : "▶ 开始记录";
+  $("recState").textContent = recActive
+    ? `记录中，组名 ${recGroup}`
+    : "未在记录（操作仍会落日志，但不带组名）";
+}
+
+$("recBtn").addEventListener("click", async () => {
+  try {
+    const res = await fetch("/api/reach/hold_record", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(recActive ? { stop: true } : { start: true }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      recActive = !!data.active;
+      recGroup = data.group || "";
+      updateRecButton();
+    } else {
+      $("msg").textContent = data.error || "记录开关失败";
+    }
+  } catch (e) {
+    $("msg").textContent = "请求失败：" + e;
+  }
+});
+
 $("turnArm").addEventListener("change", () => { stopHold(); updateTurnButtons(); });
 $("turnStopBtn").addEventListener("click", () => {
   stopHold(false);
@@ -347,6 +390,7 @@ $("alignBtn").addEventListener("click", async () => {
   } else {
     await alignPost({
       start: true,
+      mode: "hold",   // 新对中（打杆式）；去掉此行即回退旧版定长脉冲
       dmin: Number($("dmin").value) || 0.4,
       dmax: Number($("dmax").value) || 1.0,
     });
