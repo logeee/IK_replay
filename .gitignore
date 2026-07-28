@@ -20,3 +20,4 @@ logs/
 build/
 dist/
 reach_logs/
+skip_yolo_file/
