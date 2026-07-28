@@ -16,6 +16,7 @@ class ReachClient:
         self.base = base_url.rstrip("/")
         self.timeout_s = timeout_s
         self._session = requests.Session()
+        self._session.trust_env = False   # 本机服务，不走系统代理
 
     # ---- 通用 ----
 

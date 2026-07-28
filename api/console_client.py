@@ -23,6 +23,7 @@ class ConsoleClient:
         self.base = base_url.rstrip("/")
         self.answer_timeout_s = answer_timeout_s
         self._session = requests.Session()
+        self._session.trust_env = False   # 本机服务，不走系统代理
 
     def ask(self, kind: str, prompt: str,
             options: list[str] | None = None) -> Any:

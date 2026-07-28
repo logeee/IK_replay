@@ -13,6 +13,7 @@ class YoloClient:
     def __init__(self, base_url: str = "http://127.0.0.1:7004"):
         self.base = base_url.rstrip("/")
         self._session = requests.Session()
+        self._session.trust_env = False   # 本机服务，不走系统代理
 
     def scene(self) -> dict:
         """{"ok": True, "scene": "就地"|"远方"|None, "conf": ..., "boxes": [...]}"""

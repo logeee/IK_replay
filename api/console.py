@@ -39,6 +39,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 
 app = FastAPI(title="flow-console")
 
+# 只连本机 reach_server，绝不走系统代理——终端里设了坏代理也不受影响
+_http = requests.Session()
+_http.trust_env = False
+
 _cond = threading.Condition()
 _questions: dict[str, dict[str, Any]] = {}   # id → 问题（含 answer）
 _reach_base = "http://127.0.0.1:8001"        # 相机流的上游（服务器端代理）
@@ -52,8 +56,8 @@ def console_cam():
     浏览器不需要能直达 8001 端口。
     """
     try:
-        upstream = requests.get(f"{_reach_base}/api/reach/stream",
-                                stream=True, timeout=(3.0, None))
+        upstream = _http.get(f"{_reach_base}/api/reach/stream",
+                             stream=True, timeout=(3.0, None))
         upstream.raise_for_status()
     except requests.RequestException as exc:
         return Response(f"相机流不可达（{_reach_base}）: {exc}",
@@ -153,10 +157,14 @@ _PAGE = """<!DOCTYPE html>
   .cols { display:flex; gap:16px; flex-wrap:wrap; }
   .cam { flex:1 1 480px; }
   .panel { flex:1 1 340px; }
-  #imgbox { position:relative; display:inline-block; max-width:100%; }
-  #cam { display:block; width:100%; border:1px solid #333a44; border-radius:6px; }
-  #imgbox.picking #cam { cursor:crosshair; border-color:#e0a838; }
-  .dot { position:absolute; width:14px; height:14px; margin:-7px 0 0 -7px;
+  /* 边框放容器上：绝对定位的红圈原点 = 图像左上角，点击换算不吃边框偏移 */
+  #imgbox { position:relative; display:inline-block; max-width:100%;
+            border:1px solid #333a44; border-radius:6px; }
+  #cam { display:block; width:100%; border-radius:5px; }
+  #imgbox.picking { border-color:#e0a838; }
+  #imgbox.picking #cam { cursor:crosshair; }
+  .dot { position:absolute; width:14px; height:14px;
+         transform:translate(-50%,-50%);   /* 连同描边一起精确居中到点击点 */
          border:2px solid #ff5c5c; border-radius:50%; background:rgba(255,92,92,.35);
          pointer-events:none; }
   .card { background:#1c2129; border:1px solid #333a44; border-radius:8px;
@@ -244,6 +252,7 @@ function show(q) {
       if (!pts.length) { alert('请先在左侧画面上点击点位'); return; }
       answer(pts);
     });
+    addBtn(box, '撤销上个点 (Z)', '', undoPt);
     addBtn(box, '清空重点', '', () => { pts = []; clearDots(); renderPts(); });
   }
 }
@@ -289,6 +298,18 @@ el('cam').addEventListener('click', ev => {
   renderPts();
 });
 function clearDots() { document.querySelectorAll('.dot').forEach(d => d.remove()); }
+function undoPt() {
+  pts.pop();
+  const dots = document.querySelectorAll('.dot');
+  if (dots.length) dots[dots.length - 1].remove();
+  renderPts();
+}
+document.addEventListener('keydown', ev => {
+  if (ev.key !== 'z' && ev.key !== 'Z') return;
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  if (/INPUT|TEXTAREA|SELECT/.test(ev.target.tagName)) return;
+  if (cur && cur.kind === 'points') undoPt();
+});
 function renderPts() {
   el('ptlist').textContent = pts.length
     ? '已点 ' + pts.length + ' 个点位: ' + pts.map(p => `(${p.u},${p.v})`).join(' ')

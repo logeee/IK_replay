@@ -33,6 +33,10 @@ from fastapi.responses import JSONResponse
 
 app = FastAPI(title="yolo-server")
 
+# 只连本机 reach_server，绝不走系统代理——终端里设了坏代理也不受影响
+_http = requests.Session()
+_http.trust_env = False
+
 _reach_base = "http://127.0.0.1:8001"
 _model = None
 _model_name = ""
@@ -45,8 +49,8 @@ SCENE_CLASSES = ("就地", "远方")
 
 def _grab_jpeg(timeout_s: float = 5.0) -> bytes:
     """从 reach_server 的 MJPEG 流抓一帧完整 JPEG。"""
-    r = requests.get(f"{_reach_base}/api/reach/stream", stream=True,
-                     timeout=(3.0, timeout_s))
+    r = _http.get(f"{_reach_base}/api/reach/stream", stream=True,
+                  timeout=(3.0, timeout_s))
     try:
         r.raise_for_status()
         buf = b""

@@ -50,6 +50,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 
 app = FastAPI(title="yolo-collect")
 
+# 只连本机 reach_server，绝不走系统代理——终端里设了坏代理也不受影响
+_http = requests.Session()
+_http.trust_env = False
+
 _reach_base = "http://127.0.0.1:8001"
 _samples_dir = Path(__file__).resolve().parent.parent / "yolo_samples"
 _model = None          # ultralytics.YOLO 实例（可选）
@@ -67,8 +71,8 @@ _pending: dict[str, dict[str, Any]] = {}   # id → {"jpeg": bytes, ...}（拍�
 def cam():
     """直播：服务器端代理 reach_server 的 MJPEG 流（同确认台）。"""
     try:
-        upstream = requests.get(f"{_reach_base}/api/reach/stream",
-                                stream=True, timeout=(3.0, None))
+        upstream = _http.get(f"{_reach_base}/api/reach/stream",
+                             stream=True, timeout=(3.0, None))
         upstream.raise_for_status()
     except requests.RequestException as exc:
         return Response(f"相机流不可达（{_reach_base}）: {exc}",
@@ -89,8 +93,8 @@ def cam():
 
 def _grab_jpeg(timeout_s: float = 5.0) -> bytes:
     """从 MJPEG 流里抓一帧完整 JPEG（SOI 0xFFD8 … EOI 0xFFD9）。"""
-    r = requests.get(f"{_reach_base}/api/reach/stream", stream=True,
-                     timeout=(3.0, timeout_s))
+    r = _http.get(f"{_reach_base}/api/reach/stream", stream=True,
+                  timeout=(3.0, timeout_s))
     try:
         r.raise_for_status()
         buf = b""
@@ -137,8 +141,8 @@ def _measure(dmin: float, dmax: float) -> dict:
     out = {"distance_m": None, "yaw_err_deg": None,
            "pitch_err_deg": None, "tilt_deg": None}
     try:
-        r = requests.get(f"{_reach_base}/api/reach/perpendicular",
-                         params={"dmin": dmin, "dmax": dmax}, timeout=8.0)
+        r = _http.get(f"{_reach_base}/api/reach/perpendicular",
+                      params={"dmin": dmin, "dmax": dmax}, timeout=8.0)
         fit = r.json()
         if fit.get("ok"):
             for k in out:
@@ -404,14 +408,18 @@ _PAGE = """<!DOCTYPE html>
   body { margin:0; background:#14171c; color:#dde3ea; font:14px/1.6 system-ui,"Noto Sans SC",sans-serif; }
   .wrap { max-width:1200px; margin:0 auto; padding:16px; }
   h1 { font-size:17px; margin:4px 0 12px; color:#8ecbff; }
-  #imgbox { position:relative; display:inline-block; max-width:100%; }
-  #view { display:block; width:100%; border:1px solid #333a44; border-radius:6px; }
-  #imgbox.frozen #view { cursor:crosshair; border-color:#e0a838; }
+  /* 边框放容器上：绝对定位的框/红圈原点 = 图像左上角，点击换算不吃边框偏移 */
+  #imgbox { position:relative; display:inline-block; max-width:100%;
+            border:1px solid #333a44; border-radius:6px; }
+  #view { display:block; width:100%; border-radius:5px; }
+  #imgbox.frozen { border-color:#e0a838; }
+  #imgbox.frozen #view { cursor:crosshair; }
   .box { position:absolute; border:2px solid #37d67a; pointer-events:none;
          font-size:11px; color:#37d67a; }
   .box span { background:rgba(20,23,28,.8); padding:0 4px; position:absolute;
               top:-18px; left:-2px; white-space:nowrap; }
-  .dot { position:absolute; width:14px; height:14px; margin:-7px 0 0 -7px;
+  .dot { position:absolute; width:14px; height:14px;
+         transform:translate(-50%,-50%);   /* 连同描边一起精确居中到点击点 */
          border:2px solid #ff5c5c; border-radius:50%; background:rgba(255,92,92,.35);
          pointer-events:none; }
   button { background:#2a3340; color:#dde3ea; border:1px solid #3d4a5c;
@@ -435,13 +443,13 @@ _PAGE = """<!DOCTYPE html>
     深度 dmin <input type="number" id="dmin" step="0.05" value="0.4">
     dmax <input type="number" id="dmax" step="0.05" value="1.0"> m
     <button class="primary" id="snapBtn" onclick="snap()">📷 拍并点</button>
-    <button class="green" id="shootBtn" onclick="shoot()">📸 只拍不点（连拍）</button>
+    <button class="green" id="shootBtn" onclick="shoot()">📸 只拍不点（稍后标注）</button>
     <button id="annBtn" onclick="startAnn()">✏️ 补标注 (<span id="todoN">0</span>)</button>
   </div>
   <div class="bar" id="markBar" style="display:none">
-    <button class="primary" onclick="save()">💾 保存</button>
-    <button onclick="undo()">撤销上个点</button>
-    <button class="warn" onclick="skip()" id="skipBtn">跳过这张</button>
+    <button class="primary" onclick="save()">💾 保存 (S)</button>
+    <button onclick="undo()">撤销上个点 (Z)</button>
+    <button class="warn" onclick="skip()" id="skipBtn">跳过这张 (K)</button>
     <button class="warn" onclick="quitMark()">退出</button>
     <span class="muted" id="annPos"></span>
   </div>
@@ -490,11 +498,11 @@ async function snap() {
     showImage('/api/collect/frame/' + d.id + '.jpg', d.boxes);
     $('meta').textContent = metaText(d);
     setBars();
-    $('hint').textContent = '画面已冻结：点击真实目标点（可多个），然后保存。';
+    $('hint').textContent = '画面已冻结：点击真实目标点（可多个，按 Z 撤销），然后保存。';
   } finally { $('snapBtn').disabled = false; }
 }
 
-// ---------------- 只拍不点（连拍） ----------------
+// ---------------- 只拍不点（稍后标注） ----------------
 
 async function shoot() {
   $('shootBtn').disabled = true;
@@ -525,7 +533,7 @@ function showAnn() {
   $('meta').textContent = metaText(cur);
   $('annPos').textContent = `第 ${annIdx + 1}/${todo.length} 张`;
   setBars();
-  $('hint').textContent = '补标注：点击真实目标点，保存后自动下一张。';
+  $('hint').textContent = '补标注：点击真实目标点（按 Z 撤销），保存后自动下一张。';
 }
 
 function skip() { annIdx += 1; showAnn(); }
@@ -617,6 +625,16 @@ function undo() {
   const dots = document.querySelectorAll('.dot');
   if (dots.length) dots[dots.length - 1].remove();
 }
+
+document.addEventListener('keydown', ev => {
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  if (/INPUT|TEXTAREA|SELECT/.test(ev.target.tagName)) return;
+  if (mode === 'live') return;   // 标注状态（拍并点冻结 / 补标注）才生效
+  const k = ev.key.toLowerCase();
+  if (k === 'z') undo();
+  else if (k === 's') save();
+  else if (k === 'k' && mode === 'ann') skip();
+});
 
 function metaText(d) {
   return `距离 ${d.distance_m ?? '?'} m · yaw ${d.yaw_err_deg ?? '?'}° · ` +
