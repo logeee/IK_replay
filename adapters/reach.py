@@ -48,6 +48,7 @@ class ReachState:
         self.torso_reader = None           # 只读腰关节 + IMU（躯干姿态诊断）
         self.loco_client = None            # 高层 loco RPC（原地转身用），懒创建
         self.loco_available = False        # 有 DDS（非 --no-robot）才可用
+        self.hand_raised_ui = False        # 前端人工标注"已抬手"，随转身/对中日志落盘
         # 一键对中（yaw 闭环伺服）
         self.align_thread: threading.Thread | None = None
         self.align_cancel = threading.Event()
@@ -504,7 +505,11 @@ def _hold_log(entry: dict) -> None:
     try:
         state.log_dir.mkdir(parents=True, exist_ok=True)
         entry = {"ts": datetime.now().isoformat(timespec="milliseconds"),
-                 "session": state.session_id, **entry}
+                 "session": state.session_id,
+                 # 抬手状态两份都记：ui = 前端人工勾选，auto = 按 TCP 前伸自动判
+                 "hand_up_ui": bool(state.hand_raised_ui),
+                 "arm_raised_auto": _arm_raised(),
+                 **entry}
         path = state.log_dir / f"hold_{datetime.now():%Y%m%d}.jsonl"
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -642,6 +647,8 @@ def reach_turn(body: dict):
     平衡由它负责，与 arm_sdk 手臂控制可以共存（官方 VR 遥操即此组合）。
     注意：转身会带动整条手臂，请先把手收回再调。
     """
+    if "hand_raised" in body:      # 前端人工标注，跟着每条日志落盘
+        state.hand_raised_ui = bool(body["hand_raised"])
     if not state.loco_available:
         return JSONResponse({"ok": False, "error": "无 DDS 连接（--no-robot 模式）"},
                             status_code=409)
@@ -753,7 +760,10 @@ def _align_log(entry: dict) -> None:
     try:
         state.log_dir.mkdir(parents=True, exist_ok=True)
         entry = {"ts": datetime.now().isoformat(timespec="milliseconds"),
-                 "session": state.session_id, **entry}
+                 "session": state.session_id,
+                 "hand_up_ui": bool(state.hand_raised_ui),
+                 "arm_raised_auto": _arm_raised(),
+                 **entry}
         torso = _read_torso()
         if torso and torso.get("waist_rad"):
             entry["waist_deg"] = [round(math.degrees(v), 3)
@@ -765,17 +775,20 @@ def _align_log(entry: dict) -> None:
         pass
 
 
-def _align_loop(tol: float, dmin: float, dmax: float) -> None:
+def _align_loop(tol: float, dmin: float, dmax: float,
+                target: float = 0.0) -> None:
     """人手同款打法：静止测偏差 → 定长脉冲（0.5° 或 2°）→ 等稳 → 再测。
 
     修正方向：真机实测 yaw_err > 0（法线偏画面右）时左转（正角）是对的。
     保留自适应反号兜底：某步之后偏差反而变大就翻方向。
+    target ≠ 0 时对到指定角度（全流程要求柜面指数停在 -3~-6° 带内）。
     每步的测量与动作都写入 reach_logs/align_<日期>.jsonl。
     """
     loco = _get_loco_client()
     sign = 1.0
     prev_err: float | None = None
-    _align_log({"event": "start", "tol_deg": tol, "dmin": dmin, "dmax": dmax})
+    _align_log({"event": "start", "tol_deg": tol, "target_deg": target,
+                "dmin": dmin, "dmax": dmax})
     try:
         for step in range(1, ALIGN_MAX_STEPS + 1):
             if state.align_cancel.is_set():
@@ -788,14 +801,16 @@ def _align_loop(tol: float, dmin: float, dmax: float) -> None:
                 _align_log({"event": "fit_fail", "step": step,
                             "error": fitres.get("error")})
                 return
-            err = float(fitres["yaw_err_deg"])
+            yaw = float(fitres["yaw_err_deg"])
+            err = yaw - target      # 相对目标角的偏差，方向约定与对 0 相同
             _align_log({"event": "measure", "step": step,
-                        "yaw_err_deg": round(err, 3),
+                        "yaw_err_deg": round(yaw, 3),
                         "pitch_err_deg": round(float(fitres["pitch_err_deg"]), 3),
                         "points": fitres.get("points_used")})
             if abs(err) <= tol:
-                state.align_message = f"对中完成：yaw 偏差 {err:+.2f}°（{step - 1} 步）"
-                _align_log({"event": "done", "step": step, "yaw_err_deg": round(err, 3)})
+                state.align_message = (f"对中完成：yaw {yaw:+.2f}°"
+                                       f"（目标 {target:+.1f}°，{step - 1} 步）")
+                _align_log({"event": "done", "step": step, "yaw_err_deg": round(yaw, 3)})
                 return
             if prev_err is not None and abs(err) > abs(prev_err) + 0.3:
                 sign = -sign     # 上一步把偏差转大了 → 方向反了
@@ -825,12 +840,12 @@ def _align_loop(tol: float, dmin: float, dmax: float) -> None:
             state.align_message = (f"基本对中：偏差 {prev_err:+.2f}°"
                                    f"（未达 {tol}°，但已在兜底 "
                                    f"{ALIGN_TOL_FALLBACK_DEG}° 内）")
-            _align_log({"event": "done_fallback", "yaw_err_deg": round(prev_err, 3)})
+            _align_log({"event": "done_fallback", "err_deg": round(prev_err, 3)})
         else:
             state.align_message = (f"未收敛：{ALIGN_MAX_STEPS} 步后偏差仍 "
                                    f"{prev_err:+.2f}°（阈值 {tol}°）")
             _align_log({"event": "give_up",
-                        "yaw_err_deg": None if prev_err is None else round(prev_err, 3)})
+                        "err_deg": None if prev_err is None else round(prev_err, 3)})
     except Exception as exc:
         state.align_message = f"对中异常：{exc}"
         _align_log({"event": "exception", "error": str(exc)})
@@ -867,19 +882,21 @@ HOLD_ALIGN_FINE_EFF_DEG_S = HOLD_ALIGN_EFF_DEG_S * HOLD_ALIGN_FINE_CMD_DEG_S / H
 HOLD_ALIGN_FLIP_MIN_DEG = 1.5     # 反号兜底只在大杆后允许触发
 
 
-def _align_loop_hold(tol: float, dmin: float, dmax: float) -> None:
+def _align_loop_hold(tol: float, dmin: float, dmax: float,
+                     target: float = 0.0) -> None:
     """新对中：静止测偏差 → 一杆按模型算好时长 → 等稳 → 再测。
 
     与旧版（定长 0.5°/2° 脉冲逐步磨）的区别：时长连续可变、带死区补偿，
     正常情况 2~3 杆收敛。方向约定与旧版相同（yaw_err>0 → 左转），同样保留
-    "偏差变大就反号"的兜底。逐步日志写 align_<日期>.jsonl，mode=hold。
+    "偏差变大就反号"的兜底。target ≠ 0 时对到指定角度而非 0。
+    逐步日志写 align_<日期>.jsonl，mode=hold。
     """
     loco = _get_loco_client()
     sign = 1.0
     prev_err: float | None = None
     prev_expect = 0.0     # 上一杆的预计角，用于限制反号兜底只在大杆后触发
     _align_log({"event": "start", "mode": "hold", "tol_deg": tol,
-                "dmin": dmin, "dmax": dmax})
+                "target_deg": target, "dmin": dmin, "dmax": dmax})
     try:
         for step in range(1, HOLD_ALIGN_MAX_STEPS + 1):
             if state.align_cancel.is_set():
@@ -892,15 +909,16 @@ def _align_loop_hold(tol: float, dmin: float, dmax: float) -> None:
                 _align_log({"event": "fit_fail", "mode": "hold", "step": step,
                             "error": fitres.get("error")})
                 return
-            err = float(fitres["yaw_err_deg"])
+            yaw = float(fitres["yaw_err_deg"])
+            err = yaw - target
             _align_log({"event": "measure", "mode": "hold", "step": step,
-                        "yaw_err_deg": round(err, 3),
+                        "yaw_err_deg": round(yaw, 3),
                         "points": fitres.get("points_used")})
             if abs(err) <= tol:
-                state.align_message = (f"新对中完成：yaw 偏差 {err:+.2f}°"
-                                       f"（{step - 1} 步）")
+                state.align_message = (f"新对中完成：yaw {yaw:+.2f}°"
+                                       f"（目标 {target:+.1f}°，{step - 1} 步）")
                 _align_log({"event": "done", "mode": "hold", "step": step,
-                            "yaw_err_deg": round(err, 3)})
+                            "yaw_err_deg": round(yaw, 3)})
                 return
             # 反号兜底只信"大杆"的结果：短杆/小脉冲的响应本身随机，
             # 偏差涨一点不代表方向错（第 4 轮真机就是被这个误触发震荡的）
@@ -947,12 +965,12 @@ def _align_loop_hold(tol: float, dmin: float, dmax: float) -> None:
             state.align_message = (f"基本对中：偏差 {prev_err:+.2f}°"
                                    f"（未达 {tol}°，但已在兜底内）")
             _align_log({"event": "done_fallback", "mode": "hold",
-                        "yaw_err_deg": round(prev_err, 3)})
+                        "err_deg": round(prev_err, 3)})
         else:
             state.align_message = (f"未收敛：{HOLD_ALIGN_MAX_STEPS} 杆后偏差仍 "
                                    f"{prev_err:+.2f}°（阈值 {tol}°）")
             _align_log({"event": "give_up", "mode": "hold",
-                        "yaw_err_deg": None if prev_err is None else round(prev_err, 3)})
+                        "err_deg": None if prev_err is None else round(prev_err, 3)})
     except Exception as exc:
         state.align_message = f"新对中异常：{exc}"
         _align_log({"event": "exception", "mode": "hold", "error": str(exc)})
@@ -967,8 +985,11 @@ def _align_loop_hold(tol: float, dmin: float, dmax: float) -> None:
 @router.post("/align_yaw")
 def reach_align_yaw(body: dict):
     """一键对中（真机！）。Body: {"start": true, "mode"?: "hold", "tol_deg"?,
-    "dmin"?, "dmax"?} 或 {"stop": true}。mode="hold" 用新对中（打杆式），
-    否则用旧版定长脉冲。闭环转身直到 yaw 偏差进入阈值。"""
+    "target_deg"?, "dmin"?, "dmax"?} 或 {"stop": true}。mode="hold" 用新对中
+    （打杆式），否则用旧版定长脉冲。闭环转身直到 yaw 进入 target±tol
+    （target 缺省 0，即传统的垂直对中）。"""
+    if "hand_raised" in body:
+        state.hand_raised_ui = bool(body["hand_raised"])
     if body.get("stop"):
         state.align_cancel.set()
         try:
@@ -1003,15 +1024,18 @@ def reach_align_yaw(body: dict):
         tol_note = f"手臂收回，严格阈值 {tol}°"
     dmin = float(body.get("dmin", 0.3))
     dmax = float(body.get("dmax", 1.0))
+    target = float(body.get("target_deg", 0.0))
     use_hold = body.get("mode") == "hold"
     loop = _align_loop_hold if use_hold else _align_loop
     state.align_cancel = threading.Event()
     state.align_running = True
+    if abs(target) > 0.01:
+        tol_note += f"，目标 {target:+.1f}°"
     state.align_message = f"{'新' if use_hold else ''}对中开始（{tol_note}）…"
     state.align_thread = threading.Thread(
-        target=loop, args=(tol, dmin, dmax), name="reach-align", daemon=True)
+        target=loop, args=(tol, dmin, dmax, target), name="reach-align", daemon=True)
     state.align_thread.start()
-    return {"ok": True, "started": True, "tol_deg": tol,
+    return {"ok": True, "started": True, "tol_deg": tol, "target_deg": target,
             "mode": "hold" if use_hold else "pulse"}
 
 
@@ -1422,14 +1446,75 @@ def _axis_last_worker(conn, start_named, p0_list, p_mid_list, p_target_list,
             conn.send(("err", "位移为零，无需规划"))
             return
         collision = _attach_collision(waypoints, check_collision)
+        planner = "axis_last"
+        if (check_collision and collision
+                and collision.get("status") == "collision"
+                and state.collision_checker is not None):
+            # 两段直线撞了 → RRT-Connect 关节空间绕障（同序列执行的
+            # line-else-rrt 策略）。起终点上已存在的碰撞对自动豁免
+            # （指尖贴面等），目标周围的环境豁免球在 pick 时已设好。
+            # 注意：绕障路径不再保证"平移在先、进给在后"的两段形状。
+            waypoints, collision, planner = _axis_last_rrt_fallback(
+                start_named, waypoints, collision)
         conn.send(("ok", {"ok": True, "waypoints": waypoints, "collision": collision,
-                          "max_ik_error_mm": max_err,
+                          "max_ik_error_mm": max_err, "planner": planner,
                           "mode": "push_in" if dx >= 0 else "pull_out",
                           "steps": len(waypoints) - 1}))
     except Exception as exc:
         conn.send(("err", f"规划子进程异常: {exc}"))
     finally:
         conn.close()
+
+
+def _axis_last_rrt_fallback(start_named: dict, waypoints: list[dict],
+                            collision: dict) -> tuple[list[dict], dict, str]:
+    """左侧规划直线撞障时的 RRT-Connect 绕障兜底（在 fork 子进程里跑）。
+
+    成功：返回按 0.04rad 帧距重采样的新路径 + 重算的碰撞标注 + "axis_last+rrt"。
+    失败：原路径原标注返回，collision 里带 rrt_error 说明绕不过去的原因，
+    由人看着碰撞可视化决定走不走。
+    """
+    from core.types import Pose
+    from planners.rrt import densify, rrt_connect_path
+
+    names = state.robot_model.joint_names(state.chain_id)
+    tcp_offset = Pose(xyz=list(state.p_tool))
+    q_start = np.asarray([float(start_named[n]) for n in names], dtype=float)
+    q_goal = np.asarray([float(waypoints[-1]["named_joints"][n]) for n in names],
+                        dtype=float)
+    # 终点是算出来的姿态（不是真机到过的），它撞障就是真警报：绕障无意义，
+    # 直接报出撞的是哪一对，让人挪目标/重扫障
+    goal_chk = state.collision_checker.check_state(
+        [float(v) for v in q_goal], state.chain_id, tcp_offset)
+    if goal_chk["status"] == "collision":
+        pair = goal_chk.get("pair") or {}
+        collision["rrt_error"] = (f"终点姿态本身撞障（{pair.get('a', '?')} ↔ "
+                                  f"{pair.get('b', '?')}），无路可绕")
+        print(f"[reach] 左侧规划撞障，RRT 不适用: {collision['rrt_error']}")
+        return waypoints, collision, "axis_last"
+    print("[reach] 左侧规划直线撞障 → 转 RRT-Connect 绕障…")
+    t0 = time.perf_counter()
+    try:
+        path = rrt_connect_path(state.robot_model, state.collision_checker,
+                                state.chain_id, q_start, q_goal, tcp_offset,
+                                {"timeout_s": 15.0, "exempt_goal": False})
+    except ValueError as exc:
+        collision["rrt_error"] = str(exc)
+        print(f"[reach] RRT 绕障失败（{time.perf_counter() - t0:.1f}s）: {exc}")
+        return waypoints, collision, "axis_last"
+    print(f"[reach] RRT 绕障成功（{time.perf_counter() - t0:.1f}s，"
+          f"折线 {len(path)} 节点）")
+
+    out: list[dict] = []
+    for i, qv in enumerate(densify(path, 0.04)):
+        joints = [float(v) for v in qv]
+        tcp = state.robot_model.tcp_pose(joints, state.chain_id, tcp_offset)
+        out.append({"index": i,
+                    "named_joints": state.robot_model.named_chain_joints(
+                        joints, state.chain_id),
+                    "tcp_pose": {"xyz": [float(v) for v in tcp.xyz],
+                                 "rpy": [0.0, 0.0, 0.0]}})
+    return out, _attach_collision(out, True), "axis_last+rrt"
 
 
 # --------------- 中间路点（录制 / 落盘 / 复用） ---------------

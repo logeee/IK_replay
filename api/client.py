@@ -51,8 +51,17 @@ class ReachClient:
         """柜面平面拟合：yaw_err_deg（平面指数）、distance_m、align 状态等。"""
         return self.get("/perpendicular", dmin=dmin, dmax=dmax)
 
-    def align_yaw_start(self, dmin: float = 0.4, dmax: float = 1.0) -> dict:
-        return self.post("/align_yaw", {"start": True, "dmin": dmin, "dmax": dmax})
+    def align_yaw_start(self, dmin: float = 0.4, dmax: float = 1.0,
+                        tol_deg: float | None = None, target_deg: float = 0.0,
+                        mode: str | None = None) -> dict:
+        """闭环转身把 yaw 收进 target_deg±tol_deg。mode="hold" 用新对中（打杆式）。"""
+        body: dict = {"start": True, "dmin": dmin, "dmax": dmax,
+                      "target_deg": target_deg}
+        if tol_deg is not None:
+            body["tol_deg"] = tol_deg
+        if mode:
+            body["mode"] = mode
+        return self.post("/align_yaw", body)
 
     def align_yaw_stop(self) -> dict:
         return self.post("/align_yaw", {"stop": True})
@@ -72,8 +81,37 @@ class ReachClient:
         return self.post("/disarm")
 
     def pick(self, u: int, v: int, **kwargs: Any) -> dict:
-        """像素取点 → 3D 目标 → IK 预演。"""
+        """像素取点 → 3D 目标（p_root 等），不含规划。"""
         return self.post("/pick", {"u": u, "v": v, **kwargs}, timeout_s=30.0)
+
+    def plan_axis_last(self, start_joints: dict, target_root: list,
+                       **kwargs: Any) -> dict:
+        """「平移在先、进出在后」主段规划，返回 waypoints 供 execute。"""
+        return self.post("/plan_axis_last",
+                         {"start_joints": start_joints,
+                          "target_root": target_root, **kwargs},
+                         timeout_s=45.0)
+
+    def plan_cartesian(self, start_joints: dict, direction_root: list,
+                       distance_m: float, **kwargs: Any) -> dict:
+        """指尖沿直线平移的规划（收回/横移用）。"""
+        return self.post("/plan_cartesian",
+                         {"start_joints": start_joints,
+                          "direction_root": direction_root,
+                          "distance_m": distance_m, **kwargs},
+                         timeout_s=45.0)
+
+    def sequences(self) -> dict:
+        return self.get("/sequences")
+
+    def waypoints(self) -> dict:
+        return self.get("/waypoints")
+
+    def run_sequence(self, file: str, **kwargs: Any) -> dict:
+        """一键执行已保存序列。首次调用只规划并回传 preview，
+        再次调用才真机回放（详见服务端 /sequences/run）。"""
+        return self.post("/sequences/run", {"file": file, **kwargs},
+                         timeout_s=90.0)
 
     def execute(self, **kwargs: Any) -> dict:
         """执行最近一次预演轨迹（需已接管）。"""
