@@ -15,7 +15,7 @@
     /home/robot/miniconda3/envs/fastapi/bin/python -m api.dispatch
 
 外部对接（面向作业平台的统一任务接口，平台不感知后端用 VLA 还是 IK）：
-    POST /task         → body {"language": "<固定指令，必填>",
+    POST /task/flip    → body {"language": "<固定指令，必填>",
                                 "retries": 3}   # 可选，最大尝试轮数（VLA 后端忽略）
                           返回 {"ok": true, "task_id": "..."}；执行中再触发 → 409
     GET  /task/status  → 状态机 idle/starting/running/done + 流程日志尾部
@@ -185,8 +185,7 @@ def _parse_language(text: str) -> str | None:
     return LANGUAGE_TASKS.get(norm)
 
 
-@app.post("/task")
-@app.post("/task/flip")   # 旧路径别名，行为完全一致
+@app.post("/task/flip")
 def task_submit(body: dict | None = None):
     global _task
     language = str((body or {}).get("language") or "").strip()
@@ -278,7 +277,7 @@ def task_abort():
 @app.get("/")
 def index():
     return {"service": "flip-dispatch",
-            "usage": {"start": 'POST /task  body={"language": "..."}',
+            "usage": {"start": 'POST /task/flip  body={"language": "..."}',
                       "status": "GET /task/status",
                       "abort": "POST /task/abort"},
             "languages": ["Change the switch from close to remote",
@@ -317,7 +316,7 @@ def main() -> None:
     _args.reach_base = _args.reach_base.rstrip("/")
 
     print(f"[dispatch] 调度服务已启动（常驻属正常）: http://{_lan_ip()}:{_args.port}/")
-    print(f"[dispatch] 外部触发: POST /task （body 带 language）→ 轮询 GET /task/status")
+    print(f"[dispatch] 外部触发: POST /task/flip （body 带 language）→ 轮询 GET /task/status")
     print(f"[dispatch] reach_server 按需拉起: {sys.executable} reach_server.py "
           f"--camera-serial {_args.camera_serial} "
           f"--network-interface {_args.network_interface}")

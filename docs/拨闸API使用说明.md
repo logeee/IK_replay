@@ -1,7 +1,7 @@
 # 开关拨动作业 API 使用说明
 
 > 面向作业平台的对接文档。
-> 版本：v3（2026-07-29，新增可选字段 retries）　维护人：机器人侧
+> 版本：v3（2026-07-29，触发路径 POST /task/flip，新增可选字段 retries）　维护人：机器人侧
 
 ## 1. 这个服务做什么
 
@@ -27,7 +27,7 @@
 ### 3.1 触发任务
 
 ```
-POST /task
+POST /task/flip
 Content-Type: application/json
 
 {"language": "Change the switch from close to remote", "retries": 3}
@@ -149,7 +149,7 @@ import requests, time
 
 BASE = "http://192.168.61.142:17001"
 
-r = requests.post(f"{BASE}/task", timeout=5,
+r = requests.post(f"{BASE}/task/flip", timeout=5,
                   json={"language": "Change the switch from close to remote",
                         "retries": 3}   # retries 可省略，默认 3
                   ).json()
@@ -172,7 +172,7 @@ else:
 ### 命令行（调试用）
 
 ```bash
-curl -X POST http://192.168.61.142:17001/task \
+curl -X POST http://192.168.61.142:17001/task/flip \
      -H 'Content-Type: application/json' \
      -d '{"language": "Change the switch from close to remote"}'
 watch -n 2 'curl -s http://192.168.61.142:17001/task/status | python3 -m json.tool'
