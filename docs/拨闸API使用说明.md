@@ -1,17 +1,15 @@
-# 拨闸任务 API 使用说明
+# 开关拨动作业 API 使用说明
 
-> 面向调用方（作业平台/导航系统）的对接文档。
-> 版本：v2（2026-07-29，触发接口改为 POST /task + 必填 language）　维护人：机器人侧
+> 面向作业平台的对接文档。
+> 版本：v3（2026-07-29，新增可选字段 retries）　维护人：机器人侧
 
 ## 1. 这个服务做什么
 
-机器人已停在电柜前的条件下，调用本 API 可让机器人自动完成一次
-**「就地 → 远方」旋钮拨动**，全程无人值守：
+机器人已停在电柜前的条件下，调用本 API 触发一次**开关拨动作业**：
+机器人自动完成开关状态识别、位姿对正、执行拨动、结果复核、收臂归位，
+全程无人值守。具体执行算法由机器人侧选择，调用方无需感知。
 
-摄像头识别开关状态 → 腰部对正柜面 → 按距离选起手姿态 →
-视觉定位旋钮 → 机械臂拨动 → 视觉复核结果 → 收臂归位。
-
-整个任务通常 **40 秒 ~ 2 分钟**（含失败自动重试，最多 3 轮）。
+整个任务通常 **40 秒 ~ 2 分钟**（含失败自动重试）。
 
 ## 2. 调用前提（调用方需要保证的）
 
@@ -32,13 +30,19 @@
 POST /task
 Content-Type: application/json
 
-{"language": "Change the switch from close to remote"}
+{"language": "Change the switch from close to remote", "retries": 3}
 ```
 
-`language` 为**必填**字段，取值是以下固定指令之一（大小写和空格有容错，
-其他句子会被拒绝）：
+请求体字段：
 
-| language | 任务 | 当前支持情况 |
+| 字段 | 必填 | 类型 | 说明 |
+|------|------|------|------|
+| `language` | ✅ | string | 作业指令，取值见下表（大小写和空格有容错，其他句子会被拒绝） |
+| `retries` | 可选 | int | 最大尝试轮数（含第一次），取值 1~20，**不传默认 3**。首轮约 40~60 秒，之后每多重试一轮约多 10~20 秒。注：若本次作业由 VLA 算法执行，此字段会被忽略 |
+
+`language` 支持的指令：
+
+| language | 作业 | 当前支持情况 |
 |----------|------|--------------|
 | `Change the switch from close to remote` | 就地 → 远方 | ✅ 已验证 |
 | `Change the switch from remote to close` | 远方 → 就地 | ⏳ 暂未支持，任务会立即以错误码 1（NOT_IMPLEMENTED）结束 |
@@ -52,7 +56,7 @@ Content-Type: application/json
 异常返回：
 
 ```json
-// language 缺失或不是固定指令 → HTTP 422
+// language 缺失/不是固定指令，或 retries 非法 → HTTP 422
 {"ok": false, "error": "无法识别的指令: 'open the door'",
  "supported": ["Change the switch from close to remote",
                "Change the switch from remote to close"]}
@@ -75,6 +79,7 @@ GET /task/status
   "state": "running",              // idle | starting | running | done
   "task_id": "78dfd3c094",
   "language": "Change the switch from close to remote",
+  "retries": 3,
   "started_at": "2026-07-28T20:49:23",
   "finished_at": null,             // done 后才有值
   "result": null,                  // done 后才有值，见下
@@ -145,7 +150,8 @@ import requests, time
 BASE = "http://192.168.61.142:17001"
 
 r = requests.post(f"{BASE}/task", timeout=5,
-                  json={"language": "Change the switch from close to remote"}
+                  json={"language": "Change the switch from close to remote",
+                        "retries": 3}   # retries 可省略，默认 3
                   ).json()
 if not r["ok"]:
     raise RuntimeError(f"触发失败: {r}")
@@ -175,7 +181,8 @@ watch -n 2 'curl -s http://192.168.61.142:17001/task/status | python3 -m json.to
 ## 6. 常见问题
 
 **Q：POST 之后多久有结果？**
-典型 40 秒~1 分钟；含重试最长约 2~3 分钟。轮询超过 5 分钟仍是
+典型 40 秒~1 分钟；每多重试一轮约多 10~20 秒（按默认 retries=3 最长
+约 2 分钟）。轮询时长明显超出「1 分钟 + retries × 20 秒」仍是
 `running` 属异常，可 `POST /task/abort` 后上报。
 
 **Q：可以连续触发多次吗？**

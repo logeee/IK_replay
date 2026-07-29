@@ -15,7 +15,8 @@
     /home/robot/miniconda3/envs/fastapi/bin/python -m api.dispatch
 
 外部对接（面向作业平台的统一任务接口，平台不感知后端用 VLA 还是 IK）：
-    POST /task         → body {"language": "<固定指令，必填>"}
+    POST /task         → body {"language": "<固定指令，必填>",
+                                "retries": 3}   # 可选，最大尝试轮数（VLA 后端忽略）
                           返回 {"ok": true, "task_id": "..."}；执行中再触发 → 409
     GET  /task/status  → 状态机 idle/starting/running/done + 流程日志尾部
                           + 最终结果（错误码见 api.flow.ErrorCode）
@@ -147,7 +148,8 @@ def _run_task(task: dict) -> None:
         yolo = None if _args.no_yolo else YoloClient(_args.yolo)
 
         flow = SwitchFlow(client=ReachClient(_args.reach_base),
-                          console=console, yolo=yolo)
+                          console=console, yolo=yolo,
+                          max_flip_rounds=int(task.get("retries") or 3))
         task["flow"] = flow
         task["state"] = "running"
         result = flow.run()
@@ -201,6 +203,14 @@ def task_submit(body: dict | None = None):
              "supported": ["Change the switch from close to remote",
                            "Change the switch from remote to close"]},
             status_code=422)
+    try:
+        retries = int((body or {}).get("retries") or 3)
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "retries 必须是整数"},
+                            status_code=422)
+    if not 1 <= retries <= 20:
+        return JSONResponse({"ok": False, "error": "retries 取值范围 1~20"},
+                            status_code=422)
 
     with _lock:
         if _task is not None and _task["state"] != "done":
@@ -210,10 +220,10 @@ def task_submit(body: dict | None = None):
                 status_code=409)
         now = datetime.now().isoformat(timespec="seconds")
         _task = {"id": uuid.uuid4().hex[:10], "state": "starting",
-                 "language": language, "kind": kind,
+                 "language": language, "kind": kind, "retries": retries,
                  "started_at": now, "finished_at": None,
                  "result": None, "flow": None,
-                 "log": [f"指令: {language}（{kind}）"],
+                 "log": [f"指令: {language}（{kind}，最多 {retries} 轮）"],
                  "reach_proc": None, "reach_external": False}
         if kind == "remote_to_close":
             # 明知做不了就快速失败，不启动任何硬件——平台仍按统一的
@@ -239,7 +249,7 @@ def task_status():
     flow: SwitchFlow | None = t.get("flow")
     log = list(t["log"]) + (list(flow.log_lines) if flow is not None else [])
     return {"ok": True, "state": t["state"], "task_id": t["id"],
-            "language": t.get("language"),
+            "language": t.get("language"), "retries": t.get("retries"),
             "started_at": t["started_at"], "finished_at": t["finished_at"],
             "result": t["result"], "log": log[-60:]}
 
