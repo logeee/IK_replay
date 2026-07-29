@@ -1,7 +1,7 @@
 # 拨闸任务 API 使用说明
 
-> 面向调用方（导航/上层调度系统）的对接文档。
-> 版本：v1（2026-07-28）　维护人：机器人侧
+> 面向调用方（作业平台/导航系统）的对接文档。
+> 版本：v2（2026-07-29，触发接口改为 POST /task + 必填 language）　维护人：机器人侧
 
 ## 1. 这个服务做什么
 
@@ -29,18 +29,35 @@
 ### 3.1 触发任务
 
 ```
-POST /task/flip
+POST /task
+Content-Type: application/json
+
+{"language": "Change the switch from close to remote"}
 ```
 
-无需任何参数，请求体为空。**立即返回**，不等任务完成：
+`language` 为**必填**字段，取值是以下固定指令之一（大小写和空格有容错，
+其他句子会被拒绝）：
+
+| language | 任务 | 当前支持情况 |
+|----------|------|--------------|
+| `Change the switch from close to remote` | 就地 → 远方 | ✅ 已验证 |
+| `Change the switch from remote to close` | 远方 → 就地 | ⏳ 暂未支持，任务会立即以错误码 1（NOT_IMPLEMENTED）结束 |
+
+**立即返回**，不等任务完成：
 
 ```json
 {"ok": true, "task_id": "78dfd3c094"}
 ```
 
-若已有任务在执行，返回 HTTP 409：
+异常返回：
 
 ```json
+// language 缺失或不是固定指令 → HTTP 422
+{"ok": false, "error": "无法识别的指令: 'open the door'",
+ "supported": ["Change the switch from close to remote",
+               "Change the switch from remote to close"]}
+
+// 已有任务在执行 → HTTP 409（不会打断当前任务）
 {"ok": false, "error": "已有任务在执行", "task_id": "…", "state": "running"}
 ```
 
@@ -57,6 +74,7 @@ GET /task/status
   "ok": true,
   "state": "running",              // idle | starting | running | done
   "task_id": "78dfd3c094",
+  "language": "Change the switch from close to remote",
   "started_at": "2026-07-28T20:49:23",
   "finished_at": null,             // done 后才有值
   "result": null,                  // done 后才有值，见下
@@ -105,7 +123,7 @@ POST /task/abort
 | code | code_name | 含义 | 调用方建议动作 |
 |------|-----------|------|----------------|
 | 0 | OK | 拨闸成功 | 继续后续任务 |
-| 1 | NOT_IMPLEMENTED | 该场景暂不支持（如「从左向右」拨） | 上报人工 |
+| 1 | NOT_IMPLEMENTED | 该任务暂不支持（如「远方 → 就地」） | 上报人工 |
 | 2 | PRECONDITION | 机器人侧服务/硬件前置条件不满足 | 上报机器人侧检查 |
 | 3 | ALIGN_FAILED | 腰部对正柜面失败（超时或不收敛） | 微调机器人朝向后重试一次 |
 | 4 | MEASURE_FAILED | 柜面测量失败（点云拟合不出平面） | 检查是否正对柜面、有无遮挡 |
@@ -126,7 +144,9 @@ import requests, time
 
 BASE = "http://192.168.61.142:17001"
 
-r = requests.post(f"{BASE}/task/flip", timeout=5).json()
+r = requests.post(f"{BASE}/task", timeout=5,
+                  json={"language": "Change the switch from close to remote"}
+                  ).json()
 if not r["ok"]:
     raise RuntimeError(f"触发失败: {r}")
 
@@ -146,7 +166,9 @@ else:
 ### 命令行（调试用）
 
 ```bash
-curl -X POST http://192.168.61.142:17001/task/flip
+curl -X POST http://192.168.61.142:17001/task \
+     -H 'Content-Type: application/json' \
+     -d '{"language": "Change the switch from close to remote"}'
 watch -n 2 'curl -s http://192.168.61.142:17001/task/status | python3 -m json.tool'
 ```
 

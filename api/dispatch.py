@@ -14,11 +14,17 @@
 启动（fastapi 环境）：
     /home/robot/miniconda3/envs/fastapi/bin/python -m api.dispatch
 
-外部对接：
-    POST /task/flip    → {"ok": true, "task_id": "..."}；已有任务在跑 → 409
+外部对接（面向作业平台的统一任务接口，平台不感知后端用 VLA 还是 IK）：
+    POST /task         → body {"language": "<固定指令，必填>"}
+                          返回 {"ok": true, "task_id": "..."}；执行中再触发 → 409
     GET  /task/status  → 状态机 idle/starting/running/done + 流程日志尾部
                           + 最终结果（错误码见 api.flow.ErrorCode）
     POST /task/abort   → 急停正在执行的动作并强制结束任务
+
+language 逐字固定（大小写/空格容错，多余的不认）：
+    "Change the switch from close to remote"   就地 → 远方（IK 已验证）
+    "Change the switch from remote to close"   远方 → 就地（暂未支持，
+        任务立即以 NOT_IMPLEMENTED 结束，不会启动任何硬件）
 """
 
 from __future__ import annotations
@@ -165,19 +171,60 @@ def _run_task(task: dict) -> None:
 # ---------------------------------------------------------------------- 接口
 
 
-@app.post("/task/flip")
-def task_flip():
+# 作业平台的指令是逐字固定的句子，等价于枚举值；归一化后精确匹配。
+LANGUAGE_TASKS = {
+    "change the switch from close to remote": "close_to_remote",
+    "change the switch from remote to close": "remote_to_close",
+}
+
+
+def _parse_language(text: str) -> str | None:
+    norm = " ".join(text.lower().replace(".", " ").split())
+    return LANGUAGE_TASKS.get(norm)
+
+
+@app.post("/task")
+@app.post("/task/flip")   # 旧路径别名，行为完全一致
+def task_submit(body: dict | None = None):
     global _task
+    language = str((body or {}).get("language") or "").strip()
+    if not language:
+        return JSONResponse(
+            {"ok": False, "error": "缺少必填字段 language",
+             "supported": ["Change the switch from close to remote",
+                           "Change the switch from remote to close"]},
+            status_code=422)
+    kind = _parse_language(language)
+    if kind is None:
+        return JSONResponse(
+            {"ok": False, "error": f"无法识别的指令: {language!r}",
+             "supported": ["Change the switch from close to remote",
+                           "Change the switch from remote to close"]},
+            status_code=422)
+
     with _lock:
         if _task is not None and _task["state"] != "done":
             return JSONResponse(
                 {"ok": False, "error": "已有任务在执行",
                  "task_id": _task["id"], "state": _task["state"]},
                 status_code=409)
+        now = datetime.now().isoformat(timespec="seconds")
         _task = {"id": uuid.uuid4().hex[:10], "state": "starting",
-                 "started_at": datetime.now().isoformat(timespec="seconds"),
-                 "finished_at": None, "result": None, "flow": None,
-                 "log": [], "reach_proc": None, "reach_external": False}
+                 "language": language, "kind": kind,
+                 "started_at": now, "finished_at": None,
+                 "result": None, "flow": None,
+                 "log": [f"指令: {language}（{kind}）"],
+                 "reach_proc": None, "reach_external": False}
+        if kind == "remote_to_close":
+            # 明知做不了就快速失败，不启动任何硬件——平台仍按统一的
+            # 轮询路径拿到结果，错误码 NOT_IMPLEMENTED
+            _task["state"] = "done"
+            _task["finished_at"] = now
+            _task["result"] = {
+                "ok": False, "code": 1, "code_name": "NOT_IMPLEMENTED",
+                "message": "「远方 → 就地」暂未支持（镜像动作尚未真机验证）",
+                "detail": {}}
+            return {"ok": True, "task_id": _task["id"]}
         threading.Thread(target=_run_task, args=(_task,), daemon=True).start()
         return {"ok": True, "task_id": _task["id"]}
 
@@ -192,6 +239,7 @@ def task_status():
     flow: SwitchFlow | None = t.get("flow")
     log = list(t["log"]) + (list(flow.log_lines) if flow is not None else [])
     return {"ok": True, "state": t["state"], "task_id": t["id"],
+            "language": t.get("language"),
             "started_at": t["started_at"], "finished_at": t["finished_at"],
             "result": t["result"], "log": log[-60:]}
 
@@ -220,9 +268,11 @@ def task_abort():
 @app.get("/")
 def index():
     return {"service": "flip-dispatch",
-            "usage": {"start": "POST /task/flip",
+            "usage": {"start": 'POST /task  body={"language": "..."}',
                       "status": "GET /task/status",
-                      "abort": "POST /task/abort"}}
+                      "abort": "POST /task/abort"},
+            "languages": ["Change the switch from close to remote",
+                          "Change the switch from remote to close"]}
 
 
 def _lan_ip() -> str:
@@ -257,7 +307,7 @@ def main() -> None:
     _args.reach_base = _args.reach_base.rstrip("/")
 
     print(f"[dispatch] 调度服务已启动（常驻属正常）: http://{_lan_ip()}:{_args.port}/")
-    print(f"[dispatch] 外部触发: POST /task/flip → 轮询 GET /task/status")
+    print(f"[dispatch] 外部触发: POST /task （body 带 language）→ 轮询 GET /task/status")
     print(f"[dispatch] reach_server 按需拉起: {sys.executable} reach_server.py "
           f"--camera-serial {_args.camera_serial} "
           f"--network-interface {_args.network_interface}")
