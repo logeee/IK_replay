@@ -155,6 +155,18 @@
         <b>先把手收回再调</b>；需要机器人处于运动模式。</div>
       <div id="msg"></div>
     </div>
+
+    <div class="card">
+      <h2>电机角度（只读，来自 rt/lowstate）</h2>
+      <table class="kv">
+        <tr><td>左腿俯仰 #0</td><td id="m0">--</td></tr>
+        <tr><td>左腿偏航 #2</td><td id="m2">--</td></tr>
+        <tr><td>右腿俯仰 #6</td><td id="m6">--</td></tr>
+        <tr><td>右腿偏航 #8</td><td id="m8">--</td></tr>
+        <tr><td>腰偏航 #14</td><td id="m14">--</td></tr>
+      </table>
+      <div class="status-line" id="motorMsg"></div>
+    </div>
   </div>
 </div>
 
@@ -437,6 +449,24 @@ updateTurnButtons();
 
 poll();
 setInterval(poll, 600);
+
+// ---- 电机角度显示（只读轮询，不发任何指令）----
+async function pollMotors() {
+  try {
+    const res = await fetch("/api/reach/motors");
+    const data = await res.json();
+    if (!data.ok) { $("motorMsg").textContent = data.error || "读取失败"; return; }
+    $("motorMsg").textContent = "";
+    for (const m of data.motors) {
+      const el = $("m" + m.index);
+      if (el) el.textContent = `${m.q_deg.toFixed(2)}°　(${m.q_rad.toFixed(4)} rad)`;
+    }
+  } catch (e) {
+    $("motorMsg").textContent = "电机角度读取异常：" + e;
+  }
+}
+pollMotors();
+setInterval(pollMotors, 800);
 </script>
 </body>
 </html>

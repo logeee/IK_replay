@@ -37,3 +37,4 @@
 [07/21 03:30:06.451473][error][484938][UsbEnumeratorLibusb.cpp:440] Failed to query USB device interface name. SN: CPCBC530002E
 [07/26 16:58:20.659188][error][317916][UsbEnumeratorLibusb.cpp:404] Failed to open USB device: error=No such device (it may have been disconnected).
 [07/26 20:15:18.305399][error][311482][UsbEnumeratorLibusb.cpp:404] Failed to open USB device: error=No such device (it may have been disconnected).
+[07/28 15:38:43.934834][error][170118][UsbEnumeratorLibusb.cpp:404] Failed to open USB device: error=No such device (it may have been disconnected).

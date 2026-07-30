@@ -109,6 +109,7 @@ def main() -> int:
     arm = "right" if args.chain == "right_arm" else "left"
     joints_reader = None
     torso_reader = None
+    motors_reader = None
     arm_factory = None
     if not args.no_robot:
         try:
@@ -117,6 +118,7 @@ def main() -> int:
             provider = H2PoseProvider(network_interface=args.network_interface, arm=arm)
             joints_reader = provider.read_arm_q
             torso_reader = provider.read_torso_state
+            motors_reader = provider.read_motor_q
             print("[reach] rt/lowstate 只读订阅就绪（不发任何指令）")
         except Exception as exc:
             print(f"[reach] DDS 连接失败，退化为仅模拟模式: {exc}")
@@ -146,7 +148,8 @@ def main() -> int:
         collision_checker=app_module.collision_checkers[args.robot],
         ik_solver=app_module.solvers[args.robot]["numerical"],
         arm_factory=arm_factory, joints_reader=joints_reader,
-        torso_reader=torso_reader, tool_out_mm=args.tool_out_mm,
+        torso_reader=torso_reader, motors_reader=motors_reader,
+        tool_out_mm=args.tool_out_mm,
     )
     app_module.app.include_router(reach.router)
     print(f"[reach] calib = {reach.state.calib_meta}")

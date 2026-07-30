@@ -46,6 +46,7 @@ class ReachState:
         self.arm_factory = None            # 无参函数 -> H2ArmController；None = 无法真机执行
         self.provider_reader = None        # 只读 lowstate 关节读取（未接管时用）
         self.torso_reader = None           # 只读腰关节 + IMU（躯干姿态诊断）
+        self.motors_reader = None          # 只读任意全身电机角度（按序号）
         self.loco_client = None            # 高层 loco RPC（原地转身用），懒创建
         self.loco_available = False        # 有 DDS（非 --no-robot）才可用
         self.hand_raised_ui = False        # 前端人工标注"已抬手"，随转身/对中日志落盘
@@ -91,7 +92,8 @@ state = ReachState()
 
 def configure(*, camera, robot_model, robot_id: str, chain_id: str, calib_path: Path,
               collision_checker=None, ik_solver=None, arm_factory=None,
-              joints_reader=None, torso_reader=None, tool_out_mm: float = 0.0) -> None:
+              joints_reader=None, torso_reader=None, motors_reader=None,
+              tool_out_mm: float = 0.0) -> None:
     """由 reach_server 调用。calib_path 是 handeye3d_result.json。
 
     tool_out_mm: 标定的 p_tool 点（当时选在手指上，离真正指尖还差一点）
@@ -127,6 +129,7 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str, calib_path: 
     state.arm_factory = arm_factory
     state.provider_reader = joints_reader
     state.torso_reader = torso_reader
+    state.motors_reader = motors_reader
     state.loco_available = joints_reader is not None   # 有 DDS 连接才谈得上转身
     state.base_link = base_link
     state.joint_names = robot_model.joint_names(chain_id)
@@ -233,6 +236,50 @@ def reach_status():
                              or state.provider_reader is not None),
         "exec": _exec_status(),
     }
+
+
+# H2 全身电机名称表（rt/lowstate 的 motor_state 序号 → 名称）
+H2_MOTOR_NAMES = [
+    "左腿俯仰", "左腿横滚", "左腿偏航", "左膝俯仰", "左踝横滚", "左踝俯仰",
+    "右腿俯仰", "右腿横滚", "右腿偏航", "右膝俯仰", "右踝横滚", "右踝俯仰",
+    "腰横滚", "腰俯仰", "腰偏航",
+    "左大臂俯仰", "左大臂横滚", "左大臂偏航", "左肘俯仰",
+    "左小臂偏航", "左小臂俯仰", "左小臂横滚",
+    "右大臂俯仰", "右大臂横滚", "右大臂偏航", "右肘俯仰",
+    "右小臂偏航", "右小臂俯仰", "右小臂横滚",
+    "脖子俯仰", "脖子偏航",
+]
+
+# perp 页底部默认展示：左右腿的俯仰/偏航 + 腰偏航
+MOTOR_WATCH_DEFAULT = [0, 2, 6, 8, 14]
+
+
+@router.get("/motors")
+def reach_motors(ids: str = ""):
+    """只读全身电机角度（来自 rt/lowstate 订阅，不发任何指令）。
+
+    ids: 逗号分隔的电机序号，缺省 = 左右腿俯仰/偏航 + 腰偏航。
+    """
+    if state.motors_reader is None:
+        return JSONResponse({"ok": False, "error": "无 DDS 连接（--no-robot 模式？）"},
+                            status_code=503)
+    try:
+        indices = ([int(v) for v in ids.split(",") if v.strip()]
+                   if ids.strip() else list(MOTOR_WATCH_DEFAULT))
+    except ValueError:
+        return JSONResponse({"ok": False, "error": f"ids 不合法: {ids!r}"},
+                            status_code=422)
+    if any(not 0 <= i < len(H2_MOTOR_NAMES) for i in indices):
+        return JSONResponse({"ok": False, "error": f"电机序号超范围 0~{len(H2_MOTOR_NAMES)-1}"},
+                            status_code=422)
+    q = state.motors_reader(indices)
+    if q is None:
+        return JSONResponse({"ok": False, "error": "还没收到 rt/lowstate 帧"},
+                            status_code=503)
+    return {"ok": True, "motors": [
+        {"index": i, "name": H2_MOTOR_NAMES[i],
+         "q_rad": round(float(v), 5), "q_deg": round(math.degrees(float(v)), 2)}
+        for i, v in zip(indices, q)]}
 
 
 @router.get("/stream")
