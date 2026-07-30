@@ -935,18 +935,23 @@ HOLD_ALIGN_FLIP_MIN_DEG = 1.5     # 反号兜底只在大杆后允许触发
 # 闭环拿它当真，连发 6 杆 6s（每杆≈22°）的整体转身——而基座当时压根没响应
 # （六杆下来实测 yaw 只变了 0.14°，伴随 3104 应答超时）。手臂正伸在柜面前
 # 46 cm，这种空转一旦真执行就是拿手臂扫柜子。三道闸各自独立拦这次事故：
-ALIGN_ERR_CAP_ARMUP_DEG = 8.0    # 抬手后偏差上限：站位检查已保证 -6~-3，再量出
-                                 # 十几度只可能是测量坏了（本次第 3 杆即触发）
+ALIGN_ERR_CAP_ARMUP_DEG = 12.0   # 抬手后偏差上限。手臂前伸会把躯干配平带偏，
+                                 # 实测真实漂移 +4.5~+8.2°，所以门槛要容得下它；
+                                 # 而事故那次的假值偏差 16.6°，照样拦得住
 ALIGN_ERR_CAP_DEG = 25.0         # 放手时的上限：超过说明相机根本没对着柜面
 ALIGN_POINTS_MIN_RATIO = 0.7     # 拟合点数掉到首帧的七成以下 → 测量不可信
 ALIGN_STALL_MIN_EXPECT_DEG = 3.0 # 只用"大杆"判无响应（短杆响应本就随机）
 ALIGN_STALL_RATIO = 0.15         # 实测变化不到预计的这个比例算"没动"。15:00 那轮
                                  # 正常收敛时实测/预计最低到过 0.24，留 1.6 倍余量
 ALIGN_STALL_MAX = 2              # 连续这么多大杆没动 → 判运控未响应
-ALIGN_DEADBAND_DEG = 1.5         # 偏差小于此直接算合格：死区内打杆是随机数，
-                                 # 15:05 那轮为 1.2° 的残差白磨了 12 杆
+ALIGN_DEADBAND_DEG = 1.5         # 只在抬手时放宽到这个死区：抬手后基座常常
+                                 # 完全不响应小杆（15:05 那轮为 1.2° 的残差白磨
+                                 # 12 杆）。放手时必须尊重调用方给的阈值——流程
+                                 # 的验收带就靠它留出余量（见 18:08 的 ALIGN_FAILED：
+                                 # 服务器停在带边缘 1.46°，流程独立复测量出 1.57°）
 ALIGN_ARMUP_MAX_HOLD_S = 1.5     # 抬手时单杆上限（≈5°），杜绝 22° 的整体转身
-ALIGN_ARMUP_BUDGET_DEG = 10.0    # 抬手时累计转身预算，超了停手报错
+ALIGN_ARMUP_BUDGET_DEG = 15.0    # 抬手时累计转身预算（够纠 12° 上限内的漂移），
+                                 # 超了停手报错，杜绝上午那种连转 130° 的空转
 
 
 def _align_abort(msg: str, log: dict) -> None:
@@ -975,7 +980,7 @@ def _align_loop_hold(tol: float, dmin: float, dmax: float,
     prev_expect = 0.0     # 上一杆的预计角，用于限制反号兜底只在大杆后触发
     armup = _arm_raised()
     err_cap = ALIGN_ERR_CAP_ARMUP_DEG if armup else ALIGN_ERR_CAP_DEG
-    tol_eff = max(tol, ALIGN_DEADBAND_DEG)
+    tol_eff = max(tol, ALIGN_DEADBAND_DEG) if armup else tol
     first_points: int | None = None   # 首帧点数，后续帧掉太多说明拟合面变了
     prev_yaw: float | None = None
     stall = 0             # 连续"下发大杆但没动"的次数

@@ -1,10 +1,11 @@
 """拨动开关全流程编排。
 
 已部署的步骤（测平面/测距、腰部对齐、pick→规划→执行）直接走 reach_server；
-起手式按距离自动选（序列名带门槛，如「0.46起手式」需 ≥0.46m，太近报
-POSE_UNAVAILABLE）；距柜面 ≥0.5m 时起手式之后还要插值到「0.5以上」路点
-再取点；收尾 = 插值到「起手点测试」路点后释放手臂——成功和失败（含重试
-耗尽）都走这个回落，避免手臂停在柜面前被权重渐出交还本体。
+起手式按距离自动选（序列名带门槛，如「0.44避障起手式」需 ≥0.44m，太近报
+POSE_UNAVAILABLE）；取点前的补位分三档：≥0.5m 起手式后加摆「0.5以上」、
+0.46~0.5m 摆完直接取点、0.44~0.46m 摆完补位到配套「终点」路点；收尾 =
+插值到「起手点测试」路点后释放手臂——成功和失败（含重试耗尽）都走这个
+回落，避免手臂停在柜面前被权重渐出交还本体。
 场景判断和拨后复核走 7004 YOLO 服务（python -m api.yolo_server）：
 每处视觉判断连问 3 帧再下结论；配了 YOLO 却仍没结论时报 YOLO_FAILED
 退出（手臂受控回落），不转人工——无人值守的自动化不能卡在等人上。
@@ -16,10 +17,10 @@ POSE_UNAVAILABLE）；距柜面 ≥0.5m 时起手式之后还要插值到「0.5�
 不给 console 时保持旧行为：人工顶不上的步骤抛 FlowError(NOT_IMPLEMENTED)。
 
 腰部对齐目标（按 2026-07-28 流程定义）：
-  3️⃣ 粗对齐：平面指数（yaw）收进 -3 ~ -6°（target -4.5° ± 1.5°）；抬手前做，
-     允许真机转身
-  6️⃣ 细保持：抬手后只复查 -3° ± 2°（取 3 帧中位数），漂出即报 ALIGN_FAILED
-     并受控回落——抬手状态下不再转身纠正（见 _fine_hold_check 的事故记录）
+  3️⃣ 粗对齐：平面指数（yaw）收进 -3 ~ -6°（target -4.5° ± 1.5°）
+  6️⃣ 细保持：抬手后收进 -3° ± 2°。手臂前伸会把躯干配平带偏 +4.5~+8.2°（实测），
+     所以这一步必须转身纠偏；判据取 3 帧中位数防单帧污染，服务端在抬手状态下
+     限死单杆 ≤5°、累计 ≤15°，并有三道安全闸（见 adapters/reach.py）
 
 错误码：占位。等正式定义后替换 ErrorCode 的取值即可，接口形状不变。
 """
@@ -52,7 +53,7 @@ class ErrorCode(IntEnum):
     EXEC_FAILED = 7        # 真机执行失败
     VERIFY_FAILED = 8      # 拨动复核不通过且重试耗尽
     ABORTED = 9            # 人工急停或外部中断
-    POSE_UNAVAILABLE = 10  # 距离不满足任何起手式的适用范围（如 <0.46m）
+    POSE_UNAVAILABLE = 10  # 距离不满足任何起手式的适用范围（如 <0.44m）
 
 
 class FlowError(Exception):
@@ -144,7 +145,7 @@ class SwitchFlow:
             self._log(f"═══ 3️⃣ 腰部粗对齐：平面指数收进 "
                       f"{self.coarse_target_deg:+.1f}°±{self.coarse_tol_deg}° "
                       f"（即 -6°~-3°）═══")
-            self.waist_align(self.coarse_target_deg, self.coarse_tol_deg)
+            self._coarse_align_with_retry()
 
             self._log("═══ 4️⃣ 测距离 ═══")
             distance_m = self.measure_distance()
@@ -158,6 +159,7 @@ class SwitchFlow:
                     self._current_pose = pose   # 拨完插值回它配套的「终点」路点
                     self._log(f"起手式: {pose}")
                     far = distance_m >= self.FAR_DISTANCE_M
+                    near = distance_m < self.NEAR_DISTANCE_M
                     if round_no == 1:
                         self.apply_opening_pose(pose)
                         if far:
@@ -166,6 +168,11 @@ class SwitchFlow:
                                       f"「{self.FAR_EXTRA_WAYPOINT}」")
                             self._interp_to_waypoint(self.FAR_EXTRA_WAYPOINT,
                                                      f"远距补位第{round_no}轮")
+                        elif near:
+                            self._log(f"距柜面 {distance_m:.3f} m < "
+                                      f"{self.NEAR_DISTANCE_M} m，起手式后补位到"
+                                      f"配套「终点」路点再取点")
+                            self._goto_endpoint(f"近距补位第{round_no}轮")
                     elif far:
                         # 远距离重试：起手位就是「0.5以上」，不必先绕回「终点」
                         self._log(f"重试轮：直接插值回「{self.FAR_EXTRA_WAYPOINT}」"
@@ -179,9 +186,9 @@ class SwitchFlow:
                         self._log("重试轮：跳过起手式回放，插值回终点路点作为起手位")
                         self._goto_endpoint(f"重试第{round_no}轮")
 
-                    self._log(f"═══ 6️⃣ 复查保持带（只看不动）："
+                    self._log(f"═══ 6️⃣ 腰部细对齐并保持："
                               f"{self.fine_target_deg:+.1f}°±{self.fine_tol_deg}° ═══")
-                    self._fine_hold_check("6️⃣ 抬手后复查")
+                    self._fine_align_with_retry()
 
                     points = self._detect_points_held()
                     self._log(f"点位: {points}")
@@ -278,9 +285,9 @@ class SwitchFlow:
                     cmd_tol_deg: float | None = None) -> None:
         """腰部调节：把平面指数收进 target_deg ± tol_deg（真机转身）。
 
-        只在 3️⃣ 抬手前调用——抬手后转身有撞柜风险，改成只复查（见
-        _fine_hold_check）。cmd_tol_deg：发给服务器的收敛阈值（默认同
-        tol_deg），收紧它可以让服务器停在带中心附近而不是带边缘。
+        3️⃣ 抬手前和 6️⃣ 抬手后都用它；抬手后服务端会自动限幅（单杆 ≤5°、
+        累计 ≤15°）。cmd_tol_deg：发给服务器的收敛阈值（默认同 tol_deg），
+        必须比验收带更严，否则服务器停在带边缘、流程独立复测的噪声就会判失败。
         """
         yaw = float(self.measure_plane()["yaw_err_deg"])
         if abs(yaw - target_deg) <= tol_deg:
@@ -295,6 +302,7 @@ class SwitchFlow:
             raise FlowError(ErrorCode.ALIGN_FAILED,
                             f"对中启动失败: {res.get('error')}")
         deadline = time.monotonic() + self.align_timeout_s
+        last_msg: str | None = None
         while time.monotonic() < deadline:
             time.sleep(1.0)
             fit = self.client.perpendicular(self.dmin, self.dmax)
@@ -302,27 +310,49 @@ class SwitchFlow:
             if not align.get("running"):
                 err = (abs(float(fit["yaw_err_deg"]) - target_deg)
                        if fit.get("ok") else None)
-                self._log(f"对中结束: {align.get('message')}（带内残差 {err}°）")
+                shown = "读不到" if err is None else f"{err:.2f}°"
+                self._log(f"对中结束: {align.get('message')}（复测残差 {shown}）")
                 if err is not None and err <= tol_deg:
                     return
                 raise FlowError(ErrorCode.ALIGN_FAILED,
-                                f"对中结束但残差 {err}° 未达 ±{tol_deg}°")
-            self._log(f"对中中… {align.get('message') or ''}")
+                                f"对中结束但复测残差 {shown} 未达 ±{tol_deg}°")
+            msg = align.get("message") or ""
+            if msg != last_msg:          # 每秒轮询，同一杆别重复刷屏
+                self._log(f"对中中… {msg}")
+                last_msg = msg
         self.client.align_yaw_stop()
         raise FlowError(ErrorCode.ALIGN_FAILED, f"对中超时（>{self.align_timeout_s}s）")
+
+    COARSE_ALIGN_ATTEMPTS = 3
+
+    def _coarse_align_with_retry(self) -> None:
+        """3️⃣ 粗对齐：收进 -4.5°±1.5°（即 -6~-3°），未达标原地重试。
+
+        发给服务器的收敛阈值取验收半宽的一半：服务器要是停在验收带边缘，流程
+        用另一帧独立复测（噪声 ±0.2°）就可能量到带外——2026-07-30 18:08 的任务
+        就是这么挂的（服务器报残差 1.46° 完成，流程复测 1.57° 判 ALIGN_FAILED）。
+        """
+        for i in range(1, self.COARSE_ALIGN_ATTEMPTS + 1):
+            try:
+                self.waist_align(self.coarse_target_deg, self.coarse_tol_deg,
+                                 cmd_tol_deg=self.coarse_tol_deg / 2)
+                return
+            except FlowError as exc:
+                if (exc.code != ErrorCode.ALIGN_FAILED
+                        or i == self.COARSE_ALIGN_ATTEMPTS):
+                    raise
+                self._log(f"粗对齐未达标（{exc.message}），原地重试"
+                          f"（第 {i}/{self.COARSE_ALIGN_ATTEMPTS - 1} 次）")
 
     FINE_MEASURE_FRAMES = 3    # 抬手后取多帧投票，单帧污染直接被中位数投掉
     FINE_MEASURE_GAP_S = 0.4
 
-    def _fine_hold_check(self, what: str) -> None:
-        """6️⃣ 抬手后只复查保持带，不再转身纠正。
+    def _fine_yaw(self, what: str) -> float:
+        """抬手后的平面指数：取 3 帧中位数。
 
-        2026-07-30 的事故：起手式抬手后躯干自平衡前倾 5°，头部相机跟着低头，
-        0.4~1.0 m 深度带里掺进地面和前伸的手臂，整幅拟合被污染，量出假的
-        +42°；闭环拿它当真，对着柜面连发 6 杆 22° 的整体转身。手臂正伸在柜前
-        46 cm 时转身风险极高，而收益几乎为零——/check/flip 已经把朝向框在带内
-        了。所以这里只看不动：在带内继续，漂出就报 ALIGN_FAILED（手臂受控
-        回落），由上层重新走站位检查。
+        抬手后躯干前倾、手臂进画面，单帧拟合有概率被地面/手臂污染（量出几十
+        度的假值）。中位数直接把这种孤立帧投掉，避免拿假值去转身——2026-07-30
+        17:19 就是拿单帧假值 +42° 连发了 6 杆 22° 的整体转身。
         """
         yaws = []
         for i in range(self.FINE_MEASURE_FRAMES):
@@ -330,31 +360,52 @@ class SwitchFlow:
                 time.sleep(self.FINE_MEASURE_GAP_S)
             yaws.append(float(self.measure_plane()["yaw_err_deg"]))
         yaw = sorted(yaws)[len(yaws) // 2]
-        frames = "/".join(f"{v:+.2f}" for v in yaws)
-        band = (f"{self.fine_target_deg:+.1f}°±{self.fine_tol_deg}°")
-        if abs(yaw - self.fine_target_deg) <= self.fine_tol_deg:
-            self._log(f"{what}：yaw {yaw:+.2f}°（{self.FINE_MEASURE_FRAMES} 帧 "
-                      f"{frames}）在保持带 {band} 内")
-            return
+        self._log(f"{what}：yaw {yaw:+.2f}°"
+                  f"（{self.FINE_MEASURE_FRAMES} 帧 "
+                  f"{'/'.join(f'{v:+.2f}' for v in yaws)}）")
+        return yaw
+
+    def _fine_align_with_retry(self, attempts: int = 3) -> None:
+        """6️⃣ 抬手后细对齐：把平面指数纠回 fine 带，失败原地重试。
+
+        手臂前伸会被整机配平带着把躯干转过去，实测漂移 +4.5~+8.2°（越往前伸
+        越大，摆过「0.5以上」时最大），方向固定往正，所以这一步必须纠——不纠
+        任务永远过不去。历史上一杆约 3° 就够。
+        判据用 3 帧中位数（防单帧污染），纠偏由服务器闭环做：抬手状态下服务端
+        限死单杆 ≤5°、累计 ≤15°，另有拟合点数、偏差上限、运控无响应三道闸
+        （见 adapters/reach.py），不会再出现对着柜面空转的情况。
+        """
+        band = f"{self.fine_target_deg:+.1f}°±{self.fine_tol_deg}°"
+        yaw = 0.0
+        for i in range(1, attempts + 1):
+            yaw = self._fine_yaw("6️⃣ 抬手后复查")
+            if abs(yaw - self.fine_target_deg) <= self.fine_tol_deg:
+                self._log(f"在保持带 {band} 内")
+                return
+            self._log(f"抬手后漂出保持带 {band}，转身纠偏"
+                      f"（第 {i}/{attempts} 次）")
+            try:
+                self.waist_align(self.fine_target_deg, self.fine_tol_deg,
+                                 cmd_tol_deg=self.fine_tol_deg / 2)
+            except FlowError as exc:
+                if exc.code != ErrorCode.ALIGN_FAILED or i == attempts:
+                    raise
+                self._log(f"纠偏未达标（{exc.message}），再试一次")
         raise FlowError(ErrorCode.ALIGN_FAILED,
-                        f"{what}：yaw {yaw:+.2f}°（{self.FINE_MEASURE_FRAMES} 帧 "
-                        f"{frames}）超出保持带 {band}。抬手状态下不做转身纠正"
-                        f"（手臂前伸时有撞柜风险，且此时的平面拟合易被地面/手臂"
-                        f"污染），手臂将受控回落，请重新走 /check/flip 站位后再试")
+                        f"抬手后 {attempts} 次纠偏仍在 {yaw:+.2f}°，"
+                        f"未收进保持带 {band}，手臂将受控回落")
 
     def _detect_points_held(self) -> list[dict]:
-        """取点，并在取完后复查保持带——漂出则换一帧重取，仍漂出就报错回落。"""
+        """取点前后都守住保持带：取点期间漂出就重新纠偏，再重新取点。"""
         for attempt in (1, 2):
             points = self.detect_points()
-            try:
-                self._fine_hold_check("取点后复查")
+            yaw = self._fine_yaw("取点后复查")
+            if abs(yaw - self.fine_target_deg) <= self.fine_tol_deg:
                 return points
-            except FlowError as exc:
-                if exc.code != ErrorCode.ALIGN_FAILED or attempt == 2:
-                    raise
-                self._log(f"取点期间漂出保持带（{exc.message}），"
-                          f"重新取一帧再复查（第 {attempt} 次）")
-        raise FlowError(ErrorCode.ALIGN_FAILED, "取点后复查始终漂出保持带")
+            self._log(f"取点期间漂出保持带（yaw {yaw:+.2f}°），"
+                      f"重新纠偏后重新取点（第 {attempt} 次）")
+            self._fine_align_with_retry(attempts=2)
+        return self.detect_points()
 
     # 横移方向 = 拟合平面的"左"再向下倾 2°（同 main.js SIDESTEP_TILT_DEG）
     SIDESTEP_TILT_DEG = 2.0
@@ -581,8 +632,9 @@ class SwitchFlow:
         """5️⃣ 按距离选起手式（已定规则，自动选，不问确认台）。
 
         起手式 = 已存的动作序列，名字开头的数字是它的最小适用距离：
-        「0.46起手式」→ 距柜面 ≥ 0.46 m 才能用。多个够格时选门槛最大
+        「0.44避障起手式」→ 距柜面 ≥ 0.44 m 才能用。多个够格时选门槛最大
         （最贴近当前距离）的那个；一个都不够格 → POSE_UNAVAILABLE。
+        现有两档：0.44（0.44~0.46 m）和 0.46（≥0.46 m）。
         """
         seqs = (self.client.sequences().get("sequences") or [])
         poses: list[tuple[float, dict]] = []
@@ -609,11 +661,14 @@ class SwitchFlow:
     # 先插值回录制起点，保证走"录播"路径。
     SEQ_START_WAYPOINT = "录制点位1"
 
-    # 远距离补位：0.46~0.5 m 用起手式即可；≥0.5 m 时起手式摆完还要再插值到
-    # 这个已录路点（手臂前伸得更多），然后才取点拨动。重试轮直接回这个路点
-    # 当起手位，不再绕经「终点」。
+    # 起手式之后、取点之前的补位，按距柜面距离分三档：
+    #   ≥0.50 m：起手式摆完再插值到「0.5以上」（手臂前伸更多）；重试轮直接
+    #            回这个路点当起手位，不绕经「终点」
+    #   0.46~0.50 m：起手式摆完直接取点
+    #   0.44~0.46 m：起手式（「0.44避障起手式」）摆完再补位到配套的「0.44终点」
     FAR_DISTANCE_M = 0.5
     FAR_EXTRA_WAYPOINT = "0.5以上"
+    NEAR_DISTANCE_M = 0.46      # 小于此为近距档，起手式后补位到「终点」再取点
 
     def apply_opening_pose(self, pose: dict) -> None:
         """把手臂摆到起手式：先插值回录制起点，再原样回放录制轨迹。"""
