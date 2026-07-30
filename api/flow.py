@@ -678,7 +678,9 @@ class SwitchFlow:
             self._interp_to_waypoint(self.DESCEND_WAYPOINT, "失败收尾",
                                      speed_rad_s=self.DESCEND_SPEED_RAD_S)
         except Exception as exc:
-            self._log(f"⚠ 回落失败，手臂可能停在半空，请人工扶住: {exc}")
+            # 没收回来就别主动松手：保持刚性，交给人处置
+            self._log(f"⚠ 回落失败，手臂停在半空且保持接管，请人工扶住后处置: {exc}")
+            return
         if not self._armed_by_flow:
             self._log("手臂是进流程前就接管的，保持接管不释放")
             return
