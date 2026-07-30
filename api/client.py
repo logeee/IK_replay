@@ -124,6 +124,10 @@ class ReachClient:
     def joints(self) -> dict:
         return self.get("/joints")
 
+    def motors(self, ids: str | None = None) -> dict:
+        """全身电机角度（只读）。缺省 = 左右腿俯仰/偏航 + 腰偏航 5 个。"""
+        return self.get("/motors", **({"ids": ids} if ids else {}))
+
     def stop(self) -> dict:
         """急停。"""
         return self.post("/stop")
