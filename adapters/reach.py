@@ -928,6 +928,37 @@ HOLD_ALIGN_FINE_CMD_DEG_S = 3.0   # 收尾指令速度（半速）
 HOLD_ALIGN_FINE_EFF_DEG_S = HOLD_ALIGN_EFF_DEG_S * HOLD_ALIGN_FINE_CMD_DEG_S / HOLD_ALIGN_CMD_DEG_S
 HOLD_ALIGN_FLIP_MIN_DEG = 1.5     # 反号兜底只在大杆后允许触发
 
+# --------------------------------- 安全闸 ---------------------------------
+# 2026-07-30 17:19 事故（align_20260730 第 12 轮）：起手式抬手后躯干自平衡
+# 前倾 5°（腰俯仰 -0.44°→+4.6°），头部相机跟着低头，0.4~1.0 m 深度带里掺进
+# 地面/前伸的手臂。整幅 SVD 拟合被污染（点数 27k→13.5k），量出假的 +42°；
+# 闭环拿它当真，连发 6 杆 6s（每杆≈22°）的整体转身——而基座当时压根没响应
+# （六杆下来实测 yaw 只变了 0.14°，伴随 3104 应答超时）。手臂正伸在柜面前
+# 46 cm，这种空转一旦真执行就是拿手臂扫柜子。三道闸各自独立拦这次事故：
+ALIGN_ERR_CAP_ARMUP_DEG = 8.0    # 抬手后偏差上限：站位检查已保证 -6~-3，再量出
+                                 # 十几度只可能是测量坏了（本次第 3 杆即触发）
+ALIGN_ERR_CAP_DEG = 25.0         # 放手时的上限：超过说明相机根本没对着柜面
+ALIGN_POINTS_MIN_RATIO = 0.7     # 拟合点数掉到首帧的七成以下 → 测量不可信
+ALIGN_STALL_MIN_EXPECT_DEG = 3.0 # 只用"大杆"判无响应（短杆响应本就随机）
+ALIGN_STALL_RATIO = 0.15         # 实测变化不到预计的这个比例算"没动"。15:00 那轮
+                                 # 正常收敛时实测/预计最低到过 0.24，留 1.6 倍余量
+ALIGN_STALL_MAX = 2              # 连续这么多大杆没动 → 判运控未响应
+ALIGN_DEADBAND_DEG = 1.5         # 偏差小于此直接算合格：死区内打杆是随机数，
+                                 # 15:05 那轮为 1.2° 的残差白磨了 12 杆
+ALIGN_ARMUP_MAX_HOLD_S = 1.5     # 抬手时单杆上限（≈5°），杜绝 22° 的整体转身
+ALIGN_ARMUP_BUDGET_DEG = 10.0    # 抬手时累计转身预算，超了停手报错
+
+
+def _align_abort(msg: str, log: dict) -> None:
+    """安全闸拦下：先停走，再把原因写进状态和落盘日志。"""
+    try:
+        if state.loco_client is not None:
+            state.loco_client.StopMove()
+    except Exception:
+        pass
+    state.align_message = f"对中中止：{msg}"
+    _align_log(log)
+
 
 def _align_loop_hold(tol: float, dmin: float, dmax: float,
                      target: float = 0.0) -> None:
@@ -942,8 +973,16 @@ def _align_loop_hold(tol: float, dmin: float, dmax: float,
     sign = 1.0
     prev_err: float | None = None
     prev_expect = 0.0     # 上一杆的预计角，用于限制反号兜底只在大杆后触发
+    armup = _arm_raised()
+    err_cap = ALIGN_ERR_CAP_ARMUP_DEG if armup else ALIGN_ERR_CAP_DEG
+    tol_eff = max(tol, ALIGN_DEADBAND_DEG)
+    first_points: int | None = None   # 首帧点数，后续帧掉太多说明拟合面变了
+    prev_yaw: float | None = None
+    stall = 0             # 连续"下发大杆但没动"的次数
+    turned_deg = 0.0      # 抬手状态下的累计转身量
     _align_log({"event": "start", "mode": "hold", "tol_deg": tol,
-                "target_deg": target, "dmin": dmin, "dmax": dmax})
+                "tol_eff_deg": tol_eff, "target_deg": target, "armup": armup,
+                "err_cap_deg": err_cap, "dmin": dmin, "dmax": dmax})
     try:
         for step in range(1, HOLD_ALIGN_MAX_STEPS + 1):
             if state.align_cancel.is_set():
@@ -958,15 +997,59 @@ def _align_loop_hold(tol: float, dmin: float, dmax: float,
                 return
             yaw = float(fitres["yaw_err_deg"])
             err = yaw - target
+            points = int(fitres.get("points_used") or 0)
+            if first_points is None:
+                first_points = points
             _align_log({"event": "measure", "mode": "hold", "step": step,
-                        "yaw_err_deg": round(yaw, 3),
-                        "points": fitres.get("points_used")})
-            if abs(err) <= tol:
+                        "yaw_err_deg": round(yaw, 3), "points": points})
+
+            # 闸① 点数腰斩 = 拟合已经不是柜面（掺进地面/前伸的手臂）
+            if first_points > 0 and points < first_points * ALIGN_POINTS_MIN_RATIO:
+                _align_abort(f"拟合点数 {points} 掉到首帧 {first_points} 的 "
+                             f"{points / first_points:.0%}（低于 "
+                             f"{ALIGN_POINTS_MIN_RATIO:.0%}），深度带里多半掺进了"
+                             f"地面或前伸的手臂，测得的 yaw {yaw:+.2f}° 不可信",
+                             {"event": "sanity_points", "mode": "hold",
+                              "step": step, "points": points,
+                              "first_points": first_points,
+                              "yaw_err_deg": round(yaw, 3)})
+                return
+            if abs(err) <= tol_eff:
                 state.align_message = (f"新对中完成：yaw {yaw:+.2f}°"
-                                       f"（目标 {target:+.1f}°，{step - 1} 步）")
+                                       f"（目标 {target:+.1f}°±{tol_eff:.1f}°，"
+                                       f"{step - 1} 步）")
                 _align_log({"event": "done", "mode": "hold", "step": step,
                             "yaw_err_deg": round(yaw, 3)})
                 return
+            # 闸② 偏差超可信上限：抬手后不可能真的偏这么多，转身风险却极高
+            if abs(err) > err_cap:
+                _align_abort(f"偏差 {err:+.2f}° 超出可信上限 ±{err_cap:.0f}°"
+                             f"（{'抬手中' if armup else '未抬手'}），"
+                             f"判为测量异常，未下发转身",
+                             {"event": "sanity_cap", "mode": "hold",
+                              "step": step, "err_deg": round(err, 3),
+                              "cap_deg": err_cap, "armup": armup})
+                return
+            # 闸③ 下发了大杆却没动 = 运控没在执行速度指令，闭环已失去反馈
+            if (prev_yaw is not None
+                    and abs(prev_expect) >= ALIGN_STALL_MIN_EXPECT_DEG):
+                moved = abs(yaw - prev_yaw)
+                if moved < ALIGN_STALL_RATIO * abs(prev_expect):
+                    stall += 1
+                    _align_log({"event": "stall", "mode": "hold", "step": step,
+                                "moved_deg": round(moved, 3),
+                                "expect_deg": round(prev_expect, 2),
+                                "count": stall})
+                    if stall >= ALIGN_STALL_MAX:
+                        _align_abort(f"连续 {stall} 杆下发 {abs(prev_expect):.1f}° "
+                                     f"却只动了 {moved:.2f}°，运控未在执行转身指令"
+                                     f"（检查运控状态/是否被其他程序接管）",
+                                     {"event": "sanity_stall", "mode": "hold",
+                                      "step": step, "count": stall})
+                        return
+                else:
+                    stall = 0
+            prev_yaw = yaw
             # 反号兜底只信"大杆"的结果：短杆/小脉冲的响应本身随机，
             # 偏差涨一点不代表方向错（第 4 轮真机就是被这个误触发震荡的）
             if (prev_err is not None and abs(err) > abs(prev_err) + 0.3
@@ -979,22 +1062,29 @@ def _align_loop_hold(tol: float, dmin: float, dmax: float,
             if abs(err) < HOLD_ALIGN_FINE_DEG:
                 # 小残差：降速慢杆收尾。同样的角度时长翻倍，稳稳越过死区
                 # 和短杆随机区，分辨率比高速档细一倍
-                hold_s = (HOLD_ALIGN_DEAD_S
-                          + abs(err) * HOLD_ALIGN_GAIN / HOLD_ALIGN_FINE_EFF_DEG_S)
-                hold_s = float(np.clip(hold_s, HOLD_ALIGN_MIN_HOLD_S + 0.05, 1.2))
-                omega = math.radians(HOLD_ALIGN_FINE_CMD_DEG_S) * direction
-                prev_expect = (hold_s - HOLD_ALIGN_DEAD_S) * HOLD_ALIGN_FINE_EFF_DEG_S * direction
-                state.align_message = (f"第 {step} 步：偏差 {err:+.2f}° → "
-                                       f"慢杆 {hold_s:.2f}s（预计 {prev_expect:+.1f}°）")
+                cmd_deg_s, eff_deg_s, kind = (HOLD_ALIGN_FINE_CMD_DEG_S,
+                                              HOLD_ALIGN_FINE_EFF_DEG_S, "慢杆")
+                lo, hi = HOLD_ALIGN_MIN_HOLD_S + 0.05, 1.2
             else:
-                hold_s = (HOLD_ALIGN_DEAD_S
-                          + abs(err) * HOLD_ALIGN_GAIN / HOLD_ALIGN_EFF_DEG_S)
-                hold_s = float(np.clip(hold_s, HOLD_ALIGN_MIN_HOLD_S,
-                                       HOLD_ALIGN_MAX_HOLD_S))
-                omega = math.radians(HOLD_ALIGN_CMD_DEG_S) * direction
-                prev_expect = (hold_s - HOLD_ALIGN_DEAD_S) * HOLD_ALIGN_EFF_DEG_S * direction
-                state.align_message = (f"第 {step} 步：偏差 {err:+.2f}° → "
-                                       f"按 {hold_s:.2f}s（预计 {prev_expect:+.1f}°）")
+                cmd_deg_s, eff_deg_s, kind = (HOLD_ALIGN_CMD_DEG_S,
+                                              HOLD_ALIGN_EFF_DEG_S, "按")
+                lo, hi = HOLD_ALIGN_MIN_HOLD_S, HOLD_ALIGN_MAX_HOLD_S
+            if armup:
+                hi = min(hi, ALIGN_ARMUP_MAX_HOLD_S)   # 手臂前伸，禁止大角度转身
+            hold_s = HOLD_ALIGN_DEAD_S + abs(err) * HOLD_ALIGN_GAIN / eff_deg_s
+            hold_s = float(np.clip(hold_s, lo, hi))
+            omega = math.radians(cmd_deg_s) * direction
+            prev_expect = (hold_s - HOLD_ALIGN_DEAD_S) * eff_deg_s * direction
+            if armup and turned_deg + abs(prev_expect) > ALIGN_ARMUP_BUDGET_DEG:
+                _align_abort(f"抬手状态累计转身已 {turned_deg:.1f}°，再转就超预算 "
+                             f"{ALIGN_ARMUP_BUDGET_DEG:.0f}°，停手（手臂前伸时"
+                             f"大幅转身有撞柜风险）",
+                             {"event": "sanity_budget", "mode": "hold",
+                              "step": step, "turned_deg": round(turned_deg, 2)})
+                return
+            turned_deg += abs(prev_expect)
+            state.align_message = (f"第 {step} 步：偏差 {err:+.2f}° → "
+                                   f"{kind} {hold_s:.2f}s（预计 {prev_expect:+.1f}°）")
             code = loco.SetVelocity(0.0, 0.0, omega, hold_s)
             _align_log({"event": "hold", "mode": "hold", "step": step,
                         "hold_s": round(hold_s, 3),

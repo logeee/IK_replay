@@ -2,19 +2,24 @@
 
 已部署的步骤（测平面/测距、腰部对齐、pick→规划→执行）直接走 reach_server；
 起手式按距离自动选（序列名带门槛，如「0.46起手式」需 ≥0.46m，太近报
-POSE_UNAVAILABLE）；收尾 = 插值到「起手点测试」路点后释放手臂——成功和
-失败（含重试耗尽）都走这个回落，避免手臂停在柜面前被权重渐出交还本体。
+POSE_UNAVAILABLE）；距柜面 ≥0.5m 时起手式之后还要插值到「0.5以上」路点
+再取点；收尾 = 插值到「起手点测试」路点后释放手臂——成功和失败（含重试
+耗尽）都走这个回落，避免手臂停在柜面前被权重渐出交还本体。
 场景判断和拨后复核走 7004 YOLO 服务（python -m api.yolo_server）：
+每处视觉判断连问 3 帧再下结论；配了 YOLO 却仍没结论时报 YOLO_FAILED
+退出（手臂受控回落），不转人工——无人值守的自动化不能卡在等人上。
 本 API 专做「就地 → 远方」——开始前识别「就地」= 要拨、「远方」= 无需拨；
 拨完识别「远方」= 成功、「就地」= 失败重试。
 点位识别 = 「就地」框 + 固定相对偏移（标注数据实测与距离/角度无关）。
-YOLO 不可达或画面里没识别到目标时，按次转 7002 人工确认台顶上。
+只有压根没配 YOLO（--no-yolo 手动模式）才把视觉判断转 7002 人工确认台。
 
 不给 console 时保持旧行为：人工顶不上的步骤抛 FlowError(NOT_IMPLEMENTED)。
 
 腰部对齐目标（按 2026-07-28 流程定义）：
-  3️⃣ 粗对齐：平面指数（yaw）收进 -3 ~ -6°（target -4.5° ± 1.5°）
-  6️⃣ 细保持：收进 -3° ± 2°，取点前复查，漂出带则重新对齐再取点
+  3️⃣ 粗对齐：平面指数（yaw）收进 -3 ~ -6°（target -4.5° ± 1.5°）；抬手前做，
+     允许真机转身
+  6️⃣ 细保持：抬手后只复查 -3° ± 2°（取 3 帧中位数），漂出即报 ALIGN_FAILED
+     并受控回落——抬手状态下不再转身纠正（见 _fine_hold_check 的事故记录）
 
 错误码：占位。等正式定义后替换 ErrorCode 的取值即可，接口形状不变。
 """
@@ -152,8 +157,21 @@ class SwitchFlow:
                     pose = self.choose_opening_pose(distance_m)
                     self._current_pose = pose   # 拨完插值回它配套的「终点」路点
                     self._log(f"起手式: {pose}")
+                    far = distance_m >= self.FAR_DISTANCE_M
                     if round_no == 1:
                         self.apply_opening_pose(pose)
+                        if far:
+                            self._log(f"距柜面 {distance_m:.3f} m ≥ "
+                                      f"{self.FAR_DISTANCE_M} m，起手式后加摆"
+                                      f"「{self.FAR_EXTRA_WAYPOINT}」")
+                            self._interp_to_waypoint(self.FAR_EXTRA_WAYPOINT,
+                                                     f"远距补位第{round_no}轮")
+                    elif far:
+                        # 远距离重试：起手位就是「0.5以上」，不必先绕回「终点」
+                        self._log(f"重试轮：直接插值回「{self.FAR_EXTRA_WAYPOINT}」"
+                                  f"作为起手位")
+                        self._interp_to_waypoint(self.FAR_EXTRA_WAYPOINT,
+                                                 f"重试第{round_no}轮")
                     else:
                         # 重试轮：上一轮结束时手臂已在「终点」高位附近，直接
                         # 插值回终点路点即可——回放整条起手式会让手下去再上来，
@@ -161,9 +179,9 @@ class SwitchFlow:
                         self._log("重试轮：跳过起手式回放，插值回终点路点作为起手位")
                         self._goto_endpoint(f"重试第{round_no}轮")
 
-                    self._log(f"═══ 6️⃣ 腰部细对齐并保持："
+                    self._log(f"═══ 6️⃣ 复查保持带（只看不动）："
                               f"{self.fine_target_deg:+.1f}°±{self.fine_tol_deg}° ═══")
-                    self._fine_align_with_retry()
+                    self._fine_hold_check("6️⃣ 抬手后复查")
 
                     points = self._detect_points_held()
                     self._log(f"点位: {points}")
@@ -258,11 +276,11 @@ class SwitchFlow:
 
     def waist_align(self, target_deg: float, tol_deg: float,
                     cmd_tol_deg: float | None = None) -> None:
-        """腰部调节：把平面指数收进 target_deg ± tol_deg。
+        """腰部调节：把平面指数收进 target_deg ± tol_deg（真机转身）。
 
-        cmd_tol_deg：发给服务器的收敛阈值（默认同 tol_deg）。重试时把它
-        收紧，让服务器收到带中心附近再停——否则它停在带边缘（如 1.99°），
-        流程复测因测量噪声量出 2.05° 又判失败，在边界上来回打转。
+        只在 3️⃣ 抬手前调用——抬手后转身有撞柜风险，改成只复查（见
+        _fine_hold_check）。cmd_tol_deg：发给服务器的收敛阈值（默认同
+        tol_deg），收紧它可以让服务器停在带中心附近而不是带边缘。
         """
         yaw = float(self.measure_plane()["yaw_err_deg"])
         if abs(yaw - target_deg) <= tol_deg:
@@ -293,37 +311,50 @@ class SwitchFlow:
         self.client.align_yaw_stop()
         raise FlowError(ErrorCode.ALIGN_FAILED, f"对中超时（>{self.align_timeout_s}s）")
 
-    def _fine_align_with_retry(self, attempts: int = 3) -> None:
-        """6️⃣ 细对齐，失败原地重试——重摆起手式对腰部对齐毫无帮助。
+    FINE_MEASURE_FRAMES = 3    # 抬手后取多帧投票，单帧污染直接被中位数投掉
+    FINE_MEASURE_GAP_S = 0.4
 
-        重试时收紧服务器的收敛阈值（带半宽的一半），让它收到带中心附近，
-        避免停在带边缘被复测噪声判死。
+    def _fine_hold_check(self, what: str) -> None:
+        """6️⃣ 抬手后只复查保持带，不再转身纠正。
+
+        2026-07-30 的事故：起手式抬手后躯干自平衡前倾 5°，头部相机跟着低头，
+        0.4~1.0 m 深度带里掺进地面和前伸的手臂，整幅拟合被污染，量出假的
+        +42°；闭环拿它当真，对着柜面连发 6 杆 22° 的整体转身。手臂正伸在柜前
+        46 cm 时转身风险极高，而收益几乎为零——/check/flip 已经把朝向框在带内
+        了。所以这里只看不动：在带内继续，漂出就报 ALIGN_FAILED（手臂受控
+        回落），由上层重新走站位检查。
         """
-        for i in range(1, attempts + 1):
-            try:
-                self.waist_align(self.fine_target_deg, self.fine_tol_deg,
-                                 cmd_tol_deg=(self.fine_tol_deg / 2
-                                              if i > 1 else None))
-                return
-            except FlowError as exc:
-                if exc.code != ErrorCode.ALIGN_FAILED or i == attempts:
-                    raise
-                self._log(f"细对齐未达标（{exc.message}），"
-                          f"原地重试（第 {i}/{attempts - 1} 次，收紧阈值到 "
-                          f"±{self.fine_tol_deg / 2:.1f}°）")
+        yaws = []
+        for i in range(self.FINE_MEASURE_FRAMES):
+            if i:
+                time.sleep(self.FINE_MEASURE_GAP_S)
+            yaws.append(float(self.measure_plane()["yaw_err_deg"]))
+        yaw = sorted(yaws)[len(yaws) // 2]
+        frames = "/".join(f"{v:+.2f}" for v in yaws)
+        band = (f"{self.fine_target_deg:+.1f}°±{self.fine_tol_deg}°")
+        if abs(yaw - self.fine_target_deg) <= self.fine_tol_deg:
+            self._log(f"{what}：yaw {yaw:+.2f}°（{self.FINE_MEASURE_FRAMES} 帧 "
+                      f"{frames}）在保持带 {band} 内")
+            return
+        raise FlowError(ErrorCode.ALIGN_FAILED,
+                        f"{what}：yaw {yaw:+.2f}°（{self.FINE_MEASURE_FRAMES} 帧 "
+                        f"{frames}）超出保持带 {band}。抬手状态下不做转身纠正"
+                        f"（手臂前伸时有撞柜风险，且此时的平面拟合易被地面/手臂"
+                        f"污染），手臂将受控回落，请重新走 /check/flip 站位后再试")
 
     def _detect_points_held(self) -> list[dict]:
-        """取点前复查保持带：取点期间腰若漂出 -3°±2° 就重新对齐再取。"""
+        """取点，并在取完后复查保持带——漂出则换一帧重取，仍漂出就报错回落。"""
         for attempt in (1, 2):
             points = self.detect_points()
-            yaw = float(self.measure_plane()["yaw_err_deg"])
-            if abs(yaw - self.fine_target_deg) <= self.fine_tol_deg:
+            try:
+                self._fine_hold_check("取点后复查")
                 return points
-            self._log(f"取点期间漂出保持带（yaw {yaw:+.2f}°），重新对齐后重新取点"
-                      f"（第 {attempt} 次）")
-            self.waist_align(self.fine_target_deg, self.fine_tol_deg,
-                             cmd_tol_deg=self.fine_tol_deg / 2)
-        return self.detect_points()
+            except FlowError as exc:
+                if exc.code != ErrorCode.ALIGN_FAILED or attempt == 2:
+                    raise
+                self._log(f"取点期间漂出保持带（{exc.message}），"
+                          f"重新取一帧再复查（第 {attempt} 次）")
+        raise FlowError(ErrorCode.ALIGN_FAILED, "取点后复查始终漂出保持带")
 
     # 横移方向 = 拟合平面的"左"再向下倾 2°（同 main.js SIDESTEP_TILT_DEG）
     SIDESTEP_TILT_DEG = 2.0
@@ -491,21 +522,29 @@ class SwitchFlow:
             raise FlowError(ErrorCode.NOT_IMPLEMENTED, f"{what}未实现（且未接确认台）")
         return self.console
 
+    # 视觉判断的重试：反光、瞬时遮挡、抓到一帧花屏都会让单次推理没结论，
+    # 多问几帧就好了。仍然没结论时按"自动化不许卡住"报错码退出，不转人工。
+    YOLO_ATTEMPTS = 3
+    YOLO_RETRY_WAIT_S = 0.6   # 两次之间等一下，等新的一帧
+
     def _yolo_scene(self, tag: str) -> dict | None:
-        """问 YOLO 服务当前是就地还是远方。
+        """问 YOLO 服务当前是就地还是远方，最多问 YOLO_ATTEMPTS 次。
 
         返回 {"scene": "就地"|"远方", "conf": ...}；没配 YOLO、服务不可达
-        或画面里两类都没识别到 → 返回 None（调用方转人工）。
+        或每次都没识别到 → 返回 None。
         """
         if self.yolo is None:
             return None
-        res = self.yolo.scene()
-        if res.get("ok") and res.get("scene") in ("就地", "远方"):
-            self._log(f"{tag}：YOLO 识别为「{res['scene']}」"
-                      f"（置信度 {res.get('conf')}）")
-            return {"scene": res["scene"], "conf": res.get("conf")}
-        self._log(f"{tag}：YOLO 没给出结论"
-                  f"（{res.get('error') or '画面里没识别到就地/远方'}），转人工")
+        for i in range(1, self.YOLO_ATTEMPTS + 1):
+            res = self.yolo.scene()
+            if res.get("ok") and res.get("scene") in ("就地", "远方"):
+                self._log(f"{tag}：YOLO 识别为「{res['scene']}」"
+                          f"（置信度 {res.get('conf')}，第 {i} 次尝试）")
+                return {"scene": res["scene"], "conf": res.get("conf")}
+            self._log(f"{tag}：第 {i}/{self.YOLO_ATTEMPTS} 次没结论"
+                      f"（{res.get('error') or '画面里没识别到就地/远方'}）")
+            if i < self.YOLO_ATTEMPTS:
+                time.sleep(self.YOLO_RETRY_WAIT_S)
         return None
 
     def detect_scene(self) -> dict:
@@ -513,7 +552,8 @@ class SwitchFlow:
 
         YOLO 识别「就地」→ 需要拨（方向即验证过的从右向左）；
         「远方」→ 已在目标位，无需拨动直接结束。
-        YOLO 不可用/没结论 → 转确认台人工判断。
+        配了 YOLO 但多次都没结论 → 报 YOLO_FAILED 退出（不转人工，否则
+        无人值守的自动化会卡在等人上）。只有压根没配 YOLO 时才走确认台。
         """
         got = self._yolo_scene("2️⃣ 场景判断")
         if got is not None:
@@ -522,6 +562,11 @@ class SwitchFlow:
                         "conf": got["conf"]}
             return {"need_flip": True, "direction": "rtl", "source": "yolo",
                     "conf": got["conf"]}
+        if self.yolo is not None:
+            raise FlowError(ErrorCode.YOLO_FAILED,
+                            f"场景判断失败：YOLO 连续 {self.YOLO_ATTEMPTS} 次都没"
+                            f"识别到「就地/远方」——检查画面是否被遮挡、反光，"
+                            f"或机器人是否正对柜面")
         answer = self._need_console("YOLO 场景判断").choice(
             "2️⃣ 场景判断（YOLO 无结论，请看相机画面人工判断）\n"
             "开关需要拨动吗？往哪个方向拨？",
@@ -564,6 +609,12 @@ class SwitchFlow:
     # 先插值回录制起点，保证走"录播"路径。
     SEQ_START_WAYPOINT = "录制点位1"
 
+    # 远距离补位：0.46~0.5 m 用起手式即可；≥0.5 m 时起手式摆完还要再插值到
+    # 这个已录路点（手臂前伸得更多），然后才取点拨动。重试轮直接回这个路点
+    # 当起手位，不再绕经「终点」。
+    FAR_DISTANCE_M = 0.5
+    FAR_EXTRA_WAYPOINT = "0.5以上"
+
     def apply_opening_pose(self, pose: dict) -> None:
         """把手臂摆到起手式：先插值回录制起点，再原样回放录制轨迹。"""
         if pose.get("manual"):
@@ -601,26 +652,32 @@ class SwitchFlow:
     def detect_points(self) -> list[dict]:
         """开关点位（像素坐标）：YOLO「就地」框 + 固定相对偏移。
 
-        画面里没有「就地」框或 YOLO 不可用 → 转确认台人工点选。
+        最多试 YOLO_ATTEMPTS 次；配了 YOLO 还是找不到「就地」框 → 报
+        YOLO_FAILED 退出（手臂由失败收尾受控回落），不转人工干等。
         """
         if self.yolo is not None:
             self._log(f"等 {self.DETECT_SETTLE_S:.0f}s 让躯干自平衡稳定后取点")
             time.sleep(self.DETECT_SETTLE_S)
-            res = self.yolo.infer()
-            if res.get("ok"):
-                boxes = [b for b in res.get("boxes") or []
-                         if b.get("name") == "就地"]
+            for i in range(1, self.YOLO_ATTEMPTS + 1):
+                res = self.yolo.infer()
+                boxes = ([b for b in res.get("boxes") or []
+                          if b.get("name") == "就地"] if res.get("ok") else [])
                 if boxes:
                     b = max(boxes, key=lambda x: x["conf"])
                     x1, y1, x2, y2 = b["xyxy"]
                     u = int(round(x1 + self.POINT_AU * (x2 - x1)))
                     v = int(round(y1 + self.POINT_AV * (y2 - y1)))
                     self._log(f"YOLO 取点：「就地」框 conf {b['conf']}"
-                              f"（共 {len(boxes)} 个，取最高）→ ({u},{v})")
+                              f"（共 {len(boxes)} 个，取最高，第 {i} 次尝试）"
+                              f"→ ({u},{v})")
                     return [{"u": u, "v": v}]
-                self._log("YOLO 画面里没有「就地」框，取点转人工")
-            else:
-                self._log(f"YOLO 取点失败（{res.get('error')}），转人工")
+                self._log(f"取点第 {i}/{self.YOLO_ATTEMPTS} 次没结果"
+                          f"（{res.get('error') or '画面里没有「就地」框'}）")
+                if i < self.YOLO_ATTEMPTS:
+                    time.sleep(self.YOLO_RETRY_WAIT_S)
+            raise FlowError(ErrorCode.YOLO_FAILED,
+                            f"取点失败：YOLO 连续 {self.YOLO_ATTEMPTS} 次都没找到"
+                            f"「就地」框——检查开关是否在画面内、有无遮挡反光")
         pts = self._need_console("YOLO 点位识别").points(
             "请在相机画面上点击要拨动的开关点位（可多个），点完提交")
         if not pts:
@@ -634,7 +691,8 @@ class SwitchFlow:
 
         看到「就地」不立即判死：手可能正遮着开关、撤力回弹还没停，等一等
         再复看一眼，两次都是「就地」才算失败（误判失败要白跑一整轮）。
-        YOLO 不可用/没结论 → 转确认台人工判断。
+        完全看不到开关（多次都没结论）→ 报 YOLO_FAILED 退出，别把"看不清"
+        当成"没拨动"去重试；只有压根没配 YOLO 时才走确认台。
         """
         got = self._yolo_scene("复核")
         if got is not None:
@@ -643,9 +701,16 @@ class SwitchFlow:
             self._log(f"复核看到「就地」，等 {self.VERIFY_SETTLE_S}s "
                       f"排除手臂未停稳/遮挡后再看一眼")
             time.sleep(self.VERIFY_SETTLE_S)
-            got = self._yolo_scene("复核（二次）")
-            if got is not None:
-                return got["scene"] == "远方"
+            again = self._yolo_scene("复核（二次）")
+            if again is not None:
+                return again["scene"] == "远方"
+            self._log("复核二次没结论，按第一次的「就地」判为未拨动，走重试")
+            return False
+        if self.yolo is not None:
+            raise FlowError(ErrorCode.YOLO_FAILED,
+                            f"复核失败：YOLO 连续 {self.YOLO_ATTEMPTS} 次都没识别到"
+                            f"「就地/远方」，无法判定拨动结果——开关是否被手臂"
+                            f"遮住或已移出画面？")
         return self._need_console("拨动复核").yesno(
             "复核（YOLO 无结论）：开关拨动成功了吗？")
 
