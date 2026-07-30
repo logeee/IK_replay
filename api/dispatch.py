@@ -20,7 +20,7 @@
                           ≥300s）。导航把机器人开到柜前后、调 /task/flip 之前
                           先调它确认"站到位了"。四步：距离粗查 0.46~0.60m →
                           朝向收进 [-6,-3]°（不在带内会真机转身纠正）→ 5 电机
-                          限位（腿俯仰 ±6°、腿偏航 ±21°、腰偏航 ±2.8°）+
+                          限位（腿俯仰 ±6°、腿偏航 ±21°、腰偏航 -1~3.5°）+
                           距离终检 0.46~0.55m → YOLO：若识别到开关已在
                           language 的目标状态 → passed=true 且 need_flip=false
                           （无需拨动），否则要求拨前状态的框横向居中（中间 60%）。
@@ -236,10 +236,10 @@ CHECK_DIST_FINAL = (0.46, 0.55)          # 第 3 步：距离终检（m，更严
 CHECK_YAW_TARGET_DEG = -4.5              # 第 2 步：抬手前粗对齐带 [-6, -3]°
 CHECK_YAW_TOL_DEG = 1.5
 CHECK_ALIGN_TIMEOUT_S = 90.0
-CHECK_MOTOR_LIMITS_DEG = {               # 第 3 步：|角度| 上限（°），键 = 电机序号
-    0: ("左腿俯仰", 6.0), 6: ("右腿俯仰", 6.0),
-    2: ("左腿偏航", 21.0), 8: ("右腿偏航", 21.0),
-    14: ("腰偏航", 2.8),
+CHECK_MOTOR_LIMITS_DEG = {               # 第 3 步：允许区间 (下限, 上限)（°），键 = 电机序号
+    0: ("左腿俯仰", -6.0, 6.0), 6: ("右腿俯仰", -6.0, 6.0),
+    2: ("左腿偏航", -21.0, 21.0), 8: ("右腿偏航", -21.0, 21.0),
+    14: ("腰偏航", -1.0, 3.5),   # 非对称：机器人惯常往左偏
 }
 CHECK_BOX_BAND = (0.20, 0.80)            # 第 4 步：框中心须在画宽的中间 60%
 CHECK_SCENE_CLASSES = ("就地", "远方")
@@ -335,12 +335,12 @@ def _run_checks(check: dict, kind: str) -> dict:
     items: list[dict] = steps[-1]["items"]
     bad: list[str] = []
     for m in res["motors"]:
-        name, limit = CHECK_MOTOR_LIMITS_DEG[m["index"]]
-        good = abs(float(m["q_deg"])) <= limit
+        name, m_lo, m_hi = CHECK_MOTOR_LIMITS_DEG[m["index"]]
+        good = m_lo <= float(m["q_deg"]) <= m_hi
         items.append({"item": f"{name}#{m['index']}", "q_deg": m["q_deg"],
-                      "limit_deg": limit, "passed": good})
+                      "range_deg": [m_lo, m_hi], "passed": good})
         if not good:
-            bad.append(f"{name} {m['q_deg']:+.2f}°（限 ±{limit}°）")
+            bad.append(f"{name} {m['q_deg']:+.2f}°（要求 {m_lo}~{m_hi}°）")
     lo, hi = CHECK_DIST_FINAL
     dist = float(measure()["distance_m"])
     dist_good = lo <= dist <= hi
