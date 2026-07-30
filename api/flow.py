@@ -2,7 +2,8 @@
 
 已部署的步骤（测平面/测距、腰部对齐、pick→规划→执行）直接走 reach_server；
 起手式按距离自动选（序列名带门槛，如「0.46起手式」需 ≥0.46m，太近报
-POSE_UNAVAILABLE）；收尾 = 插值到「起手点测试」路点后释放手臂。
+POSE_UNAVAILABLE）；收尾 = 插值到「起手点测试」路点后释放手臂——成功和
+失败（含重试耗尽）都走这个回落，避免手臂停在柜面前被权重渐出交还本体。
 场景判断和拨后复核走 7004 YOLO 服务（python -m api.yolo_server）：
 本 API 专做「就地 → 远方」——开始前识别「就地」= 要拨、「远方」= 无需拨；
 拨完识别「远方」= 成功、「就地」= 失败重试。
@@ -112,6 +113,7 @@ class SwitchFlow:
         self.exec_timeout_s = exec_timeout_s
         self._current_pose: dict | None = None
         self._armed_by_flow = False   # 手臂是流程接管的（而非用户本来就接管着）
+        self._arm_moved = False       # 已下发过手臂动作 → 失败时要先受控回落
         self.log_lines: deque[str] = deque(maxlen=300)   # 供调度服务透出进度
 
     # ------------------------------------------------------------------ 主流程
@@ -199,6 +201,7 @@ class SwitchFlow:
                               detail={"elapsed_s": round(time.monotonic() - t0, 1)})
         except FlowError as exc:
             self._log(f"✘ 流程中止：[{exc.code.name}] {exc.message}")
+            self._descend_on_failure()
             return FlowResult(ok=False, code=exc.code, message=exc.message,
                               detail={"elapsed_s": round(time.monotonic() - t0, 1)})
 
@@ -363,6 +366,7 @@ class SwitchFlow:
             self._log(f"{tag} 预演就绪：{len(frames)} 路点，"
                       f"IK 误差 {plan.get('max_ik_error_mm')}mm")
 
+            self._arm_moved = True
             res = self.client.execute(
                 waypoints=[f["named_joints"] for f in frames],
                 duration=self.reach_duration_s, label="flow_reach")
@@ -455,6 +459,7 @@ class SwitchFlow:
             return
         speed = speed_rad_s or self.endpoint_speed_rad_s
         duration = max(1.5, travel / max(speed, 0.05))
+        self._arm_moved = True
         res = self.client.execute(waypoints=[cur, end], duration=duration,
                                   max_speed_rad_s=speed,
                                   label=f"flow_goto_{wp_name}"[:32])
@@ -567,6 +572,7 @@ class SwitchFlow:
             return
         self._interp_to_waypoint(self.SEQ_START_WAYPOINT, "起手式起点",
                                  only_if_beyond_rad=0.4)
+        self._arm_moved = True
         res = self.client.run_sequence(pose["file"])
         if not res.get("ok"):
             raise FlowError(ErrorCode.EXEC_FAILED,
@@ -655,6 +661,33 @@ class SwitchFlow:
         if not res.get("ok"):
             raise FlowError(ErrorCode.EXEC_FAILED,
                             f"释放手臂失败: {res.get('error')}")
+
+    def _descend_on_failure(self) -> None:
+        """失败收尾：手臂动过就先回落到「起手点测试」，再按接管来源决定释放。
+
+        不回落的话手臂会停在柜面前（拨动结束的姿态），随 reach_server 退出
+        做 1s 权重渐出交还本体控制器——那一刻姿态不受我们控制，有下坠风险。
+        全程只尽最大努力：回落或释放自身的失败只记日志，绝不抛出，否则
+        真正的失败原因会被收尾异常盖掉。
+        """
+        if not self._arm_moved:
+            self._release_if_flow_armed()
+            return
+        self._log("═══ 失败收尾：受控回落 ═══")
+        try:
+            self._interp_to_waypoint(self.DESCEND_WAYPOINT, "失败收尾",
+                                     speed_rad_s=self.DESCEND_SPEED_RAD_S)
+        except Exception as exc:
+            self._log(f"⚠ 回落失败，手臂可能停在半空，请人工扶住: {exc}")
+        if not self._armed_by_flow:
+            self._log("手臂是进流程前就接管的，保持接管不释放")
+            return
+        try:
+            res = self.client.disarm()
+            self._log("释放手臂" if res.get("ok")
+                      else f"⚠ 释放手臂失败: {res.get('error')}")
+        except Exception as exc:
+            self._log(f"⚠ 释放手臂异常: {exc}")
 
     # ---------------------------------------------------------------- 工具
 
