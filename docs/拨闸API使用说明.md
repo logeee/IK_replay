@@ -1,7 +1,7 @@
 # 开关拨动作业 API 使用说明
 
 > 面向作业平台的对接文档。
-> 版本：v3（2026-07-29，触发路径 POST /task/flip，新增可选字段 retries）　维护人：机器人侧
+> 版本：v4（2026-07-30，新增站位检查 POST /check/flip）　维护人：机器人侧
 
 ## 1. 这个服务做什么
 
@@ -10,6 +10,11 @@
 全程无人值守。具体执行算法由机器人侧选择，调用方无需感知。
 
 整个任务通常 **40 秒 ~ 2 分钟**（含失败自动重试）。
+
+**推荐调用顺序**：导航到位 → `POST /check/flip`（站位检查，确认"站到位了、
+确实需要拨"）→ 通过且 `need_flip=true` 时 `POST /task/flip`（拨闸）。
+站位检查不是必须的，但能在动手臂之前把"站歪了/太远/开关本来就在目标
+状态"这类问题拦下来，失败原因也更具体。
 
 ## 2. 调用前提（调用方需要保证的）
 
@@ -24,7 +29,88 @@
 
 服务地址：`http://<机器人IP>:17001`（示例中用 `192.168.61.142`）
 
-### 3.1 触发任务
+### 3.1 站位检查（拨闸前置，推荐）
+
+```
+POST /check/flip
+Content-Type: application/json
+
+{"language": "Change the switch from close to remote"}
+```
+
+请求体字段：
+
+| 字段 | 必填 | 类型 | 说明 |
+|------|------|------|------|
+| `language` | ✅ | string | 与 `/task/flip` 相同的固定指令（取值见 3.2）。检查靠它判断"开关是否已在目标状态" |
+
+**同步阻塞接口**：请求会等检查全部做完才返回。典型 **15~60 秒**；
+如果需要启动相机（约 40 秒）或原地转身纠正朝向（最长 90 秒），
+总时长可达 3~4 分钟——**HTTP 客户端超时请设 ≥ 300 秒**。
+
+> ⚠️ 检查期间机器人**可能原地转身**（第 2 步发现朝向偏了会自动纠正），
+> 请保证机器人周围无人无障碍，与拨闸作业同等对待。
+
+依次做四步检查，**任何一步不满足立即返回**，不再做后面的：
+
+| 步骤 | 内容 | 通过条件 | 动机器人？ |
+|------|------|----------|------------|
+| 1 | 距离粗查 | 距柜面 0.46 ~ 0.60 m | 否 |
+| 2 | 朝向检查 | 柜面朝向角收进指定带内；不在带内会**自动原地转身**纠正，转不进去才算不满足 | 可能转身 |
+| 3 | 站姿终检 | 左右腿俯仰/偏航、腰偏航共 5 个关节角在允许区间内，且距离 0.46 ~ 0.55 m | 否 |
+| 4 | 视觉确认 | 识别到开关，且检测框横向落在画面中间 60%；若识别到开关**已在目标状态**则直接判"无需拨动" | 否 |
+
+（各步阈值为机器人侧调参项，可能随现场标定微调，调用方无需感知具体数值。）
+
+返回（HTTP 200，无论检查通过与否）：
+
+```json
+{
+  "ok": true,               // 请求本身被正常处理（参数错误/互斥冲突时才不是 200）
+  "passed": true,           // 站位检查是否通过
+  "need_flip": true,        // true=需要拨闸；false=开关已在目标状态，别再调 /task/flip
+  "failed_step": null,      // 不通过时 = 卡在第几步（1~4）；通过为 null
+  "message": "站位合格，可以调用 /task/flip（相机保持开启供其复用）",
+  "steps": [                // 每一步的实测值，失败时用于定位
+    {"step": 1, "name": "距离粗查", "distance_m": 0.503, "range_m": [0.46, 0.6],
+     "passed": true, "message": "距柜面 0.503 m"},
+    {"step": 2, "name": "朝向（平面指数）", "yaw_deg": -4.51, "range_deg": [-6.0, -3.0],
+     "corrected": true, "passed": true, "message": "yaw -4.51°（已转动纠正）"},
+    {"step": 3, "name": "电机与距离终检", "items": [
+       {"item": "左腿俯仰#0", "q_deg": 1.2, "range_deg": [-6.0, 6.0], "passed": true},
+       {"item": "距离", "distance_m": 0.5, "range_m": [0.46, 0.55], "passed": true}],
+     "passed": true, "message": "5 电机全部在限内，距离 0.500 m"},
+    {"step": 4, "name": "YOLO 状态与居中", "scene": "就地", "conf": 0.86,
+     "cx_ratio": 0.469, "passed": true,
+     "message": "「就地」框中心在画宽 46.9% 处（要求 20%~80%）"}
+  ],
+  "camera_kept": true,      // 见下方说明，调用方一般无需关心
+  "duration_s": 16.2,
+  "log": ["…"]              // 过程日志，仅供人读
+}
+```
+
+**调用方的判断逻辑（三分支）**：
+
+| passed | need_flip | 含义 | 下一步 |
+|--------|-----------|------|--------|
+| `true` | `true` | 站位合格，需要拨 | **马上**调 `/task/flip`（相机已就绪，可省约 40 秒启动） |
+| `true` | `false` | 开关已在目标状态 | 作业结束，**不要**调 `/task/flip` |
+| `false` | — | 站位不合格 | 看 `failed_step` / `message`：第 1/3 步失败通常要**导航重新进位**；第 2 步失败是朝向纠不过来；第 4 步失败按 `message` 提示（偏左/偏右多少）平移站位 |
+
+异常返回：
+
+```json
+// language 缺失或不是固定指令 → HTTP 422（同 /task/flip）
+// 拨闸任务执行中 → HTTP 409
+{"ok": false, "error": "拨闸任务执行中，不能同时做站位检查", "task_id": "…", "state": "running"}
+```
+
+关于 `camera_kept`：检查通过且需要拨闸时，机器人侧会保持相机开启，
+紧接着的 `/task/flip` 会复用它（更快）；其余情况相机自动释放。
+这对调用方透明，不需要做任何处理。
+
+### 3.2 触发任务
 
 ```
 POST /task/flip
@@ -65,7 +151,7 @@ Content-Type: application/json
 {"ok": false, "error": "已有任务在执行", "task_id": "…", "state": "running"}
 ```
 
-### 3.2 查询进度与结果（轮询）
+### 3.3 查询进度与结果（轮询）
 
 ```
 GET /task/status
@@ -111,7 +197,7 @@ GET /task/status
 判断逻辑：**`result.ok` 为 `true` 即拨闸成功**；为 `false` 时按
 `result.code` 分支处理，`result.message` 是给人看的中文原因。
 
-### 3.3 中止任务
+### 3.4 中止任务
 
 ```
 POST /task/abort
@@ -148,14 +234,25 @@ POST /task/abort
 import requests, time
 
 BASE = "http://192.168.61.142:17001"
+CMD = "Change the switch from close to remote"
 
+# 1) 站位检查（同步，超时务必给足 300 秒）
+chk = requests.post(f"{BASE}/check/flip", timeout=300,
+                    json={"language": CMD}).json()
+if not chk["passed"]:
+    raise RuntimeError(f"站位不合格（第{chk['failed_step']}步）: {chk['message']}")
+if not chk["need_flip"]:
+    print("开关已在目标状态，无需拨动")
+    raise SystemExit(0)
+
+# 2) 触发拨闸（异步，立即返回 task_id）
 r = requests.post(f"{BASE}/task/flip", timeout=5,
-                  json={"language": "Change the switch from close to remote",
-                        "retries": 3}   # retries 可省略，默认 3
+                  json={"language": CMD, "retries": 3}   # retries 可省略，默认 3
                   ).json()
 if not r["ok"]:
     raise RuntimeError(f"触发失败: {r}")
 
+# 3) 轮询直到结束
 while True:
     st = requests.get(f"{BASE}/task/status", timeout=5).json()
     if st["state"] == "done":
@@ -172,6 +269,12 @@ else:
 ### 命令行（调试用）
 
 ```bash
+# 站位检查（同步，等它返回）
+curl -X POST http://192.168.61.142:17001/check/flip --max-time 300 \
+     -H 'Content-Type: application/json' \
+     -d '{"language": "Change the switch from close to remote"}'
+
+# 触发拨闸 + 轮询
 curl -X POST http://192.168.61.142:17001/task/flip \
      -H 'Content-Type: application/json' \
      -d '{"language": "Change the switch from close to remote"}'
@@ -187,7 +290,17 @@ watch -n 2 'curl -s http://192.168.61.142:17001/task/status | python3 -m json.to
 
 **Q：可以连续触发多次吗？**
 可以，但必须等上一个任务 `done` 之后。任务执行中重复 POST 会收到 409，
-不会打断当前任务。
+不会打断当前任务。站位检查和拨闸任务也互斥：检查进行中触发
+`/task/flip` 会收到 409，反之亦然。
+
+**Q：`/check/flip` 必须调吗？**
+不必须，直接 `/task/flip` 也能工作（流程内部有自己的对正和识别）。
+但推荐调：它能在动手臂之前拦下"站太远/站歪/开关本来就在目标状态"，
+失败原因逐项量化（差多少度、偏多少像素），方便导航侧修正。
+
+**Q：站位检查失败后需要清理吗？**
+不需要。检查失败时机器人侧自动释放相机等资源，机器人保持可移动状态，
+按 `failed_step` 修正站位后可立即再次调用。
 
 **Q：任务失败后机器人是什么状态？**
 机械臂会被释放、相机服务会被关闭，机器人回到可移动状态。失败不需要
