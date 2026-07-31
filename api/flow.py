@@ -434,14 +434,14 @@ class SwitchFlow:
 
     # 把目标点上抬：实测指尖落点比指令位低 20~31 mm（重力下垂，见 reach_logs
     # 里 tcp.planned_root vs actual_root），所以打不中多半是打低了。
-    #   · 距柜面 ≥0.52 m 时手臂伸得更远、力矩更大，第一轮就先垫 1 cm
-    #   · 之后每重试一轮再加 1 cm
-    # 两者相加封顶 3 cm——再高就不是下垂能解释的了，继续加只会从开关上方
-    # 擦过去。
+    #   · 距柜面 <0.5 m 完全不抬：手臂没伸那么远，下垂本来就小，打不中另有
+    #     原因，一轮轮往上加只会越加越偏
+    #   · ≥0.5 m 手臂伸得远、力矩大，第一轮就先垫 1 cm，每重试一轮再加 1 cm
+    # 相加封顶 3 cm——再高就不是下垂能解释的了，继续加只会从开关上方擦过去。
+    LIFT_MIN_DISTANCE_M = 0.50
+    BASE_LIFT_M = 0.01
     RETRY_LIFT_M = 0.01
     RETRY_LIFT_MAX_M = 0.03
-    FAR_LIFT_DISTANCE_M = 0.52
-    FAR_LIFT_M = 0.01
 
     def flip_switch(self, points: list[dict], round_no: int = 1,
                     distance_m: float | None = None) -> None:
@@ -455,13 +455,19 @@ class SwitchFlow:
         先插值回终点路点当起手位。规划就绪后直接真机执行，不经确认台。
         目标点会按距离和轮次上抬（见 RETRY_LIFT_M / FAR_LIFT_M 的注释）。
         """
-        far = distance_m is not None and distance_m >= self.FAR_LIFT_DISTANCE_M
-        lift = (self.FAR_LIFT_M if far else 0.0) + (round_no - 1) * self.RETRY_LIFT_M
-        lift = min(lift, self.RETRY_LIFT_MAX_M)
-        why = (f"距柜面 {distance_m:.3f} m ≥ {self.FAR_LIFT_DISTANCE_M} m"
-               if far else "")
-        if round_no > 1:
-            why = (why + "，" if why else "") + f"第 {round_no} 轮重试"
+        near = distance_m is not None and distance_m < self.LIFT_MIN_DISTANCE_M
+        if near:
+            lift, why = 0.0, ""
+        else:
+            lift = min(self.BASE_LIFT_M + (round_no - 1) * self.RETRY_LIFT_M,
+                       self.RETRY_LIFT_MAX_M)
+            why = ("" if distance_m is None else
+                   f"距柜面 {distance_m:.3f} m ≥ {self.LIFT_MIN_DISTANCE_M} m")
+            if round_no > 1:
+                why = (why + "，" if why else "") + f"第 {round_no} 轮重试"
+        if near and round_no > 1:
+            self._log(f"距柜面 {distance_m:.3f} m < {self.LIFT_MIN_DISTANCE_M} m，"
+                      f"重试不上抬目标点（近距下垂小，抬了反而偏）")
         for i, pt in enumerate(points, 1):
             u, v = int(pt["u"]), int(pt["v"])
             tag = f"点位 {i}/{len(points)} ({u},{v})"
