@@ -33,8 +33,8 @@ def main() -> int:
                         help="3️⃣ 粗对齐带半宽（°），默认 -4.5±1.5 即 -6~-3")
     parser.add_argument("--fine-target", type=float, default=-3.0,
                         help="6️⃣ 保持目标角（°）")
-    parser.add_argument("--fine-tol", type=float, default=2.0,
-                        help="6️⃣ 保持带半宽（°），默认 -3±2")
+    parser.add_argument("--fine-tol", type=float, default=4.0,
+                        help="6️⃣ 保持带半宽（°），默认 -3±4 即 -7~+1")
     parser.add_argument("--align-mode", default="hold", choices=["hold", "pulse"],
                         help="腰部对齐用新对中(hold)还是旧定长脉冲(pulse)")
     parser.add_argument("--approach-offset", type=float, default=0.0,
