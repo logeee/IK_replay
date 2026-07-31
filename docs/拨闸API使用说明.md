@@ -74,8 +74,8 @@ Content-Type: application/json
   "steps": [                // 每一步的实测值，失败时用于定位
     {"step": 1, "name": "距离粗查", "distance_m": 0.503, "range_m": [0.44, 0.6],
      "passed": true, "message": "距柜面 0.503 m"},
-    {"step": 2, "name": "朝向（平面指数）", "yaw_deg": -4.51, "range_deg": [-6.0, -3.0],
-     "corrected": true, "passed": true, "message": "yaw -4.51°（已转动纠正）"},
+    {"step": 2, "name": "朝向（平面指数）", "yaw_deg": -6.8, "range_deg": [-9.0, -5.0],
+     "corrected": true, "passed": true, "message": "yaw -6.80°（已转动纠正）"},
     {"step": 3, "name": "电机与距离终检", "items": [
        {"item": "左腿俯仰#0", "q_deg": 1.2, "range_deg": [-6.0, 6.0], "passed": true},
        {"item": "距离", "distance_m": 0.5, "range_m": [0.44, 0.55], "passed": true}],
@@ -241,7 +241,7 @@ POST /task/abort            # 等价，只是会额外提示"当前没有任务"
 | 0 | OK | 拨闸成功 | 继续后续任务 |
 | 1 | NOT_IMPLEMENTED | 该任务暂不支持（如「远方 → 就地」） | 上报人工 |
 | 2 | PRECONDITION | 机器人侧服务/硬件前置条件不满足 | 上报机器人侧检查 |
-| 3 | ALIGN_FAILED | 对正柜面失败：抬手前对中不收敛，或抬手后朝向漂出保持带（此时不做转身纠正，手臂受控回落） | 重新走 `/check/flip` 站位后再触发 |
+| 3 | ALIGN_FAILED | 对正柜面失败：抬手前对中不收敛，或抬手后朝向漂出保持带且纠不回来（抬手时只允许往负方向纠偏，朝向偏到负侧时只能等自然回转，纠不进就让手臂受控回落） | 重新走 `/check/flip` 站位后再触发 |
 | 4 | MEASURE_FAILED | 柜面测量失败（点云拟合不出平面） | 检查是否正对柜面、有无遮挡 |
 | 5 | YOLO_FAILED | 视觉识别失败：连问 3 帧都没识别到开关（手臂已受控回落） | 检查光线/遮挡/站位后重试 |
 | 6 | IK_FAILED | 机械臂无法到达目标点 | 调整机器人站位后重试 |

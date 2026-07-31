@@ -27,10 +27,11 @@ def main() -> int:
                         help="YOLO 推理服务地址（python -m api.yolo_server 启动）")
     parser.add_argument("--no-yolo", action="store_true",
                         help="不用 YOLO：场景判断和复核全走确认台人工")
-    parser.add_argument("--coarse-target", type=float, default=-4.5,
-                        help="3️⃣ 粗对齐目标角（°），带 = 目标±coarse-tol")
+    parser.add_argument("--coarse-target", type=float, default=-7.0,
+                        help="3️⃣ 粗对齐目标角（°）：已预补偿抬手后的正向回转，"
+                             "带 = 目标±coarse-tol")
     parser.add_argument("--coarse-tol", type=float, default=1.5,
-                        help="3️⃣ 粗对齐带半宽（°），默认 -4.5±1.5 即 -6~-3")
+                        help="3️⃣ 粗对齐带半宽（°），默认 -7±1.5 即 -8.5~-5.5")
     parser.add_argument("--fine-target", type=float, default=-3.0,
                         help="6️⃣ 保持目标角（°）")
     parser.add_argument("--fine-tol", type=float, default=2.0,

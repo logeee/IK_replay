@@ -17,7 +17,8 @@ POSE_UNAVAILABLE）；取点前的补位分三档：≥0.5m 起手式后加摆�
 不给 console 时保持旧行为：人工顶不上的步骤抛 FlowError(NOT_IMPLEMENTED)。
 
 腰部对齐目标（按 2026-07-28 流程定义）：
-  3️⃣ 粗对齐：平面指数（yaw）收进 -3 ~ -6°（target -4.5° ± 1.5°）
+  3️⃣ 粗对齐：平面指数（yaw）收进 -8.5 ~ -11.5°（target -10° ± 1.5°）
+     —— 故意过打，抵消抬手后身体自己回转的 +6.6°
   6️⃣ 细保持：抬手后收进 -3° ± 2°。手臂前伸会把躯干配平带偏 +4.5~+8.2°（实测），
      所以这一步必须转身纠偏；判据取 3 帧中位数防单帧污染，服务端在抬手状态下
      限死单杆 ≤5°、累计 ≤15°，并有三道安全闸（见 adapters/reach.py）
@@ -83,8 +84,15 @@ class SwitchFlow:
                  client: ReachClient | None = None,
                  console: ConsoleClient | None = None,
                  yolo: YoloClient | None = None,
-                 coarse_target_deg: float = -4.5,  # 3️⃣ 粗对齐目标（-3~-6 带中心）
-                 coarse_tol_deg: float = 1.5,      # 3️⃣ 带半宽 → [-6, -3]
+                 # 3️⃣ 粗对齐目标：抬手+起手式之后身体会自己往正方向转，所以
+                 # 手放下时先"过打"这么多，让它自己漂进 6️⃣ 的保持带。
+                 # 漂移量与起始角有关（从 -4.5 出发漂 +6.6 落 +2.1；从 -10 出发
+                 # 漂 +3.9 落 -6.1），两点线性外推 → 想落 -3 该从 -8 出发。
+                 # 又因为 6️⃣ 只能往 - 方向纠（见 adapters/reach.py 的单向闸），
+                 # 落点宁可偏 + 一点（可纠）也别偏 -（只能干等），故取 -7：
+                 # 预计落 -1.6，落带内且在可纠的那一侧
+                 coarse_target_deg: float = -7.0,
+                 coarse_tol_deg: float = 1.5,      # 3️⃣ 带半宽 → [-8.5, -5.5]
                  fine_target_deg: float = -3.0,    # 6️⃣ 保持目标
                  fine_tol_deg: float = 2.0,        # 6️⃣ 带半宽 → [-5, -1]
                  align_mode: str = "hold",         # "hold"=新对中（打杆式）
@@ -154,8 +162,10 @@ class SwitchFlow:
             self._log(f"场景: {scene}")
 
             self._log(f"═══ 3️⃣ 腰部粗对齐：平面指数收进 "
-                      f"{self.coarse_target_deg:+.1f}°±{self.coarse_tol_deg}° "
-                      f"（即 -6°~-3°）═══")
+                      f"{self.coarse_target_deg:+.1f}°±{self.coarse_tol_deg}°"
+                      f"（即 {self.coarse_target_deg - self.coarse_tol_deg:+.1f}°"
+                      f"~{self.coarse_target_deg + self.coarse_tol_deg:+.1f}°，"
+                      f"已预补偿抬手后的回转）═══")
             self._coarse_align_with_retry()
 
             self._log("═══ 4️⃣ 测距离 ═══")
@@ -347,7 +357,10 @@ class SwitchFlow:
     COARSE_ALIGN_ATTEMPTS = 3
 
     def _coarse_align_with_retry(self) -> None:
-        """3️⃣ 粗对齐：收进 -4.5°±1.5°（即 -6~-3°），未达标原地重试。
+        """3️⃣ 粗对齐：收进 coarse_target_deg ± coarse_tol_deg，未达标原地重试。
+
+        目标角已经把"抬手后身体自己回转 +6.6°"预补偿进去了（见构造函数注释），
+        所以这一步结束时看着是"过打"的，抬手之后才会落到 -3° 附近。
 
         发给服务器的收敛阈值取验收半宽的一半：服务器要是停在验收带边缘，流程
         用另一帧独立复测（噪声 ±0.2°）就可能量到带外——2026-07-30 18:08 的任务
@@ -389,12 +402,15 @@ class SwitchFlow:
     def _fine_align_with_retry(self, attempts: int = 3) -> None:
         """6️⃣ 抬手后细对齐：把平面指数纠回 fine 带，失败原地重试。
 
-        手臂前伸会被整机配平带着把躯干转过去，实测漂移 +4.5~+8.2°（越往前伸
+        手臂前伸会被整机配平带着把躯干转过去，实测漂移 +3.5~+9.9°（越往前伸
         越大，摆过「0.5以上」时最大），方向固定往正，所以这一步必须纠——不纠
         任务永远过不去。历史上一杆约 3° 就够。
-        判据用 3 帧中位数（防单帧污染），纠偏由服务器闭环做：抬手状态下服务端
-        限死单杆 ≤5°、累计 ≤15°，另有拟合点数、偏差上限、运控无响应三道闸
-        （见 adapters/reach.py），不会再出现对着柜面空转的情况。
+        判据用 3 帧中位数（防单帧污染），纠偏由服务器闭环做，抬手状态下服务端
+        只往 - 方向纠：yaw 低于目标时它只等不纠（那个方向和身体自己的 + 向
+        回转同向，越纠越远，07-31 两次甩到 +30° 都是这么起头的）。所以真正靠
+        3️⃣ 的过打量把落点摆在目标的 + 侧，这里只负责收掉多出来的那部分。
+        另有单杆 ≤5°、累计 ≤30°，以及拟合点数、偏差上限（±24°）、运控无响应
+        三道闸（见 adapters/reach.py）。
         """
         band = f"{self.fine_target_deg:+.1f}°±{self.fine_tol_deg}°"
         yaw = 0.0
