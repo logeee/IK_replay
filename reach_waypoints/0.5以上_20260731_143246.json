@@ -1,0 +1,14 @@
+{
+  "name": "0.5以上",
+  "chain_id": "right_arm",
+  "named_joints": {
+    "right_shoulder_pitch_joint": -1.0210773944854736,
+    "right_shoulder_roll_joint": 0.05535513535141945,
+    "right_shoulder_yaw_joint": -0.042549993842840195,
+    "right_elbow_joint": 0.5305536389350891,
+    "right_wrist_roll_joint": 0.04200470820069313,
+    "right_wrist_pitch_joint": -0.5351675748825073,
+    "right_wrist_yaw_joint": -0.0601847805082798
+  },
+  "created_at": "2026-07-31 14:32:46"
+}
