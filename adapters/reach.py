@@ -928,6 +928,19 @@ HOLD_ALIGN_FINE_CMD_DEG_S = 3.0   # 收尾指令速度（半速）
 HOLD_ALIGN_FINE_EFF_DEG_S = HOLD_ALIGN_EFF_DEG_S * HOLD_ALIGN_FINE_CMD_DEG_S / HOLD_ALIGN_CMD_DEG_S
 HOLD_ALIGN_FLIP_MIN_DEG = 1.5     # 反号兜底只在大杆后允许触发
 
+# 提速逃生档：14:39 那轮 6°/s 的杆下发 4.7° 实测只动 0.22°、下发 3.1° 只动
+# 0.01°——手臂前伸后重心前移，运控对这个档的转身指令基本不跟随。与其直接
+# 判死，不如把指令速度提上去再试一杆（人手动纠偏时也是这么干的）。
+# 有效速率按 6°/s 档等比外推，未经真机标定，所以：① 只在确认"下发了大杆
+# 却没动"之后才启用；② 单杆预计角卡死在 BOOST_MAX_DEG 内，宁可多打几杆；
+# ③ 每杆之后照常重新测量，实际转了多少由测量说了算。
+# 真机跑过之后可以从 align_*.jsonl 里 event=hold & boost=true 的记录反算
+# 真实有效速率，再回来校准 BOOST_EFF。
+HOLD_ALIGN_BOOST_CMD_DEG_S = 20.0
+HOLD_ALIGN_BOOST_EFF_DEG_S = (HOLD_ALIGN_EFF_DEG_S * HOLD_ALIGN_BOOST_CMD_DEG_S
+                              / HOLD_ALIGN_CMD_DEG_S)   # ≈12.7°/s（待标定）
+HOLD_ALIGN_BOOST_MAX_DEG = 5.0    # 提速档单杆预计角上限（≈0.6s）
+
 # --------------------------------- 安全闸 ---------------------------------
 # 2026-07-30 17:19 事故（align_20260730 第 12 轮）：起手式抬手后躯干自平衡
 # 前倾 5°（腰俯仰 -0.44°→+4.6°），头部相机跟着低头，0.4~1.0 m 深度带里掺进
@@ -943,7 +956,8 @@ ALIGN_POINTS_MIN_RATIO = 0.7     # 拟合点数掉到首帧的七成以下 → �
 ALIGN_STALL_MIN_EXPECT_DEG = 3.0 # 只用"大杆"判无响应（短杆响应本就随机）
 ALIGN_STALL_RATIO = 0.15         # 实测变化不到预计的这个比例算"没动"。15:00 那轮
                                  # 正常收敛时实测/预计最低到过 0.24，留 1.6 倍余量
-ALIGN_STALL_MAX = 2              # 连续这么多大杆没动 → 判运控未响应
+ALIGN_STALL_MAX = 2              # 提速后仍连续这么多大杆没动 → 判运控未响应
+                                 # （第一次没动不判死，先切提速档再给两次机会）
 ALIGN_DEADBAND_DEG = 1.5         # 只在抬手时放宽到这个死区：抬手后基座常常
                                  # 完全不响应小杆（15:05 那轮为 1.2° 的残差白磨
                                  # 12 杆）。放手时必须尊重调用方给的阈值——流程
@@ -951,7 +965,10 @@ ALIGN_DEADBAND_DEG = 1.5         # 只在抬手时放宽到这个死区：抬手
                                  # 服务器停在带边缘 1.46°，流程独立复测量出 1.57°）
 ALIGN_ARMUP_MAX_HOLD_S = 1.5     # 抬手时单杆上限（≈5°），杜绝 22° 的整体转身
 ALIGN_ARMUP_BUDGET_DEG = 15.0    # 抬手时累计转身预算（够纠 12° 上限内的漂移），
-                                 # 超了停手报错，杜绝上午那种连转 130° 的空转
+                                 # 超了停手报错，杜绝上午那种连转 130° 的空转。
+                                 # 按"实测转过的角度"扣，不按预计角——14:39 那轮
+                                 # 基座实际只转了不到 2°，预算却被没兑现的预计角
+                                 # 扣光判超支，纠偏机会白白浪费
 
 
 def _align_abort(msg: str, log: dict) -> None:
@@ -972,6 +989,8 @@ def _align_loop_hold(tol: float, dmin: float, dmax: float,
     与旧版（定长 0.5°/2° 脉冲逐步磨）的区别：时长连续可变、带死区补偿，
     正常情况 2~3 杆收敛。方向约定与旧版相同（yaw_err>0 → 左转），同样保留
     "偏差变大就反号"的兜底。target ≠ 0 时对到指定角度而非 0。
+    下发了大杆基座却没动时，先把指令速度从 6°/s 提到 20°/s 再试（单杆预计角
+    仍卡在 5° 内），提速后还不动才判运控未响应。
     逐步日志写 align_<日期>.jsonl，mode=hold。
     """
     loco = _get_loco_client()
@@ -984,7 +1003,8 @@ def _align_loop_hold(tol: float, dmin: float, dmax: float,
     first_points: int | None = None   # 首帧点数，后续帧掉太多说明拟合面变了
     prev_yaw: float | None = None
     stall = 0             # 连续"下发大杆但没动"的次数
-    turned_deg = 0.0      # 抬手状态下的累计转身量
+    boost = False         # 运控不跟随 → 切提速档（一旦切了就不再切回来）
+    turned_deg = 0.0      # 累计转身量，按实测逐步累加
     _align_log({"event": "start", "mode": "hold", "tol_deg": tol,
                 "tol_eff_deg": tol_eff, "target_deg": target, "armup": armup,
                 "err_cap_deg": err_cap, "dmin": dmin, "dmax": dmax})
@@ -1035,25 +1055,35 @@ def _align_loop_hold(tol: float, dmin: float, dmax: float,
                               "step": step, "err_deg": round(err, 3),
                               "cap_deg": err_cap, "armup": armup})
                 return
-            # 闸③ 下发了大杆却没动 = 运控没在执行速度指令，闭环已失去反馈
-            if (prev_yaw is not None
-                    and abs(prev_expect) >= ALIGN_STALL_MIN_EXPECT_DEG):
+            # 闸③ 下发了大杆却没动 = 运控没在执行速度指令，闭环已失去反馈。
+            # 但"没动"先不判死：先把指令速度提上去再试，提速后还是不动才判。
+            if prev_yaw is not None:
                 moved = abs(yaw - prev_yaw)
-                if moved < ALIGN_STALL_RATIO * abs(prev_expect):
-                    stall += 1
-                    _align_log({"event": "stall", "mode": "hold", "step": step,
-                                "moved_deg": round(moved, 3),
-                                "expect_deg": round(prev_expect, 2),
-                                "count": stall})
-                    if stall >= ALIGN_STALL_MAX:
-                        _align_abort(f"连续 {stall} 杆下发 {abs(prev_expect):.1f}° "
-                                     f"却只动了 {moved:.2f}°，运控未在执行转身指令"
-                                     f"（检查运控状态/是否被其他程序接管）",
-                                     {"event": "sanity_stall", "mode": "hold",
-                                      "step": step, "count": stall})
-                        return
-                else:
-                    stall = 0
+                turned_deg += moved     # 预算按实测扣：没兑现的杆不该占额度
+                if abs(prev_expect) >= ALIGN_STALL_MIN_EXPECT_DEG:
+                    if moved < ALIGN_STALL_RATIO * abs(prev_expect):
+                        stall += 1
+                        _align_log({"event": "stall", "mode": "hold",
+                                    "step": step, "moved_deg": round(moved, 3),
+                                    "expect_deg": round(prev_expect, 2),
+                                    "count": stall, "boost": boost})
+                        if not boost:
+                            boost = True
+                            stall = 0   # 换档重新计数，给提速档完整的机会
+                            _align_log({"event": "boost_on", "mode": "hold",
+                                        "step": step,
+                                        "cmd_deg_s": HOLD_ALIGN_BOOST_CMD_DEG_S})
+                        elif stall >= ALIGN_STALL_MAX:
+                            _align_abort(
+                                f"提速到 {HOLD_ALIGN_BOOST_CMD_DEG_S:.0f}°/s 后仍连续 "
+                                f"{stall} 杆下发 {abs(prev_expect):.1f}° 却只动了 "
+                                f"{moved:.2f}°，运控未在执行转身指令"
+                                f"（检查运控状态/是否被其他程序接管）",
+                                {"event": "sanity_stall", "mode": "hold",
+                                 "step": step, "count": stall, "boost": True})
+                            return
+                    else:
+                        stall = 0
             prev_yaw = yaw
             # 反号兜底只信"大杆"的结果：短杆/小脉冲的响应本身随机，
             # 偏差涨一点不代表方向错（第 4 轮真机就是被这个误触发震荡的）
@@ -1064,7 +1094,15 @@ def _align_loop_hold(tol: float, dmin: float, dmax: float,
             prev_err = err
             direction = 1.0 if sign * err > 0 else -1.0
 
-            if abs(err) < HOLD_ALIGN_FINE_DEG:
+            if boost and abs(err) >= HOLD_ALIGN_FINE_DEG:
+                # 6°/s 那档基座不跟随，提速再试。时长按提速后的有效速率重算，
+                # 单杆预计角照样卡死，靠多打几杆收敛而不是靠一杆打到位
+                cmd_deg_s, eff_deg_s, kind = (HOLD_ALIGN_BOOST_CMD_DEG_S,
+                                              HOLD_ALIGN_BOOST_EFF_DEG_S,
+                                              f"提速{HOLD_ALIGN_BOOST_CMD_DEG_S:.0f}°/s 按")
+                lo = HOLD_ALIGN_MIN_HOLD_S
+                hi = HOLD_ALIGN_DEAD_S + HOLD_ALIGN_BOOST_MAX_DEG / eff_deg_s
+            elif abs(err) < HOLD_ALIGN_FINE_DEG:
                 # 小残差：降速慢杆收尾。同样的角度时长翻倍，稳稳越过死区
                 # 和短杆随机区，分辨率比高速档细一倍
                 cmd_deg_s, eff_deg_s, kind = (HOLD_ALIGN_FINE_CMD_DEG_S,
@@ -1080,19 +1118,22 @@ def _align_loop_hold(tol: float, dmin: float, dmax: float,
             hold_s = float(np.clip(hold_s, lo, hi))
             omega = math.radians(cmd_deg_s) * direction
             prev_expect = (hold_s - HOLD_ALIGN_DEAD_S) * eff_deg_s * direction
+            # 预算看的是"已经实测转过的 + 这一杆预计要转的"，实测部分在上面
+            # 逐步累加。这样没兑现的杆不占额度，真转起来了照样按 15° 拦住
             if armup and turned_deg + abs(prev_expect) > ALIGN_ARMUP_BUDGET_DEG:
-                _align_abort(f"抬手状态累计转身已 {turned_deg:.1f}°，再转就超预算 "
+                _align_abort(f"抬手状态实测已转 {turned_deg:.1f}°，再打这杆就超预算 "
                              f"{ALIGN_ARMUP_BUDGET_DEG:.0f}°，停手（手臂前伸时"
                              f"大幅转身有撞柜风险）",
                              {"event": "sanity_budget", "mode": "hold",
-                              "step": step, "turned_deg": round(turned_deg, 2)})
+                              "step": step, "turned_deg": round(turned_deg, 2),
+                              "expect_deg": round(prev_expect, 2)})
                 return
-            turned_deg += abs(prev_expect)
             state.align_message = (f"第 {step} 步：偏差 {err:+.2f}° → "
                                    f"{kind} {hold_s:.2f}s（预计 {prev_expect:+.1f}°）")
             code = loco.SetVelocity(0.0, 0.0, omega, hold_s)
             _align_log({"event": "hold", "mode": "hold", "step": step,
-                        "hold_s": round(hold_s, 3),
+                        "hold_s": round(hold_s, 3), "boost": boost,
+                        "cmd_deg_s": cmd_deg_s, "turned_deg": round(turned_deg, 2),
                         "expect_deg": round(prev_expect, 2), "rpc_code": code})
             if code == RPC_TIMEOUT_CODE:
                 state.align_message += "（RPC 应答超时，按已执行继续）"

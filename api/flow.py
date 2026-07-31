@@ -206,7 +206,7 @@ class SwitchFlow:
                     self._log(f"点位: {points}")
 
                     self._log("IK 执行拨动")
-                    self.flip_switch(points)
+                    self.flip_switch(points, round_no, distance_m)
 
                     self._log("复核拨动结果")
                     if self.verify_flip():
@@ -432,7 +432,19 @@ class SwitchFlow:
     SIDESTEP_TILT_DEG = 2.0
     SIDESTEP_PUSH_SPEED = 0.06   # 带推力时快拨（m/s）：借冲量越过定位卡点
 
-    def flip_switch(self, points: list[dict]) -> None:
+    # 把目标点上抬：实测指尖落点比指令位低 20~31 mm（重力下垂，见 reach_logs
+    # 里 tcp.planned_root vs actual_root），所以打不中多半是打低了。
+    #   · 距柜面 ≥0.52 m 时手臂伸得更远、力矩更大，第一轮就先垫 1 cm
+    #   · 之后每重试一轮再加 1 cm
+    # 两者相加封顶 3 cm——再高就不是下垂能解释的了，继续加只会从开关上方
+    # 擦过去。
+    RETRY_LIFT_M = 0.01
+    RETRY_LIFT_MAX_M = 0.03
+    FAR_LIFT_DISTANCE_M = 0.52
+    FAR_LIFT_M = 0.01
+
+    def flip_switch(self, points: list[dict], round_no: int = 1,
+                    distance_m: float | None = None) -> None:
         """IK 执行拨动：
 
           取点（接近偏移 0）→ 左侧规划（中段抬高 2cm）→
@@ -441,7 +453,15 @@ class SwitchFlow:
         拨完就地停住直接交给复核（拨动本身不要求到点精度，不再先插值回
         「终点」路点）：成功 → 收尾直接回「起手点测试」；失败 → 重试轮
         先插值回终点路点当起手位。规划就绪后直接真机执行，不经确认台。
+        目标点会按距离和轮次上抬（见 RETRY_LIFT_M / FAR_LIFT_M 的注释）。
         """
+        far = distance_m is not None and distance_m >= self.FAR_LIFT_DISTANCE_M
+        lift = (self.FAR_LIFT_M if far else 0.0) + (round_no - 1) * self.RETRY_LIFT_M
+        lift = min(lift, self.RETRY_LIFT_MAX_M)
+        why = (f"距柜面 {distance_m:.3f} m ≥ {self.FAR_LIFT_DISTANCE_M} m"
+               if far else "")
+        if round_no > 1:
+            why = (why + "，" if why else "") + f"第 {round_no} 轮重试"
         for i, pt in enumerate(points, 1):
             u, v = int(pt["u"]), int(pt["v"])
             tag = f"点位 {i}/{len(points)} ({u},{v})"
@@ -452,14 +472,19 @@ class SwitchFlow:
                 raise FlowError(ErrorCode.IK_FAILED,
                                 f"{tag} 取点失败: {picked.get('error')}")
 
+            target = [float(v) for v in picked["p_root"]]
+            if lift > 0:
+                target[2] += lift
+                self._log(f"{tag} {why}，目标点上抬 {lift * 100:.0f} cm"
+                          f"（z {picked['p_root'][2]:.3f} → {target[2]:.3f} m）")
+
             joints = self.client.joints()
             if not joints.get("ok"):
                 raise FlowError(ErrorCode.PRECONDITION,
                                 f"读不到关节: {joints.get('error')}")
             # 不做碰撞检查：目标点本来就贴着柜面，指尖终点必然挨着"墙"，
             # 碰撞标注全是误报（调试页对主段也只提示不拦）
-            plan = self.client.plan_axis_last(joints["named_joints"],
-                                              picked["p_root"],
+            plan = self.client.plan_axis_last(joints["named_joints"], target,
                                               lift_m=self.lift_m,
                                               check_collision=False)
             if not plan.get("ok"):
