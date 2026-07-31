@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import math
 import re
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -121,6 +122,16 @@ class SwitchFlow:
         self._armed_by_flow = False   # 手臂是流程接管的（而非用户本来就接管着）
         self._arm_moved = False       # 已下发过手臂动作 → 失败时要先受控回落
         self.log_lines: deque[str] = deque(maxlen=300)   # 供调度服务透出进度
+        # 强制停止开关：外部（/emergency/stop）置位后，流程在最近的检查点退出。
+        # 置位时手臂多半已被强停端点直接释放了，所以退出路径不再做受控回落。
+        self.abort = threading.Event()
+
+    def request_abort(self) -> None:
+        self.abort.set()
+
+    def _check_abort(self) -> None:
+        if self.abort.is_set():
+            raise FlowError(ErrorCode.ABORTED, "收到强制停止")
 
     # ------------------------------------------------------------------ 主流程
 
@@ -153,6 +164,7 @@ class SwitchFlow:
 
             last_error: FlowError | None = None
             for round_no in range(1, self.max_flip_rounds + 1):
+                self._check_abort()
                 self._log(f"═══ 5️⃣ 第 {round_no}/{self.max_flip_rounds} 轮 ═══")
                 try:
                     pose = self.choose_opening_pose(distance_m)
@@ -208,7 +220,8 @@ class SwitchFlow:
                 except FlowError as exc:
                     if exc.code in (ErrorCode.NOT_IMPLEMENTED,
                                     ErrorCode.POSE_UNAVAILABLE,
-                                    ErrorCode.ALIGN_FAILED):
+                                    ErrorCode.ALIGN_FAILED,
+                                    ErrorCode.ABORTED):
                         # 未实现/距离不够/对不齐：重摆起手式也不会变，直接中止
                         raise
                     self._log(f"本轮失败（{exc.code.name}: {exc.message}），回到 5️⃣")
@@ -226,7 +239,12 @@ class SwitchFlow:
                               detail={"elapsed_s": round(time.monotonic() - t0, 1)})
         except FlowError as exc:
             self._log(f"✘ 流程中止：[{exc.code.name}] {exc.message}")
-            self._descend_on_failure()
+            if self.abort.is_set():
+                # 强制停止：手臂已由 /emergency/stop 急停并释放，这里绝不能
+                # 再下发回落动作——那等于在"已经放手"之后又去动机器人
+                self._log("强制停止：不做回落，手臂控制权已交还本体")
+            else:
+                self._descend_on_failure()
             return FlowResult(ok=False, code=exc.code, message=exc.message,
                               detail={"elapsed_s": round(time.monotonic() - t0, 1)})
 
@@ -305,6 +323,9 @@ class SwitchFlow:
         last_msg: str | None = None
         while time.monotonic() < deadline:
             time.sleep(1.0)
+            if self.abort.is_set():
+                self.client.align_yaw_stop()
+                raise FlowError(ErrorCode.ABORTED, "收到强制停止（对中中）")
             fit = self.client.perpendicular(self.dmin, self.dmax)
             align = fit.get("align") or {}
             if not align.get("running"):
@@ -555,6 +576,7 @@ class SwitchFlow:
         deadline = time.monotonic() + self.exec_timeout_s
         while time.monotonic() < deadline:
             time.sleep(0.5)
+            self._check_abort()
             st = self.client.exec_status()
             if not st.get("running"):
                 msg = str(st.get("message") or "")

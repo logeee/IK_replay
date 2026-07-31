@@ -197,13 +197,38 @@ GET /task/status
 判断逻辑：**`result.ok` 为 `true` 即拨闸成功**；为 `false` 时按
 `result.code` 分支处理，`result.message` 是给人看的中文原因。
 
-### 3.4 中止任务
+### 3.4 强制停止 / 中止任务
 
 ```
-POST /task/abort
+POST /emergency/stop        # 任何状态都能调，没有任务在跑时也能调
+POST /task/abort            # 等价，只是会额外提示"当前没有任务"
 ```
 
-急停当前动作并强制结束任务（机械臂就地停住后释放）。没有任务在跑时返回 409。
+**一个接口顶「松手」用**：不管我们当前在站位检查、在拨闸、还是任务已经结束
+但手臂还接管着，调一次就按下面的顺序全做一遍，前一步失败不影响后一步：
+
+1. 停止转身（对中闭环若正在下发速度指令，立即 `StopMove`）；
+2. 急停机械臂轨迹（**就地冻结在当前指令位，不会失重下坠**）；
+3. 等执行线程真正退出后**释放手臂**——权重渐出，控制权交还本体控制器；
+4. 关掉本服务拉起的 `reach_server`，释放相机与 DDS
+   （外部自己启动的 8001 不会被关，但手已经松了）。
+
+请求体可选 `{"reason": "..."}`，只写进日志。返回：
+
+```json
+{"ok": true, "reason": "外部强制停止",
+ "actions": ["停止转身", "急停手臂轨迹", "释放手臂", "已关闭 reach_server（释放相机/DDS）"],
+ "arm_released": true, "task_state": "running"}
+```
+
+`arm_released` 为 `true` 表示手臂控制权确实已经交还本体；为 `false` 时看
+`actions` 里的原因（常见是本来就没接管）。整个调用通常 1 秒内返回，最坏
+约 20 秒（等权重渐出 + 关子进程）。
+
+正在跑的任务会在最近的检查点退出，最终 `GET /task/status` 拿到
+`code=9 ABORTED`。**注意：强制停止后手臂停在当前位置且已松手，不做受控回落**
+——如果当时手臂是伸在柜子前面的，请人工确认姿态后再让别的程序接管运动。
+想要「先收回再松手」的正常收尾，用任务自己的失败回落路径，不要用这个接口。
 
 ## 4. 错误码
 
@@ -222,7 +247,7 @@ POST /task/abort
 | 6 | IK_FAILED | 机械臂无法到达目标点 | 调整机器人站位后重试 |
 | 7 | EXEC_FAILED | 真机执行失败（急停/超时等） | 上报人工 |
 | 8 | VERIFY_FAILED | 拨了但复核未通过，重试轮次耗尽 | 上报人工确认开关状态 |
-| 9 | ABORTED | 被人工中止（abort 接口或确认台） | 按业务逻辑处理 |
+| 9 | ABORTED | 被人工中止（`/emergency/stop`、`/task/abort` 或确认台）；手臂已停在当前位置并松手 | 人工确认手臂姿态后再继续 |
 | 10 | POSE_UNAVAILABLE | 距柜面太近，无可用起手姿态 | **后退到 ≥0.44 m 再触发** |
 | -1 | DISPATCH_ERROR | 调度层故障（相机服务拉不起来等） | 上报机器人侧 |
 
@@ -279,6 +304,9 @@ curl -X POST http://192.168.61.142:17001/task/flip \
      -H 'Content-Type: application/json' \
      -d '{"language": "Change the switch from close to remote"}'
 watch -n 2 'curl -s http://192.168.61.142:17001/task/status | python3 -m json.tool'
+
+# 出事了：立刻急停并松手（任何状态都能调，不需要有任务在跑）
+curl -X POST http://192.168.61.142:17001/emergency/stop
 ```
 
 ## 6. 常见问题

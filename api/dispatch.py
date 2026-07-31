@@ -33,7 +33,11 @@
                           返回 {"ok": true, "task_id": "..."}；执行中再触发 → 409
     GET  /task/status  → 状态机 idle/starting/running/done + 流程日志尾部
                           + 最终结果（错误码见 api.flow.ErrorCode）
-    POST /task/abort   → 急停正在执行的动作并强制结束任务
+    POST /task/abort   → 急停正在执行的动作并强制结束任务（= /emergency/stop）
+    POST /emergency/stop → 强制停止（任何状态下都可调，没任务在跑也能用）：
+                          停转身 → 急停手臂轨迹 → 释放手臂（权重渐出，控制权
+                          交还本体）→ 关掉自己拉起的 reach_server（放相机/DDS）。
+                          用于"别的程序要接管、必须马上让我们松手"的场合。
 
 language 逐字固定（大小写/空格容错，多余的不认）：
     "Change the switch from close to remote"   就地 → 远方（IK 已验证）
@@ -77,6 +81,9 @@ _check: dict[str, Any] | None = None  # 当前/最近一次站位检查（/check
 # 站位检查通过后留下的 reach 子进程——交给紧接着的 /task/flip 认领，
 # 它任务结束后负责关；下一次 /check/flip 也可认领（失败时就能关掉它）
 _check_reach_proc: subprocess.Popen | None = None
+# 收到 /emergency/stop 后置位：正在跑的检查/任务在最近的检查点退出。
+# 新的 /check/flip、/task/flip 会先清掉它。
+_estop = threading.Event()
 
 
 # ------------------------------------------------------------ reach 生命周期
@@ -210,6 +217,9 @@ def _run_task(task: dict) -> None:
                           console=console, yolo=yolo,
                           max_flip_rounds=int(task.get("retries") or 3))
         task["flow"] = flow
+        if _estop.is_set():
+            # 强制停止卡在"拉起 reach"和"建流程"之间时，别让流程真的跑起来
+            flow.request_abort()
         task["state"] = "running"
         result = flow.run()
         task["result"] = {"ok": result.ok, "code": int(result.code),
@@ -276,6 +286,8 @@ def _run_checks(check: dict, kind: str) -> dict:
                 "steps": steps}
 
     def measure() -> dict:
+        if _estop.is_set():
+            raise RuntimeError("收到强制停止")
         fit = client.perpendicular(CHECK_DMIN, CHECK_DMAX)
         if not fit.get("ok"):
             raise RuntimeError(f"平面拟合失败: {fit.get('error')}")
@@ -311,6 +323,9 @@ def _run_checks(check: dict, kind: str) -> dict:
         deadline = time.monotonic() + CHECK_ALIGN_TIMEOUT_S
         while time.monotonic() < deadline:
             time.sleep(1.0)
+            if _estop.is_set():
+                client.align_yaw_stop()
+                raise RuntimeError("收到强制停止（对中中）")
             fit = client.perpendicular(CHECK_DMIN, CHECK_DMAX)
             align = fit.get("align") or {}
             if not align.get("running"):
@@ -429,6 +444,7 @@ def check_flip(body: dict | None = None):
         if _check is not None and _check["state"] == "running":
             return JSONResponse(
                 {"ok": False, "error": "已有站位检查在执行"}, status_code=409)
+        _estop.clear()     # 新的检查开始，清掉上一次的强制停止标记
         _check = {"state": "running", "log": [], "steps": [],
                   "reach_proc": None, "reach_log": None,
                   "started_at": datetime.now().isoformat(timespec="seconds")}
@@ -533,6 +549,7 @@ def task_submit(body: dict | None = None):
             return JSONResponse(
                 {"ok": False, "error": "站位检查（/check/flip）执行中，请等它返回再触发任务"},
                 status_code=409)
+        _estop.clear()     # 新任务开始，清掉上一次的强制停止标记
         now = datetime.now().isoformat(timespec="seconds")
         _task = {"id": uuid.uuid4().hex[:10], "state": "starting",
                  "language": language, "kind": kind, "retries": retries,
@@ -569,25 +586,111 @@ def task_status():
             "result": t["result"], "log": log[-60:]}
 
 
+def _reach_base() -> str:
+    return _args.reach_base if _args is not None else "http://127.0.0.1:8001"
+
+
+def _emergency_stop(reason: str) -> dict:
+    """强制停止：停转身 → 急停轨迹 → 释放手臂 → 关掉自己拉起的 reach_server。
+
+    任何状态下都能调（没任务在跑也能用，用于收拾上一次留下的接管状态）。
+    每一步都尽力做完，前一步失败不影响后一步——目标只有一个：让我们这边
+    彻底不再给机器人发指令，把控制权交还本体，好让别的程序安全接手。
+    """
+    _estop.set()
+    base = _reach_base()
+    actions: list[str] = []
+
+    def post(path: str, body: dict | None = None, timeout: float = 5.0) -> dict:
+        try:
+            r = _http.post(f"{base}{path}", json=body or {}, timeout=timeout)
+            try:
+                return r.json() if r.content else {}
+            except ValueError:
+                return {"http": r.status_code}
+        except requests.RequestException as exc:
+            return {"error": str(exc)}
+
+    with _lock:
+        task, check = _task, _check
+    flow: SwitchFlow | None = task.get("flow") if task else None
+    if flow is not None:
+        flow.request_abort()      # 流程在最近的检查点退出，不再下发新动作
+
+    if _reach_alive(1.5):
+        # 1) 先停基座：对中闭环可能正拿着速度指令在转身
+        r = post("/api/reach/align_yaw", {"stop": True})
+        actions.append("停止转身" + (f"（{r['error']}）" if r.get("error") else ""))
+        # 2) 急停手臂轨迹（冻结在当前指令位，不下坠）
+        r = post("/api/reach/stop")
+        actions.append("急停手臂轨迹" + (f"（{r.get('error')}）"
+                                        if r.get("error") else ""))
+        # 3) 等执行线程真的退出，否则 disarm 会被"轨迹执行中"挡回 409
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            try:
+                st = _http.get(f"{base}/api/reach/exec_status", timeout=1.0).json()
+            except (requests.RequestException, ValueError):
+                break
+            if not st.get("running"):
+                break
+            time.sleep(0.2)
+        # 4) 释放手臂：权重渐出，控制权交还本体控制器
+        r = post("/api/reach/disarm", timeout=15.0)
+        actions.append("释放手臂" if r.get("ok")
+                       else f"释放手臂失败（{r.get('error') or r}）")
+    else:
+        actions.append("reach_server 未在运行，我们本来就没有控制权")
+
+    # 5) 关掉自己拉起的 reach_server（外部启动的不动，只是已经放了手）
+    global _check_reach_proc
+    with _lock:
+        leftover, _check_reach_proc = _check_reach_proc, None
+    holders: list[dict] = [{"log": [], "reach_proc": leftover}]
+    if task is not None and not task.get("reach_external"):
+        holders.append(task)
+    if check is not None:
+        holders.append(check)
+    for holder in holders:
+        if holder.get("reach_proc") is None:
+            continue
+        try:
+            _stop_reach(holder)
+            actions.append("已关闭 reach_server（释放相机/DDS）")
+        except Exception as exc:
+            actions.append(f"关闭 reach_server 出错: {exc}")
+
+    line = f"⚑ 强制停止（{reason}）：" + "；".join(actions)
+    for holder in (task, check):
+        if holder is not None and holder.get("state") != "done":
+            holder["log"].append(line)
+    print(f"[dispatch] {line}")
+    return {"ok": True, "reason": reason, "actions": actions,
+            "arm_released": any(a == "释放手臂" for a in actions),
+            "task_state": task["state"] if task else "idle"}
+
+
+@app.post("/emergency/stop")
+def emergency_stop(body: dict | None = None):
+    """强制停止（任何状态下都可调，无任务时也能用）：急停 + 释放手臂控制权。
+
+    Body 可选 {"reason": "..."}。返回逐项动作清单。
+    """
+    reason = str((body or {}).get("reason") or "外部强制停止")
+    return _emergency_stop(reason)
+
+
 @app.post("/task/abort")
 def task_abort():
+    """中止当前任务。等价于 /emergency/stop，只是会额外提示没有任务在跑。"""
     with _lock:
         t = _task
+    res = _emergency_stop("task/abort")
     if t is None or t["state"] == "done":
-        return JSONResponse({"ok": False, "error": "没有正在执行的任务"},
-                            status_code=409)
-    t["log"].append("收到外部中止请求")
-    # 先急停正在执行的动作，再关掉 reach（流程的 HTTP 调用会随之失败退出）
-    try:
-        _http.post(f"{_args.reach_base}/api/reach/stop", timeout=3.0)
-    except requests.RequestException:
-        pass
-    if not t.get("reach_external"):
-        try:
-            _stop_reach(t)
-        except Exception as exc:
-            t["log"].append(f"⚠ 中止时关闭 reach_server 出错: {exc}")
-    return {"ok": True, "message": "已急停并开始收尾，稍后轮询 /task/status"}
+        res["message"] = "没有正在执行的任务；已按强制停止处理（急停+释放手臂）"
+    else:
+        res["message"] = "已急停并释放手臂，稍后轮询 /task/status"
+    return res
 
 
 @app.get("/")
@@ -597,7 +700,8 @@ def index():
                                '（站位检查，同步，客户端超时建议 ≥300s）',
                       "start": 'POST /task/flip  body={"language": "..."}',
                       "status": "GET /task/status",
-                      "abort": "POST /task/abort"},
+                      "abort": "POST /task/abort",
+                      "estop": "POST /emergency/stop（任何状态：急停+释放手臂）"},
             "languages": ["Change the switch from close to remote",
                           "Change the switch from remote to close"]}
 
