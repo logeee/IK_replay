@@ -86,7 +86,7 @@ class SwitchFlow:
                  coarse_target_deg: float = -4.5,  # 3️⃣ 粗对齐目标（-3~-6 带中心）
                  coarse_tol_deg: float = 1.5,      # 3️⃣ 带半宽 → [-6, -3]
                  fine_target_deg: float = -3.0,    # 6️⃣ 保持目标
-                 fine_tol_deg: float = 4.0,        # 6️⃣ 带半宽 → [-7, +1]
+                 fine_tol_deg: float = 2.0,        # 6️⃣ 带半宽 → [-5, -1]
                  align_mode: str = "hold",         # "hold"=新对中（打杆式）
                  dmin: float = 0.4, dmax: float = 1.0,
                  # ---- IK 拨动段参数（index.html 真机验证过的一组）----
