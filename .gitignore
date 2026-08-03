@@ -15,10 +15,9 @@ env/
 
 .web_qa/
 logs/
+Log/
 *.log
 
 build/
 dist/
-reach_logs/
-skip_yolo_file/
-yolo_samples/
+models/

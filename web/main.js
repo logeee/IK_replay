@@ -1578,7 +1578,7 @@ async function recordWaypoint() {
     });
     await refreshWaypoints();
     reach.dom.waypointSel.value = data.waypoint.file;
-    reachMsg(`已录制路点「${data.waypoint.name}」→ reach_waypoints/${data.waypoint.file}`, "success");
+    reachMsg(`已录制路点「${data.waypoint.name}」→ data/waypoints/${data.waypoint.file}`, "success");
   } catch (error) {
     reachMsg(`录制失败: ${error.message}`, "error");
   }

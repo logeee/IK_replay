@@ -12,7 +12,7 @@
 
 启动（yolo 环境）：
     /home/robot/miniconda3/envs/yolo/bin/python -m api.yolo_server \
-        --model skip_yolo_file/Xuanniu.pt --conf 0.25
+        --model models/Xuanniu.pt --conf 0.25
 
 接口：
     GET  /api/yolo/status   模型名/类别表/阈值（也当健康检查用）
@@ -158,7 +158,7 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=7004)
     parser.add_argument("--reach-base", default="http://127.0.0.1:8001")
-    parser.add_argument("--model", default="skip_yolo_file/Xuanniu.pt",
+    parser.add_argument("--model", default="models/Xuanniu.pt",
                         help="YOLO .pt 模型路径")
     parser.add_argument("--conf", type=float, default=0.25, help="置信度阈值")
     args = parser.parse_args()

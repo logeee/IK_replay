@@ -99,8 +99,8 @@ def _reach_alive(timeout_s: float = 2.0) -> bool:
 
 def _spawn_reach(task: dict) -> None:
     """子进程拉起 reach_server，输出落到日志文件。"""
-    log_dir = ROOT / "reach_logs"
-    log_dir.mkdir(exist_ok=True)
+    log_dir = ROOT / "logs" / "reach"
+    log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"dispatch_reach_{datetime.now():%Y%m%d_%H%M%S}.log"
     cmd = [sys.executable, str(ROOT / "reach_server.py"),
            "--camera-serial", _args.camera_serial,

@@ -9,7 +9,7 @@
       距离×角度组合，机器人尽早收工；之后进「补标注」模式逐张点击补全。
 
 每个样本（一张图）记录：
-    · 相机帧（jpg，存 yolo_samples/images/）
+    · 相机帧（jpg，存 models/samples/images/）
     · 采集时刻的 distance_m / yaw_err_deg / pitch_err_deg（问 reach_server
       的 /perpendicular，和对中用的是同一套测量）
     · YOLO 框（给了 --model 且装了 ultralytics 时实时推理；没给也能采，
@@ -18,11 +18,11 @@
 
 启动：
     /home/robot/miniconda3/envs/yolo/bin/python -m api.yolo_collect \
-        --model skip_yolo_file/Xuanniu.pt --conf 0.25
+        --model models/Xuanniu.pt --conf 0.25
 
 网页：http://<机器人IP>:7003/
 
-落盘格式（yolo_samples/samples_<日期>.jsonl，每行一个样本）：
+落盘格式（models/samples/samples_<日期>.jsonl，每行一个样本）：
     {"id": "...", "ts": "...", "image": "images/xxx.jpg", "w": 1280, "h": 720,
      "distance_m": 0.54, "yaw_err_deg": -3.2, "pitch_err_deg": 1.0,
      "dmin": 0.4, "dmax": 1.0,
@@ -55,7 +55,7 @@ _http = requests.Session()
 _http.trust_env = False
 
 _reach_base = "http://127.0.0.1:8001"
-_samples_dir = Path(__file__).resolve().parent.parent / "yolo_samples"
+_samples_dir = Path(__file__).resolve().parent.parent / "models" / "samples"
 _model = None          # ultralytics.YOLO 实例（可选）
 _model_name = ""
 _model_conf = 0.25

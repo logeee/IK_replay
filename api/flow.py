@@ -448,7 +448,7 @@ class SwitchFlow:
     SIDESTEP_TILT_DEG = 2.0
     SIDESTEP_PUSH_SPEED = 0.06   # 带推力时快拨（m/s）：借冲量越过定位卡点
 
-    # 把目标点上抬：实测指尖落点比指令位低 20~31 mm（重力下垂，见 reach_logs
+    # 把目标点上抬：实测指尖落点比指令位低 20~31 mm（重力下垂，见 logs/reach
     # 里 tcp.planned_root vs actual_root），所以打不中多半是打低了。
     #   · 距柜面 <0.5 m 完全不抬：手臂没伸那么远，下垂本来就小，打不中另有
     #     原因，一轮轮往上加只会越加越偏

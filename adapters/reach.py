@@ -136,10 +136,10 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str, calib_path: 
     state.robot_model = robot_model
     state.collision_checker = collision_checker
     state.ik_solver = ik_solver
-    state.waypoints_dir = Path(__file__).resolve().parent.parent / "reach_waypoints"
-    state.sequences_dir = Path(__file__).resolve().parent.parent / "reach_sequences"
-    state.sidesteps_dir = Path(__file__).resolve().parent.parent / "reach_sidesteps"
-    state.log_dir = Path(__file__).resolve().parent.parent / "reach_logs"
+    state.waypoints_dir = Path(__file__).resolve().parent.parent / "data" / "waypoints"
+    state.sequences_dir = Path(__file__).resolve().parent.parent / "data" / "sequences"
+    state.sidesteps_dir = Path(__file__).resolve().parent.parent / "data" / "sidesteps"
+    state.log_dir = Path(__file__).resolve().parent.parent / "logs" / "reach"
     state.enabled = True
 
 
@@ -516,7 +516,7 @@ TURN_HOLD_RATE_DEG_S = 12.0        # 按住模式默认转速（前端可传 rat
 TURN_HOLD_RATE_RANGE = (2.0, 30.0)  # 前端可调范围；点动/对中仍用上面验证过的 6°/s
 
 # --------------- 按住转身的操作记录（为自动纠偏学习采数据） ---------------
-# 每次"按住→松开"落一条样本到 reach_logs/hold_<日期>.jsonl：
+# 每次"按住→松开"落一条样本到 logs/reach/hold_<日期>.jsonl：
 # 按住前/松开稳定后的柜面偏航角、方向、速度、时长、距离、腰角。
 # 攒够人工纠偏样本后，用它学"人打杆的习惯"（多大偏差按多久、何时松手），
 # 再写成自动纠偏。
@@ -548,7 +548,7 @@ def _hold_measure(dmin: float, dmax: float) -> dict:
 
 
 def _hold_log(entry: dict) -> None:
-    """按住转身操作日志：reach_logs/hold_<日期>.jsonl。"""
+    """按住转身操作日志：logs/reach/hold_<日期>.jsonl。"""
     try:
         state.log_dir.mkdir(parents=True, exist_ok=True)
         entry = {"ts": datetime.now().isoformat(timespec="milliseconds"),
@@ -803,7 +803,7 @@ ALIGN_SETTLE_S = 1.0       # 每步转完后等运控稳定再测
 
 
 def _align_log(entry: dict) -> None:
-    """对中过程逐步落盘：reach_logs/align_<日期>.jsonl，事后分析用。"""
+    """对中过程逐步落盘：logs/reach/align_<日期>.jsonl，事后分析用。"""
     try:
         state.log_dir.mkdir(parents=True, exist_ok=True)
         entry = {"ts": datetime.now().isoformat(timespec="milliseconds"),
@@ -829,7 +829,7 @@ def _align_loop(tol: float, dmin: float, dmax: float,
     修正方向：真机实测 yaw_err > 0（法线偏画面右）时左转（正角）是对的。
     保留自适应反号兜底：某步之后偏差反而变大就翻方向。
     target ≠ 0 时对到指定角度（全流程要求柜面指数停在 -3~-6° 带内）。
-    每步的测量与动作都写入 reach_logs/align_<日期>.jsonl。
+    每步的测量与动作都写入 logs/reach/align_<日期>.jsonl。
     """
     loco = _get_loco_client()
     sign = 1.0
@@ -1802,7 +1802,7 @@ def reach_waypoints():
 @router.post("/waypoints")
 def reach_record_waypoint(body: dict):
     """把真机当前关节角录制为命名路点，每个路点单独落盘为
-    reach_waypoints/<名字>_<时间戳>.json。Body: {"name": str}
+    data/waypoints/<名字>_<时间戳>.json。Body: {"name": str}
 
     典型流程：接管手臂 → 卸力 → 人手摆到中间位 → 恢复保持 → 录制。
     """
@@ -2301,7 +2301,7 @@ def reach_execute(body: dict):
            "max_speed_rad_s": float?, "label": str?,
            "push": {"direction_root": [x,y,z], "force_n": float}?}
 
-    label（可选）：段名，只用于 reach_logs 里区分主轨迹/横移/收回。
+    label（可选）：段名，只用于 logs/reach 里区分主轨迹/横移/收回。
 
     max_speed_rad_s（可选）：本次执行的关节限速档（默认 0.2，收回段等
     低精度动作可以给 0.4 提速），不会超过 --arm-max-speed 天花板。
@@ -2378,7 +2378,7 @@ def _tcp_position(q) -> list[float] | None:
 def _log_exec(kind: str, result: str, q_target, *, sag=None,
               duration=None, speed=None, pushing: bool = False, push_tau=None,
               trace=None) -> None:
-    """每段真机动作落一行 JSONL：reach_logs/reach_YYYYMMDD.jsonl。
+    """每段真机动作落一行 JSONL：logs/reach/reach_YYYYMMDD.jsonl。
 
     调参靠的是横向对比（改了 α / payload / kp 之后到底好了多少），
     而页面上的实时数字每次重新取点就被冲掉了，留不下证据。这里把一次

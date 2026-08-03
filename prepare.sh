@@ -15,7 +15,7 @@ cd "$(dirname "$0")"
 
 FASTAPI_PY=/home/robot/miniconda3/envs/fastapi/bin/python
 YOLO_PY=/home/robot/miniconda3/envs/yolo/bin/python
-LOG_DIR=service_logs
+LOG_DIR=logs/service
 mkdir -p "$LOG_DIR"
 
 # ---- 停止模式：./prepare.sh stop ----
@@ -67,7 +67,7 @@ start_one() {   # 用法: start_one 名字 端口 日志文件 命令...
 
 start_one "调度 " 17001 dispatch.log    "$FASTAPI_PY" -m api.dispatch
 start_one "YOLO " 7004  yolo_server.log "$YOLO_PY" -m api.yolo_server \
-    --model skip_yolo_file/Xuanniu.pt
+    --model models/Xuanniu.pt
 start_one "确认台" 7002  console.log     "$FASTAPI_PY" -m api.console
 
 # ---- 自检：等服务起来后逐个探活 ----
