@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>H2 小碎步控制</title>
+<style>
+  :root {
+    --bg: #101418; --panel: #1a2026; --line: #2a333c;
+    --fg: #dde6ee; --dim: #7d8b98; --acc: #3da5ff;
+    --ok: #35c67d; --warn: #e6a23c; --err: #ef5350;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    display: flex; flex-direction: column; min-height: 100vh;
+    user-select: none;
+  }
+  header {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 10px 18px; background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  .badge {
+    padding: 2px 10px; border-radius: 999px; font-size: 13px;
+    background: #26303a; color: var(--dim); white-space: nowrap;
+  }
+  .badge.ok   { background: rgba(53,198,125,.15); color: var(--ok); }
+  .badge.err  { background: rgba(239,83,80,.15);  color: var(--err); }
+  .badge.warn { background: rgba(230,162,60,.15); color: var(--warn); }
+  main { flex: 1; max-width: 860px; width: 100%; margin: 0 auto; padding: 16px; }
+
+  .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+  .tabs button {
+    flex: 1; padding: 10px; font-size: 15px; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--panel);
+    color: var(--dim); cursor: pointer;
+  }
+  .tabs button.on { color: var(--fg); border-color: var(--acc);
+                    background: rgba(61,165,255,.12); }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; padding: 18px; margin-bottom: 14px;
+  }
+  .hint { color: var(--dim); font-size: 13px; margin: 6px 0 14px; }
+
+  /* 方向盘 */
+  .pad { display: grid; grid-template-columns: repeat(3, 96px);
+         gap: 10px; justify-content: center; }
+  .pad button, .rot button, .steps button {
+    height: 72px; border-radius: 12px; border: 1px solid var(--line);
+    background: #232c35; color: var(--fg); font-size: 17px; cursor: pointer;
+    touch-action: none;
+  }
+  .pad button:active, .pad button.live,
+  .rot button:active, .rot button.live {
+    background: rgba(61,165,255,.28); border-color: var(--acc);
+  }
+  .pad .blank { visibility: hidden; }
+  .stopmid { background: #3a2626 !important; color: #ffb4b0 !important;
+             font-size: 15px !important; }
+  .rot { display: flex; gap: 10px; justify-content: center; margin-top: 10px; }
+  .rot button { width: 149px; height: 56px; font-size: 15px; }
+  .sliders { display: flex; gap: 24px; flex-wrap: wrap; margin-top: 16px;
+             justify-content: center; }
+  .sliders label { font-size: 13px; color: var(--dim); }
+  .sliders input { vertical-align: middle; width: 150px; accent-color: var(--acc); }
+
+  /* 点动 */
+  .stepsize { text-align: center; margin-bottom: 14px; }
+  .stepsize input {
+    width: 90px; padding: 8px; font-size: 16px; text-align: center;
+    background: #232c35; color: var(--fg);
+    border: 1px solid var(--line); border-radius: 8px;
+  }
+  .steps { display: grid; grid-template-columns: repeat(3, 96px);
+           gap: 10px; justify-content: center; }
+  .steps button:disabled { opacity: .35; cursor: not-allowed; }
+  .steps button:active:not(:disabled) {
+    background: rgba(53,198,125,.25); border-color: var(--ok);
+  }
+  #stepResult { margin-top: 14px; font-size: 14px; text-align: center;
+                min-height: 22px; }
+
+  #logbox {
+    font: 12px/1.7 ui-monospace, Consolas, monospace; color: var(--dim);
+    max-height: 170px; overflow-y: auto; white-space: pre-wrap;
+  }
+  #estop {
+    position: fixed; right: 18px; bottom: 18px; z-index: 9;
+    width: 110px; height: 64px; border-radius: 14px; border: none;
+    background: var(--err); color: #fff; font-size: 18px; font-weight: 700;
+    cursor: pointer; box-shadow: 0 4px 16px rgba(239,83,80,.4);
+  }
+  #estop:active { transform: scale(.96); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>H2 小碎步控制</h1>
+  <span class="badge" id="bConn">连接中…</span>
+  <span class="badge" id="bFsm">FSM ?</span>
+  <span class="badge" id="bOdom">里程计 ?</span>
+  <span class="badge" id="bBusy" style="display:none">执行中</span>
+</header>
+
+<main>
+  <div class="tabs">
+    <button id="tabHold" class="on">按住控制</button>
+    <button id="tabStep">点动控制</button>
+  </div>
+
+  <!-- 按住模式 -->
+  <section class="card" id="paneHold">
+    <div class="hint">按住不放 = 持续移动，松开即停（心跳断了也会自动刹车）。
+      键盘：W/S 前后，A/D 左右，Q/E 旋转。</div>
+    <div class="pad">
+      <span class="blank"></span>
+      <button data-dir="f">▲ 前</button>
+      <span class="blank"></span>
+      <button data-dir="l">◀ 左</button>
+      <button class="stopmid" id="padStop">停</button>
+      <button data-dir="r">右 ▶</button>
+      <span class="blank"></span>
+      <button data-dir="b">▼ 后</button>
+      <span class="blank"></span>
+    </div>
+    <div class="rot">
+      <button data-dir="q">⟲ 左转</button>
+      <button data-dir="e">右转 ⟳</button>
+    </div>
+    <div class="sliders">
+      <label>平移 <input type="range" id="vLin" min="0.05" max="0.35"
+             step="0.01" value="0.20"> <span id="vLinTxt">0.20</span> m/s</label>
+      <label>旋转 <input type="range" id="vRot" min="5" max="30"
+             step="1" value="15"> <span id="vRotTxt">15</span> °/s</label>
+    </div>
+  </section>
+
+  <!-- 点动模式 -->
+  <section class="card" id="paneStep" style="display:none">
+    <div class="hint">点一下走一步：里程计闭环，实测挪够设定距离就刹车。</div>
+    <div class="stepsize">
+      步长 <input type="number" id="stepCm" min="1" max="15" step="0.5" value="3"> cm
+    </div>
+    <div class="steps">
+      <span></span>
+      <button data-step="f">▲ 前</button>
+      <span></span>
+      <button data-step="l">◀ 左</button>
+      <button id="stepStop" class="stopmid">停</button>
+      <button data-step="r">右 ▶</button>
+      <span></span>
+      <button data-step="b">▼ 后</button>
+      <span></span>
+    </div>
+    <div id="stepResult"></div>
+  </section>
+
+  <section class="card">
+    <div class="hint" style="margin-bottom:6px">操作记录</div>
+    <div id="logbox"></div>
+  </section>
+</main>
+
+<button id="estop">急停</button>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const post = (url, body) => fetch(url, {
+  method: "POST", headers: {"Content-Type": "application/json"},
+  body: JSON.stringify(body || {})
+}).then(r => r.json()).catch(e => ({ok: false, error: String(e)}));
+
+function log(msg, bad) {
+  const t = new Date().toTimeString().slice(0, 8);
+  const box = $("logbox");
+  box.textContent = `[${t}] ${msg}\n` + box.textContent;
+  if (bad) console.warn(msg);
+}
+
+/* ---------------- 标签页 ---------------- */
+$("tabHold").onclick = () => switchTab(true);
+$("tabStep").onclick = () => switchTab(false);
+function switchTab(hold) {
+  $("tabHold").classList.toggle("on", hold);
+  $("tabStep").classList.toggle("on", !hold);
+  $("paneHold").style.display = hold ? "" : "none";
+  $("paneStep").style.display = hold ? "none" : "";
+  stopHold();  // 切页时确保没有残留心跳
+}
+
+/* ---------------- 状态轮询 ---------------- */
+async function poll() {
+  try {
+    const s = await (await fetch("/api/status")).json();
+    $("bConn").textContent = "已连接";
+    $("bConn").className = "badge ok";
+    $("bFsm").textContent = s.walking ? `运动模式 (FSM ${s.fsm_id})`
+                                      : `非运动模式 (FSM ${s.fsm_id})`;
+    $("bFsm").className = "badge " + (s.walking ? "ok" : "err");
+    const o = s.odom || {};
+    $("bOdom").textContent = o.fresh
+      ? `里程计 x${o.x.toFixed(2)} y${o.y.toFixed(2)} yaw${o.yaw_deg.toFixed(1)}°`
+      : "里程计无数据（点动将退化为开环）";
+    $("bOdom").className = "badge " + (o.fresh ? "ok" : "warn");
+    $("bBusy").style.display = (s.step_busy || s.hold_active) ? "" : "none";
+    $("bBusy").textContent = s.step_busy ? "点动执行中" : "按住移动中";
+  } catch (e) {
+    $("bConn").textContent = "连接断开";
+    $("bConn").className = "badge err";
+  }
+}
+setInterval(poll, 500); poll();
+
+/* ---------------- 按住模式（死人开关心跳） ---------------- */
+const DIRS = {
+  f: v => ({vx: +v.lin}), b: v => ({vx: -v.lin}),
+  l: v => ({vy: +v.lin}), r: v => ({vy: -v.lin}),
+  q: v => ({omega: +v.rot}), e: v => ({omega: -v.rot}),
+};
+let holdTimer = null, holdDir = null;
+
+function speeds() {
+  return { lin: parseFloat($("vLin").value),
+           rot: parseFloat($("vRot").value) * Math.PI / 180 };
+}
+$("vLin").oninput = () => $("vLinTxt").textContent = $("vLin").value;
+$("vRot").oninput = () => $("vRotTxt").textContent = $("vRot").value;
+
+async function beat() {
+  if (!holdDir) return;
+  const r = await post("/api/hold", DIRS[holdDir](speeds()));
+  if (!r.ok) { log("按住被拒: " + r.error, true); stopHold(); }
+}
+function startHold(dir, el) {
+  if (holdDir === dir) return;
+  stopHold(true);
+  holdDir = dir;
+  el && el.classList.add("live");
+  beat();
+  holdTimer = setInterval(beat, 300);
+  log("按住 " + el.textContent.trim());
+}
+function stopHold(silent) {
+  if (holdTimer) clearInterval(holdTimer);
+  holdTimer = null;
+  const had = holdDir; holdDir = null;
+  document.querySelectorAll(".live").forEach(b => b.classList.remove("live"));
+  if (had) { post("/api/stop"); if (!silent) log("松开，已刹车"); }
+}
+
+document.querySelectorAll("#paneHold [data-dir]").forEach(btn => {
+  const dir = btn.dataset.dir;
+  btn.addEventListener("pointerdown", e => { e.preventDefault(); startHold(dir, btn); });
+  ["pointerup", "pointerleave", "pointercancel"].forEach(ev =>
+    btn.addEventListener(ev, () => stopHold()));
+});
+window.addEventListener("pointerup", () => stopHold(true));
+window.addEventListener("blur", () => stopHold());
+$("padStop").onclick = () => { stopHold(true); post("/api/stop"); log("手动停止"); };
+
+const KEYMAP = { w:"f", s:"b", a:"l", d:"r", q:"q", e:"e" };
+window.addEventListener("keydown", e => {
+  if (e.repeat || $("paneHold").style.display === "none") return;
+  const dir = KEYMAP[e.key.toLowerCase()];
+  if (dir) startHold(dir,
+    document.querySelector(`#paneHold [data-dir="${dir}"]`));
+});
+window.addEventListener("keyup", e => {
+  if (KEYMAP[e.key.toLowerCase()]) stopHold();
+});
+
+/* ---------------- 点动模式 ---------------- */
+const STEPS = { f: cm => ({dx_cm: +cm}), b: cm => ({dx_cm: -cm}),
+                l: cm => ({dy_cm: +cm}), r: cm => ({dy_cm: -cm}) };
+const stepBtns = document.querySelectorAll("#paneStep [data-step]");
+
+stepBtns.forEach(btn => btn.onclick = async () => {
+  const cm = Math.min(15, Math.max(1, parseFloat($("stepCm").value) || 3));
+  stepBtns.forEach(b => b.disabled = true);
+  $("stepResult").textContent = "执行中…";
+  const r = await post("/api/step", STEPS[btn.dataset.step](cm));
+  stepBtns.forEach(b => b.disabled = false);
+  if (r.ok) {
+    const m = r.closed_loop
+      ? `实测 ${r.measured_along_cm}cm（侧偏 ${r.measured_cross_cm}cm）`
+      : "开环（无里程计，未实测）";
+    const esc = r.escalations > 0 ? `，自动升速到 ${r.speed_final} m/s` : "";
+    $("stepResult").textContent =
+      `指令 ${btn.textContent.trim()} ${cm}cm → ${m}，耗时 ${r.elapsed_s}s${esc}`;
+    $("stepResult").style.color = "var(--ok)";
+    log(`点动 ${btn.textContent.trim()} ${cm}cm → ${m}`);
+  } else {
+    $("stepResult").textContent = "失败：" + r.error;
+    $("stepResult").style.color = "var(--err)";
+    log("点动失败: " + r.error, true);
+  }
+});
+
+$("stepStop").onclick = () => { post("/api/stop"); log("点动停止"); };
+
+/* ---------------- 急停 ---------------- */
+$("estop").onclick = () => { stopHold(true); post("/api/stop"); log("!!! 急停"); };
+</script>
+</body>
+</html>
