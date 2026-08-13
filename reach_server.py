@@ -2,7 +2,8 @@
 """IK_replay + reach adapter 启动入口：点击相机取目标 → IK 预演 → 确认后真机执行。
 
 不加任何参数时等价于原离线查看器（app.py），reach 面板不出现。
-相机 / 手臂控制模块复用 calib/hand_eye_3D 项目。
+生产相机从外部 teleimager ZMQ 只读获取；本项目不会启动或修改推流服务。
+Orbbec SDK 直连仅用于显式调试/标定，手臂控制模块仍复用 hand_eye_3D。
 
 是否接管手臂（真机执行）由【前端页面按钮】决定：
 服务器启动时只做 rt/lowstate 只读订阅；页面上点「接管手臂」后才创建
@@ -13,8 +14,12 @@
 纯模拟联调（假相机，无机器人）:
     python reach_server.py --camera-source mock --no-robot
 
-正常启动（真相机 + DDS 只读；执行与否由页面决定）:
-    python reach_server.py --camera-serial CP0BB53000FS --network-interface enp86s0
+生产启动（外部 ZMQ RGB-D + DDS 只读；执行与否由页面决定）:
+    python reach_server.py --camera-host 192.168.123.164 --network-interface enp86s0
+
+显式 SDK 调试（会在本机打开相机，生产禁止使用）:
+    python reach_server.py --camera-source orbbec \
+      --camera-serial CP0BB53000FS --network-interface enp86s0
 
 环境障碍：页面「扫描障碍」把当前深度图转成躯干系体素（默认 5cm），
 注入碰撞检查——电柜等环境物体也参与轨迹校验。扫描时建议先把手臂放低
@@ -37,6 +42,8 @@ sys.path.insert(0, str(HAND_EYE_3D_ROOT))
 # 存疑待查；两套必须整组使用：0720 配 --tool-out-mm 10，0726 配 0，不可混搭）
 DEFAULT_CALIB = (HAND_EYE_3D_ROOT / "handeye3d_data" / "20260720_230131"
                  / "handeye3d_result.json")
+DEFAULT_RGBD_CALIB = PROJECT_ROOT / "config" / "camera" / "orbbec_rgbd_calibration.json"
+DEFAULT_CAMERA_CONFIG_CACHE = PROJECT_ROOT / "config" / "camera" / "teleimager_config_cache.json"
 
 
 def main() -> int:
@@ -49,8 +56,24 @@ def main() -> int:
     parser.add_argument("--calib", type=Path, default=DEFAULT_CALIB,
                         help="hand_eye_3D 的 handeye3d_result.json 路径")
 
-    parser.add_argument("--camera-source", choices=["orbbec", "mock"], default="orbbec")
-    parser.add_argument("--camera-serial", default=None, help="Orbbec 序列号（默认第一台）")
+    parser.add_argument("--camera-source", choices=["zmq", "orbbec", "mock"], default="zmq",
+                        help="生产默认 zmq；orbbec 会主动打开本机相机，仅限调试")
+    parser.add_argument("--camera-serial", default=None,
+                        help="仅 --camera-source orbbec 使用的 Orbbec 序列号")
+    parser.add_argument("--camera-host", default="192.168.123.164",
+                        help="teleimager 主机地址")
+    parser.add_argument("--camera-request-port", type=int, default=60000,
+                        help="teleimager 配置请求端口")
+    parser.add_argument("--camera-port", type=int, default=None,
+                        help="RGB-D ZMQ 端口；默认通过配置请求获取，服务无配置接口时可显式给出")
+    parser.add_argument("--camera-name", default="head_rgbd_camera",
+                        help="teleimager RGB-D stream 名称")
+    parser.add_argument("--camera-rgbd-calib", type=Path, default=DEFAULT_RGBD_CALIB,
+                        help="SDK 调试工具一次性导出的本地 RGB-D 标定 JSON")
+    parser.add_argument("--camera-config-cache", type=Path, default=DEFAULT_CAMERA_CONFIG_CACHE,
+                        help="teleimager 只读配置的本地缓存")
+    parser.add_argument("--camera-stale-after", type=float, default=2.0,
+                        help="超过该秒数未收到 RGB-D 帧即视为过期")
 
     parser.add_argument("--no-robot", action="store_true",
                         help="不连 DDS（纯模拟联调，页面上无法接管手臂）")
@@ -100,9 +123,23 @@ def main() -> int:
         return 1
     robot_model = app_module.robots[args.robot]
 
-    from backend.camera import make_camera  # hand_eye_3D
+    if args.camera_source == "zmq":
+        from camera_sources import ZmqRGBDCamera
 
-    camera = make_camera(args.camera_source, serial=args.camera_serial)
+        camera = ZmqRGBDCamera(
+            host=args.camera_host,
+            calibration_path=args.camera_rgbd_calib,
+            camera_name=args.camera_name,
+            request_port=args.camera_request_port,
+            stream_port=args.camera_port,
+            config_cache_path=args.camera_config_cache,
+            stale_after_s=args.camera_stale_after,
+        )
+    else:
+        # 只有显式选择 orbbec 才 import SDK 后端并可能打开本机设备。
+        from backend.camera import make_camera  # hand_eye_3D
+
+        camera = make_camera(args.camera_source, serial=args.camera_serial)
     camera.start()
     print(f"[reach] camera = {args.camera_source}: {camera.info()}")
 

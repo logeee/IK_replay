@@ -30,6 +30,55 @@ Open:
 http://localhost:8000
 ```
 
+## Reach RGB-D source
+
+The production reach service is a read-only consumer of the external
+teleimager RGB-D ZMQ stream. It does not start a local camera and it does not
+modify the teleimager project.
+
+Before first deployment (or after changing the camera/profile), temporarily
+make the camera available for exclusive SDK access and export its calibration:
+
+```bash
+sudo systemctl stop teleimager-camera-capture.service
+python tools/export_orbbec_rgbd_calibration.py \
+  --serial CP0BB53000FS \
+  --color-width 1920 --color-height 1080 \
+  --depth-width 1280 --depth-height 800 \
+  --sample-dir /tmp/orbbec_alignment_reference
+sudo systemctl start teleimager-camera-capture.service
+```
+
+The generated `config/camera/orbbec_rgbd_calibration.json` contains the SDK
+intrinsics, distortion, depth-to-color extrinsics, and depth scale. Production
+then starts without SDK camera access:
+
+```bash
+python reach_server.py \
+  --camera-source zmq \
+  --camera-host 192.168.123.164 \
+  --network-interface enp86s0
+```
+
+`reach_server.py` checks the ZMQ metadata dimensions against the local
+calibration before software-aligning Z16 depth into the JPEG color frame.
+Failure to connect or a profile mismatch is fatal; production never falls back
+to opening the local Orbbec. Direct SDK access remains available only through
+an explicit debug command:
+
+```bash
+python reach_server.py --camera-source orbbec --camera-serial CP0BB53000FS
+```
+
+When `--sample-dir` is used, the exporter also saves the same frame before and
+after SDK `AlignFilter`. Compare that reference with the SDK-free implementation:
+
+```bash
+python tools/compare_rgbd_alignment.py \
+  --raw-depth /tmp/orbbec_alignment_reference/raw_depth_z16.npy \
+  --sdk-aligned /tmp/orbbec_alignment_reference/sdk_aligned_depth_mm.npy
+```
+
 ## API
 
 - `GET /`
@@ -46,7 +95,9 @@ http://localhost:8000
 ```text
 IK_replay/
 ├── app.py
+├── camera_sources/
 ├── config/
+│   ├── camera/
 │   ├── default.yaml
 │   └── robots/
 │       ├── g1_d.yaml
