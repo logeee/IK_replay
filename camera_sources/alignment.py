@@ -150,7 +150,14 @@ class SoftwareDepthAligner:
 
     def __init__(self, calibration: RGBDCalibration):
         self.calibration = calibration
-        self._depth_rays = self._make_depth_rays()
+        depth_rays = self._make_depth_rays()
+        # Both the undistorted rays and depth-to-color rotation are immutable.
+        # Precompute R @ ray once instead of repeating a million-point BLAS
+        # matrix multiplication for every incoming depth frame.
+        self._rotated_depth_rays = np.ascontiguousarray(
+            depth_rays @ self.calibration.depth_to_color_rotation.T,
+            dtype=np.float64,
+        )
 
     def _make_depth_rays(self) -> np.ndarray:
         height, width = self.calibration.depth_shape
@@ -203,9 +210,8 @@ class SoftwareDepthAligner:
 
         z_depth_mm = raw_flat[valid_indices].astype(np.float32)
         z_depth_mm *= np.float32(self.calibration.depth_scale_mm)
-        points_depth = self._depth_rays[valid_indices] * z_depth_mm[:, None]
         points_color = (
-            points_depth @ self.calibration.depth_to_color_rotation.T
+            self._rotated_depth_rays[valid_indices] * z_depth_mm[:, None]
             + self.calibration.depth_to_color_translation_mm
         )
         z_color = points_color[:, 2]

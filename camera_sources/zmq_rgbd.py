@@ -6,7 +6,6 @@ import json
 import os
 import threading
 import time
-from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +15,7 @@ import numpy as np
 from .alignment import RGBDCalibration, SoftwareDepthAligner
 
 
-DEPTH_HISTORY = 8
+PICK_SAMPLES = 3
 
 
 def _shape(value: Any, name: str) -> tuple[int, int]:
@@ -114,9 +113,16 @@ class ZmqRGBDCamera:
         self.name = camera_name
 
         self._lock = threading.Lock()
+        self._condition = threading.Condition(self._lock)
+        self._align_lock = threading.Lock()
         self._color_jpeg: bytes | None = None
+        self._raw_depth: np.ndarray | None = None
+        self._frame_generation = 0
         self._aligned_depth: np.ndarray | None = None
-        self._depth_hist: deque[np.ndarray] = deque(maxlen=DEPTH_HISTORY)
+        self._aligned_generation = -1
+        self._aligned_color_jpeg: bytes | None = None
+        self._aligned_metadata: dict[str, Any] | None = None
+        self._aligned_frame_at: float | None = None
         self._metadata: dict[str, Any] | None = None
         self._last_frame_at: float | None = None
         self._stop_evt = threading.Event()
@@ -257,16 +263,16 @@ class ZmqRGBDCamera:
                         self.calibration,
                         verify_jpeg_shape=not self._verified_jpeg,
                     )
-                    aligned_depth = self.aligner.align(raw_depth)
                     now = time.monotonic()
-                    with self._lock:
+                    with self._condition:
                         self._color_jpeg = color_jpeg
-                        self._aligned_depth = aligned_depth
-                        self._depth_hist.append(aligned_depth)
+                        self._raw_depth = raw_depth
+                        self._frame_generation += 1
                         self._metadata = metadata
                         self._last_frame_at = now
                         self.error = None
                         self._verified_jpeg = True
+                        self._condition.notify_all()
                     self._ready.set()
                 except zmq.ZMQError as exc:
                     with self._lock:
@@ -292,6 +298,8 @@ class ZmqRGBDCamera:
 
     def stop(self) -> None:
         self._stop_evt.set()
+        with self._condition:
+            self._condition.notify_all()
         if self._thread is not None:
             self._thread.join(timeout=3.0)
             self._thread = None
@@ -311,21 +319,112 @@ class ZmqRGBDCamera:
                 return None
             return self._color_jpeg
 
+    def _raw_snapshot(
+        self,
+        *,
+        after_generation: int | None = None,
+        timeout_s: float = 0.0,
+    ) -> tuple[int, bytes, np.ndarray, dict[str, Any], float] | None:
+        """Copy references to one immutable source message, optionally waiting."""
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        with self._condition:
+            while True:
+                fresh = (
+                    self._fresh()
+                    and self._color_jpeg is not None
+                    and self._raw_depth is not None
+                    and (
+                        after_generation is None
+                        or self._frame_generation != after_generation
+                    )
+                )
+                if fresh:
+                    return (
+                        self._frame_generation,
+                        self._color_jpeg,
+                        self._raw_depth,
+                        {} if self._metadata is None else dict(self._metadata),
+                        self._last_frame_at,
+                    )
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0 or self._stop_evt.is_set():
+                    return None
+                self._condition.wait(remaining)
+
+    def _align_on_demand(
+        self,
+        *,
+        after_generation: int | None = None,
+        timeout_s: float = 0.0,
+    ) -> tuple[int, bytes, np.ndarray, dict[str, Any]] | None:
+        """Align one source message, coalescing concurrent requests by frame."""
+        source = self._raw_snapshot(
+            after_generation=after_generation,
+            timeout_s=timeout_s,
+        )
+        if source is None:
+            return None
+        generation, jpeg, raw_depth, metadata, frame_at = source
+        with self._align_lock:
+            with self._lock:
+                if (
+                    self._aligned_generation == generation
+                    and self._aligned_depth is not None
+                    and self._aligned_color_jpeg is not None
+                ):
+                    return (
+                        generation,
+                        self._aligned_color_jpeg,
+                        self._aligned_depth,
+                        {} if self._aligned_metadata is None
+                        else dict(self._aligned_metadata),
+                    )
+
+            aligned_depth = self.aligner.align(raw_depth)
+            with self._lock:
+                if generation >= self._aligned_generation:
+                    self._aligned_generation = generation
+                    self._aligned_depth = aligned_depth
+                    self._aligned_color_jpeg = jpeg
+                    self._aligned_metadata = dict(metadata)
+                    self._aligned_frame_at = frame_at
+            return generation, jpeg, aligned_depth, metadata
+
     def pick(self, u: int, v: int, win: int = 5) -> dict[str, Any]:
         del win
-        with self._lock:
-            hist = list(self._depth_hist) if self._fresh() else []
-        if not hist:
-            return {"ok": False, "error": self.error or "还没有新鲜的对齐深度帧"}
-        height, width = hist[0].shape
-        if not (0 <= u < width and 0 <= v < height):
-            return {"ok": False, "error": f"像素越界 ({u},{v})，深度图 {width}x{height}"}
-        values = np.asarray([frame[v, u] for frame in hist], dtype=np.float64)
-        valid = values[(values > 60.0) & (values < 15000.0)]
-        if valid.size < max(3, len(values) // 2):
+        if not (0 <= u < self.width and 0 <= v < self.height):
             return {
                 "ok": False,
-                "error": f"该像素没有稳定深度（{valid.size}/{len(values)} 帧有效）",
+                "error": (
+                    f"像素越界 ({u},{v})，深度图 "
+                    f"{self.width}x{self.height}"
+                ),
+            }
+        frames: list[np.ndarray] = []
+        generation = None
+        for index in range(PICK_SAMPLES):
+            aligned = self._align_on_demand(
+                after_generation=generation,
+                timeout_s=0.0 if index == 0 else 1.0,
+            )
+            if aligned is None:
+                break
+            generation, _jpeg, depth, _metadata = aligned
+            frames.append(depth)
+        if len(frames) < PICK_SAMPLES:
+            return {
+                "ok": False,
+                "error": (
+                    f"无法取得 {PICK_SAMPLES} 帧新鲜深度"
+                    f"（实际 {len(frames)} 帧）"
+                ),
+            }
+        values = np.asarray([frame[v, u] for frame in frames], dtype=np.float64)
+        valid = values[(values > 60.0) & (values < 15000.0)]
+        if valid.size < PICK_SAMPLES:
+            return {
+                "ok": False,
+                "error": f"该像素没有稳定深度（{valid.size}/{PICK_SAMPLES} 帧有效）",
             }
         spread = float(np.max(valid) - np.min(valid))
         if spread > 80.0:
@@ -345,31 +444,24 @@ class ZmqRGBDCamera:
         }
 
     def depth_snapshot(self):
-        with self._lock:
-            hist = list(self._depth_hist) if self._fresh() else []
-        if not hist:
+        aligned = self._align_on_demand()
+        if aligned is None:
             return None
-        depth = np.median(np.stack(hist), axis=0).astype(np.float32)
-        return depth, self.intrinsics
+        _generation, _jpeg, depth, _metadata = aligned
+        return depth.copy(), self.intrinsics
 
     def rgbd_snapshot(self) -> dict[str, Any] | None:
-        """Return the latest color/depth pair from one ZMQ message.
-
-        Point-cloud capture must not combine the latest JPEG with the temporal
-        median used by depth_snapshot(), because that median spans multiple
-        frames. Both arrays below are copied under the same lock.
-        """
-        with self._lock:
-            if (not self._fresh() or self._color_jpeg is None
-                    or self._aligned_depth is None):
-                return None
-            return {
-                "jpeg": bytes(self._color_jpeg),
-                "depth_mm": self._aligned_depth.copy(),
-                "intrinsics": tuple(float(v) for v in self.intrinsics),
-                "metadata": ({} if self._metadata is None
-                             else dict(self._metadata)),
-            }
+        """Align and return one strict same-message color/depth pair."""
+        aligned = self._align_on_demand()
+        if aligned is None:
+            return None
+        _generation, jpeg, depth, metadata = aligned
+        return {
+            "jpeg": bytes(jpeg),
+            "depth_mm": depth.copy(),
+            "intrinsics": tuple(float(v) for v in self.intrinsics),
+            "metadata": dict(metadata),
+        }
 
     def info(self) -> dict[str, Any]:
         with self._lock:
@@ -380,6 +472,15 @@ class ZmqRGBDCamera:
                 else max(0.0, time.monotonic() - self._last_frame_at)
             )
             error = self.error
+            aligned_age = (
+                None
+                if self._aligned_frame_at is None
+                else max(0.0, time.monotonic() - self._aligned_frame_at)
+            )
+            aligned_generation = (
+                None if self._aligned_generation < 0
+                else self._aligned_generation
+            )
         return {
             "source": self.source,
             "host": self.host,
@@ -397,6 +498,9 @@ class ZmqRGBDCamera:
             },
             "calibration_path": str(self.calibration.path),
             "last_frame_age_s": last_age,
+            "alignment_mode": "on_demand",
+            "aligned_frame_age_s": aligned_age,
+            "aligned_generation": aligned_generation,
             "metadata": metadata,
             "error": error,
         }

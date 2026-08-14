@@ -354,6 +354,12 @@ class MockTeleimagerTest(unittest.TestCase):
                     startup_timeout_s=3.0,
                 )
                 camera.start()
+                self.assertIsNone(camera.info()["aligned_generation"])
+                time.sleep(0.15)
+                self.assertIsNone(
+                    camera.info()["aligned_generation"],
+                    "仅接收 ZMQ 推流时不应执行深度对齐",
+                )
                 picked = {"ok": False}
                 jpeg = None
                 for _ in range(40):
