@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RGB / YOLO 语义点云</title>
-    <link rel="stylesheet" href="/web/pointcloud.css?v=20260814-2" />
+    <link rel="stylesheet" href="/web/pointcloud.css?v=20260814-4" />
     <script type="importmap">
       {
         "imports": {
@@ -48,6 +48,7 @@
         <h2>显示</h2>
         <div class="segmented">
           <button id="liveMode" class="active">实时画面</button>
+          <button id="snapshotMode">快照图像</button>
           <button id="rgbMode">RGB 点云</button>
           <button id="semanticMode">YOLO 语义点云</button>
         </div>
@@ -76,11 +77,17 @@
 
     <main class="viewer-shell">
       <img id="liveStream" src="/api/pointcloud/stream" alt="实时相机画面" />
+      <div id="snapshotStage" class="hidden">
+        <div id="snapshotFrame">
+          <img id="snapshotImage" alt="当前点云对应的快照图像" />
+          <div id="snapshotBoxes"></div>
+        </div>
+      </div>
       <div id="viewport" class="hidden"></div>
       <div id="viewerHelp" class="viewer-help">实时 ZMQ 彩色画面 · 点击“拍一下”生成点云</div>
       <div id="axisNote" class="axis-note hidden">显示坐标：X 右，Y 上，视线向前；数值返回彩色相机系 X右/Y下/Z前</div>
     </main>
 
-    <script type="module" src="/web/pointcloud.js?v=20260814-2"></script>
+    <script type="module" src="/web/pointcloud.js?v=20260814-4"></script>
   </body>
 </html>

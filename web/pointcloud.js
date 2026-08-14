@@ -51,6 +51,7 @@ function resize() {
   renderer.setSize(clientWidth, clientHeight, false);
   camera.aspect = Math.max(1, clientWidth) / Math.max(1, clientHeight);
   camera.updateProjectionMatrix();
+  layoutSnapshot();
 }
 window.addEventListener("resize", resize);
 resize();
@@ -70,17 +71,24 @@ function setStatus(text, kind = "") {
 function setViewMode(mode) {
   viewMode = mode;
   const live = mode === "live";
+  const snapshot = mode === "snapshot";
+  const pointcloud = !live && !snapshot;
   $("liveStream").classList.toggle("hidden", !live);
-  viewport.classList.toggle("hidden", live);
+  $("snapshotStage").classList.toggle("hidden", !snapshot);
+  viewport.classList.toggle("hidden", !pointcloud);
   $("liveMode").classList.toggle("active", live);
+  $("snapshotMode").classList.toggle("active", snapshot);
   $("rgbMode").classList.toggle("active", mode === "rgb");
   $("semanticMode").classList.toggle("active", mode === "semantic");
-  $("axisNote").classList.toggle("hidden", live);
+  $("axisNote").classList.toggle("hidden", !pointcloud);
   $("viewerHelp").textContent = live
     ? "实时 ZMQ 彩色画面 · 点击“拍一下”生成点云"
-    : "左键旋转 · 右键平移 · 滚轮缩放 · 点击点云选点";
-  controls.enabled = !live;
-  if (!live) resize();
+    : snapshot
+      ? "生成当前点云时使用的同帧 RGB 快照 · YOLO 检测框"
+      : "左键旋转 · 右键平移 · 滚轮缩放 · 点击点云选点";
+  controls.enabled = pointcloud;
+  if (pointcloud) resize();
+  if (snapshot) layoutSnapshot();
 }
 
 function decodeBinary(buffer) {
@@ -208,6 +216,42 @@ function renderBoxes(meta) {
   }
 }
 
+function layoutSnapshot() {
+  const image = $("snapshotImage");
+  const stage = $("snapshotStage");
+  if (!image.naturalWidth || !stage.clientWidth || !stage.clientHeight) return;
+  const scale = Math.min(
+    stage.clientWidth / image.naturalWidth,
+    stage.clientHeight / image.naturalHeight,
+  );
+  $("snapshotFrame").style.width = `${image.naturalWidth * scale}px`;
+  $("snapshotFrame").style.height = `${image.naturalHeight * scale}px`;
+}
+
+function drawSnapshotBoxes() {
+  const root = $("snapshotBoxes");
+  const image = $("snapshotImage");
+  root.replaceChildren();
+  if (!captureMeta || !image.naturalWidth) return;
+  for (const box of captureMeta.boxes || []) {
+    const [x1, y1, x2, y2] = box.xyxy;
+    const color = PALETTE[((box.cls % PALETTE.length) + PALETTE.length) % PALETTE.length];
+    const cssColor = `rgb(${color.join(",")})`;
+    const element = document.createElement("div");
+    element.className = "snapshot-box";
+    element.style.left = `${x1 / image.naturalWidth * 100}%`;
+    element.style.top = `${y1 / image.naturalHeight * 100}%`;
+    element.style.width = `${(x2 - x1) / image.naturalWidth * 100}%`;
+    element.style.height = `${(y2 - y1) / image.naturalHeight * 100}%`;
+    element.style.borderColor = cssColor;
+    const label = document.createElement("span");
+    label.style.background = cssColor;
+    label.textContent = `${box.name} ${(box.conf * 100).toFixed(0)}%`;
+    element.appendChild(label);
+    root.appendChild(element);
+  }
+}
+
 async function capture() {
   const button = $("captureBtn");
   button.disabled = true;
@@ -229,6 +273,12 @@ async function capture() {
     if (!binaryResponse.ok) throw new Error(`点云下载失败 HTTP ${binaryResponse.status}`);
     const decoded = decodeBinary(await binaryResponse.arrayBuffer());
     captureMeta = meta;
+    const snapshotImage = $("snapshotImage");
+    snapshotImage.onload = () => {
+      layoutSnapshot();
+      drawSnapshotBoxes();
+    };
+    snapshotImage.src = meta.image_url;
     installCloud(decoded);
     setColorMode("rgb");
     renderBoxes(meta);
@@ -261,6 +311,14 @@ function rootPoint(cameraPoint) {
     transform[2][0] * cameraPoint[0] + transform[2][1] * cameraPoint[1]
       + transform[2][2] * cameraPoint[2] + transform[2][3],
   ];
+}
+
+function showSnapshot() {
+  if (!captureMeta) {
+    setStatus("请先点击“拍一下”生成快照", "error");
+    return;
+  }
+  setViewMode("snapshot");
 }
 
 let pointerDown = null;
@@ -310,6 +368,7 @@ renderer.domElement.addEventListener("pointerup", (event) => {
 
 $("captureBtn").addEventListener("click", capture);
 $("liveMode").addEventListener("click", () => setViewMode("live"));
+$("snapshotMode").addEventListener("click", showSnapshot);
 $("rgbMode").addEventListener("click", () => setColorMode("rgb"));
 $("semanticMode").addEventListener("click", () => setColorMode("semantic"));
 $("resetView").addEventListener("click", resetView);
@@ -320,6 +379,9 @@ $("pointSize").addEventListener("input", () => {
 });
 $("liveStream").addEventListener("error", () => {
   setStatus("实时画面不可达，请检查 reach_server 的 8001 服务", "error");
+});
+$("snapshotImage").addEventListener("error", () => {
+  setStatus("当前快照图像加载失败，请重新拍摄", "error");
 });
 
 fetch("/api/pointcloud/status")

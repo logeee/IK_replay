@@ -208,6 +208,9 @@ class PointCloudBackendTest(unittest.TestCase):
         self.assertEqual(metadata["point_count"], 4)
         self.assertEqual(metadata["source"]["frame_id"], "frame-7")
         self.assertEqual(metadata["boxes"][0]["name"], "target")
+        image_response = pointcloud_viewer.capture_image(metadata["capture_id"])
+        self.assertEqual(image_response.media_type, "image/jpeg")
+        self.assertEqual(image_response.body, jpeg.tobytes())
         response = pointcloud_viewer.pointcloud_data(metadata["capture_id"])
         cloud = decode_pointcloud(response.body)
         self.assertEqual(cloud.count, 4)
@@ -216,6 +219,8 @@ class PointCloudBackendTest(unittest.TestCase):
     def test_old_or_unknown_capture_id_is_not_downloadable(self):
         response = pointcloud_viewer.pointcloud_data("missing")
         self.assertEqual(response.status_code, 404)
+        image_response = pointcloud_viewer.capture_image("missing")
+        self.assertEqual(image_response.status_code, 404)
 
     def test_live_stream_proxies_reach_mjpeg_and_closes_upstream(self):
         upstream = mock.Mock()

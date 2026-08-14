@@ -82,7 +82,7 @@ input, select {
 .status.error { color: #ff8585; }
 .status.ok { color: #67d394; }
 
-.segmented { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.segmented { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
 .segmented button.active { background: #1769aa; border-color: #3b91d4; }
 
 .range-label { display: grid; grid-template-columns: 64px 1fr 50px; align-items: center; gap: 7px; margin: 12px 0; }
@@ -113,6 +113,38 @@ input, select {
   height: 100%;
   object-fit: contain;
   background: #080b10;
+}
+#snapshotStage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+#snapshotFrame { position: relative; }
+#snapshotImage { display: block; width: 100%; height: 100%; }
+#snapshotBoxes { position: absolute; inset: 0; pointer-events: none; }
+.snapshot-box {
+  position: absolute;
+  border: 2px solid;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .7);
+}
+.snapshot-box span {
+  position: absolute;
+  left: -2px;
+  top: -24px;
+  max-width: 220px;
+  padding: 3px 6px;
+  border-radius: 3px 3px 3px 0;
+  color: #fff;
+  font-size: 13px;
+  line-height: 18px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 2px #000;
 }
 #viewport { position: absolute; inset: 0; }
 #viewport canvas { display: block; width: 100%; height: 100%; }

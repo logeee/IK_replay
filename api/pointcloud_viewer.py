@@ -48,6 +48,7 @@ _capture_lock = threading.Lock()
 class Capture:
     capture_id: str
     binary: bytes
+    jpeg: bytes
     metadata: dict[str, Any]
 
 
@@ -217,6 +218,7 @@ def capture(body: dict | None = None):
         "ok": True,
         "capture_id": capture_id,
         "data_url": f"/api/pointcloud/data/{capture_id}",
+        "image_url": f"/api/pointcloud/image/{capture_id}",
         "point_count": cloud.count,
         "stride": stride,
         "z_min_m": z_min_m,
@@ -239,8 +241,29 @@ def capture(body: dict | None = None):
         },
     }
     with _capture_lock:
-        _latest = Capture(capture_id=capture_id, binary=binary, metadata=metadata)
+        _latest = Capture(
+            capture_id=capture_id,
+            binary=binary,
+            jpeg=snapshot["jpeg"],
+            metadata=metadata,
+        )
     return metadata
+
+
+@app.get("/api/pointcloud/image/{capture_id}")
+def capture_image(capture_id: str):
+    with _capture_lock:
+        capture_value = _latest
+    if capture_value is None or capture_value.capture_id != capture_id:
+        return JSONResponse(
+            {"ok": False, "error": "快照图像不存在或已被新快照替换"},
+            status_code=404,
+        )
+    return Response(
+        capture_value.jpeg,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/pointcloud/data/{capture_id}")
