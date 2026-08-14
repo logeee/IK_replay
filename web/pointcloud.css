@@ -82,7 +82,7 @@ input, select {
 .status.error { color: #ff8585; }
 .status.ok { color: #67d394; }
 
-.segmented { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.segmented { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 .segmented button.active { background: #1769aa; border-color: #3b91d4; }
 
 .range-label { display: grid; grid-template-columns: 64px 1fr 50px; align-items: center; gap: 7px; margin: 12px 0; }
@@ -106,8 +106,17 @@ input, select {
 .swatch { width: 11px; height: 11px; border-radius: 3px; }
 
 .viewer-shell { min-width: 0; position: relative; background: #080b10; }
+#liveStream {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #080b10;
+}
 #viewport { position: absolute; inset: 0; }
 #viewport canvas { display: block; width: 100%; height: 100%; }
+.hidden { display: none !important; }
 
 .viewer-help, .axis-note {
   position: absolute;

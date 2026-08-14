@@ -44,6 +44,7 @@ let pixels = null;
 let classIds = null;
 let captureMeta = null;
 let colorMode = "rgb";
+let viewMode = "live";
 
 function resize() {
   const { clientWidth, clientHeight } = viewport;
@@ -64,6 +65,22 @@ animate();
 function setStatus(text, kind = "") {
   $("status").textContent = text;
   $("status").className = `status ${kind}`;
+}
+
+function setViewMode(mode) {
+  viewMode = mode;
+  const live = mode === "live";
+  $("liveStream").classList.toggle("hidden", !live);
+  viewport.classList.toggle("hidden", live);
+  $("liveMode").classList.toggle("active", live);
+  $("rgbMode").classList.toggle("active", mode === "rgb");
+  $("semanticMode").classList.toggle("active", mode === "semantic");
+  $("axisNote").classList.toggle("hidden", live);
+  $("viewerHelp").textContent = live
+    ? "实时 ZMQ 彩色画面 · 点击“拍一下”生成点云"
+    : "左键旋转 · 右键平移 · 滚轮缩放 · 点击点云选点";
+  controls.enabled = !live;
+  if (!live) resize();
 }
 
 function decodeBinary(buffer) {
@@ -154,12 +171,14 @@ function installCloud(decoded) {
 
 function setColorMode(mode) {
   colorMode = mode;
-  $("rgbMode").classList.toggle("active", mode === "rgb");
-  $("semanticMode").classList.toggle("active", mode === "semantic");
-  if (!points) return;
+  if (!points) {
+    setStatus("请先点击“拍一下”生成点云", "error");
+    return;
+  }
   const colors = mode === "rgb" ? rgbColors : semanticColors;
   points.geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3, true));
   points.geometry.attributes.color.needsUpdate = true;
+  setViewMode(mode);
 }
 
 function renderBoxes(meta) {
@@ -211,6 +230,7 @@ async function capture() {
     const decoded = decodeBinary(await binaryResponse.arrayBuffer());
     captureMeta = meta;
     installCloud(decoded);
+    setColorMode("rgb");
     renderBoxes(meta);
     $("captureInfo").classList.remove("muted");
     $("captureInfo").innerHTML = [
@@ -289,6 +309,7 @@ renderer.domElement.addEventListener("pointerup", (event) => {
 });
 
 $("captureBtn").addEventListener("click", capture);
+$("liveMode").addEventListener("click", () => setViewMode("live"));
 $("rgbMode").addEventListener("click", () => setColorMode("rgb"));
 $("semanticMode").addEventListener("click", () => setColorMode("semantic"));
 $("resetView").addEventListener("click", resetView);
@@ -297,6 +318,9 @@ $("pointSize").addEventListener("input", () => {
   $("pointSizeValue").textContent = `${value.toFixed(1)} px`;
   if (points) points.material.size = value;
 });
+$("liveStream").addEventListener("error", () => {
+  setStatus("实时画面不可达，请检查 reach_server 的 8001 服务", "error");
+});
 
 fetch("/api/pointcloud/status")
   .then((response) => response.json())
@@ -304,3 +328,5 @@ fetch("/api/pointcloud/status")
     if (value.ok) setStatus(`服务就绪 · ${value.model || "模型加载中"}`);
   })
   .catch((error) => setStatus(`状态检查失败: ${error}`, "error"));
+
+setViewMode(viewMode);

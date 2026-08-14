@@ -16,7 +16,12 @@ import cv2
 import numpy as np
 import requests
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 
 from .pointcloud_core import build_pointcloud, encode_pointcloud
@@ -106,6 +111,39 @@ def _infer(bgr: np.ndarray, conf: float) -> list[dict[str, Any]]:
 @app.get("/")
 def page():
     return FileResponse(WEB_DIR / "pointcloud.html")
+
+
+@app.get("/api/pointcloud/stream")
+def camera_stream():
+    """Proxy reach_server's MJPEG stream for the integrated live preview."""
+    try:
+        upstream = _http.get(
+            f"{_reach_base}/api/reach/stream",
+            stream=True,
+            timeout=(3.0, None),
+        )
+        upstream.raise_for_status()
+    except requests.RequestException as exc:
+        return Response(
+            f"相机流不可达（{_reach_base}）: {exc}",
+            status_code=502,
+            media_type="text/plain",
+        )
+
+    def generate():
+        try:
+            yield from upstream.iter_content(chunk_size=65536)
+        finally:
+            upstream.close()
+
+    return StreamingResponse(
+        generate(),
+        media_type=upstream.headers.get(
+            "Content-Type",
+            "multipart/x-mixed-replace; boundary=frame",
+        ),
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.get("/api/pointcloud/status")
@@ -241,7 +279,7 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=7005)
     parser.add_argument("--reach-base", default="http://127.0.0.1:8001")
-    parser.add_argument("--model", default="models/Xuanniu-NJ.pt")
+    parser.add_argument("--model", default="models/Xuanniu.pt")
     parser.add_argument("--conf", type=float, default=0.25)
     args = parser.parse_args()
     _reach_base = args.reach_base.rstrip("/")

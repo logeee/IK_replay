@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from unittest import mock
 
@@ -215,6 +216,30 @@ class PointCloudBackendTest(unittest.TestCase):
     def test_old_or_unknown_capture_id_is_not_downloadable(self):
         response = pointcloud_viewer.pointcloud_data("missing")
         self.assertEqual(response.status_code, 404)
+
+    def test_live_stream_proxies_reach_mjpeg_and_closes_upstream(self):
+        upstream = mock.Mock()
+        upstream.headers = {
+            "Content-Type": "multipart/x-mixed-replace; boundary=frame",
+        }
+        upstream.iter_content.return_value = iter([b"first", b"second"])
+        with mock.patch.object(
+            pointcloud_viewer._http,
+            "get",
+            return_value=upstream,
+        ) as request:
+            response = pointcloud_viewer.camera_stream()
+
+        async def consume():
+            return [chunk async for chunk in response.body_iterator]
+
+        self.assertEqual(asyncio.run(consume()), [b"first", b"second"])
+        request.assert_called_once_with(
+            "http://127.0.0.1:8001/api/reach/stream",
+            stream=True,
+            timeout=(3.0, None),
+        )
+        upstream.close.assert_called_once()
 
 
 if __name__ == "__main__":
