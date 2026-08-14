@@ -287,6 +287,7 @@ async function capture() {
       `点数: ${meta.point_count.toLocaleString()}`,
       `YOLO框: ${meta.boxes.length}`,
       `stride: ${meta.stride}`,
+      `YOLO邻域: 全像素（外扩 ${(meta.box_padding_ratio * 100).toFixed(0)}%）`,
       `范围: ${meta.z_min_m.toFixed(2)}–${meta.z_max_m.toFixed(2)} m`,
       `耗时: ${meta.capture_ms.toFixed(1)} ms`,
       `源帧: ${meta.source?.frame_id ?? "?"}`,

@@ -40,6 +40,7 @@ _model = None
 _model_name = ""
 _names: dict[int, str] = {}
 _default_conf = 0.25
+_box_padding_ratio = 0.1
 _model_lock = threading.Lock()
 _capture_lock = threading.Lock()
 
@@ -200,6 +201,8 @@ def capture(body: dict | None = None):
             stride=stride,
             z_min_m=z_min_m,
             z_max_m=z_max_m,
+            dense_box_sampling=True,
+            box_padding_ratio=_box_padding_ratio,
         )
         binary = encode_pointcloud(cloud)
     except Exception as exc:
@@ -221,6 +224,8 @@ def capture(body: dict | None = None):
         "image_url": f"/api/pointcloud/image/{capture_id}",
         "point_count": cloud.count,
         "stride": stride,
+        "dense_box_sampling": True,
+        "box_padding_ratio": _box_padding_ratio,
         "z_min_m": z_min_m,
         "z_max_m": z_max_m,
         "conf": conf,

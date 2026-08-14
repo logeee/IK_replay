@@ -43,8 +43,15 @@ def build_pointcloud(
     z_min_m: float = 0.15,
     z_max_m: float = 3.0,
     max_points: int = 350_000,
+    dense_box_sampling: bool = True,
+    box_padding_ratio: float = 0.1,
 ) -> PointCloud:
-    """Back-project aligned depth and assign RGB and detection-box colors."""
+    """Back-project aligned depth and assign RGB and detection-box colors.
+
+    The background uses ``stride`` sampling. By default, each valid YOLO box
+    is expanded by ``box_padding_ratio`` and sampled at every pixel so that
+    interactive picking remains precise near detected targets.
+    """
     depth = np.asarray(depth_mm)
     image = np.asarray(bgr)
     if depth.ndim != 2:
@@ -57,16 +64,37 @@ def build_pointcloud(
         raise ValueError("stride 必须在 1~32")
     if not (0.01 <= z_min_m < z_max_m <= 30.0):
         raise ValueError("深度范围不合法")
+    if not 0.0 <= box_padding_ratio <= 1.0:
+        raise ValueError("box_padding_ratio 必须在 0~1")
     fx, fy, cx, cy = [float(v) for v in intrinsics]
     if fx <= 0 or fy <= 0:
         raise ValueError("fx/fy 必须为正数")
 
     height, width = depth.shape
-    vv, uu = np.mgrid[0:height:stride, 0:width:stride]
-    z = depth[::stride, ::stride].astype(np.float32) / 1000.0
+    sampled = np.zeros((height, width), dtype=bool)
+    sampled[::stride, ::stride] = True
+    if dense_box_sampling:
+        for box in boxes:
+            try:
+                x1, y1, x2, y2 = [float(value) for value in box["xyxy"]]
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not np.all(np.isfinite([x1, y1, x2, y2])) or x2 < x1 or y2 < y1:
+                continue
+            pad_x = (x2 - x1) * box_padding_ratio
+            pad_y = (y2 - y1) * box_padding_ratio
+            left = max(0, int(np.floor(x1 - pad_x)))
+            top = max(0, int(np.floor(y1 - pad_y)))
+            right = min(width - 1, int(np.ceil(x2 + pad_x)))
+            bottom = min(height - 1, int(np.ceil(y2 + pad_y)))
+            if left <= right and top <= bottom:
+                sampled[top:bottom + 1, left:right + 1] = True
+
+    vv, uu = np.nonzero(sampled)
+    z = depth[vv, uu].astype(np.float32) / 1000.0
     valid = np.isfinite(z) & (z >= z_min_m) & (z <= z_max_m)
-    u = uu[valid].astype(np.uint16)
-    v = vv[valid].astype(np.uint16)
+    u = uu[valid].astype(np.uint16, copy=False)
+    v = vv[valid].astype(np.uint16, copy=False)
     z_valid = z[valid]
     count = int(z_valid.size)
     if count > max_points:

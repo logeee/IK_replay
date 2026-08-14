@@ -80,6 +80,47 @@ class PointCloudGeometryTest(unittest.TestCase):
 
 
 class SemanticColoringTest(unittest.TestCase):
+    def test_yolo_neighborhood_is_sampled_at_every_pixel(self):
+        depth = np.full((8, 8), 1000, dtype=np.float32)
+        bgr = np.zeros((8, 8, 3), dtype=np.uint8)
+        boxes = [{"cls": 2, "conf": 0.9, "xyxy": [5, 5, 6, 6]}]
+
+        cloud = build_pointcloud(
+            depth,
+            bgr,
+            (100, 100, 4, 4),
+            boxes,
+            stride=4,
+            box_padding_ratio=0.0,
+        )
+
+        sampled_pixels = {tuple(pixel) for pixel in cloud.pixels.tolist()}
+        self.assertEqual(cloud.count, 8)
+        self.assertTrue(
+            {(5, 5), (6, 5), (5, 6), (6, 6)}.issubset(sampled_pixels)
+        )
+
+    def test_dense_padding_does_not_expand_semantic_box_label(self):
+        depth = np.full((8, 8), 1000, dtype=np.float32)
+        bgr = np.zeros((8, 8, 3), dtype=np.uint8)
+        cloud = build_pointcloud(
+            depth,
+            bgr,
+            (100, 100, 4, 4),
+            [{"cls": 3, "conf": 0.9, "xyxy": [5, 5, 6, 6]}],
+            stride=4,
+            box_padding_ratio=0.5,
+        )
+
+        padded = np.flatnonzero(
+            (cloud.pixels[:, 0] == 7) & (cloud.pixels[:, 1] == 7)
+        )[0]
+        inside = np.flatnonzero(
+            (cloud.pixels[:, 0] == 5) & (cloud.pixels[:, 1] == 5)
+        )[0]
+        self.assertEqual(int(cloud.class_ids[padded]), -1)
+        self.assertEqual(int(cloud.class_ids[inside]), 3)
+
     def test_colors_box_pixels_and_higher_confidence_overlap_wins(self):
         depth = np.full((3, 4), 1000, dtype=np.float32)
         bgr = np.zeros((3, 4, 3), dtype=np.uint8)
