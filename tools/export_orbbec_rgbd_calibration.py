@@ -138,14 +138,18 @@ def _make_device(ob, serial: str | None):
     devices = context.query_devices()
     if devices.get_count() == 0:
         raise RuntimeError("SDK 未发现 Orbbec 设备")
-    found = []
-    for index in range(devices.get_count()):
-        device = devices.get_device_by_index(index)
-        candidate = device.get_device_info().get_serial_number()
-        found.append(candidate)
-        if serial is None or candidate == serial:
-            return device
-    raise RuntimeError(f"未找到序列号 {serial!r}；已发现 {found}")
+    if serial is None:
+        return devices.get_device_by_index(0)
+    try:
+        # 不要逐个 get_device_by_index() 再比较序列号：该调用会实际打开
+        # 每台 USB 设备，任意一台被其他进程占用都会让目标相机尚未被检查
+        # 就提前失败。SDK 的序列号接口只打开明确指定的设备。
+        return devices.get_device_by_serial_number(serial)
+    except Exception as exc:
+        raise RuntimeError(
+            f"无法按序列号打开 Orbbec {serial!r}；"
+            "请确认序列号正确、目标相机未被占用且当前用户有 USB 写权限"
+        ) from exc
 
 
 def export(args: argparse.Namespace) -> dict[str, Any]:
@@ -184,8 +188,10 @@ def export(args: argparse.Namespace) -> dict[str, Any]:
         translation_raw = getattr(extrinsic, "trans", None)
     if rotation_raw is None or translation_raw is None:
         raise RuntimeError("SDK 外参缺少 rot / transform(trans)")
-    rotation = [float(value) for value in rotation_raw]
-    translation = [float(value) for value in translation_raw]
+    # 不同 pyorbbecsdk 版本会返回扁平 list、3x3 ndarray，或带一层
+    # 包装的 ndarray；统一展平后再序列化。
+    rotation = np.asarray(rotation_raw, dtype=np.float64).reshape(-1).tolist()
+    translation = np.asarray(translation_raw, dtype=np.float64).reshape(-1).tolist()
     if len(rotation) != 9 or len(translation) != 3:
         raise RuntimeError(
             f"SDK 返回异常外参长度: rotation={len(rotation)}, translation={len(translation)}"
