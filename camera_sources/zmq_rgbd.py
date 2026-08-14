@@ -115,6 +115,7 @@ class ZmqRGBDCamera:
 
         self._lock = threading.Lock()
         self._color_jpeg: bytes | None = None
+        self._aligned_depth: np.ndarray | None = None
         self._depth_hist: deque[np.ndarray] = deque(maxlen=DEPTH_HISTORY)
         self._metadata: dict[str, Any] | None = None
         self._last_frame_at: float | None = None
@@ -260,6 +261,7 @@ class ZmqRGBDCamera:
                     now = time.monotonic()
                     with self._lock:
                         self._color_jpeg = color_jpeg
+                        self._aligned_depth = aligned_depth
                         self._depth_hist.append(aligned_depth)
                         self._metadata = metadata
                         self._last_frame_at = now
@@ -349,6 +351,25 @@ class ZmqRGBDCamera:
             return None
         depth = np.median(np.stack(hist), axis=0).astype(np.float32)
         return depth, self.intrinsics
+
+    def rgbd_snapshot(self) -> dict[str, Any] | None:
+        """Return the latest color/depth pair from one ZMQ message.
+
+        Point-cloud capture must not combine the latest JPEG with the temporal
+        median used by depth_snapshot(), because that median spans multiple
+        frames. Both arrays below are copied under the same lock.
+        """
+        with self._lock:
+            if (not self._fresh() or self._color_jpeg is None
+                    or self._aligned_depth is None):
+                return None
+            return {
+                "jpeg": bytes(self._color_jpeg),
+                "depth_mm": self._aligned_depth.copy(),
+                "intrinsics": tuple(float(v) for v in self.intrinsics),
+                "metadata": ({} if self._metadata is None
+                             else dict(self._metadata)),
+            }
 
     def info(self) -> dict[str, Any]:
         with self._lock:

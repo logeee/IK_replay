@@ -368,6 +368,12 @@ class MockTeleimagerTest(unittest.TestCase):
                 aligned, _intrinsics = snapshot
                 self.assertEqual(aligned.shape, color_shape)
                 self.assertGreater(float(np.median(aligned[aligned > 0])), 0.0)
+                rgbd = camera.rgbd_snapshot()
+                self.assertIsNotNone(rgbd)
+                self.assertEqual(rgbd["jpeg"], encoded.tobytes())
+                self.assertEqual(rgbd["depth_mm"].shape, color_shape)
+                self.assertEqual(rgbd["metadata"], metadata)
+                self.assertEqual(tuple(rgbd["intrinsics"]), camera.intrinsics)
                 self.assertTrue(picked["ok"], picked)
                 info = camera.info()
                 self.assertEqual(info["source"], "zmq")

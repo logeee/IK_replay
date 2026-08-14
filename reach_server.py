@@ -32,6 +32,9 @@ Orbbec SDK 直连仅用于显式调试/标定，手臂控制模块仍复用 hand
 from __future__ import annotations
 
 import argparse
+import fcntl
+import socket
+import struct
 import sys
 from pathlib import Path
 
@@ -47,6 +50,28 @@ DEFAULT_CALIB = (HAND_EYE_3D_ROOT / "handeye3d_data" / "20260720_230131"
                  / "handeye3d_result.json")
 DEFAULT_RGBD_CALIB = PROJECT_ROOT / "config" / "camera" / "orbbec_rgbd_calibration.json"
 DEFAULT_CAMERA_CONFIG_CACHE = PROJECT_ROOT / "config" / "camera" / "teleimager_config_cache.json"
+
+
+def _browser_urls(host: str, port: int) -> list[str]:
+    """列出真实可访问地址，过滤 Docker/虚拟网桥。"""
+    if host not in {"0.0.0.0", "::"}:
+        return [f"http://{host}:{port}/"]
+    addresses: set[str] = set()
+    for _, name in socket.if_nameindex():
+        if (name == "lo" or name.startswith(("docker", "br-", "veth", "virbr"))):
+            continue
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            packed = struct.pack("256s", name.encode("utf-8")[:15])
+            result = fcntl.ioctl(sock.fileno(), 0x8915, packed)  # SIOCGIFADDR
+            addresses.add(socket.inet_ntoa(result[20:24]))
+        except OSError:
+            pass
+        finally:
+            sock.close()
+    if not addresses:
+        return [f"http://127.0.0.1:{port}/"]
+    return [f"http://{address}:{port}/" for address in sorted(addresses)]
 
 
 def main() -> int:
@@ -207,6 +232,7 @@ def main() -> int:
             "/api/reach/status",
             "/api/reach/stream",
             "/api/reach/perpendicular",
+            "/api/reach/rgbd_snapshot",
         }
 
         @app_module.app.middleware("http")
@@ -229,7 +255,9 @@ def main() -> int:
     print(f"[reach] p_tool(TCP) = {reach.state.p_tool}")
     print(f"[reach] 真机执行能力 = {'可用（由页面「接管手臂」触发）' if arm_factory else '不可用'}")
     print(f"[reach] 执行诊断日志 = {reach.state.log_dir}/reach_<日期>.jsonl（每段动作一行）")
-    print(f"[reach] serving on http://{args.host}:{args.port}")
+    print("[reach] 浏览器访问地址:")
+    for url in _browser_urls(args.host, args.port):
+        print(f"  {url}")
 
     import uvicorn
     try:

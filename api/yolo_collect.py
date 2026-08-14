@@ -12,8 +12,7 @@
     · 相机帧（jpg，存 models/samples/images/）
     · 采集时刻的 distance_m / yaw_err_deg / pitch_err_deg（问 reach_server
       的 /perpendicular，和对中用的是同一套测量）
-    · YOLO 框（给了 --model 且装了 ultralytics 时实时推理；没给也能采，
-      图像都在，之后可离线补跑推理补框）
+    · YOLO 框（默认加载 models/Xuanniu.pt；也可用 --model 指定其他模型）
     · 点击的真实目标点（可多个；保存时自动关联包含它的框）
 
 启动：
@@ -56,6 +55,7 @@ _http.trust_env = False
 
 _reach_base = "http://127.0.0.1:8001"
 _samples_dir = Path(__file__).resolve().parent.parent / "models" / "samples"
+_default_model = Path(__file__).resolve().parent.parent / "models" / "Xuanniu.pt"
 _model = None          # ultralytics.YOLO 实例（可选）
 _model_name = ""
 _model_conf = 0.25
@@ -683,8 +683,8 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=7003)
     parser.add_argument("--reach-base", default="http://127.0.0.1:8001")
-    parser.add_argument("--model", default=None,
-                        help="YOLO .pt 模型路径（可选；不给则只采图不推理）")
+    parser.add_argument("--model", default=str(_default_model),
+                        help=f"YOLO .pt 模型路径（默认 {_default_model}）")
     parser.add_argument("--conf", type=float, default=0.25, help="置信度阈值")
     parser.add_argument("--out", default=None,
                         help=f"样本目录（默认 {_samples_dir}）")

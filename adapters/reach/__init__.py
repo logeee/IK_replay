@@ -28,7 +28,7 @@ from .state import ReachState, configure, router, state
 # 导入各模块以注册路由（execution 先于依赖它的模块被隐式加载，顺序无碍：
 # 各路由路径互不冲突）
 from . import (execution, locomotion, perception, planning,  # noqa: E402,F401
-               recordings, service)
+               pointcloud_source, recordings, service)
 from .planning import _axis_last_worker  # noqa: F401  tools/test_axis_last_rrt.py 在用
 
 __all__ = ["ReachState", "configure", "router", "state"]

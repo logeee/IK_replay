@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RGB / YOLO 语义点云</title>
+    <link rel="stylesheet" href="/web/pointcloud.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/web/vendor/three.module.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <aside class="sidebar">
+      <header>
+        <h1>RGB / 语义点云</h1>
+        <p>单帧捕获 · YOLO 检测框区域着色 · 三维选点</p>
+      </header>
+
+      <section class="panel capture-panel">
+        <div class="form-grid">
+          <label>采样步长
+            <select id="stride">
+              <option value="2">2（密）</option>
+              <option value="4" selected>4（推荐）</option>
+              <option value="6">6</option>
+              <option value="8">8（快）</option>
+            </select>
+          </label>
+          <label>置信度
+            <input id="conf" type="number" min="0.01" max="1" step="0.05" value="0.25" />
+          </label>
+          <label>最近距离 m
+            <input id="zMin" type="number" min="0.01" max="10" step="0.05" value="0.15" />
+          </label>
+          <label>最远距离 m
+            <input id="zMax" type="number" min="0.02" max="30" step="0.1" value="3.0" />
+          </label>
+        </div>
+        <button id="captureBtn" class="primary">拍一下</button>
+        <div id="status" class="status">等待捕获</div>
+      </section>
+
+      <section class="panel">
+        <h2>显示</h2>
+        <div class="segmented">
+          <button id="rgbMode" class="active">RGB 点云</button>
+          <button id="semanticMode">YOLO 语义点云</button>
+        </div>
+        <label class="range-label">点大小
+          <input id="pointSize" type="range" min="1" max="8" step="0.5" value="2.5" />
+          <span id="pointSizeValue">2.5 px</span>
+        </label>
+        <button id="resetView">重置视角</button>
+      </section>
+
+      <section class="panel">
+        <h2>选中点</h2>
+        <div id="selection" class="details muted">点击点云选择一个点</div>
+      </section>
+
+      <section class="panel">
+        <h2>快照信息</h2>
+        <div id="captureInfo" class="details muted">暂无</div>
+      </section>
+
+      <section class="panel grow">
+        <h2>检测框 / 类别颜色</h2>
+        <div id="boxes" class="box-list muted">暂无检测结果</div>
+      </section>
+    </aside>
+
+    <main class="viewer-shell">
+      <div id="viewport"></div>
+      <div class="viewer-help">左键旋转 · 右键平移 · 滚轮缩放 · 点击点云选点</div>
+      <div class="axis-note">显示坐标：X 右，Y 上，视线向前；数值返回彩色相机系 X右/Y下/Z前</div>
+    </main>
+
+    <script type="module" src="/web/pointcloud.js"></script>
+  </body>
+</html>
