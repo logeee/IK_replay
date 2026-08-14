@@ -27,6 +27,8 @@ class ReachState:
         self.T_cam2torso: np.ndarray | None = None  # torso_link <- 彩色相机
         self.p_tool: list[float] | None = None      # 指尖在腕系的位置（TCP 偏移）
         self.calib_meta: dict[str, Any] = {}
+        self.handeye_ready = False
+        self.camera_only = False
         self.controller = None             # H2ArmController，仅在前端"接管"后创建
         self.arm_factory = None            # 无参函数 -> H2ArmController；None = 无法真机执行
         self.provider_reader = None        # 只读 lowstate 关节读取（未接管时用）
@@ -75,42 +77,65 @@ class ReachState:
 state = ReachState()
 
 
-def configure(*, camera, robot_model, robot_id: str, chain_id: str, calib_path: Path,
+def configure(*, camera, robot_model, robot_id: str, chain_id: str,
+              calib_path: Path | None, camera_only: bool = False,
               collision_checker=None, ik_solver=None, arm_factory=None,
               joints_reader=None, torso_reader=None, motors_reader=None,
               tool_out_mm: float = 0.0) -> None:
     """由 reach_server 调用。calib_path 是 handeye3d_result.json。
 
+    camera_only=True 时不加载手眼标定，只开放相机流与相机系深度观测；
+    机器人坐标相关接口由 reach_server 的保护层禁用。
+
     tool_out_mm: 标定的 p_tool 点（当时选在手指上，离真正指尖还差一点）
     沿法兰盘法线向外的附加偏移。法兰盘平面 = 手掌安装面 = 腕系 y-z 平面，
     其法线严格为腕系 +x，"向外" = +x（远离法兰、指向指尖方向）。
     """
-    calib = json.loads(Path(calib_path).read_text())
-    T_cam2torso = np.asarray(calib["T_cam2base"], dtype=float).reshape(4, 4)
-    base_link = calib.get("base_link", "torso_link")
+    calib = None
+    T_cam2torso = None
+    T_cam2root = None
+    p_tool = None
+    base_link = "torso_link"
+    if not camera_only:
+        if calib_path is None:
+            raise ValueError("非相机预览模式必须提供手眼标定")
+        calib = json.loads(Path(calib_path).read_text())
+        T_cam2torso = np.asarray(calib["T_cam2base"], dtype=float).reshape(4, 4)
+        base_link = calib.get("base_link", "torso_link")
 
-    # 全零关节下 URDF 根 <- base_link（腰 0 假设，与查看器/IK 一致）
-    transforms = robot_model.forward_kinematics({})
-    if base_link not in transforms:
-        raise ValueError(f"标定的 base_link {base_link!r} 不在 URDF 中")
-    T_root_torso = transforms[base_link]
+        # 全零关节下 URDF 根 <- base_link（腰 0 假设，与查看器/IK 一致）
+        transforms = robot_model.forward_kinematics({})
+        if base_link not in transforms:
+            raise ValueError(f"标定的 base_link {base_link!r} 不在 URDF 中")
+        T_root_torso = transforms[base_link]
+        T_cam2root = T_root_torso @ T_cam2torso
+        p_tool = [float(v) for v in calib["p_tool_wrist_m"]]
+        p_tool[0] += float(tool_out_mm) / 1000.0
 
     state.camera = camera
     state.robot_id = robot_id
     state.chain_id = chain_id
     state.T_cam2torso = T_cam2torso
-    state.T_cam2root = T_root_torso @ T_cam2torso
-    p_tool = [float(v) for v in calib["p_tool_wrist_m"]]
-    p_tool[0] += float(tool_out_mm) / 1000.0   # 沿法兰法线（腕系 +x）向外
+    state.T_cam2root = T_cam2root
     state.p_tool = p_tool
-    state.calib_meta = {
-        "path": str(calib_path),
-        "base_link": base_link,
-        "solved_at": calib.get("solved_at"),
-        "rms_mm": calib.get("residual_mm", {}).get("rms"),
-        "num_samples": calib.get("num_samples"),
-        "tool_out_mm": float(tool_out_mm),
-    }
+    state.handeye_ready = not camera_only
+    state.camera_only = camera_only
+    if camera_only:
+        state.calib_meta = {
+            "ready": False,
+            "mode": "camera_only",
+            "message": "尚未加载手眼标定；仅开放相机预览和相机系深度观测",
+        }
+    else:
+        state.calib_meta = {
+            "ready": True,
+            "path": str(calib_path),
+            "base_link": base_link,
+            "solved_at": calib.get("solved_at"),
+            "rms_mm": calib.get("residual_mm", {}).get("rms"),
+            "num_samples": calib.get("num_samples"),
+            "tool_out_mm": float(tool_out_mm),
+        }
     state.arm_factory = arm_factory
     state.provider_reader = joints_reader
     state.torso_reader = torso_reader

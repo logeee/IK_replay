@@ -70,6 +70,14 @@ an explicit debug command:
 python reach_server.py --camera-source orbbec --camera-serial CP0BB53000FS
 ```
 
+Before hand-eye calibration is available, camera and YOLO debugging can run in
+an explicitly safe preview mode. It connects only to ZMQ, skips DDS, and blocks
+all robot-coordinate, planning, and execution endpoints:
+
+```bash
+python reach_server.py --camera-only --camera-host 127.0.0.1
+```
+
 When `--sample-dir` is used, the exporter also saves the same frame before and
 after SDK `AlignFilter`. Compare that reference with the SDK-free implementation:
 

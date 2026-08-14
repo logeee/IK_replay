@@ -14,6 +14,9 @@ Orbbec SDK 直连仅用于显式调试/标定，手臂控制模块仍复用 hand
 纯模拟联调（假相机，无机器人）:
     python reach_server.py --camera-source mock --no-robot
 
+无手眼标定的相机预览（仅视频/深度观测，禁用机器人操作）:
+    python reach_server.py --camera-only --camera-host 127.0.0.1
+
 生产启动（外部 ZMQ RGB-D + DDS 只读；执行与否由页面决定）:
     python reach_server.py --camera-host 192.168.123.164 --network-interface enp86s0
 
@@ -55,6 +58,11 @@ def main() -> int:
     parser.add_argument("--chain", default="right_arm", help="执行链（默认 right_arm）")
     parser.add_argument("--calib", type=Path, default=DEFAULT_CALIB,
                         help="hand_eye_3D 的 handeye3d_result.json 路径")
+    parser.add_argument(
+        "--camera-only",
+        action="store_true",
+        help="无手眼标定预览：只开放相机流/深度观测，禁用 DDS、规划和执行",
+    )
 
     parser.add_argument("--camera-source", choices=["zmq", "orbbec", "mock"], default="zmq",
                         help="生产默认 zmq；orbbec 会主动打开本机相机，仅限调试")
@@ -110,9 +118,11 @@ def main() -> int:
                              "先看页面诊断里的 IMU 数值是否合理再开")
     args = parser.parse_args()
 
-    if not args.calib.exists():
+    if not args.camera_only and not args.calib.exists():
         print(f"[reach] 标定文件不存在: {args.calib}")
         return 1
+    if args.camera_only:
+        print("[reach] 相机预览模式：不加载手眼标定，不连接/控制机器人")
 
     # 主应用（离线查看器 + IK/规划 API）原样加载
     import app as app_module
@@ -148,7 +158,7 @@ def main() -> int:
     torso_reader = None
     motors_reader = None
     arm_factory = None
-    if not args.no_robot:
+    if not args.no_robot and not args.camera_only:
         try:
             from backend.robot import H2PoseProvider  # hand_eye_3D（只读订阅）
 
@@ -181,13 +191,39 @@ def main() -> int:
 
     reach.configure(
         camera=camera, robot_model=robot_model, robot_id=args.robot,
-        chain_id=args.chain, calib_path=args.calib,
+        chain_id=args.chain,
+        calib_path=None if args.camera_only else args.calib,
+        camera_only=args.camera_only,
         collision_checker=app_module.collision_checkers[args.robot],
         ik_solver=app_module.solvers[args.robot]["numerical"],
         arm_factory=arm_factory, joints_reader=joints_reader,
         torso_reader=torso_reader, motors_reader=motors_reader,
         tool_out_mm=args.tool_out_mm,
     )
+    if args.camera_only:
+        from fastapi.responses import JSONResponse
+
+        allowed_preview_paths = {
+            "/api/reach/status",
+            "/api/reach/stream",
+            "/api/reach/perpendicular",
+        }
+
+        @app_module.app.middleware("http")
+        async def guard_camera_only(request, call_next):
+            path = request.url.path
+            if (path.startswith("/api/reach/")
+                    and path not in allowed_preview_paths
+                    and request.method != "OPTIONS"):
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error": "相机预览模式：缺少手眼标定，机器人坐标、规划和执行均已禁用",
+                    },
+                    status_code=409,
+                )
+            return await call_next(request)
+
     app_module.app.include_router(reach.router)
     print(f"[reach] calib = {reach.state.calib_meta}")
     print(f"[reach] p_tool(TCP) = {reach.state.p_tool}")

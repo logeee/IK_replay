@@ -20,8 +20,11 @@ def reach_status():
         "chain_id": state.chain_id,
         "camera": state.camera.info(),
         "calib": state.calib_meta,
+        "handeye_ready": state.handeye_ready,
+        "camera_only": state.camera_only,
         "p_tool": state.p_tool,
-        "T_cam2root": state.T_cam2root.tolist(),
+        "T_cam2root": (None if state.T_cam2root is None
+                       else state.T_cam2root.tolist()),
         "arm_supported": state.arm_factory is not None,   # 有真机执行能力
         "armed": state.controller is not None,            # 前端已接管手臂
         "hand_move": bool(state.controller and state.controller.status()["float"]),

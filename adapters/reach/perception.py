@@ -194,7 +194,8 @@ def _fit_view_plane(dmin: float, dmax: float) -> dict:
     yaw_err = math.degrees(math.atan2(float(n[0]), float(-n[2])))
     pitch_err = math.degrees(math.atan2(float(n[1]), float(-n[2])))
     tilt = math.degrees(math.acos(float(np.clip(-n[2], -1.0, 1.0))))
-    n_root = (state.T_cam2root[:3, :3] @ n).tolist()
+    n_root = (None if state.T_cam2root is None
+              else (state.T_cam2root[:3, :3] @ n).tolist())
 
     return {
         "ok": True,

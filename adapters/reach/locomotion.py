@@ -37,7 +37,7 @@ def reach_perpendicular(dmin: float = 0.3, dmax: float = 1.0):
     _hold_check_stale()   # 顺带收尾心跳断掉的按住会话（见操作记录一节）
     out = _fit_view_plane(dmin, dmax)
     out["torso"] = _read_torso()
-    out["turn_available"] = state.loco_available
+    out["turn_available"] = state.loco_available and state.handeye_ready
     out["align"] = {"running": state.align_running, "message": state.align_message}
     out["hold_record"] = {"active": _hold_group is not None,
                           "group": _hold_group["name"] if _hold_group else None}
