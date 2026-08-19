@@ -32,6 +32,7 @@ class ReachState:
         self.calib_meta: dict[str, Any] = {}
         self.handeye_ready = False
         self.camera_only = False
+        self.robot_only = False
         self.controller = None             # H2ArmController，仅在前端"接管"后创建
         self.arm_factory = None            # 无参函数 -> H2ArmController；None = 无法真机执行
         self.provider_reader = None        # 只读 lowstate 关节读取（未接管时用）
@@ -82,6 +83,7 @@ state = ReachState()
 
 def configure(*, camera, robot_model, robot_id: str, chain_id: str,
               calib_path: Path | None, camera_only: bool = False,
+              robot_only: bool = False,
               collision_checker=None, ik_solver=None, arm_factory=None,
               joints_reader=None, torso_reader=None, motors_reader=None,
               tool_out_mm: float = 0.0) -> None:
@@ -156,6 +158,7 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str,
     state.wrist_link = wrist_link
     state.handeye_ready = not camera_only
     state.camera_only = camera_only
+    state.robot_only = robot_only
     if camera_only:
         state.calib_meta = {
             "ready": False,

@@ -83,10 +83,16 @@ def main() -> int:
     parser.add_argument("--chain", default="right_arm", help="执行链（默认 right_arm）")
     parser.add_argument("--calib", type=Path, default=DEFAULT_CALIB,
                         help="hand_eye_3D 的 handeye3d_result.json 路径")
-    parser.add_argument(
+    runtime_mode = parser.add_mutually_exclusive_group()
+    runtime_mode.add_argument(
         "--camera-only",
         action="store_true",
         help="无手眼标定预览：只开放相机流/深度观测，禁用 DDS、规划和执行",
+    )
+    runtime_mode.add_argument(
+        "--robot-only",
+        action="store_true",
+        help="无相机控制模式：只连接 DDS 并开放关节读取/手臂执行，供 API 联调",
     )
 
     parser.add_argument("--camera-source", choices=["zmq", "orbbec", "mock"], default="zmq",
@@ -147,6 +153,8 @@ def main() -> int:
         return 1
     if args.camera_only:
         print("[reach] 相机预览模式：不加载手眼标定，不连接/控制机器人")
+    if args.robot_only:
+        print("[reach] 机器人控制模式：不连接相机，只开放 DDS 和手臂执行")
 
     # 主应用（离线查看器 + IK/规划 API）原样加载
     import app as app_module
@@ -157,25 +165,27 @@ def main() -> int:
         return 1
     robot_model = app_module.robots[args.robot]
 
-    if args.camera_source == "zmq":
-        from camera_sources import ZmqRGBDCamera
+    camera = None
+    if not args.robot_only:
+        if args.camera_source == "zmq":
+            from camera_sources import ZmqRGBDCamera
 
-        camera = ZmqRGBDCamera(
-            host=args.camera_host,
-            calibration_path=args.camera_rgbd_calib,
-            camera_name=args.camera_name,
-            request_port=args.camera_request_port,
-            stream_port=args.camera_port,
-            config_cache_path=args.camera_config_cache,
-            stale_after_s=args.camera_stale_after,
-        )
-    else:
-        # 只有显式选择 orbbec 才 import SDK 后端并可能打开本机设备。
-        from backend.camera import make_camera  # hand_eye_3D
+            camera = ZmqRGBDCamera(
+                host=args.camera_host,
+                calibration_path=args.camera_rgbd_calib,
+                camera_name=args.camera_name,
+                request_port=args.camera_request_port,
+                stream_port=args.camera_port,
+                config_cache_path=args.camera_config_cache,
+                stale_after_s=args.camera_stale_after,
+            )
+        else:
+            # 只有显式选择 orbbec 才 import SDK 后端并可能打开本机设备。
+            from backend.camera import make_camera  # hand_eye_3D
 
-        camera = make_camera(args.camera_source, serial=args.camera_serial)
-    camera.start()
-    print(f"[reach] camera = {args.camera_source}: {camera.info()}")
+            camera = make_camera(args.camera_source, serial=args.camera_serial)
+        camera.start()
+        print(f"[reach] camera = {args.camera_source}: {camera.info()}")
 
     arm = "right" if args.chain == "right_arm" else "left"
     joints_reader = None
@@ -218,6 +228,7 @@ def main() -> int:
         chain_id=args.chain,
         calib_path=None if args.camera_only else args.calib,
         camera_only=args.camera_only,
+        robot_only=args.robot_only,
         collision_checker=app_module.collision_checkers[args.robot],
         ik_solver=app_module.solvers[args.robot]["numerical"],
         arm_factory=arm_factory, joints_reader=joints_reader,
@@ -265,7 +276,8 @@ def main() -> int:
         if reach.state.controller is not None:
             print("[reach] 手臂仍处于接管状态，权重渐出交还本体控制器（请扶住手臂）...")
             reach.state.controller.shutdown()
-        camera.stop()
+        if camera is not None:
+            camera.stop()
     return 0
 
 

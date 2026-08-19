@@ -18,10 +18,12 @@ def reach_status():
         "enabled": True,
         "robot": state.robot_id,
         "chain_id": state.chain_id,
-        "camera": state.camera.info(),
+        "camera": (state.camera.info() if state.camera is not None
+                   else {"source": "disabled", "mode": "robot_only"}),
         "calib": state.calib_meta,
         "handeye_ready": state.handeye_ready,
         "camera_only": state.camera_only,
+        "robot_only": state.robot_only,
         "p_tool": state.p_tool,
         "p_tool_wrist_m_by_marker": state.p_tool_by_marker,
         "p_tool_reference_marker": state.tool_reference_marker,
