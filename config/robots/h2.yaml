@@ -29,7 +29,6 @@ chains:
       - right_wrist_roll_link
       - right_wrist_pitch_link
       - right_wrist_yaw_link
-      - right_hand_link
 
   left_arm:
     display_name: 画面右侧手臂

@@ -26,6 +26,9 @@ class ReachState:
         self.T_cam2root: np.ndarray | None = None   # URDF 根 <- 彩色相机
         self.T_cam2torso: np.ndarray | None = None  # torso_link <- 彩色相机
         self.p_tool: list[float] | None = None      # 指尖在腕系的位置（TCP 偏移）
+        self.p_tool_by_marker: dict[str, list[float]] = {}  # 各手部标记点在腕系的位置
+        self.tool_reference_marker: str | None = None
+        self.wrist_link: str | None = None
         self.calib_meta: dict[str, Any] = {}
         self.handeye_ready = False
         self.camera_only = False
@@ -95,6 +98,9 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str,
     T_cam2torso = None
     T_cam2root = None
     p_tool = None
+    p_tool_by_marker: dict[str, list[float]] = {}
+    tool_reference_marker = None
+    wrist_link = None
     base_link = "torso_link"
     if not camera_only:
         if calib_path is None:
@@ -111,6 +117,21 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str,
         T_cam2root = T_root_torso @ T_cam2torso
         p_tool = [float(v) for v in calib["p_tool_wrist_m"]]
         p_tool[0] += float(tool_out_mm) / 1000.0
+        raw_markers = calib.get("p_tool_wrist_m_by_marker", {})
+        if isinstance(raw_markers, dict):
+            for marker_id, xyz in raw_markers.items():
+                if not isinstance(xyz, (list, tuple)) or len(xyz) != 3:
+                    raise ValueError(
+                        f"手部关键点 {marker_id!r} 必须是腕系下的 3 维坐标"
+                    )
+                point = [float(v) for v in xyz]
+                if not all(np.isfinite(point)):
+                    raise ValueError(f"手部关键点 {marker_id!r} 包含非有限数值")
+                p_tool_by_marker[str(marker_id)] = point
+        tool_reference_marker = calib.get(
+            "p_tool_reference_marker", calib.get("p_tool_reference")
+        )
+        wrist_link = calib.get("wrist_link", chain_id.replace("_arm", "_wrist_yaw_link"))
 
     state.camera = camera
     state.robot_id = robot_id
@@ -118,6 +139,9 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str,
     state.T_cam2torso = T_cam2torso
     state.T_cam2root = T_cam2root
     state.p_tool = p_tool
+    state.p_tool_by_marker = p_tool_by_marker
+    state.tool_reference_marker = tool_reference_marker
+    state.wrist_link = wrist_link
     state.handeye_ready = not camera_only
     state.camera_only = camera_only
     if camera_only:
@@ -135,6 +159,9 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str,
             "rms_mm": calib.get("residual_mm", {}).get("rms"),
             "num_samples": calib.get("num_samples"),
             "tool_out_mm": float(tool_out_mm),
+            "wrist_link": wrist_link,
+            "marker_count": len(p_tool_by_marker),
+            "tool_reference_marker": tool_reference_marker,
         }
     state.arm_factory = arm_factory
     state.provider_reader = joints_reader

@@ -23,6 +23,9 @@ def reach_status():
         "handeye_ready": state.handeye_ready,
         "camera_only": state.camera_only,
         "p_tool": state.p_tool,
+        "p_tool_wrist_m_by_marker": state.p_tool_by_marker,
+        "p_tool_reference_marker": state.tool_reference_marker,
+        "wrist_link": state.wrist_link,
         "T_cam2root": (None if state.T_cam2root is None
                        else state.T_cam2root.tolist()),
         "arm_supported": state.arm_factory is not None,   # 有真机执行能力

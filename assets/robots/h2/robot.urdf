@@ -917,13 +917,6 @@
       <mass value="0.41885723"/>
       <inertia ixx="0.00032660" ixy="-0.00009631" ixz="-0.00000380" iyy="0.00079378" iyz="-0.00004300" izz="0.00068092"/>
     </inertial>
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="meshes/right_hand_link.stl"/>
-      </geometry>
-      <material name="dark"/>
-    </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>

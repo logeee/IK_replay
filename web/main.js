@@ -274,12 +274,34 @@ async function initReach() {
   await refreshWaypoints();
   await refreshSequences();
   await refreshSidesteps();
+  await syncReachJointsOnStartup();
   showFlangeDebug();
   updateReachArmUi();
   refreshReachDiag();
   const rms = status.calib?.rms_mm;
+  const markerCount = Object.keys(status.p_tool_wrist_m_by_marker || {}).length;
   reachMsg(`标定: ${status.calib?.solved_at || "?"} · RMS ${rms ? rms.toFixed(2) : "?"} mm · ` +
-    `TCP=p_tool [${(status.p_tool || []).map((v) => v.toFixed(3)).join(", ")}] m`);
+    `TCP=p_tool [${(status.p_tool || []).map((v) => v.toFixed(3)).join(", ")}] m` +
+    (markerCount ? ` · 手部关键点 ${markerCount} 个` : ""));
+}
+
+async function syncReachJointsOnStartup() {
+  const st = reach.status;
+  const panel = state.panels[st?.chain_id];
+  if (!st?.joints_available || !panel) {
+    return;
+  }
+  try {
+    const data = await fetchJson("/api/reach/joints");
+    if (!data.ok) {
+      throw new Error(data.error || "后端未返回关节数据");
+    }
+    setJointInputs(panel, data.named_joints);
+    Object.assign(state.robotJointState, data.named_joints);
+    setRobotJoints(state.robotJointState, false);
+  } catch (error) {
+    console.warn(`网页启动时同步真机关节失败: ${error.message}`);
+  }
 }
 
 function updateReachArmUi() {
@@ -1376,18 +1398,21 @@ function combineCollisionSummaries(a, b) {
   };
 }
 
-// 调试：只画两个东西——法兰盘平面（手掌在腕上的安装面）和 TCP 点（p_tool 指尖）
-// 都挂在腕 link 下，随手臂一起动。
+// 法兰盘、TCP 和标定得到的手部颜色关键点都挂在腕 link 下，随 FK/预演一起动。
 function showFlangeDebug() {
   const chainId = reach.status?.chain_id;
   const pTool = reach.status?.p_tool;
+  const handMarkers = reach.status?.p_tool_wrist_m_by_marker || {};
+  const referenceMarker = reach.status?.p_tool_reference_marker;
   const panel = state.panels[chainId];
   if (!panel || !pTool) {
     return;
   }
-  const wristGroup = state.linkGroups.get(panel.chain.end_link);
+  const wristLink = reach.status?.wrist_link || panel.chain.end_link;
+  const wristGroup = state.linkGroups.get(wristLink);
   const handGroup = state.linkGroups.get(chainId === "left_arm" ? "left_hand_link" : "right_hand_link");
   if (!wristGroup) {
+    console.warn(`手部关键点腕部 link ${wristLink} 不存在`);
     return;
   }
   if (reach.flangeDebugGroup) {
@@ -1419,22 +1444,53 @@ function showFlangeDebug() {
   );
   ring.quaternion.copy(disc.quaternion);
   ring.position.copy(flangeLocal);
-  const flangeLabel = makeLabelSprite("法兰盘平面");
-  flangeLabel.position.copy(flangeLocal).add(new THREE.Vector3(0, 0, 0.09));
-  group.add(disc, ring, flangeLabel);
+  group.add(disc, ring);
 
-  // TCP 点：标定出的 p_tool（腕系坐标，指尖）
-  const tcp = new THREE.Mesh(
-    new THREE.SphereGeometry(0.012, 20, 14),
-    new THREE.MeshBasicMaterial({ color: 0xff4444, depthTest: false }),
-  );
-  tcp.position.set(...pTool);
-  const tcpLabel = makeLabelSprite("TCP");
-  tcpLabel.position.set(pTool[0], pTool[1], pTool[2] + 0.05);
-  group.add(tcp, tcpLabel);
+  const markerColors = {
+    blue: 0x1687ff,
+    brown: 0x8b4513,
+    gold: 0xffd700,
+    gray: 0xb0b0b0,
+    green: 0x26c95c,
+    orange: 0xff8c00,
+    pink: 0xff69b4,
+    purple: 0x9b59ff,
+    red: 0xff3030,
+  };
+  const tcpVec = new THREE.Vector3(...pTool);
+  let referenceIsTcp = false;
+  for (const [markerId, xyz] of Object.entries(handMarkers)) {
+    if (!Array.isArray(xyz) || xyz.length !== 3) {
+      continue;
+    }
+    const point = new THREE.Vector3(...xyz);
+    const isReference = markerId === referenceMarker;
+    if (isReference && point.distanceTo(tcpVec) < 1e-6) {
+      referenceIsTcp = true;
+    }
+    const dot = new THREE.Mesh(
+      new THREE.SphereGeometry(0.009, 18, 12),
+      new THREE.MeshBasicMaterial({
+        color: markerColors[markerId] ?? 0xffffff,
+        depthTest: false,
+      }),
+    );
+    dot.position.copy(point);
+    dot.renderOrder = 20;
+    group.add(dot);
+  }
+
+  // 老标定没有多关键点，或 tool_out_mm 使 TCP 与参考点不重合时，单独画 TCP。
+  if (!referenceIsTcp) {
+    const tcp = new THREE.Mesh(
+      new THREE.SphereGeometry(0.012, 20, 14),
+      new THREE.MeshBasicMaterial({ color: 0xff4444, depthTest: false }),
+    );
+    tcp.position.copy(tcpVec);
+    group.add(tcp);
+  }
 
   // hand 碰撞胶囊（TCP 向法兰盘平面的垂足 → TCP，半径同 h2.yaml 里的 0.04）：常驻显示
-  const tcpVec = new THREE.Vector3(...pTool);
   // 垂足：把 TCP 沿平面法线（腕系 +x）投影到法兰平面上
   const foot = tcpVec.clone().sub(
     normal.clone().multiplyScalar(tcpVec.clone().sub(flangeLocal).dot(normal)));
@@ -1958,7 +2014,8 @@ async function loadRobotData(robotId = null) {
     dom.robotName.textContent = metadata.robot.display_name;
     renderRobotSelector(metadata);
     renderPanels(metadata);
-    await loadRobot(metadata.robot.urdf_url);
+    const urdfUrl = `${metadata.robot.urdf_url}${metadata.robot.urdf_url.includes("?") ? "&" : "?"}v=2`;
+    await loadRobot(urdfUrl);
     attachViewerFrames(metadata);
     for (const panel of Object.values(state.panels)) {
       setJointInputs(panel, panel.chain.default_current_joints);
