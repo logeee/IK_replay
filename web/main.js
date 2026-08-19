@@ -1480,11 +1480,11 @@ function showFlangeDebug() {
     group.add(dot);
   }
 
-  // 老标定没有多关键点，或 tool_out_mm 使 TCP 与参考点不重合时，单独画 TCP。
+  // TCP 不与颜色关键点重合时（当前为红蓝中点），单独画一个稍大的白点。
   if (!referenceIsTcp) {
     const tcp = new THREE.Mesh(
-      new THREE.SphereGeometry(0.012, 20, 14),
-      new THREE.MeshBasicMaterial({ color: 0xff4444, depthTest: false }),
+      new THREE.SphereGeometry(0.013, 20, 14),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false }),
     );
     tcp.position.copy(tcpVec);
     group.add(tcp);

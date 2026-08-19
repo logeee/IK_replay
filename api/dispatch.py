@@ -4,11 +4,11 @@
     · 本服务 17001：常驻。外部系统（导航栈把机器人开到电柜前后）只需
       POST /task/flip，然后轮询 GET /task/status 拿结果。
     · yolo_server 7004 / console 7002：常驻（不占相机）。
-    · reach_server 8001：平时关着。本服务收到任务时子进程拉起；它只读订阅
+    · reach_server 18001：平时关着。本服务收到任务时子进程拉起；它只读订阅
       外部 teleimager ZMQ，不会启动本机相机。任务结束（无论成败）后 SIGINT
       优雅关掉，reach_server 自己会释放手臂并断开 ZMQ/DDS。
 
-若收到任务时 8001 已经在跑（比如你手动开着调试），直接复用，任务结束
+若收到任务时 18001 已经在跑（比如你手动开着调试），直接复用，任务结束
 后也不关它——谁启动的谁负责关。
 
 启动（fastapi 环境）：
@@ -27,7 +27,7 @@
                           （无需拨动），否则要求拨前状态的框横向居中（中间 60%）。
                           相机：passed 且 need_flip → 保持开启留给紧接着的
                           /task/flip 复用；失败或无需拨动 → 立即关（外部手动
-                          启动的 8001 除外，成败都不动）。
+                          启动的 18001 除外，成败都不动）。
     POST /task/flip    → body {"language": "<固定指令，必填>",
                                 "retries": 3}   # 可选，最大尝试轮数（VLA 后端忽略）
                           返回 {"ok": true, "task_id": "..."}；执行中再触发 → 409
@@ -105,12 +105,15 @@ def _spawn_reach(task: dict) -> None:
     cmd = [
         sys.executable,
         str(ROOT / "reach_server.py"),
+        "--port", str(_args.reach_port),
         "--camera-source", "zmq",
         "--camera-host", _args.camera_host,
         "--camera-request-port", str(_args.camera_request_port),
         "--camera-name", _args.camera_name,
         "--camera-rgbd-calib", _args.camera_rgbd_calib,
         "--network-interface", _args.network_interface,
+        "--calib", _args.calib,
+        "--tool-out-mm", str(_args.tool_out_mm),
     ]
     if _args.camera_port is not None:
         cmd.extend(["--camera-port", str(_args.camera_port)])
@@ -735,8 +738,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="拨闸任务调度服务（17001，常驻）")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=17001)
-    parser.add_argument("--reach-base", default="http://127.0.0.1:8001")
-    parser.add_argument("--camera-host", default="192.168.123.164",
+    parser.add_argument("--reach-base", default="http://127.0.0.1:18001")
+    parser.add_argument("--reach-port", type=int, default=18001,
+                        help="按需拉起的 reach_server 监听端口，须与 --reach-base 一致")
+    parser.add_argument("--camera-host", default="127.0.0.1",
                         help="外部 teleimager 主机")
     parser.add_argument("--camera-request-port", type=int, default=60000,
                         help="teleimager 配置请求端口")
@@ -748,6 +753,14 @@ def main() -> None:
         default=str(ROOT / "config" / "camera" / "orbbec_rgbd_calibration.json"),
         help="本地 SDK 一次性导出的 RGB-D 标定 JSON",
     )
+    parser.add_argument(
+        "--calib",
+        default=("/home/robot/yx/project/calib/hand_eye_3D/handeye3d_data/"
+                 "biaoding/handeye3d_result.json"),
+        help="reach_server 使用的手眼标定结果",
+    )
+    parser.add_argument("--tool-out-mm", type=float, default=15.0,
+                        help="TCP 沿腕系 +x 方向额外外移毫米数")
     parser.add_argument("--network-interface", default="enp86s0")
     parser.add_argument("--console", default="http://127.0.0.1:7002",
                         help="人工确认台地址（不可达时自动不带兜底）")
@@ -761,8 +774,9 @@ def main() -> None:
     print(f"[dispatch] 调度服务已启动（常驻属正常）: http://{_lan_ip()}:{_args.port}/")
     print(f"[dispatch] 外部触发: POST /task/flip （body 带 language）→ 轮询 GET /task/status")
     print(f"[dispatch] reach_server 按需拉起: {sys.executable} reach_server.py "
-          f"--camera-source zmq --camera-host {_args.camera_host} "
-          f"--network-interface {_args.network_interface}")
+          f"--port {_args.reach_port} --camera-source zmq "
+          f"--camera-host {_args.camera_host} --network-interface {_args.network_interface} "
+          f"--calib {_args.calib} --tool-out-mm {_args.tool_out_mm:g}")
     uvicorn.run(app, host=_args.host, port=_args.port, log_level="warning")
 
 

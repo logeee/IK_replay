@@ -44,9 +44,9 @@ HAND_EYE_3D_ROOT = Path("/home/robot/yx/project/calib/hand_eye_3D")
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(HAND_EYE_3D_ROOT))
 
-# 真机试用后退回 20260720 标定（20260727 凌晨的重标 RMS 更小但实测效果反而差，
-# 存疑待查；两套必须整组使用：0720 配 --tool-out-mm 10，0726 配 0，不可混搭）
-DEFAULT_CALIB = (HAND_EYE_3D_ROOT / "handeye3d_data" / "20260720_230131"
+# 当前机器人使用 2026-08-18 多标记联合标定；TCP 取红蓝中点，
+# 再沿腕系 +x 外移 15 mm。
+DEFAULT_CALIB = (HAND_EYE_3D_ROOT / "handeye3d_data" / "biaoding"
                  / "handeye3d_result.json")
 DEFAULT_RGBD_CALIB = PROJECT_ROOT / "config" / "camera" / "orbbec_rgbd_calibration.json"
 DEFAULT_CAMERA_CONFIG_CACHE = PROJECT_ROOT / "config" / "camera" / "teleimager_config_cache.json"
@@ -77,7 +77,7 @@ def _browser_urls(host: str, port: int) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="IK replay viewer + click-to-reach adapter")
     parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8001)
+    parser.add_argument("--port", type=int, default=18001)
 
     parser.add_argument("--robot", default="h2", help="使用的机器人配置（默认 h2）")
     parser.add_argument("--chain", default="right_arm", help="执行链（默认 right_arm）")
@@ -93,7 +93,7 @@ def main() -> int:
                         help="生产默认 zmq；orbbec 会主动打开本机相机，仅限调试")
     parser.add_argument("--camera-serial", default=None,
                         help="仅 --camera-source orbbec 使用的 Orbbec 序列号")
-    parser.add_argument("--camera-host", default="192.168.123.164",
+    parser.add_argument("--camera-host", default="127.0.0.1",
                         help="teleimager 主机地址")
     parser.add_argument("--camera-request-port", type=int, default=60000,
                         help="teleimager 配置请求端口")
@@ -134,10 +134,9 @@ def main() -> int:
                         help="卸力拖动时也给重力前馈（按实测角实时算）：手臂近似失重、"
                              "推到哪停哪，录路点省力得多（默认开）。补过头会缓慢上飘，"
                              "用 --no-arm-grav-in-float 关闭")
-    parser.add_argument("--tool-out-mm", type=float, default=10.0,
+    parser.add_argument("--tool-out-mm", type=float, default=15.0,
                         help="TCP 沿法兰盘法线（腕系 +x）向外的附加偏移，毫米。"
-                             "0720 旧标定点的是手指标记点，需要 +10 补到指尖（默认）；"
-                             "0726 重标已直接标到指尖尖端，换用它时给 0")
+                             "当前默认在红蓝中点基础上向外 15 mm")
     parser.add_argument("--arm-imu-gravity", action="store_true",
                         help="用 IMU 实测姿态修正重力方向（躯干前倾/后仰时更准）。"
                              "先看页面诊断里的 IMU 数值是否合理再开")

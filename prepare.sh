@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # 拨闸服务预备脚本：一次拉起所有常驻服务，可重复执行（已在跑的自动跳过）。
 #
-#   调度   17001  外部触发入口（按需自动开/关 8001 reach_server）
+#   调度   17001  外部触发入口（按需自动开/关 18001 reach_server）
 #   YOLO    7004  常驻推理
 #   确认台  7002  人工兜底（不想要就注释掉那一行）
 #
-# reach_server(8001) 不需要在这里启动——任务来了调度服务会自动拉起。
+# reach_server(18001) 不需要在这里启动——任务来了调度服务会自动拉起。
 # 以后做成开机服务时，把下面三条 start_one 拆成三个 systemd unit 即可。
 #
 # 停止全部：./prepare.sh stop   （逐个报告：已关闭 / 没有找到进程）
@@ -14,7 +14,9 @@ set -u
 cd "$(dirname "$0")"
 
 FASTAPI_PY=/home/robot/miniconda3/envs/fastapi/bin/python
-YOLO_PY=/home/robot/miniconda3/envs/yolo/bin/python
+REACH_PORT=18001
+REACH_BASE=http://127.0.0.1:$REACH_PORT
+HAND_EYE_CALIB=/home/robot/yx/project/calib/hand_eye_3D/handeye3d_data/biaoding/handeye3d_result.json
 LOG_DIR=logs/service
 mkdir -p "$LOG_DIR"
 
@@ -26,7 +28,7 @@ stop_one() {   # 用法: stop_one 名字 进程匹配模式 等待秒数
         echo "[$name] 没有找到进程"
         return
     fi
-    pkill -f "$pattern"    # SIGTERM，服务走优雅退出（调度会顺带收掉它拉起的 8001）
+    pkill -f "$pattern"    # SIGTERM，服务走优雅退出（调度会顺带收掉它拉起的 18001）
     local i
     for ((i = 0; i < wait_s * 2; i++)); do
         if ! pgrep -f "$pattern" >/dev/null; then
@@ -40,15 +42,15 @@ stop_one() {   # 用法: stop_one 名字 进程匹配模式 等待秒数
 }
 
 if [[ "${1:-}" == "stop" ]]; then
-    # 先停调度：它的退出钩子会关掉自己拉起的 reach_server(8001)，最长等 15s
+    # 先停调度：它的退出钩子会关掉自己拉起的 reach_server(18001)，最长等 15s
     stop_one "调度 " 'python -m api\.dispatch' 25
     stop_one "YOLO " 'python -m api\.yolo_server' 5
     stop_one "确认台" 'python -m api\.console' 5
-    if ss -ltn 2>/dev/null | grep -q ':8001 '; then
-        echo "[reach] ⚠ 8001 仍在监听——应该是手动启动的（谁启动谁负责关）。"
+    if ss -ltn 2>/dev/null | grep -q ":$REACH_PORT "; then
+        echo "[reach] ⚠ $REACH_PORT 仍在监听——应该是手动启动的（谁启动谁负责关）。"
         echo "        如需一并关闭: pkill -f reach_server.py"
     else
-        echo "[reach] 8001 未在运行（调度拉起的会随调度退出自动关闭）"
+        echo "[reach] $REACH_PORT 未在运行（调度拉起的会随调度退出自动关闭）"
     fi
     exit 0
 fi
@@ -65,10 +67,17 @@ start_one() {   # 用法: start_one 名字 端口 日志文件 命令...
     echo "[$name] 启动中 pid=$! 日志=$LOG_DIR/$log"
 }
 
-start_one "调度 " 17001 dispatch.log    "$FASTAPI_PY" -m api.dispatch
-start_one "YOLO " 7004  yolo_server.log "$YOLO_PY" -m api.yolo_server \
+start_one "调度 " 17001 dispatch.log "$FASTAPI_PY" -m api.dispatch \
+    --reach-base "$REACH_BASE" \
+    --reach-port "$REACH_PORT" \
+    --camera-host 127.0.0.1 \
+    --calib "$HAND_EYE_CALIB" \
+    --tool-out-mm 15
+start_one "YOLO " 7004 yolo_server.log "$FASTAPI_PY" -m api.yolo_server \
+    --reach-base "$REACH_BASE" \
     --model models/Xuanniu.pt
-start_one "确认台" 7002  console.log     "$FASTAPI_PY" -m api.console
+start_one "确认台" 7002 console.log "$FASTAPI_PY" -m api.console \
+    --reach-base "$REACH_BASE"
 
 # ---- 自检：等服务起来后逐个探活 ----
 echo

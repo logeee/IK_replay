@@ -100,6 +100,8 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str,
     p_tool = None
     p_tool_by_marker: dict[str, list[float]] = {}
     tool_reference_marker = None
+    calib_reference_marker = None
+    tcp_definition: dict[str, Any] = {"type": "calibration_reference"}
     wrist_link = None
     base_link = "torso_link"
     if not camera_only:
@@ -115,8 +117,6 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str,
             raise ValueError(f"标定的 base_link {base_link!r} 不在 URDF 中")
         T_root_torso = transforms[base_link]
         T_cam2root = T_root_torso @ T_cam2torso
-        p_tool = [float(v) for v in calib["p_tool_wrist_m"]]
-        p_tool[0] += float(tool_out_mm) / 1000.0
         raw_markers = calib.get("p_tool_wrist_m_by_marker", {})
         if isinstance(raw_markers, dict):
             for marker_id, xyz in raw_markers.items():
@@ -128,9 +128,21 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str,
                 if not all(np.isfinite(point)):
                     raise ValueError(f"手部关键点 {marker_id!r} 包含非有限数值")
                 p_tool_by_marker[str(marker_id)] = point
-        tool_reference_marker = calib.get(
+        calib_reference_marker = calib.get(
             "p_tool_reference_marker", calib.get("p_tool_reference")
         )
+        if "red" in p_tool_by_marker and "blue" in p_tool_by_marker:
+            p_tool = (
+                (np.asarray(p_tool_by_marker["red"], dtype=float)
+                 + np.asarray(p_tool_by_marker["blue"], dtype=float))
+                * 0.5
+            ).tolist()
+            tool_reference_marker = None
+            tcp_definition = {"type": "marker_midpoint", "markers": ["red", "blue"]}
+        else:
+            p_tool = [float(v) for v in calib["p_tool_wrist_m"]]
+            tool_reference_marker = calib_reference_marker
+        p_tool[0] += float(tool_out_mm) / 1000.0
         wrist_link = calib.get("wrist_link", chain_id.replace("_arm", "_wrist_yaw_link"))
 
     state.camera = camera
@@ -162,6 +174,8 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str,
             "wrist_link": wrist_link,
             "marker_count": len(p_tool_by_marker),
             "tool_reference_marker": tool_reference_marker,
+            "calib_reference_marker": calib_reference_marker,
+            "tcp_definition": tcp_definition,
         }
     state.arm_factory = arm_factory
     state.provider_reader = joints_reader
