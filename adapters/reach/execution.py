@@ -16,6 +16,51 @@ from .state import (_read_joints, _read_torso, _torso_drift, _torso_rotation,
                     router, state)
 
 
+COMMAND_SNAPSHOT_MAX_AGE_S = 0.25
+
+
+def _validated_command_snapshot(snapshot: dict, joint_count: int,
+                                *, now: float | None = None) -> tuple[np.ndarray, dict]:
+    """Validate a controller snapshot and return its last published joint command."""
+    if not isinstance(snapshot, dict):
+        raise RuntimeError("控制器没有返回有效的已发送命令快照")
+    q = np.asarray(snapshot.get("q_rad"), dtype=float).reshape(-1)
+    if q.size != joint_count or not np.all(np.isfinite(q)):
+        raise RuntimeError(f"已发送命令快照维度/数值异常（需要 {joint_count} 维）")
+    try:
+        sequence = int(snapshot["sequence"])
+        sent_at = float(snapshot["sent_at_monotonic"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("已发送命令快照缺少序号或时间戳") from exc
+    if sequence <= 0 or not np.isfinite(sent_at):
+        raise RuntimeError("控制器尚未成功发布关节命令")
+    age = max(0.0, (time.monotonic() if now is None else float(now)) - sent_at)
+    if age > COMMAND_SNAPSHOT_MAX_AGE_S:
+        raise RuntimeError(f"最后关节命令已过期（{age * 1000.0:.0f} ms）")
+
+    tau = np.asarray(snapshot.get("tau_ff_nm", []), dtype=float).reshape(-1)
+    if tau.size not in (0, joint_count) or (tau.size and not np.all(np.isfinite(tau))):
+        raise RuntimeError("已发送命令快照中的前馈力矩异常")
+    return q.copy(), {
+        "sequence": sequence,
+        "age_ms": round(age * 1000.0, 3),
+        "tau_ff_nm": tau.tolist() if tau.size else None,
+    }
+
+
+def _build_control_waypoints(planned: list[np.ndarray],
+                             command_start: np.ndarray) -> list[np.ndarray]:
+    """Keep the measured-space plan, but anchor control at the last sent command."""
+    if not planned:
+        raise RuntimeError("控制轨迹为空")
+    start = np.asarray(command_start, dtype=float).reshape(-1)
+    if start.size != planned[0].size or not np.all(np.isfinite(start)):
+        raise RuntimeError("控制轨迹起点维度/数值异常")
+    control = [np.asarray(q, dtype=float).copy() for q in planned]
+    control[0] = start.copy()
+    return control
+
+
 @router.post("/hand_move")
 def reach_hand_move(body: dict | None = None):
     """卸力开关（摆中间位用）。Body: {"on": bool}
@@ -207,12 +252,51 @@ def reach_execute(body: dict):
                           "手臂可能已被移动，请重新取点规划"},
                 status_code=409)
 
+        ctl_status = state.controller.status()
+        if ctl_status.get("float"):
+            return JSONResponse(
+                {"ok": False, "error": "手臂仍在卸力拖动模式，请先恢复刚性保持"},
+                status_code=409)
+        try:
+            command_start, snapshot_meta = _validated_command_snapshot(
+                state.controller.command_snapshot(), len(state.joint_names))
+        except Exception as exc:
+            return JSONResponse(
+                {"ok": False, "error": f"无法取得连续控制起点: {exc}"}, status_code=409)
+
+        support_gap = command_start - measured
+        kp = float(ctl_status.get("kp") or 0.0)
+        kp_wrist = float(ctl_status.get("kp_wrist") or kp)
+        kp_vec = np.asarray([
+            kp_wrist if "wrist" in name else kp for name in state.joint_names
+        ])
+        command_handoff = {
+            "planned_start_rad": q_list[0].tolist(),
+            "measured_start_rad": measured.tolist(),
+            "last_sent_start_rad": command_start.tolist(),
+            "support_gap_rad": support_gap.tolist(),
+            "support_gap_max_rad": float(np.max(np.abs(support_gap))),
+            "estimated_pd_support_nm": (kp_vec * support_gap).tolist(),
+            "snapshot_sequence": snapshot_meta["sequence"],
+            "snapshot_age_ms": snapshot_meta["age_ms"],
+            "last_sent_tau_ff_nm": snapshot_meta["tau_ff_nm"],
+        }
+
         state.exec_cancel.clear()
         state.exec_running = True
         state.exec_progress = 0.0
         state.exec_message = "执行中"
         state.exec_thread = threading.Thread(
-            target=_exec_loop, args=(q_list, duration, push_tau, speed, label), daemon=True)
+            target=_exec_loop,
+            args=(q_list, duration),
+            kwargs={
+                "push_tau": push_tau,
+                "speed": speed,
+                "label": label,
+                "command_start_q": command_start,
+                "command_handoff": command_handoff,
+            },
+            daemon=True)
         state.exec_thread.start()
     return {"ok": True, **_exec_status()}
 
@@ -231,7 +315,7 @@ def _tcp_position(q) -> list[float] | None:
 
 def _log_exec(kind: str, result: str, q_target, *, sag=None,
               duration=None, speed=None, pushing: bool = False, push_tau=None,
-              trace=None) -> None:
+              trace=None, command_handoff=None) -> None:
     """每段真机动作落一行 JSONL：logs/reach/reach_YYYYMMDD.jsonl。
 
     调参靠的是横向对比（改了 α / payload / kp 之后到底好了多少），
@@ -277,6 +361,7 @@ def _log_exec(kind: str, result: str, q_target, *, sag=None,
             "tau_push_peak_nm": (None if push_tau is None
                                  else [round(float(v), 3) for v in np.asarray(push_tau)]),
             "settle_residual_rad": sag,
+            "command_handoff": command_handoff,
         }
         if measured.size == target.size and measured.size:
             rec["reach_error_deg"] = [round(v, 3) for v in deg(target - measured)]
@@ -383,29 +468,34 @@ def _start_torso_trace(ctl) -> tuple[list, threading.Event]:
 
 def _exec_loop(q_list: list[np.ndarray], duration: float,
                push_tau: np.ndarray | None = None, speed: float = 0.2,
-               label: str = "reach") -> None:
+               label: str = "reach", command_start_q: np.ndarray | None = None,
+               command_handoff: dict | None = None) -> None:
     ctl = state.controller
     trace, trace_stop = _start_torso_trace(ctl)
     log = dict(duration=duration, speed=speed, pushing=push_tau is not None,
-               push_tau=push_tau, trace=trace)
+               push_tau=push_tau, trace=trace, command_handoff=command_handoff)
     try:
+        if command_start_q is None:
+            raise RuntimeError("缺少上一帧已发送关节命令，拒绝启动轨迹")
+        control_q_list = _build_control_waypoints(q_list, command_start_q)
         state.exec_phase = "traj"
         ctl.enable_jog()
         # 分段限速：普通段默认 0.2 慢而稳；带推力的快拨段放行到 0.4；
         # 调用方也可以按段指定（如收回段 0.4），都不超 --arm-max-speed 天花板
         if hasattr(ctl, "set_max_speed"):
             ctl.set_max_speed(max(0.4, speed) if push_tau is not None else speed)
-        n = len(q_list)
+        n = len(control_q_list)
         # 时长下限：限速滑动（矢量同步）跑完全程所需时间。短于它路点节拍会
         # 一直超前于指令，falling-behind 的关节仍会扭曲路径，所以自动拉长。
-        travel = sum(float(np.max(np.abs(b - a))) for a, b in zip(q_list, q_list[1:]))
+        travel = sum(float(np.max(np.abs(b - a)))
+                     for a, b in zip(control_q_list, control_q_list[1:]))
         min_duration = travel / max(ctl.max_speed, 1e-6) * 1.1
         if duration < min_duration:
             duration = min_duration
             state.exec_message = f"时长过短，按限速拉长到 {duration:.1f}s"
         dt = duration / max(n - 1, 1)
         t0 = time.monotonic()
-        for i, q in enumerate(q_list):
+        for i, q in enumerate(control_q_list):
             if state.exec_cancel.is_set():
                 ctl.disable_jog()
                 state.exec_message = "已中止（保持当前位置）"
