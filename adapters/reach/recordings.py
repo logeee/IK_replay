@@ -12,7 +12,12 @@ from pathlib import Path
 import numpy as np
 from fastapi.responses import JSONResponse
 
-from .execution import _exec_loop, _exec_status, _tcp_position
+from .execution import (
+    _exec_loop,
+    _exec_status,
+    _tcp_position,
+    _validated_command_snapshot,
+)
 from .state import _read_joints, router, state
 
 
@@ -337,13 +342,51 @@ def reach_run_sequence(body: dict):
                     "duration_s": round(duration, 2),
                     "preview_frames": frames_preview}
         label = f"序列:{str(seq.get('name') or path.stem)}"[:32]
+        ctl_status = state.controller.status()
+        if ctl_status.get("float"):
+            return JSONResponse(
+                {"ok": False, "error": "手臂仍在卸力拖动模式，请先恢复刚性保持"},
+                status_code=409,
+            )
+        try:
+            command_start, snapshot_meta = _validated_command_snapshot(
+                state.controller.command_snapshot(), len(state.joint_names)
+            )
+        except Exception as exc:
+            return JSONResponse(
+                {"ok": False, "error": f"无法取得连续控制起点: {exc}"},
+                status_code=409,
+            )
+        command_handoff = {
+            "planned_start_rad": q_list[0].tolist(),
+            "measured_start_rad": q0.tolist(),
+            "last_sent_start_rad": command_start.tolist(),
+            "support_gap_rad": (command_start - q0).tolist(),
+            "support_gap_max_rad": float(
+                np.max(np.abs(command_start - q0))
+            ),
+            "snapshot_sequence": snapshot_meta["sequence"],
+            "snapshot_age_ms": snapshot_meta["age_ms"],
+            "last_sent_tau_ff_nm": snapshot_meta["tau_ff_nm"],
+            "source": "sequence_replay",
+        }
 
         state.exec_cancel.clear()
         state.exec_running = True
         state.exec_progress = 0.0
         state.exec_message = "执行中"
         state.exec_thread = threading.Thread(
-            target=_exec_loop, args=(q_list, duration, None, speed, label), daemon=True)
+            target=_exec_loop,
+            args=(q_list, duration),
+            kwargs={
+                "push_tau": None,
+                "speed": speed,
+                "label": label,
+                "command_start_q": command_start,
+                "command_handoff": command_handoff,
+            },
+            daemon=True,
+        )
         state.exec_thread.start()
     return {"ok": True, "duration_s": round(duration, 2), "frames": len(q_list),
             "planned": planned, "replayed": not planned, **_exec_status()}
