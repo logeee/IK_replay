@@ -155,14 +155,34 @@ def reach_diagnostics():
         arm.update({k: st.get(k) for k in
                     ("kp", "kd", "kp_wrist", "kd_wrist", "grav_alpha", "payload_kg",
                      "grav_in_float", "use_imu_gravity", "tau_grav_nm", "tau_push_nm",
-                     "joint_names", "cmd_rad", "measured_rad", "desired_rad")})
+                     "joint_names", "cmd_rad", "measured_rad", "desired_rad",
+                     "dq_rad_s", "measured_dq_rad_s", "tau_est_nm",
+                     "measured_tau_nm", "tau_ff_nm")})
         if st.get("cmd_rad") and st.get("measured_rad"):
-            gap = np.asarray(st["cmd_rad"]) - np.asarray(st["measured_rad"])
+            cmd = np.asarray(st["cmd_rad"], dtype=float)
+            measured = np.asarray(st["measured_rad"], dtype=float)
+            gap = cmd - measured
             # 跟随误差就是"下垂"的直接度量：重力前馈生效后应当从几度掉到零点几度
             arm["follow_error_deg"] = [round(math.degrees(v), 2) for v in gap]
             arm["follow_error_max_deg"] = round(math.degrees(float(np.max(np.abs(gap)))), 2)
+            kp = float(st.get("kp") or 0.0)
+            kp_wrist = float(st.get("kp_wrist") or kp)
+            names = list(st.get("joint_names") or state.joint_names)
+            kp_vec = np.asarray([
+                kp_wrist if "wrist" in name else kp for name in names
+            ], dtype=float)
+            if kp_vec.size == gap.size:
+                arm["estimated_pd_support_nm"] = (kp_vec * gap).tolist()
+            arm["tcp_cmd_root_m"] = _tcp_position(cmd.tolist())
+            arm["tcp_measured_root_m"] = _tcp_position(measured.tolist())
+        try:
+            arm["command_snapshot"] = ctl.command_snapshot()
+        except Exception as exc:
+            arm["command_snapshot_error"] = str(exc)
     now = _read_torso()
     return {
+        "captured_at": datetime.now().isoformat(timespec="milliseconds"),
+        "captured_monotonic": time.monotonic(),
         "arm": arm,
         "torso_now": now,
         "torso_at_pick": state.pick_torso,

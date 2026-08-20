@@ -30,6 +30,26 @@ Open:
 http://localhost:8000
 ```
 
+## Gravity calibration experiment bench (18002)
+
+The gravity calibration UI keeps its waypoints and experiment records separate
+under `data/gravity_calibration/`. It delegates planning and hardware execution
+to an already-running reach service on port 18001; the 18002 process never opens
+DDS or controls the arm directly.
+
+```bash
+./prepare-gravity.sh
+# open http://<robot-ip>:18002/
+
+./prepare-gravity.sh stop
+```
+
+Recommended workflow: save all manually dragged poses first, then choose and
+order any subset for the experiment. Each confirmed run plans and previews the
+trajectory, moves the arm, waits for settling, and records command/measured
+joints, measured velocity, estimated motor torque, controller gains,
+gravity/feedforward torque, TCP, and torso diagnostics.
+
 ## Reach RGB-D source
 
 The production reach service is a read-only consumer of the external

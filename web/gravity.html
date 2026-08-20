@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>重力补偿标定实验台</title>
+<style>
+  :root {
+    --bg:#08101b; --panel:#111d2b; --panel2:#152436; --line:#293b50;
+    --text:#edf5ff; --muted:#8fa3b9; --cyan:#43d6c5; --blue:#66aaff;
+    --green:#54d68b; --amber:#f3bc5b; --red:#ff7373; --purple:#a78bfa;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; color:var(--text); font:14px/1.5 "PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    background:radial-gradient(circle at 10% -15%,#17385b 0,transparent 34%),
+               radial-gradient(circle at 95% 0,rgba(67,214,197,.1),transparent 30%),var(--bg); }
+  button,input,textarea,select { font:inherit; }
+  button { border:1px solid var(--line); border-radius:8px; padding:8px 13px; color:var(--text);
+    background:#1a2b3e; cursor:pointer; transition:.18s; }
+  button:hover:not(:disabled) { border-color:#4a6684; transform:translateY(-1px); }
+  button:disabled { opacity:.38; cursor:not-allowed; }
+  button.primary { background:#176f78; border-color:#2d9ba1; }
+  button.execute { background:#295d96; border-color:#4c83bd; font-weight:700; }
+  button.danger { background:#622f38; border-color:#914553; }
+  button.ghost { background:transparent; }
+  input,textarea,select { color:var(--text); background:#0c1724; border:1px solid var(--line); border-radius:7px; padding:7px 9px; }
+  input[type=number] { width:76px; }
+  input:focus,textarea:focus,select:focus { outline:none; border-color:var(--cyan); box-shadow:0 0 0 3px rgba(67,214,197,.09); }
+  header { height:68px; padding:0 26px; display:flex; align-items:center; border-bottom:1px solid var(--line);
+    background:rgba(7,15,25,.8); backdrop-filter:blur(16px); position:sticky; top:0; z-index:10; }
+  .brand { display:flex; align-items:center; gap:12px; }
+  .logo { width:38px;height:38px;border-radius:11px;display:grid;place-items:center;font-weight:900;color:#061019;
+    background:linear-gradient(135deg,var(--cyan),var(--blue)); }
+  h1 { margin:0;font-size:16px; } .sub { color:var(--muted);font-size:11px;margin-top:1px; }
+  .head-status { margin-left:auto;display:flex;gap:10px;align-items:center; }
+  .pill { padding:5px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted);font-size:11px; }
+  .pill.ok { color:var(--green);border-color:rgba(84,214,139,.35);background:rgba(84,214,139,.07); }
+  .pill.warn { color:var(--amber); } .pill.bad { color:var(--red); }
+  main { max-width:1540px;margin:auto;padding:20px 22px 42px; }
+  .phase-strip { display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px; }
+  .phase { border:1px solid var(--line);border-radius:14px;background:rgba(17,29,43,.86);padding:15px 18px;display:flex;gap:13px;align-items:center; }
+  .phase-no { width:35px;height:35px;border-radius:10px;display:grid;place-items:center;font-weight:800;background:rgba(102,170,255,.1);color:var(--blue); }
+  .phase:nth-child(2) .phase-no { color:var(--cyan);background:rgba(67,214,197,.1); }
+  .phase b { display:block; } .phase span { color:var(--muted);font-size:11px; }
+  .grid { display:grid;grid-template-columns:minmax(400px,1.05fr) minmax(480px,1.45fr);gap:14px; }
+  .panel { border:1px solid var(--line);border-radius:16px;background:linear-gradient(145deg,rgba(20,36,54,.95),rgba(12,24,38,.96));overflow:hidden; }
+  .panel-head { min-height:53px;padding:12px 16px;display:flex;align-items:center;border-bottom:1px solid var(--line); }
+  .panel-head h2 { margin:0;font-size:14px; } .panel-head .hint { margin-left:auto;color:var(--muted);font-size:11px; }
+  .toolbar { padding:12px 15px;border-bottom:1px solid var(--line);display:flex;gap:8px;flex-wrap:wrap;align-items:center; }
+  .toolbar .spacer { margin-left:auto; }
+  .author-form { padding:12px 15px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:1fr 1.3fr auto;gap:8px; }
+  .point-list { height:515px;overflow:auto;padding:8px; }
+  .point { border:1px solid transparent;border-radius:11px;padding:11px;margin-bottom:6px;background:rgba(7,17,28,.48);
+    display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center; }
+  .point:hover { border-color:var(--line); } .point.selected { border-color:rgba(67,214,197,.52);background:rgba(67,214,197,.06); }
+  .point input { width:17px;height:17px;accent-color:var(--cyan); }
+  .point-name { font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+  .point-meta { color:var(--muted);font-size:10.5px;margin-top:2px; }
+  .point-actions { display:flex;gap:4px; } .point-actions button { padding:5px 7px;font-size:11px; }
+  .badge { display:inline-flex;padding:2px 6px;border-radius:999px;font-size:9px;margin-left:5px;background:rgba(143,163,185,.1);color:var(--muted); }
+  .badge.done { color:var(--green);background:rgba(84,214,139,.1); }
+  .empty { min-height:180px;display:grid;place-items:center;text-align:center;color:var(--muted);padding:25px; }
+  .operation { padding:14px 16px;border-bottom:1px solid var(--line); }
+  .op-top { display:flex;align-items:center;gap:10px; }
+  .op-icon { width:38px;height:38px;border-radius:12px;display:grid;place-items:center;background:rgba(102,170,255,.1);color:var(--blue);font-weight:800; }
+  .op-title { font-weight:700; } .op-message { color:var(--muted);font-size:11px; }
+  .progress { height:5px;background:#0a1420;border-radius:9px;margin-top:12px;overflow:hidden; }
+  .progress i { display:block;height:100%;width:0;background:linear-gradient(90deg,var(--blue),var(--cyan));transition:width .25s; }
+  .batchbar { padding:10px 16px;border-bottom:1px solid var(--line);background:rgba(7,17,28,.28); }
+  .batch-actions { display:flex;gap:7px;align-items:center;flex-wrap:wrap; }
+  .batch-actions input { width:150px; }
+  .batch-actions .label { color:var(--muted);font-size:10px;margin-right:auto; }
+  .batch-items { display:flex;gap:5px;overflow:auto;margin-top:8px;padding-bottom:2px; }
+  .batch-item { white-space:nowrap;padding:4px 7px;border-radius:7px;background:#0b1825;border:1px solid var(--line);font-size:10px;color:var(--muted);cursor:pointer; }
+  .batch-item.completed { color:var(--green);border-color:rgba(84,214,139,.3); }
+  .batch-item.executing,.batch-item.planning { color:var(--blue);border-color:rgba(102,170,255,.35); }
+  .batch-item.failed { color:var(--red);border-color:rgba(255,115,115,.35); }
+  .batch-item.skipped { text-decoration:line-through;opacity:.6; }
+  .run-layout { display:grid;grid-template-columns:1fr 1fr;min-height:260px; }
+  .run-controls { padding:14px 16px;border-right:1px solid var(--line); }
+  .selected-title { font-size:19px;font-weight:750;margin-bottom:3px; }
+  .selected-note { color:var(--muted);font-size:11px;min-height:34px; }
+  .form-row { display:flex;align-items:center;gap:8px;margin-top:9px;flex-wrap:wrap; }
+  .form-row label { color:var(--muted);font-size:11px; }
+  .safety { margin-top:12px;padding:9px;border-radius:9px;background:rgba(243,188,91,.06);border:1px solid rgba(243,188,91,.2);font-size:11px;color:#d8c397; }
+  .safety label { display:flex;gap:8px;align-items:flex-start;cursor:pointer; } .safety input { margin-top:2px;accent-color:var(--amber); }
+  .action-row { display:flex;gap:8px;margin-top:12px; }
+  .preview { padding:12px;display:flex;flex-direction:column;min-width:0; }
+  .preview h3 { margin:0 0 7px;font-size:11px;color:var(--muted);font-weight:500; }
+  #pathSvg { width:100%;height:145px;border-radius:10px;background:#091522;border:1px solid rgba(41,59,80,.8); }
+  .preview-meta { color:var(--muted);font-size:10.5px;margin-top:7px; }
+  .joint-mini { margin-top:10px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;max-height:90px;overflow:auto; }
+  .joint-mini div { padding:4px 7px;background:rgba(7,17,28,.45);border-radius:6px;font-size:10px;display:flex;justify-content:space-between;gap:6px; }
+  .history { border-top:1px solid var(--line); }
+  .history-list { max-height:226px;overflow:auto;padding:8px 12px 12px; }
+  .run { padding:9px 10px;border-bottom:1px solid rgba(41,59,80,.6);display:grid;grid-template-columns:1fr auto;gap:8px; }
+  .run:last-child { border-bottom:0; } .run-title { font-size:11px;font-weight:650; } .run-meta { color:var(--muted);font-size:10px;margin-top:2px; }
+  .run-status { font-size:10px;color:var(--green); } .run-status.failed { color:var(--red); }
+  .toast { position:fixed;right:22px;bottom:22px;max-width:390px;padding:11px 15px;border-radius:10px;background:#183047;border:1px solid #345572;
+    box-shadow:0 16px 40px rgba(0,0,0,.35);transform:translateY(20px);opacity:0;pointer-events:none;transition:.25s;z-index:20; }
+  .toast.show { opacity:1;transform:none; } .toast.bad { border-color:#814653;background:#472831; }
+  @media(max-width:1050px){.grid{grid-template-columns:1fr}.point-list{height:400px}}
+  @media(max-width:680px){header{padding:0 13px}.head-status .pill:nth-child(n+2){display:none}main{padding:12px 9px}.phase-strip{grid-template-columns:1fr}.author-form{grid-template-columns:1fr}.run-layout{grid-template-columns:1fr}.run-controls{border-right:0;border-bottom:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><div class="logo">G</div><div><h1>重力补偿标定实验台</h1><div class="sub">GRAVITY IDENTIFICATION · PORT 18002</div></div></div>
+  <div class="head-status">
+    <span id="reachPill" class="pill bad">18001 离线</span>
+    <span id="armPill" class="pill">手臂未接管</span>
+    <span id="dragPill" class="pill">刚性保持</span>
+  </div>
+</header>
+<main>
+  <div class="phase-strip">
+    <div class="phase"><div class="phase-no">1</div><div><b>先准备位点库</b><span>自由拖动并连续保存所有实验姿态，不要求保存后立即执行</span></div></div>
+    <div class="phase"><div class="phase-no">2</div><div><b>再选择并运行实验</b><span>任意选择、排序、规划预览；逐点确认后真机执行并自动采样</span></div></div>
+  </div>
+  <div class="grid">
+    <section class="panel">
+      <div class="panel-head"><h2>重力标定位点库</h2><span id="pointSummary" class="hint">0 个位点</span></div>
+      <div class="toolbar">
+        <button id="armBtn" class="primary">接管手臂</button>
+        <button id="dragBtn">开启拖动</button>
+        <button id="releaseBtn" class="ghost">释放手臂</button>
+        <span class="spacer"></span>
+        <button id="clearQueueBtn" class="ghost">清空选择</button>
+      </div>
+      <div class="author-form">
+        <input id="pointName" placeholder="位点名称，例如：高位前伸" maxlength="80" />
+        <input id="pointNote" placeholder="备注（可选）" maxlength="500" />
+        <button id="savePointBtn" class="primary">保存当前位置</button>
+      </div>
+      <div id="pointList" class="point-list"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>规划与实验运行</h2><span id="queueSummary" class="hint">未选择实验位点</span></div>
+      <div class="operation">
+        <div class="op-top"><div id="opIcon" class="op-icon">○</div><div><div id="opTitle" class="op-title">等待选择位点</div><div id="opMessage" class="op-message">从左侧位点库选择一个姿态开始</div></div></div>
+        <div class="progress"><i id="opProgress"></i></div>
+      </div>
+      <div class="batchbar">
+        <div class="batch-actions">
+          <input id="batchName" placeholder="本次实验批次名称" maxlength="80" />
+          <button id="createBatchBtn">由左侧选择创建批次</button>
+          <button id="nextBatchBtn" class="primary" disabled>半自动：执行下一个</button>
+          <button id="autoBatchBtn" class="execute" disabled>自动批量</button>
+          <button id="pauseBatchBtn" disabled>完成本点后暂停</button>
+          <button id="skipBatchBtn" disabled>跳过</button>
+          <span id="batchLabel" class="label">尚未建立批次</span>
+        </div>
+        <div id="batchItems" class="batch-items"></div>
+      </div>
+      <div class="run-layout">
+        <div class="run-controls">
+          <div id="selectedTitle" class="selected-title">尚未选择位点</div>
+          <div id="selectedNote" class="selected-note">位点准备和实验执行彼此独立。</div>
+          <div class="form-row"><label>轨迹时长</label><input id="duration" type="number" min="2" max="30" step="0.5" value="6" /><label>s</label><label>关节限速</label><input id="speed" type="number" min=".05" max=".5" step=".05" value=".2" /></div>
+          <div class="form-row"><label>到位稳定</label><input id="settle" type="number" min=".5" max="20" step=".5" value="3" /><label>s</label><label>采样</label><input id="sample" type="number" min=".5" max="20" step=".5" value="2" /><label>s</label></div>
+          <div class="form-row"><label>采样频率</label><input id="sampleHz" type="number" min="2" max="50" step="1" value="10" /><label>Hz</label></div>
+          <div class="safety"><label><input id="safetyCheck" type="checkbox" /><span>已确认人员远离、周围无障碍、手臂已恢复刚性保持，并准备好随时急停。</span></label></div>
+          <div class="action-row"><button id="planBtn" class="primary">① 规划并预览</button><button id="executeBtn" class="execute" disabled>② 真机执行</button><button id="stopBtn" class="danger">急停</button></div>
+        </div>
+        <div class="preview">
+          <h3>TCP规划路径预览（根坐标 X/Z）</h3>
+          <svg id="pathSvg" viewBox="0 0 360 145" preserveAspectRatio="none"></svg>
+          <div id="previewMeta" class="preview-meta">规划成功后显示路径</div>
+          <div id="jointMini" class="joint-mini"></div>
+        </div>
+      </div>
+      <div class="history">
+        <div class="panel-head"><h2>最近实验记录</h2><span id="runSummary" class="hint">0 次完成</span></div>
+        <div id="historyList" class="history-list"></div>
+      </div>
+    </section>
+  </div>
+</main>
+<div id="toast" class="toast"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+let data = null;
+let selectedId = localStorage.getItem("gravity_selected_point") || "";
+let queue = new Set(JSON.parse(localStorage.getItem("gravity_queue") || "[]"));
+let busy = false;
+
+async function api(path, method="GET", body=null) {
+  const response = await fetch(path, {method, headers: body ? {"Content-Type":"application/json"} : {}, body: body ? JSON.stringify(body) : null, cache:"no-store"});
+  const payload = await response.json();
+  if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+  return payload;
+}
+function toast(message, bad=false) {
+  const el=$("toast"); el.textContent=message; el.className="toast show"+(bad?" bad":"");
+  clearTimeout(el._timer); el._timer=setTimeout(()=>el.className="toast",3500);
+}
+function saveQueue(){localStorage.setItem("gravity_queue",JSON.stringify([...queue]));}
+function selectedPoint(){return (data?.points||[]).find(p=>p.id===selectedId)||null;}
+function phaseBusy(){return ["planning","executing","settling","sampling"].includes(data?.operation?.phase);}
+function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));}
+function deg(v){return `${(Number(v)*180/Math.PI).toFixed(1)}°`;}
+
+function renderHeader(){
+  const reach=data.reach;
+  $("reachPill").textContent=reach?"18001 在线":"18001 离线";
+  $("reachPill").className="pill "+(reach?"ok":"bad");
+  $("armPill").textContent=reach?.armed?"手臂已接管":"手臂未接管";
+  $("armPill").className="pill "+(reach?.armed?"ok":"");
+  $("dragPill").textContent=reach?.hand_move?"拖动模式":"刚性保持";
+  $("dragPill").className="pill "+(reach?.hand_move?"warn":"");
+  $("armBtn").disabled=!reach||reach.armed;
+  $("dragBtn").disabled=!reach?.armed||phaseBusy();
+  $("dragBtn").textContent=reach?.hand_move?"恢复刚性保持":"开启拖动";
+  $("releaseBtn").disabled=!reach?.armed||phaseBusy();
+}
+function selectPoint(id){
+  selectedId=id; localStorage.setItem("gravity_selected_point",id); $("safetyCheck").checked=false; render();
+}
+function toggleQueue(id,checked){checked?queue.add(id):queue.delete(id);saveQueue();render();}
+async function deletePoint(id){
+  const p=(data.points||[]).find(x=>x.id===id); if(!confirm(`删除位点「${p?.name||id}」？实验记录不会删除。`))return;
+  try{await api(`/api/gravity/waypoints/${id}`,"DELETE");queue.delete(id);if(selectedId===id)selectedId="";saveQueue();toast("位点已删除");await poll();}catch(e){toast(e.message,true);}
+}
+async function movePoint(id,delta){
+  const pts=data.points||[],i=pts.findIndex(p=>p.id===id),j=i+delta;if(i<0||j<0||j>=pts.length)return;
+  try{await Promise.all([api(`/api/gravity/waypoints/${pts[i].id}`,"PATCH",{order:pts[j].order}),api(`/api/gravity/waypoints/${pts[j].id}`,"PATCH",{order:pts[i].order})]);await poll();}catch(e){toast(e.message,true);}
+}
+function renderPoints(){
+  const points=data.points||[]; $("pointSummary").textContent=`${points.length} 个位点 · ${data.summary.completed_points} 个已完成`;
+  $("queueSummary").textContent=queue.size?`本轮已选择 ${queue.size} 个位点`:"未选择实验位点";
+  if(!points.length){$("pointList").innerHTML='<div class="empty">尚无重力标定位点<br>接管手臂并拖到姿态后，可连续保存多个点</div>';return;}
+  $("pointList").innerHTML=points.map((p,i)=>`<div class="point ${p.id===selectedId?"selected":""}" onclick="selectPoint('${p.id}')">
+    <input type="checkbox" ${queue.has(p.id)?"checked":""} onclick="event.stopPropagation();toggleQueue('${p.id}',this.checked)" />
+    <div><div class="point-name">${esc(p.name)}${p.completed_runs?`<span class="badge done">完成 ${p.completed_runs} 次</span>`:'<span class="badge">未采样</span>'}</div>
+    <div class="point-meta">#${i+1} · ${esc(p.note||"无备注")} · ${p.created_at?.replace("T"," ").slice(0,19)||""}</div></div>
+    <div class="point-actions"><button onclick="event.stopPropagation();movePoint('${p.id}',-1)" ${i===0?"disabled":""}>↑</button><button onclick="event.stopPropagation();movePoint('${p.id}',1)" ${i===points.length-1?"disabled":""}>↓</button><button onclick="event.stopPropagation();deletePoint('${p.id}')">删</button></div>
+  </div>`).join("");
+}
+function renderOperation(){
+  const op=data.operation||{}, map={idle:["○","等待选择位点"],planning:["…","正在规划"],ready:["✓","规划可以执行"],executing:["↻","真机运动中"],settling:["◷","稳定等待"],sampling:["●","采集重力数据"],completed:["✓","该位点已完成"],error:["!","操作未完成"]};
+  const info=map[op.phase]||["○",op.phase];$("opIcon").textContent=info[0];$("opTitle").textContent=info[1];$("opMessage").textContent=op.error||op.message||"";
+  $("opProgress").style.width=`${Math.max(0,Math.min(100,Number(op.progress||0)*100))}%`;
+}
+async function batchItemClick(pointId,status){
+  if(status==="failed"||status==="skipped"){
+    if(!confirm("将该位点恢复为待执行并重试？"))return;
+    try{await api(`/api/gravity/batches/${data.batch.id}/retry`,"POST",{point_id:pointId});toast("位点已恢复为待执行");await poll();}catch(e){toast(e.message,true);}
+    return;
+  }
+  selectPoint(pointId);
+}
+function renderBatch(){
+  const batch=data.batch, hasPending=batch?.items?.some(i=>i.status==="pending"), running=batch?.state==="running";
+  $("createBatchBtn").disabled=!queue.size||phaseBusy();
+  $("nextBatchBtn").disabled=!batch||!hasPending||running||phaseBusy()||!data.reach?.armed||data.reach?.hand_move;
+  $("autoBatchBtn").disabled=!batch||!hasPending||running||phaseBusy()||!data.reach?.armed||data.reach?.hand_move;
+  $("pauseBatchBtn").disabled=!batch||!running;
+  $("skipBatchBtn").disabled=!batch||phaseBusy()||!batch.items.some(i=>["pending","failed"].includes(i.status));
+  if(!batch){$("batchLabel").textContent="尚未建立批次";$("batchItems").innerHTML="";return;}
+  const done=batch.items.filter(i=>i.status==="completed").length;
+  $("batchLabel").textContent=`${batch.name} · ${done}/${batch.items.length} · ${batch.mode==="automatic"?"自动":"半自动"} · ${batch.state}`;
+  const labels={pending:"待执行",planning:"规划中",executing:"运行中",completed:"完成",failed:"失败",skipped:"跳过"};
+  $("batchItems").innerHTML=batch.items.map((item,index)=>`<span class="batch-item ${item.status}" onclick="batchItemClick('${item.point_id}','${item.status}')" title="${esc(item.error||"点击查看；失败/跳过项可点击重试")}">${index+1}. ${esc(item.point_name)} · ${labels[item.status]||item.status}</span>`).join("");
+}
+function drawPreview(plan){
+  const svg=$("pathSvg"),path=plan?.preview?.tcp_path_root_m||[];if(path.length<2){svg.innerHTML='<text x="180" y="76" text-anchor="middle" fill="#60778e" font-size="11">暂无规划路径</text>';return;}
+  const xs=path.map(p=>Number(p[0])),zs=path.map(p=>Number(p[2])),minX=Math.min(...xs),maxX=Math.max(...xs),minZ=Math.min(...zs),maxZ=Math.max(...zs),pad=18;
+  const sx=x=>pad+(x-minX)/(maxX-minX||1)*(360-pad*2),sz=z=>145-pad-(z-minZ)/(maxZ-minZ||1)*(145-pad*2);
+  const points=path.map(p=>`${sx(p[0]).toFixed(1)},${sz(p[2]).toFixed(1)}`).join(" ");
+  svg.innerHTML=`<defs><linearGradient id="g" x1="0" x2="1"><stop stop-color="#66aaff"/><stop offset="1" stop-color="#43d6c5"/></linearGradient></defs>
+  <polyline points="${points}" fill="none" stroke="url(#g)" stroke-width="3"/><circle cx="${sx(path[0][0])}" cy="${sz(path[0][2])}" r="5" fill="#66aaff"/><circle cx="${sx(path.at(-1)[0])}" cy="${sz(path.at(-1)[2])}" r="5" fill="#54d68b"/>`;
+}
+function renderSelected(){
+  const p=selectedPoint(),plan=data.plan&&data.plan.point_id===selectedId?data.plan:null;
+  $("selectedTitle").textContent=p?p.name:"尚未选择位点";$("selectedNote").textContent=p?(p.note||"无备注"):"位点准备和实验执行彼此独立。";
+  $("planBtn").disabled=!p||phaseBusy()||!data.reach;$("executeBtn").disabled=!p||!plan||data.operation.phase!=="ready"||!data.reach?.armed||data.reach?.hand_move;
+  drawPreview(plan);$("previewMeta").textContent=plan?`${plan.planner||"规划"} · ${plan.waypoint_count}帧 · ${plan.duration_s}s · 碰撞检查${plan.collision?.status==="collision"?"未通过":"通过"}`:"规划成功后显示路径";
+  if(!p){$("jointMini").innerHTML="";return;}const names=p.joint_names||Object.keys(p.named_joints||{});
+  $("jointMini").innerHTML=names.map(n=>`<div><span>${esc(n.replace("right_",""))}</span><b>${deg(p.named_joints[n])}</b></div>`).join("");
+}
+function renderHistory(){
+  const runs=data.runs||[];$("runSummary").textContent=`${data.summary.completed_runs} 次完成 · ${data.summary.failed_runs} 次失败`;
+  if(!runs.length){$("historyList").innerHTML='<div class="empty">尚无实验记录</div>';return;}
+  $("historyList").innerHTML=runs.slice(0,12).map(r=>{const err=r.aggregate?.command_minus_measured_deg;const max=err?.length?Math.max(...err.map(Math.abs)).toFixed(2):null;
+    return `<div class="run"><div><div class="run-title">${esc(r.point_name||r.point_id)}</div><div class="run-meta">${r.started_at?.replace("T"," ").slice(0,19)||""}${max?` · 最大静差 ${max}°`:""} · ${r.sample_count||0}帧</div></div><div class="run-status ${r.status==="failed"?"failed":""}">${r.status==="completed"?"已完成":"失败"}</div></div>`}).join("");
+}
+function render(){if(!data)return;renderHeader();renderPoints();renderOperation();renderBatch();renderSelected();renderHistory();}
+
+async function poll(){if(busy)return;busy=true;try{data=await api("/api/gravity/status");if(selectedId&&!selectedPoint())selectedId="";render();}catch(e){toast(`状态读取失败：${e.message}`,true);}finally{busy=false;}}
+$("armBtn").onclick=async()=>{if(!confirm("确认接管手臂并在当前位置刚性保持？"))return;try{await api("/api/gravity/arm","POST",{on:true});toast("手臂已接管");await poll();}catch(e){toast(e.message,true);}};
+$("releaseBtn").onclick=async()=>{if(!confirm("确认释放手臂控制权？请先扶住手臂。"))return;try{await api("/api/gravity/arm","POST",{on:false});toast("手臂已释放");await poll();}catch(e){toast(e.message,true);}};
+$("dragBtn").onclick=async()=>{const on=!data?.reach?.hand_move;if(on&&!confirm("拖动模式会卸力并可能下坠，请扶住手臂。继续？"))return;try{await api("/api/gravity/hand_move","POST",{on});toast(on?"已开启拖动，请扶稳手臂":"已恢复当前位置刚性保持");await poll();}catch(e){toast(e.message,true);}};
+$("savePointBtn").onclick=async()=>{const name=$("pointName").value.trim();if(!name){toast("请输入位点名称",true);return;}try{const r=await api("/api/gravity/waypoints","POST",{name,note:$("pointNote").value.trim()});$("pointName").value="";$("pointNote").value="";selectedId=r.point.id;queue.add(r.point.id);saveQueue();toast("已保存当前位置，可继续拖动并保存下一个点");await poll();}catch(e){toast(e.message,true);}};
+$("clearQueueBtn").onclick=()=>{queue.clear();saveQueue();render();};
+$("createBatchBtn").onclick=async()=>{const ids=(data.points||[]).filter(p=>queue.has(p.id)).map(p=>p.id);if(!ids.length){toast("请先从左侧勾选位点",true);return;}try{await api("/api/gravity/batches","POST",{name:$("batchName").value.trim(),point_ids:ids,duration_s:Number($("duration").value),max_speed_rad_s:Number($("speed").value),settle_s:Number($("settle").value),sample_s:Number($("sample").value),sample_hz:Number($("sampleHz").value)});toast("实验批次已建立，可选择半自动或自动批量");await poll();}catch(e){toast(e.message,true);}};
+$("nextBatchBtn").onclick=async()=>{const batch=data.batch;if(!batch)return;if(!$("safetyCheck").checked){toast("请先勾选安全确认",true);return;}const next=batch.items.find(i=>i.status==="pending");if(!confirm(`半自动执行下一个位点「${next?.point_name||""}」？`))return;try{selectedId=next.point_id;await api(`/api/gravity/batches/${batch.id}/next`,"POST",{confirm:true});toast("已开始规划并执行下一个位点");await poll();}catch(e){toast(e.message,true);}};
+$("autoBatchBtn").onclick=async()=>{const batch=data.batch;if(!batch)return;if(!$("safetyCheck").checked){toast("请先勾选安全确认",true);return;}if(!confirm("自动批量会在每个点采样成功后直接运行下一个点，不再逐点确认。确认人员已远离并开始？"))return;try{await api(`/api/gravity/batches/${batch.id}/auto`,"POST",{confirm:true});toast("自动批量已启动，可点击“完成本点后暂停”");await poll();}catch(e){toast(e.message,true);}};
+$("pauseBatchBtn").onclick=async()=>{try{const r=await api(`/api/gravity/batches/${data.batch.id}/pause`,"POST",{});toast(r.message);await poll();}catch(e){toast(e.message,true);}};
+$("skipBatchBtn").onclick=async()=>{if(!confirm("跳过当前失败项或下一个待执行位点？"))return;try{await api(`/api/gravity/batches/${data.batch.id}/skip`,"POST",{});toast("已跳过该位点");await poll();}catch(e){toast(e.message,true);}};
+$("planBtn").onclick=async()=>{const p=selectedPoint();if(!p)return;try{await api(`/api/gravity/plan/${p.id}`,"POST",{duration_s:Number($("duration").value),max_speed_rad_s:Number($("speed").value),steps:120,planner_type:"linear",check_collision:true});toast("规划完成，请检查预览后确认真机执行");$("safetyCheck").checked=false;await poll();}catch(e){toast(e.message,true);await poll();}};
+$("executeBtn").onclick=async()=>{const p=selectedPoint(),plan=data?.plan;if(!p||!plan)return;if(!$("safetyCheck").checked){toast("请先勾选安全确认",true);return;}if(!confirm(`真机将运动到「${p.name}」，随后稳定并采样。确认执行？`))return;try{await api(`/api/gravity/execute/${p.id}`,"POST",{confirm:true,plan_id:plan.id,settle_s:Number($("settle").value),sample_s:Number($("sample").value),sample_hz:Number($("sampleHz").value)});toast("真机执行已启动");await poll();}catch(e){toast(e.message,true);await poll();}};
+$("stopBtn").onclick=async()=>{if(!confirm("立即停止当前运动并保持当前位置？"))return;try{await api("/api/gravity/stop","POST",{});toast("已发送急停");await poll();}catch(e){toast(e.message,true);}};
+drawPreview(null);poll();setInterval(()=>{if(!document.hidden)poll();},700);document.addEventListener("visibilitychange",()=>{if(!document.hidden)poll();});
+</script>
+</body>
+</html>
