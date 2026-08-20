@@ -469,9 +469,9 @@ HOLD_ALIGN_FLIP_MIN_DEG = 1.5     # 反号兜底只在大杆后允许触发
 # 提速逃生档：14:39 那轮 6°/s 的杆下发 4.7° 实测只动 0.22°、下发 3.1° 只动
 # 0.01°——手臂前伸后重心前移，运控对这个档的转身指令基本不跟随。与其直接
 # 判死，不如把指令速度提上去再试一杆（人手动纠偏时也是这么干的）。
-# 有效速率按 6°/s 档等比外推，未经真机标定，所以：① 只在确认"下发了大杆
-# 却没动"之后才启用；② 单杆预计角卡死在 BOOST_MAX_DEG 内，宁可多打几杆；
-# ③ 每杆之后照常重新测量，实际转了多少由测量说了算。
+# 有效速率按 6°/s 档等比外推，未经真机标定，所以即使抬手后第一杆直接启用：
+# ① 单杆预计角仍卡死在 BOOST_MAX_DEG 内，宁可多打几杆；② 每杆之后照常重新
+# 测量，实际转了多少由测量说了算；③ 未抬手时仍只在普通档不响应后启用。
 # 真机跑过之后可以从 align_*.jsonl 里 event=hold & boost=true 的记录反算
 # 真实有效速率，再回来校准 BOOST_EFF。
 HOLD_ALIGN_BOOST_CMD_DEG_S = 20.0
@@ -512,10 +512,11 @@ ALIGN_ARMUP_MAX_HOLD_S = 1.5     # 抬手时单杆上限（≈5°），杜绝 22
 #      叠加，15:34/15:35 两次把机器人甩到 +30°，起手都是那一杆"往 + 转 2.6°"；
 #      yaw 低于目标时干脆等着，自然回转本来就会把它带上来。
 #   ② 既然只往一个方向纠，打过头也不怕（自然回转会填回来），所以可以放心
-#      在久纠不进时加大力度。
+#      从第一杆使用提速档，但仍限制单杆角度和累计转身预算。
 ALIGN_ARMUP_ONE_WAY = True
 ALIGN_ARMUP_WAIT_S = 1.5         # yaw 低于目标时每次等多久再复测
 ALIGN_ARMUP_WAIT_MAX = 3         # 等这么多次还没被自然回转带进带里就收工
+ALIGN_ARMUP_START_BOOST = True   # 抬手后普通 6°/s 无法对抗配平，第一杆直接 20°/s
 ALIGN_ARMUP_ESCALATE_STEP = 3    # 打到第几杆还没进带 → 切提速档加大力度
 ALIGN_ARMUP_BUDGET_DEG = 30.0    # 抬手时累计转身预算（要够纠 24° 上限内的漂移），
                                  # 超了停手报错，杜绝上午那种连转 130° 的空转。
@@ -542,10 +543,10 @@ def _align_loop_hold(tol: float, dmin: float, dmax: float,
     与旧版（定长 0.5°/2° 脉冲逐步磨）的区别：时长连续可变、带死区补偿，
     正常情况 2~3 杆收敛。方向约定与旧版相同（yaw_err>0 → 左转），同样保留
     "偏差变大就反号"的兜底。target ≠ 0 时对到指定角度而非 0。
-    下发了大杆基座却没动时，先把指令速度从 6°/s 提到 20°/s 再试（单杆预计角
-    仍卡在 5° 内），提速后还不动才判运控未响应。
     抬手状态下改成单向纠偏：只往 - 方向打，yaw 低于目标时只等不纠（见
-    ALIGN_ARMUP_ONE_WAY），久纠不进则直接切提速档。
+    ALIGN_ARMUP_ONE_WAY），第一杆直接使用 20°/s 提速档；小于 1.2° 的残差仍
+    使用 3°/s 慢杆收尾。未抬手时若大杆不响应，也会从 6°/s 自动提到 20°/s。
+    提速档单杆预计角仍卡在 5° 内，提速后还不动才判运控未响应。
     逐步日志写 align_<日期>.jsonl，mode=hold。
     """
     loco = _get_loco_client()
@@ -558,13 +559,14 @@ def _align_loop_hold(tol: float, dmin: float, dmax: float,
     first_points: int | None = None   # 首帧点数，后续帧掉太多说明拟合面变了
     prev_yaw: float | None = None
     stall = 0             # 连续"下发大杆但没动"的次数
-    boost = False         # 运控不跟随 / 久纠不进 → 切提速档（切了就不切回来）
     turned_deg = 0.0      # 累计转身量，按实测逐步累加
     one_way = armup and ALIGN_ARMUP_ONE_WAY   # 抬手时只许往 - 方向纠
+    boost = bool(armup and ALIGN_ARMUP_START_BOOST)
     waited = 0            # 单向模式下"低于目标只能干等"的次数
     _align_log({"event": "start", "mode": "hold", "tol_deg": tol,
                 "tol_eff_deg": tol_eff, "target_deg": target, "armup": armup,
-                "err_cap_deg": err_cap, "dmin": dmin, "dmax": dmax})
+                "boost": boost, "err_cap_deg": err_cap,
+                "dmin": dmin, "dmax": dmax})
     try:
         for step in range(1, HOLD_ALIGN_MAX_STEPS + 1):
             if state.align_cancel.is_set():
@@ -671,7 +673,7 @@ def _align_loop_hold(tol: float, dmin: float, dmax: float,
                     return
                 continue
 
-            # 久纠不进 → 加大力度（单向模式下过冲有自然回转兜底，可以放心加）
+            # 兼容关闭 START_BOOST 的配置：久纠不进后再加大力度。
             if one_way and not boost and step >= ALIGN_ARMUP_ESCALATE_STEP:
                 boost = True
                 _align_log({"event": "boost_on", "mode": "hold", "step": step,
