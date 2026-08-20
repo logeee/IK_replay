@@ -103,6 +103,145 @@ def reach_pick(body: dict):
     }
 
 
+@router.post("/confirm_pointcloud_pick")
+def confirm_pointcloud_pick(body: dict):
+    """确认冻结 RGB-D 中选出的三维点，并生成与 /pick 相同的规划目标。
+
+    Body:
+      p_camera_surface: 微调后的相机系表面点
+      pixel: 原始 RGB 像素（可选）
+      plane: 从同一冻结深度拟合出的相机系平面（可选）
+      approach_offset_m: 沿平面法线向机器人侧后退，语义与 /pick 相同
+    """
+    if not state.enabled or state.T_cam2root is None or state.T_cam2torso is None:
+        return JSONResponse(
+            {"ok": False, "error": "手眼标定尚未就绪"}, status_code=409
+        )
+    try:
+        p_cam = np.asarray(body["p_camera_surface"], dtype=float).reshape(3)
+        offset = float(body.get("approach_offset_m", 0.0))
+        pixel_value = body.get("pixel")
+        pixel = (
+            [int(pixel_value[0]), int(pixel_value[1])]
+            if pixel_value is not None
+            else [-1, -1]
+        )
+        adjustment = np.asarray(
+            body.get("adjustment_camera_m", [0.0, 0.0, 0.0]),
+            dtype=float,
+        ).reshape(3)
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        return JSONResponse(
+            {"ok": False, "error": f"三维目标参数非法: {exc}"}, status_code=400
+        )
+    if (
+        not np.isfinite(p_cam).all()
+        or not np.isfinite(adjustment).all()
+        or not math.isfinite(offset)
+        or p_cam[2] <= 0.05
+    ):
+        return JSONResponse(
+            {"ok": False, "error": "三维目标包含非有限值或深度过小"},
+            status_code=400,
+        )
+    dist = float(np.linalg.norm(p_cam))
+    if dist <= abs(offset) + 0.05 or dist > 5.0:
+        return JSONResponse(
+            {"ok": False, "error": f"三维目标距离异常（{dist:.2f} m）"},
+            status_code=400,
+        )
+
+    plane = _pointcloud_plane(body.get("plane"), p_cam)
+    if plane is not None:
+        normal_cam = np.asarray(plane["normal_cam"], dtype=float)
+        p_cam_goal = p_cam + offset * normal_cam
+        offset_mode = "plane_normal"
+    else:
+        p_cam_goal = p_cam * (1.0 - offset / dist)
+        offset_mode = "camera_ray"
+    if p_cam_goal[2] <= 0.05:
+        return JSONResponse(
+            {"ok": False, "error": "接近偏移后的目标深度过小"},
+            status_code=400,
+        )
+
+    def to_frame(T, point):
+        return (T[:3, :3] @ point + T[:3, 3]).tolist()
+
+    p_root_surface = to_frame(state.T_cam2root, p_cam)
+    if state.collision_checker is not None:
+        state.collision_checker.set_environment_exclusions(
+            [(p_root_surface, state.target_exclusion_m)]
+        )
+    state.plane = plane
+    state.pick_target_torso = to_frame(state.T_cam2torso, p_cam_goal)
+    state.pick_target_root = to_frame(state.T_cam2root, p_cam_goal)
+    state.pick_pixel = pixel
+    state.pick_torso = _read_torso()
+    state.torso_diag = None
+
+    return {
+        "ok": True,
+        "selection_mode": "frozen_rgbd_pointcloud",
+        "source_frame_id": body.get("source_frame_id"),
+        "pixel": pixel,
+        "depth_mm": float(p_cam[2] * 1000.0),
+        "p_camera": p_cam.tolist(),
+        "adjustment_camera_m": adjustment.tolist(),
+        "approach_offset_m": offset,
+        "offset_mode": offset_mode,
+        "p_torso_surface": to_frame(state.T_cam2torso, p_cam),
+        "p_torso": state.pick_target_torso,
+        "p_root": state.pick_target_root,
+        "p_root_surface": p_root_surface,
+        "plane": plane,
+    }
+
+
+def _pointcloud_plane(value: dict | None, p_cam: np.ndarray) -> dict | None:
+    """把冻结深度拟合的相机系平面转换成 Reach 使用的根系平面。"""
+    if not value:
+        return None
+    try:
+        center_cam = np.asarray(
+            value.get("center_cam", p_cam), dtype=float
+        ).reshape(3)
+        normal_cam = np.asarray(value["normal_cam"], dtype=float).reshape(3)
+        norm = float(np.linalg.norm(normal_cam))
+        if (
+            not np.isfinite(center_cam).all()
+            or not np.isfinite(normal_cam).all()
+            or norm < 1e-6
+        ):
+            return None
+        normal_cam /= norm
+        if float(np.dot(normal_cam, -center_cam)) < 0:
+            normal_cam = -normal_cam
+        rotation = state.T_cam2root[:3, :3]
+        normal_root = rotation @ normal_cam
+        center_root = rotation @ center_cam + state.T_cam2root[:3, 3]
+        facing = -normal_root
+        left_root = np.cross(np.array([0.0, 0.0, 1.0]), facing)
+        left_norm = float(np.linalg.norm(left_root))
+        if left_norm < 1e-3:
+            return None
+        left_root /= left_norm
+        left_root -= float(np.dot(left_root, normal_root)) * normal_root
+        left_root /= float(np.linalg.norm(left_root))
+        return {
+            "center_root": center_root.tolist(),
+            "normal_root": normal_root.tolist(),
+            "normal_cam": normal_cam.tolist(),
+            "left_root": left_root.tolist(),
+            "rms_mm": float(value.get("rms_mm", 0.0)),
+            "points": int(value.get("points", 0)),
+            "radius_m": float(value.get("radius_m", 0.12)),
+            "source": "frozen_rgbd",
+        }
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
 def _fit_surface_plane(p_cam_surface: np.ndarray, radius: float = 0.12) -> dict | None:
     """在被点表面点周围拟合平面（SVD 最小二乘），返回根系下的
     法线（指向机器人）、"左"方向（面向平面时的左，嵌在平面内）等。

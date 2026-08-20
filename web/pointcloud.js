@@ -20,12 +20,38 @@ controls.update();
 
 scene.add(new THREE.AxesHelper(0.25));
 const raycaster = new THREE.Raycaster();
-raycaster.params.Points.threshold = 0.012;
+raycaster.params.Points.threshold = 0.02;
 const pointer = new THREE.Vector2();
-const marker = new THREE.Mesh(
-  new THREE.SphereGeometry(0.008, 18, 12),
-  new THREE.MeshBasicMaterial({ color: 0xffffff }),
+const markerCanvas = document.createElement("canvas");
+markerCanvas.width = 64;
+markerCanvas.height = 64;
+const markerContext = markerCanvas.getContext("2d");
+markerContext.beginPath();
+markerContext.arc(32, 32, 20, 0, Math.PI * 2);
+markerContext.fillStyle = "#ff5964";
+markerContext.fill();
+markerContext.lineWidth = 8;
+markerContext.strokeStyle = "#ffffff";
+markerContext.stroke();
+const markerTexture = new THREE.CanvasTexture(markerCanvas);
+const markerGeometry = new THREE.BufferGeometry();
+markerGeometry.setAttribute(
+  "position",
+  new THREE.Float32BufferAttribute([0, 0, 0], 3),
 );
+const marker = new THREE.Points(
+  markerGeometry,
+  new THREE.PointsMaterial({
+    color: 0xffffff,
+    map: markerTexture,
+    transparent: true,
+    alphaTest: 0.1,
+    depthTest: false,
+    size: 16,
+    sizeAttenuation: false,
+  }),
+);
+marker.renderOrder = 1000;
 marker.visible = false;
 scene.add(marker);
 
@@ -45,6 +71,7 @@ let classIds = null;
 let captureMeta = null;
 let colorMode = "rgb";
 let viewMode = "live";
+let selection = null;
 
 function resize() {
   const { clientWidth, clientHeight } = viewport;
@@ -84,7 +111,7 @@ function setViewMode(mode) {
   $("viewerHelp").textContent = live
     ? "实时 ZMQ 彩色画面 · 点击“拍一下”生成点云"
     : snapshot
-      ? "生成当前点云时使用的同帧 RGB 快照 · YOLO 检测框"
+      ? "同帧 RGB 快照 · 点击图像可直接选择三维目标"
       : "左键旋转 · 右键平移 · 滚轮缩放 · 点击点云选点";
   controls.enabled = pointcloud;
   if (pointcloud) resize();
@@ -172,6 +199,8 @@ function installCloud(decoded) {
   points = new THREE.Points(geometry, material);
   scene.add(points);
   marker.visible = false;
+  selection = null;
+  $("confirmTarget").disabled = true;
   $("selection").textContent = "点击点云选择一个点";
   $("selection").classList.add("muted");
   resetView();
@@ -250,6 +279,13 @@ function drawSnapshotBoxes() {
     element.appendChild(label);
     root.appendChild(element);
   }
+  if (selection?.pixel) {
+    const dot = document.createElement("div");
+    dot.className = "snapshot-target";
+    dot.style.left = `${selection.pixel[0] / image.naturalWidth * 100}%`;
+    dot.style.top = `${selection.pixel[1] / image.naturalHeight * 100}%`;
+    root.appendChild(dot);
+  }
 }
 
 async function capture() {
@@ -314,6 +350,181 @@ function rootPoint(cameraPoint) {
   ];
 }
 
+function classAtPixel(pixel) {
+  let best = null;
+  for (const box of captureMeta?.boxes || []) {
+    const [x1, y1, x2, y2] = box.xyxy;
+    if (x1 <= pixel[0] && pixel[0] <= x2 && y1 <= pixel[1] && pixel[1] <= y2) {
+      if (!best || box.conf > best.conf) best = box;
+    }
+  }
+  return best
+    ? { cls: Number(best.cls), name: best.name }
+    : { cls: -1, name: "背景" };
+}
+
+function setSelection(pCamera, pixel, source, cls = null, className = null) {
+  const point = pCamera.map(Number);
+  const detected = cls == null ? classAtPixel(pixel) : { cls, name: className };
+  selection = {
+    baseCamera: [...point],
+    pCamera: [...point],
+    pixel: pixel ? pixel.map(Number) : null,
+    source,
+    cls: Number(detected.cls),
+    className: detected.name || "背景",
+    adjustment: [0, 0, 0],
+    confirmed: null,
+  };
+  renderSelection();
+}
+
+function renderSelection() {
+  if (!selection) return;
+  const pCamera = selection.pCamera;
+  marker.position.set(pCamera[0], -pCamera[1], -pCamera[2]);
+  marker.visible = true;
+  const pRoot = rootPoint(pCamera);
+  const adjustmentMm = selection.adjustment.map((value) => value * 1000);
+  const lines = [
+    `来源: ${selection.source === "rgb" ? "RGB 图像" : "三维点云"}`,
+    selection.pixel ? `像素: (${selection.pixel[0]}, ${selection.pixel[1]})` : "像素: -",
+    `类别: ${selection.className}`,
+    `深度: ${(pCamera[2] * 1000).toFixed(1)} mm`,
+    `p_camera: [${pCamera.map((value) => value.toFixed(5)).join(", ")}] m`,
+    `微调(mm): [${adjustmentMm.map((value) => value.toFixed(1)).join(", ")}]`,
+    pRoot
+      ? `p_root: [${pRoot.map((value) => value.toFixed(5)).join(", ")}] m`
+      : "p_root: 无手眼标定",
+  ];
+  if (selection.confirmed) {
+    lines.push(
+      `18001: 已确认 · p_root [${selection.confirmed.p_root
+        .map((value) => value.toFixed(5)).join(", ")}] m`,
+    );
+  }
+  $("selection").classList.remove("muted");
+  $("selection").textContent = lines.join("\n");
+  $("confirmTarget").disabled = !captureMeta?.T_cam2root;
+  drawSnapshotBoxes();
+}
+
+async function selectSnapshotPixel(event) {
+  if (!captureMeta) {
+    setStatus("请先拍摄 RGB-D 快照", "error");
+    return;
+  }
+  const image = $("snapshotImage");
+  const rect = image.getBoundingClientRect();
+  const u = Math.max(0, Math.min(
+    image.naturalWidth - 1,
+    Math.round((event.clientX - rect.left) / rect.width * image.naturalWidth),
+  ));
+  const v = Math.max(0, Math.min(
+    image.naturalHeight - 1,
+    Math.round((event.clientY - rect.top) / rect.height * image.naturalHeight),
+  ));
+  setStatus(`正在读取 RGB 像素 (${u}, ${v}) 的冻结深度…`);
+  try {
+    const response = await fetch(`/api/pointcloud/pixel/${captureMeta.capture_id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        u, v, search_radius: 6,
+        z_min_m: captureMeta.z_min_m,
+        z_max_m: captureMeta.z_max_m,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+    setSelection(result.p_camera, result.pixel, "rgb");
+    setColorMode(colorMode);
+    const shifted = result.search_distance_px > 0
+      ? `，使用邻近像素 (${result.pixel.join(", ")})`
+      : "";
+    setStatus(`RGB 选点成功：深度 ${result.depth_mm.toFixed(1)} mm${shifted}`, "ok");
+  } catch (error) {
+    setStatus(error.message || String(error), "error");
+  }
+}
+
+function nudgeSelection(code) {
+  const commands = {
+    KeyA: [0, -1], KeyD: [0, 1],
+    KeyW: [1, -1], KeyS: [1, 1],
+    KeyQ: [2, -1], KeyE: [2, 1],
+  };
+  const command = commands[code];
+  if (!command) return false;
+  if (!selection) {
+    setStatus("请先从点云或 RGB 图像中选择目标", "error");
+    return true;
+  }
+  const step = Number($("nudgeStep").value) / 1000;
+  if (!Number.isFinite(step) || step <= 0) {
+    setStatus("微调步长必须大于零", "error");
+    return true;
+  }
+  const [axis, direction] = command;
+  const next = [...selection.pCamera];
+  next[axis] += direction * step;
+  if (next[2] <= 0.05) {
+    setStatus("Z 深度不能小于 50 mm", "error");
+    return true;
+  }
+  selection.pCamera = next;
+  selection.adjustment[axis] += direction * step;
+  selection.confirmed = null;
+  renderSelection();
+  setStatus(
+    `${["X", "Y", "Z"][axis]} ${direction > 0 ? "+" : "−"}`
+      + `${(step * 1000).toFixed(1)} mm`,
+    "ok",
+  );
+  return true;
+}
+
+async function confirmTarget() {
+  if (!selection || !captureMeta) {
+    setStatus("请先选择目标", "error");
+    return;
+  }
+  const button = $("confirmTarget");
+  button.disabled = true;
+  setStatus("正在用冻结深度拟合表面，并提交给 18001…");
+  try {
+    const response = await fetch(
+      `/api/pointcloud/confirm/${captureMeta.capture_id}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          p_camera: selection.pCamera,
+          surface_reference_camera: selection.baseCamera,
+          pixel: selection.pixel,
+          adjustment_camera_m: selection.adjustment,
+          approach_offset_m: Number($("approachOffset").value || 0),
+        }),
+      },
+    );
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+    selection.confirmed = result;
+    renderSelection();
+    setStatus("18001 已确认目标；可以回到主界面查看 IK 预演", "ok");
+    if (window.opener && !window.opener.closed) {
+      window.opener.postMessage(
+        { type: "ik-replay-pointcloud-pick", pick: result },
+        "*",
+      );
+    }
+  } catch (error) {
+    setStatus(error.message || String(error), "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function showSnapshot() {
   if (!captureMeta) {
     setStatus("请先点击“拍一下”生成快照", "error");
@@ -338,7 +549,29 @@ renderer.domElement.addEventListener("pointerup", (event) => {
   pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
-  const hit = raycaster.intersectObject(points, false)[0];
+  const hits = raycaster.intersectObject(points, false);
+  let hit = null;
+  let bestScreenDistance2 = Infinity;
+  const positionAttribute = points.geometry.getAttribute("position");
+  const candidatePoint = new THREE.Vector3();
+  for (const candidate of hits) {
+    candidatePoint
+      .fromBufferAttribute(positionAttribute, candidate.index)
+      .applyMatrix4(points.matrixWorld);
+    const projected = candidatePoint.clone().project(camera);
+    const dx = (projected.x - pointer.x) * rect.width / 2;
+    const dy = (projected.y - pointer.y) * rect.height / 2;
+    const screenDistance2 = dx * dx + dy * dy;
+    if (
+      screenDistance2 < bestScreenDistance2
+      || (screenDistance2 === bestScreenDistance2
+          && candidate.distance < (hit?.distance ?? Infinity))
+    ) {
+      hit = candidate;
+      bestScreenDistance2 = screenDistance2;
+    }
+  }
+  if (bestScreenDistance2 > 12 * 12) hit = null;
   if (!hit || hit.index == null) return;
   const index = hit.index;
   const pCamera = [
@@ -349,25 +582,13 @@ renderer.domElement.addEventListener("pointerup", (event) => {
   const pixel = [pixels[2 * index], pixels[2 * index + 1]];
   const cls = classIds[index];
   const className = cls >= 0 ? (captureMeta?.names?.[String(cls)] ?? String(cls)) : "背景";
-  const pRoot = rootPoint(pCamera);
-  marker.position.set(
-    displayPositions[3 * index],
-    displayPositions[3 * index + 1],
-    displayPositions[3 * index + 2],
-  );
-  marker.visible = true;
-  $("selection").classList.remove("muted");
-  $("selection").innerHTML = [
-    `点索引: ${index.toLocaleString()}`,
-    `像素: (${pixel[0]}, ${pixel[1]})`,
-    `类别: ${className}`,
-    `深度: ${(pCamera[2] * 1000).toFixed(1)} mm`,
-    `p_camera: [${pCamera.map((value) => value.toFixed(5)).join(", ")}] m`,
-    pRoot ? `p_root: [${pRoot.map((value) => value.toFixed(5)).join(", ")}] m` : "p_root: 无手眼标定",
-  ].join("<br>");
+  setSelection(pCamera, pixel, "pointcloud", cls, className);
+  setStatus(`已选择点云索引 ${index.toLocaleString()}`, "ok");
 });
 
 $("captureBtn").addEventListener("click", capture);
+$("snapshotImage").addEventListener("click", selectSnapshotPixel);
+$("confirmTarget").addEventListener("click", confirmTarget);
 $("liveMode").addEventListener("click", () => setViewMode("live"));
 $("snapshotMode").addEventListener("click", showSnapshot);
 $("rgbMode").addEventListener("click", () => setColorMode("rgb"));
@@ -379,11 +600,27 @@ $("pointSize").addEventListener("input", () => {
   if (points) points.material.size = value;
 });
 $("liveStream").addEventListener("error", () => {
-  setStatus("实时画面不可达，请检查 reach_server 的 8001 服务", "error");
+  setStatus("实时画面不可达，请检查 reach_server 的 18001 服务", "error");
 });
 $("snapshotImage").addEventListener("error", () => {
   setStatus("当前快照图像加载失败，请重新拍摄", "error");
 });
+window.addEventListener("keydown", (event) => {
+  if (event.ctrlKey || event.metaKey || event.altKey) return;
+  const target = event.target;
+  if (target instanceof HTMLElement
+      && (target.matches("input, textarea, select") || target.isContentEditable)) {
+    return;
+  }
+  if (nudgeSelection(event.code)) event.preventDefault();
+});
+
+const requestedOffset = Number(
+  new URLSearchParams(window.location.search).get("approach_offset_m"),
+);
+if (Number.isFinite(requestedOffset)) {
+  $("approachOffset").value = String(requestedOffset);
+}
 
 fetch("/api/pointcloud/status")
   .then((response) => response.json())

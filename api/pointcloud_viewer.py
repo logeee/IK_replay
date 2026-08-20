@@ -24,7 +24,12 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 
-from .pointcloud_core import build_pointcloud, encode_pointcloud
+from .pointcloud_core import (
+    build_pointcloud,
+    encode_pointcloud,
+    fit_surface_plane,
+    point_from_pixel,
+)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -35,7 +40,7 @@ app.mount("/web", StaticFiles(directory=WEB_DIR), name="pointcloud-web")
 
 _http = requests.Session()
 _http.trust_env = False
-_reach_base = "http://127.0.0.1:8001"
+_reach_base = "http://127.0.0.1:18001"
 _model = None
 _model_name = ""
 _names: dict[int, str] = {}
@@ -51,6 +56,9 @@ class Capture:
     binary: bytes
     jpeg: bytes
     metadata: dict[str, Any]
+    depth_mm: np.ndarray
+    intrinsics: tuple[float, float, float, float]
+    created_monotonic: float
 
 
 _latest: Capture | None = None
@@ -251,6 +259,9 @@ def capture(body: dict | None = None):
             binary=binary,
             jpeg=snapshot["jpeg"],
             metadata=metadata,
+            depth_mm=snapshot["depth_mm"],
+            intrinsics=snapshot["intrinsics"],
+            created_monotonic=time.monotonic(),
         )
     return metadata
 
@@ -287,6 +298,114 @@ def pointcloud_data(capture_id: str):
     )
 
 
+def _capture_by_id(capture_id: str) -> Capture | None:
+    with _capture_lock:
+        capture_value = _latest
+    if capture_value is None or capture_value.capture_id != capture_id:
+        return None
+    return capture_value
+
+
+@app.post("/api/pointcloud/pixel/{capture_id}")
+def pointcloud_pixel(capture_id: str, body: dict):
+    capture_value = _capture_by_id(capture_id)
+    if capture_value is None:
+        return JSONResponse(
+            {"ok": False, "error": "快照不存在或已被新快照替换"},
+            status_code=404,
+        )
+    try:
+        result = point_from_pixel(
+            capture_value.depth_mm,
+            capture_value.intrinsics,
+            int(body["u"]),
+            int(body["v"]),
+            search_radius=int(body.get("search_radius", 6)),
+            z_min_m=float(
+                body.get("z_min_m", capture_value.metadata["z_min_m"])
+            ),
+            z_max_m=float(
+                body.get("z_max_m", capture_value.metadata["z_max_m"])
+            ),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        return JSONResponse(
+            {"ok": False, "error": f"RGB 选点失败: {exc}"}, status_code=400
+        )
+    return {
+        "ok": True,
+        "capture_id": capture_id,
+        **result,
+    }
+
+
+@app.post("/api/pointcloud/confirm/{capture_id}")
+def confirm_pointcloud_target(capture_id: str, body: dict):
+    capture_value = _capture_by_id(capture_id)
+    if capture_value is None:
+        return JSONResponse(
+            {"ok": False, "error": "快照不存在或已被新快照替换"},
+            status_code=404,
+        )
+    try:
+        p_camera = np.asarray(body["p_camera"], dtype=float).reshape(3)
+        reference = np.asarray(
+            body.get("surface_reference_camera", p_camera),
+            dtype=float,
+        ).reshape(3)
+        adjustment = np.asarray(
+            body.get("adjustment_camera_m", [0.0, 0.0, 0.0]),
+            dtype=float,
+        ).reshape(3)
+        if (
+            not np.isfinite(p_camera).all()
+            or not np.isfinite(reference).all()
+            or not np.isfinite(adjustment).all()
+        ):
+            raise ValueError("三维坐标包含非有限数值")
+        plane = fit_surface_plane(
+            capture_value.depth_mm,
+            capture_value.intrinsics,
+            reference,
+        )
+        request_body = {
+            "p_camera_surface": p_camera.tolist(),
+            "pixel": body.get("pixel"),
+            "adjustment_camera_m": adjustment.tolist(),
+            "approach_offset_m": float(body.get("approach_offset_m", 0.0)),
+            "plane": plane,
+            "source_frame_id": capture_value.metadata.get("source", {}).get(
+                "frame_id"
+            ),
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        return JSONResponse(
+            {"ok": False, "error": f"确认目标参数非法: {exc}"},
+            status_code=400,
+        )
+    try:
+        upstream = _http.post(
+            f"{_reach_base}/api/reach/confirm_pointcloud_pick",
+            json=request_body,
+            timeout=(3.0, 15.0),
+        )
+        result = upstream.json()
+        if not upstream.ok or not result.get("ok"):
+            raise RuntimeError(
+                result.get("error") or f"reach HTTP {upstream.status_code}"
+            )
+    except (requests.RequestException, ValueError, RuntimeError) as exc:
+        return JSONResponse(
+            {"ok": False, "error": f"18001 拒绝目标: {exc}"},
+            status_code=502,
+        )
+    result["capture_id"] = capture_id
+    result["capture_age_s"] = round(
+        time.monotonic() - capture_value.created_monotonic, 3
+    )
+    return result
+
+
 def _lan_ip() -> str:
     import socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -306,7 +425,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="RGB/YOLO语义点云查看器（7005）")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=7005)
-    parser.add_argument("--reach-base", default="http://127.0.0.1:8001")
+    parser.add_argument("--reach-base", default="http://127.0.0.1:18001")
     parser.add_argument("--model", default="models/Xuanniu.pt")
     parser.add_argument("--conf", type=float, default=0.25)
     args = parser.parse_args()

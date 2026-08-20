@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>双臂 IK 调试回放台</title>
-    <link rel="stylesheet" href="/web/style.css?v=61" />
+    <link rel="stylesheet" href="/web/style.css?v=62" />
     <script type="importmap">
       {
         "imports": {
@@ -43,15 +43,21 @@
                 <div id="reachMark" class="reach-mark hidden"></div>
               </div>
               <div class="reach-video-btns">
-                <button id="reachFullscreenBtn" type="button">全屏选点</button>
-                <a class="reach-perp-link" href="/web/perp.html" target="_blank"
-                   title="柜面法向 / 垂直指标实时观测 + 腰 yaw 点动">垂直度调试 ↗</a>
-                <select id="reachGotoSel" class="reach-waypoint-sel"
-                        title="不从图像取点，把录制路点直接当终点">
-                  <option value="">（路点终点）</option>
-                </select>
-                <button id="reachGotoBtn" type="button"
-                        title="从当前姿态直接运动到选中路点（关节插值，无 IK）">▶ 前往</button>
+                <div class="reach-pick-actions">
+                  <button id="reachFullscreenBtn" type="button">全屏选点</button>
+                  <button id="reachPointcloudBtn" type="button"
+                          title="冻结同帧 RGB-D，可在 RGB 或点云中选点并用 WASDQE 微调">点云选点 ↗</button>
+                  <a class="reach-perp-link" href="/web/perp.html" target="_blank"
+                     title="柜面法向 / 垂直指标实时观测 + 腰 yaw 点动">垂直度调试 ↗</a>
+                </div>
+                <div class="reach-goto-actions">
+                  <select id="reachGotoSel" class="reach-waypoint-sel"
+                          title="不从图像取点，把录制路点直接当终点">
+                    <option value="">（路点终点）</option>
+                  </select>
+                  <button id="reachGotoBtn" type="button"
+                          title="从当前姿态直接运动到选中路点（关节插值，无 IK）">▶ 前往</button>
+                </div>
               </div>
             </div>
             <div class="reach-side">
@@ -82,31 +88,41 @@
                 <button id="reachScanBtn" type="button">扫描障碍</button>
                 <button id="reachClearObsBtn" type="button" disabled>清除障碍</button>
               </div>
-              <div class="reach-offset-row">
-                <span>经由路点</span>
-                <select id="reachWaypointSel" class="reach-waypoint-sel">
-                  <option value="">（直达）</option>
-                </select>
-                <button id="reachAddViaBtn" type="button" title="加入经由队列">＋</button>
-                <span>结束位点</span>
-                <select id="reachEndSel" class="reach-waypoint-sel">
-                  <option value="">（不收回）</option>
-                </select>
+              <div class="reach-control-group">
+                <div class="reach-control-row">
+                  <span>经由路点</span>
+                  <select id="reachWaypointSel" class="reach-waypoint-sel">
+                    <option value="">（直达）</option>
+                  </select>
+                  <button id="reachAddViaBtn" type="button" title="加入经由队列">＋ 加入</button>
+                </div>
+                <div class="reach-control-row">
+                  <span>结束位点</span>
+                  <select id="reachEndSel" class="reach-waypoint-sel">
+                    <option value="">（不收回）</option>
+                  </select>
+                </div>
               </div>
               <div id="reachViaList" class="reach-via-list hidden"></div>
-              <div class="reach-offset-row">
-                <span>动作序列</span>
-                <select id="reachSeqSel" class="reach-waypoint-sel">
-                  <option value="">（未选择）</option>
-                </select>
-                <button id="reachSeqRunBtn" type="button"
-                        title="首次/Shift=RRT 规划并仿真回放（确认后再按一次执行）；已录制则直接真机回放">▶</button>
-                <button id="reachSeqSaveBtn" type="button"
-                        title="把当前经由队列按顺序存为序列">存</button>
-                <button id="reachSeqDelBtn" type="button" title="删除选中的序列">×</button>
-                <input id="reachSeqMargin" type="number" value="1" step="0.5"
-                       style="width:52px"
-                       title="墙面退让（cm）：正=墙向机器人逼近（更保守），负=墙向后退让（允许更贴近柜面）。只影响 RRT 重规划，不影响录播" />
+              <div class="reach-control-group reach-sequence-group">
+                <div class="reach-sequence-main">
+                  <span>动作序列</span>
+                  <select id="reachSeqSel" class="reach-waypoint-sel">
+                    <option value="">（未选择）</option>
+                  </select>
+                  <button id="reachSeqRunBtn" type="button" disabled
+                          title="选择序列并接管手臂后可用">先接管</button>
+                </div>
+                <div class="reach-sequence-tools">
+                  <label title="正=墙向机器人逼近（更保守），负=墙向后退让；只影响重新规划">
+                    退让(cm)
+                    <input id="reachSeqMargin" type="number" value="1" step="0.5" />
+                  </label>
+                  <button id="reachSeqSaveBtn" type="button"
+                          title="把当前经由队列按顺序存为序列">保存序列</button>
+                  <button id="reachSeqDelBtn" type="button" disabled
+                          title="删除选中的序列">删除</button>
+                </div>
               </div>
               <div class="reach-actions">
                 <button id="reachHandMoveBtn" type="button" disabled>卸力摆位</button>
@@ -175,6 +191,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=82"></script>
+    <script type="module" src="/web/main.js?v=84"></script>
   </body>
 </html>

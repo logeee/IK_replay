@@ -89,8 +89,14 @@ input, select {
 .range-label input { margin: 0; padding: 0; }
 .range-label span { text-align: right; color: #d1deee; }
 
-.details { font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; word-break: break-word; }
+.details {
+  font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+  word-break: break-word;
+  white-space: pre-line;
+}
 .muted { color: #7f91a8; }
+.target-controls { margin: 10px 0 8px; }
+.key-help { margin-bottom: 9px; color: #8fa0b7; font-size: 11px; line-height: 1.5; }
 
 .box-list { display: flex; flex-direction: column; gap: 6px; }
 .box-row {
@@ -123,7 +129,7 @@ input, select {
   overflow: hidden;
 }
 #snapshotFrame { position: relative; }
-#snapshotImage { display: block; width: 100%; height: 100%; }
+#snapshotImage { display: block; width: 100%; height: 100%; cursor: crosshair; }
 #snapshotBoxes { position: absolute; inset: 0; pointer-events: none; }
 .snapshot-box {
   position: absolute;
@@ -145,6 +151,16 @@ input, select {
   overflow: hidden;
   text-overflow: ellipsis;
   text-shadow: 0 1px 2px #000;
+}
+.snapshot-target {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #ff5964;
+  box-shadow: 0 0 0 3px rgba(255, 89, 100, .3);
+  transform: translate(-50%, -50%);
 }
 #viewport { position: absolute; inset: 0; }
 #viewport canvas { display: block; width: 100%; height: 100%; }

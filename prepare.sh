@@ -3,10 +3,11 @@
 #
 #   调度   17001  外部触发入口（按需自动开/关 18001 reach_server）
 #   YOLO    7004  常驻推理
+#   点云    7005  冻结 RGB-D、双视图选点与三维微调
 #   确认台  7002  人工兜底（不想要就注释掉那一行）
 #
 # reach_server(18001) 不需要在这里启动——任务来了调度服务会自动拉起。
-# 以后做成开机服务时，把下面三条 start_one 拆成三个 systemd unit 即可。
+# 以后做成开机服务时，把下面各条 start_one 拆成独立 systemd unit 即可。
 #
 # 停止全部：./prepare.sh stop   （逐个报告：已关闭 / 没有找到进程）
 
@@ -44,6 +45,7 @@ stop_one() {   # 用法: stop_one 名字 进程匹配模式 等待秒数
 if [[ "${1:-}" == "stop" ]]; then
     # 先停调度：它的退出钩子会关掉自己拉起的 reach_server(18001)，最长等 15s
     stop_one "调度 " 'python -m api\.dispatch' 25
+    stop_one "点云 " 'python -m api\.pointcloud_viewer' 5
     stop_one "YOLO " 'python -m api\.yolo_server' 5
     stop_one "确认台" 'python -m api\.console' 5
     if ss -ltn 2>/dev/null | grep -q ":$REACH_PORT "; then
@@ -76,6 +78,10 @@ start_one "调度 " 17001 dispatch.log "$FASTAPI_PY" -m api.dispatch \
 start_one "YOLO " 7004 yolo_server.log "$FASTAPI_PY" -m api.yolo_server \
     --reach-base "$REACH_BASE" \
     --model models/Xuanniu.pt
+start_one "点云 " 7005 pointcloud_viewer.log "$FASTAPI_PY" -m api.pointcloud_viewer \
+    --reach-base "$REACH_BASE" \
+    --model models/Xuanniu.pt \
+    --conf 0.25
 start_one "确认台" 7002 console.log "$FASTAPI_PY" -m api.console \
     --reach-base "$REACH_BASE"
 
@@ -92,9 +98,11 @@ check() {   # 用法: check 名字 URL
 echo "== 自检 =="
 check "调度   17001" "http://127.0.0.1:17001/task/status"
 check "YOLO   7004"  "http://127.0.0.1:7004/api/yolo/status"
+check "点云   7005"  "http://127.0.0.1:7005/api/pointcloud/status"
 check "确认台 7002"  "http://127.0.0.1:7002/api/console/pending"
 
 IP=$(ip route get 8.8.8.8 2>/dev/null | grep -oP 'src \K\S+')
 echo
 echo "对外入口: POST http://${IP:-<机器人IP>}:17001/task/flip"
 echo "确认台:   http://${IP:-<机器人IP>}:7002/"
+echo "点云选点: http://${IP:-<机器人IP>}:7005/"

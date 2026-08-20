@@ -133,6 +133,107 @@ def build_pointcloud(
     )
 
 
+def point_from_pixel(
+    depth_mm: np.ndarray,
+    intrinsics: tuple[float, float, float, float] | np.ndarray,
+    u: int,
+    v: int,
+    *,
+    search_radius: int = 6,
+    z_min_m: float = 0.15,
+    z_max_m: float = 3.0,
+) -> dict[str, Any]:
+    depth = np.asarray(depth_mm)
+    if depth.ndim != 2:
+        raise ValueError(f"depth 必须是 HxW，实际 {depth.shape}")
+    if not 0 <= search_radius <= 50:
+        raise ValueError("search_radius 必须在 0~50")
+    if not 0.01 <= z_min_m < z_max_m <= 30.0:
+        raise ValueError("深度范围不合法")
+    height, width = depth.shape
+    if not (0 <= u < width and 0 <= v < height):
+        raise ValueError(f"像素 ({u},{v}) 超出 {width}x{height}")
+    fx, fy, cx, cy = [float(value) for value in intrinsics]
+    if fx <= 0 or fy <= 0:
+        raise ValueError("fx/fy 必须为正数")
+
+    x0, x1 = max(0, u - search_radius), min(width, u + search_radius + 1)
+    y0, y1 = max(0, v - search_radius), min(height, v + search_radius + 1)
+    patch = depth[y0:y1, x0:x1].astype(np.float64, copy=False)
+    valid = (
+        np.isfinite(patch)
+        & (patch >= z_min_m * 1000.0)
+        & (patch <= z_max_m * 1000.0)
+    )
+    ys, xs = np.nonzero(valid)
+    if not len(xs):
+        raise ValueError(f"点击位置附近 {search_radius}px 内没有有效深度")
+    used_u = xs + x0
+    used_v = ys + y0
+    distance2 = (used_u - u) ** 2 + (used_v - v) ** 2
+    nearest = int(np.argmin(distance2))
+    actual_u = int(used_u[nearest])
+    actual_v = int(used_v[nearest])
+    z = float(depth[actual_v, actual_u]) / 1000.0
+    return {
+        "requested_pixel": [int(u), int(v)],
+        "pixel": [actual_u, actual_v],
+        "search_distance_px": float(np.sqrt(distance2[nearest])),
+        "depth_mm": z * 1000.0,
+        "p_camera": [
+            (actual_u - cx) * z / fx,
+            (actual_v - cy) * z / fy,
+            z,
+        ],
+    }
+
+
+def fit_surface_plane(
+    depth_mm: np.ndarray,
+    intrinsics: tuple[float, float, float, float] | np.ndarray,
+    p_camera_surface: list[float] | np.ndarray,
+    *,
+    radius_m: float = 0.12,
+) -> dict[str, Any] | None:
+    depth = np.asarray(depth_mm)
+    if depth.ndim != 2:
+        raise ValueError(f"depth 必须是 HxW，实际 {depth.shape}")
+    fx, fy, cx, cy = [float(value) for value in intrinsics]
+    target = np.asarray(p_camera_surface, dtype=np.float64).reshape(3)
+    if not np.isfinite(target).all() or target[2] <= 0:
+        raise ValueError("p_camera_surface 不合法")
+    height, width = depth.shape
+    stride = max(1, int(round(max(height, width) / 320)))
+    sampled = depth[::stride, ::stride].astype(np.float64) / 1000.0
+    vs, us = np.mgrid[0:height:stride, 0:width:stride]
+    valid = np.isfinite(sampled) & (sampled > 0.15) & (sampled < 3.0)
+    points = np.stack(
+        [
+            (us[valid] - cx) * sampled[valid] / fx,
+            (vs[valid] - cy) * sampled[valid] / fy,
+            sampled[valid],
+        ],
+        axis=1,
+    )
+    near = points[np.linalg.norm(points - target, axis=1) < radius_m]
+    if len(near) < 50:
+        return None
+    center = near.mean(axis=0)
+    centered = near - center
+    _, _, vh = np.linalg.svd(centered, full_matrices=False)
+    normal = vh[-1]
+    rms_m = float(np.sqrt(np.mean((centered @ normal) ** 2)))
+    if float(np.dot(normal, -center)) < 0:
+        normal = -normal
+    return {
+        "center_cam": center.tolist(),
+        "normal_cam": normal.tolist(),
+        "rms_mm": rms_m * 1000.0,
+        "points": int(len(near)),
+        "radius_m": float(radius_m),
+    }
+
+
 def encode_pointcloud(cloud: PointCloud) -> bytes:
     """Encode arrays as PCV1: header then five contiguous little-endian arrays."""
     count = cloud.count

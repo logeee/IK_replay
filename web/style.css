@@ -556,20 +556,36 @@ button:disabled {
 
 .reach-video-btns {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.reach-video-btns > button {
+.reach-pick-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.reach-goto-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.reach-video-btns button {
   padding: 4px 12px;
   border: 1px solid #c9d5df;
   border-radius: 5px;
   background: #f2f6f9;
   cursor: pointer;
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .reach-perp-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 12px;
   color: #2a6fa8;
   text-decoration: none;
@@ -711,8 +727,82 @@ button:disabled {
 }
 
 .reach-actions {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(74px, 1fr));
   gap: 6px;
+}
+
+.reach-control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid #d2dce4;
+  border-radius: 7px;
+  background: #f7fafc;
+}
+
+.reach-control-row,
+.reach-sequence-main {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.reach-control-row > span,
+.reach-sequence-main > span {
+  color: #4a5a6b;
+  white-space: nowrap;
+}
+
+.reach-control-row button,
+.reach-sequence-main button,
+.reach-sequence-tools button {
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid rgba(20, 31, 45, 0.15);
+  border-radius: 6px;
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.reach-sequence-main button {
+  min-width: 74px;
+  color: #1b6598;
+  border-color: #9fc4de;
+}
+
+.reach-sequence-tools {
+  display: grid;
+  grid-template-columns: minmax(80px, 1fr) auto auto;
+  align-items: end;
+  gap: 6px;
+}
+
+.reach-sequence-tools label {
+  display: grid;
+  grid-template-columns: auto 52px;
+  align-items: center;
+  gap: 4px;
+  color: #4a5a6b;
+  white-space: nowrap;
+}
+
+.reach-sequence-tools input {
+  width: 52px;
+  min-width: 0;
+  padding: 4px 5px;
+  border: 1px solid #c9d5df;
+  border-radius: 5px;
+}
+
+.reach-control-group button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .reach-via-list {
@@ -747,7 +837,6 @@ button:disabled {
 }
 
 .reach-actions button {
-  flex: 1;
   min-height: 30px;
   border: 1px solid rgba(20, 31, 45, 0.15);
   border-radius: 6px;

@@ -191,6 +191,7 @@ async function initReach() {
     msg: document.getElementById("reachMsg"),
     diag: document.getElementById("reachDiag"),
     fsBtn: document.getElementById("reachFullscreenBtn"),
+    pointcloudBtn: document.getElementById("reachPointcloudBtn"),
     fsOverlay: document.getElementById("reachFsOverlay"),
     fsVideo: document.getElementById("reachFsVideo"),
     fsMark: document.getElementById("reachFsMark"),
@@ -253,6 +254,7 @@ async function initReach() {
     }
   });
   d.seqRun.addEventListener("click", (e) => runSequence(e.shiftKey));
+  d.seqSel.addEventListener("change", updateSequenceUi);
   d.seqSave.addEventListener("click", () => saveSequence());
   d.seqDel.addEventListener("click", () => deleteSequence());
   d.nextSide.addEventListener("click", () => stepNextSidestep());
@@ -267,6 +269,37 @@ async function initReach() {
   d.nextReturn.addEventListener("click", () => stepNextReturn());
   d.nextDone.addEventListener("click", () => hideStepNext());
   d.fsBtn.addEventListener("click", () => openReachFullscreen());
+  d.pointcloudBtn.addEventListener("click", () => {
+    const url = new URL(window.location.href);
+    url.port = "7005";
+    url.pathname = "/";
+    url.search = "";
+    url.searchParams.set(
+      "approach_offset_m",
+      String(Number(d.offset.value || 0)),
+    );
+    window.open(url.toString(), "ik-replay-pointcloud", "width=1500,height=920");
+  });
+  window.addEventListener("message", async (event) => {
+    if (event.data?.type !== "ik-replay-pointcloud-pick") return;
+    try {
+      if (new URL(event.origin).hostname !== window.location.hostname) return;
+    } catch {
+      return;
+    }
+    const pick = event.data.pick;
+    if (!pick?.ok || !Array.isArray(pick.p_root) || pick.p_root.length !== 3) {
+      reachMsg("点云选点窗口返回的数据无效", "error");
+      return;
+    }
+    reach.lastPick = pick;
+    reach.plane = pick.plane || null;
+    visualizeSurfacePlane(pick);
+    d.replan.disabled = false;
+    d.planLeft.disabled = false;
+    reachMsg("已接收点云目标，开始 IK 预演…");
+    await planReachLeft();
+  });
   d.fsClose.addEventListener("click", () => cancelReachFullscreen());
   d.fsVideo.addEventListener("click", (ev) => onReachFullscreenClick(ev));
   state.helperRoot.add(reach.obstacleGroup, reach.planeGroup);
@@ -328,6 +361,7 @@ function updateReachArmUi() {
   if (!st.armed) {
     d.exec.disabled = true;
   }
+  updateSequenceUi();
 }
 
 async function toggleReachArm() {
@@ -1161,6 +1195,31 @@ async function refreshSequences() {
   if ([...sel.options].some((o) => o.value === prev)) {
     sel.value = prev;
   }
+  updateSequenceUi();
+}
+
+function updateSequenceUi() {
+  if (!reach.dom?.seqRun || !reach.dom?.seqSel) return;
+  const seq = sequenceByFile(reach.dom.seqSel.value);
+  reach.dom.seqDel.disabled = !seq;
+  if (!seq) {
+    reach.dom.seqRun.disabled = true;
+    reach.dom.seqRun.textContent = "选择序列";
+    reach.dom.seqRun.title = "请先选择动作序列";
+    return;
+  }
+  if (!reach.status?.armed) {
+    reach.dom.seqRun.disabled = true;
+    reach.dom.seqRun.textContent = "先接管";
+    reach.dom.seqRun.title = "动作序列需要先接管手臂";
+    return;
+  }
+  const recorded = Boolean(seq.trajectory?.frames?.length);
+  reach.dom.seqRun.disabled = false;
+  reach.dom.seqRun.textContent = recorded ? "▶ 执行" : "规划预演";
+  reach.dom.seqRun.title = recorded
+    ? "使用已验证轨迹执行；按住 Shift 点击可强制重新规划"
+    : "首次运行先规划并在三维视图预演，不会立即驱动真机";
 }
 
 // reach 各段规划是否做逐帧碰撞检查（默认关：录制/工况一致性由人保证，检查很慢）
@@ -1225,6 +1284,11 @@ async function runSequence(replan = false) {
     reachMsg("先在下拉框选一个动作序列", "error");
     return;
   }
+  if (!reach.status?.armed) {
+    reachMsg("动作序列需要先点击「接管手臂」", "error");
+    updateSequenceUi();
+    return;
+  }
   const names = (seq.waypoints || [])
     .map((f) => waypointByFile(f)?.name || f).join(" → ");
   const ok = window.confirm(
@@ -1269,6 +1333,9 @@ async function runSequence(replan = false) {
       }
       reachMsg(`已规划并录制（${res.frames} 帧，执行约 ${Number(res.duration_s).toFixed(1)}s）。` +
         "正在三维视图仿真回放——确认无误后再按一次 ▶ 即真机执行", "warn");
+      await refreshSequences();
+      reach.dom.seqSel.value = seq.file;
+      updateSequenceUi();
       return;
     }
     const how = res.replayed ? "回放录制轨迹" : "RRT 规划完成并已录制";
@@ -1281,7 +1348,7 @@ async function runSequence(replan = false) {
   } catch (error) {
     reachMsg(`序列执行失败: ${error.message}`, "error");
   } finally {
-    reach.dom.seqRun.disabled = false;
+    updateSequenceUi();
   }
 }
 

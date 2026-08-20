@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RGB / YOLO 语义点云</title>
-    <link rel="stylesheet" href="/web/pointcloud.css?v=20260814-4" />
+    <link rel="stylesheet" href="/web/pointcloud.css?v=20260819-1" />
     <script type="importmap">
       {
         "imports": {
@@ -62,6 +62,16 @@
       <section class="panel">
         <h2>选中点</h2>
         <div id="selection" class="details muted">点击点云选择一个点</div>
+        <div class="form-grid target-controls">
+          <label>微调步长 mm
+            <input id="nudgeStep" type="number" min="0.1" max="100" step="0.1" value="1" />
+          </label>
+          <label>接近偏移 m
+            <input id="approachOffset" type="number" min="-0.05" max="0.1" step="0.005" value="0" />
+          </label>
+        </div>
+        <div class="key-help">A/D：X−/X+　W/S：Y−/Y+　Q/E：Z−/Z+</div>
+        <button id="confirmTarget" class="primary" disabled>确定目标并发送到 18001</button>
       </section>
 
       <section class="panel">
@@ -88,6 +98,6 @@
       <div id="axisNote" class="axis-note hidden">显示坐标：X 右，Y 上，视线向前；数值返回彩色相机系 X右/Y下/Z前</div>
     </main>
 
-    <script type="module" src="/web/pointcloud.js?v=20260814-5"></script>
+    <script type="module" src="/web/pointcloud.js?v=20260820-2"></script>
   </body>
 </html>

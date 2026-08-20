@@ -13,8 +13,11 @@ from api.pointcloud_core import (
     build_pointcloud,
     decode_pointcloud,
     encode_pointcloud,
+    fit_surface_plane,
+    point_from_pixel,
 )
 from api import pointcloud_viewer
+from adapters.reach import perception
 
 
 class PointCloudGeometryTest(unittest.TestCase):
@@ -77,6 +80,36 @@ class PointCloudGeometryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "stride"):
             build_pointcloud(depth, np.zeros((2, 2, 3), np.uint8),
                              (1, 1, 0, 0), [], stride=0)
+
+    def test_rgb_pixel_uses_nearest_valid_frozen_depth(self):
+        depth = np.zeros((5, 6), dtype=np.float32)
+        depth[2, 3] = 1250.0
+        result = point_from_pixel(
+            depth,
+            (100.0, 100.0, 2.5, 2.0),
+            1,
+            1,
+            search_radius=3,
+        )
+        self.assertEqual(result["pixel"], [3, 2])
+        self.assertAlmostEqual(result["depth_mm"], 1250.0)
+        np.testing.assert_allclose(
+            result["p_camera"], [0.00625, 0.0, 1.25], atol=1e-8
+        )
+
+    def test_fits_surface_plane_from_frozen_depth(self):
+        depth = np.full((40, 50), 1000.0, dtype=np.float32)
+        plane = fit_surface_plane(
+            depth,
+            (100.0, 100.0, 24.5, 19.5),
+            [0.0, 0.0, 1.0],
+            radius_m=0.2,
+        )
+        self.assertIsNotNone(plane)
+        np.testing.assert_allclose(
+            plane["normal_cam"], [0.0, 0.0, -1.0], atol=1e-6
+        )
+        self.assertLess(plane["rms_mm"], 1e-6)
 
 
 class SemanticColoringTest(unittest.TestCase):
@@ -263,6 +296,57 @@ class PointCloudBackendTest(unittest.TestCase):
         image_response = pointcloud_viewer.capture_image("missing")
         self.assertEqual(image_response.status_code, 404)
 
+    def test_rgb_click_and_confirm_use_the_frozen_capture(self):
+        bgr = np.full((2, 2, 3), [10, 20, 30], dtype=np.uint8)
+        ok, jpeg = cv2.imencode(".jpg", bgr)
+        self.assertTrue(ok)
+        snapshot = {
+            "jpeg": jpeg.tobytes(),
+            "depth_mm": np.full((2, 2), 1000, dtype=np.float32),
+            "intrinsics": (100.0, 100.0, 0.5, 0.5),
+            "metadata": {"frame_id": "frozen-9"},
+            "T_cam2root": np.eye(4).tolist(),
+        }
+        with mock.patch.object(
+            pointcloud_viewer, "_fetch_rgbd_snapshot", return_value=snapshot
+        ):
+            metadata = pointcloud_viewer.capture({"stride": 1})
+
+        picked = pointcloud_viewer.pointcloud_pixel(
+            metadata["capture_id"], {"u": 1, "v": 1}
+        )
+        self.assertTrue(picked["ok"])
+        self.assertEqual(picked["pixel"], [1, 1])
+        np.testing.assert_allclose(
+            picked["p_camera"], [0.005, 0.005, 1.0], atol=1e-7
+        )
+
+        upstream = mock.Mock()
+        upstream.ok = True
+        upstream.json.return_value = {
+            "ok": True,
+            "p_root": [0.005, 0.005, 1.0],
+            "p_torso": [0.005, 0.005, 1.0],
+        }
+        with mock.patch.object(
+            pointcloud_viewer._http, "post", return_value=upstream
+        ) as post:
+            confirmed = pointcloud_viewer.confirm_pointcloud_target(
+                metadata["capture_id"],
+                {
+                    "p_camera": picked["p_camera"],
+                    "surface_reference_camera": picked["p_camera"],
+                    "pixel": picked["pixel"],
+                    "adjustment_camera_m": [0.001, 0.0, 0.0],
+                    "approach_offset_m": 0.0,
+                },
+            )
+        self.assertTrue(confirmed["ok"])
+        sent = post.call_args.kwargs["json"]
+        self.assertEqual(sent["source_frame_id"], "frozen-9")
+        self.assertEqual(sent["pixel"], [1, 1])
+        self.assertEqual(sent["adjustment_camera_m"], [0.001, 0.0, 0.0])
+
     def test_live_stream_proxies_reach_mjpeg_and_closes_upstream(self):
         upstream = mock.Mock()
         upstream.headers = {
@@ -281,11 +365,55 @@ class PointCloudBackendTest(unittest.TestCase):
 
         self.assertEqual(asyncio.run(consume()), [b"first", b"second"])
         request.assert_called_once_with(
-            "http://127.0.0.1:8001/api/reach/stream",
+            "http://127.0.0.1:18001/api/reach/stream",
             stream=True,
             timeout=(3.0, None),
         )
         upstream.close.assert_called_once()
+
+
+class ReachPointCloudConfirmationTest(unittest.TestCase):
+    def test_confirm_converts_frozen_camera_target_for_existing_planner(self):
+        state = perception.state
+        attributes = [
+            "enabled", "T_cam2root", "T_cam2torso", "collision_checker",
+            "plane", "pick_target_torso", "pick_target_root", "pick_pixel",
+            "pick_torso", "torso_diag",
+        ]
+        saved = {name: getattr(state, name) for name in attributes}
+        try:
+            state.enabled = True
+            transform = np.eye(4)
+            transform[:3, :3] = np.array(
+                [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+            )
+            state.T_cam2root = transform
+            state.T_cam2torso = transform
+            state.collision_checker = None
+            with mock.patch.object(perception, "_read_torso", return_value=None):
+                result = perception.confirm_pointcloud_pick({
+                    "p_camera_surface": [0.1, 0.2, 1.0],
+                    "pixel": [320, 240],
+                    "adjustment_camera_m": [0.001, -0.002, 0.003],
+                    "approach_offset_m": 0.01,
+                    "source_frame_id": "frame-1",
+                    "plane": {
+                        "center_cam": [0.0, 0.0, 1.0],
+                        "normal_cam": [0.0, 0.0, -1.0],
+                        "rms_mm": 1.0,
+                        "points": 500,
+                        "radius_m": 0.12,
+                    },
+                })
+            self.assertTrue(result["ok"])
+            np.testing.assert_allclose(result["p_root"], [0.99, 0.1, 0.2])
+            self.assertEqual(result["selection_mode"], "frozen_rgbd_pointcloud")
+            self.assertEqual(result["pixel"], [320, 240])
+            self.assertEqual(result["plane"]["source"], "frozen_rgbd")
+            np.testing.assert_allclose(state.pick_target_root, result["p_root"])
+        finally:
+            for name, value in saved.items():
+                setattr(state, name, value)
 
 
 if __name__ == "__main__":
