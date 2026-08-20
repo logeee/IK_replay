@@ -151,6 +151,10 @@ class SoftwareDepthAligner:
     def __init__(self, calibration: RGBDCalibration):
         self.calibration = calibration
         depth_rays = self._make_depth_rays()
+        # Keep the undistorted depth-camera rays as well: plane fitting can
+        # downsample and fit directly in the depth frame without rasterizing a
+        # full 1920x1080 color-aligned depth image.
+        self._depth_rays = np.ascontiguousarray(depth_rays, dtype=np.float32)
         # Both the undistorted rays and depth-to-color rotation are immutable.
         # Precompute R @ ray once instead of repeating a million-point BLAS
         # matrix multiplication for every incoming depth frame.
@@ -172,6 +176,43 @@ class SoftwareDepthAligner:
         rays[:, :2] = normalized.astype(np.float32)
         rays[:, 2] = 1.0
         return rays
+
+    def unproject_depth(
+        self,
+        raw_depth: np.ndarray,
+        *,
+        stride: int = 1,
+    ) -> tuple[np.ndarray, int]:
+        """Return sampled measured points in the depth-camera frame, in metres.
+
+        This deliberately stops before depth-to-color projection and z-buffer
+        rasterization.  It is intended for geometry such as whole-view plane
+        fitting where RGB pixel correspondence is unnecessary.
+        """
+        if raw_depth.shape != self.calibration.depth_shape:
+            raise ValueError(
+                f"depth shape {raw_depth.shape} 与标定 {self.calibration.depth_shape} 不一致"
+            )
+        if raw_depth.dtype != np.uint16:
+            raise ValueError(f"depth dtype 必须是 uint16，实际为 {raw_depth.dtype}")
+        if not isinstance(stride, int) or stride < 1:
+            raise ValueError("stride 必须是正整数")
+
+        height, width = self.calibration.depth_shape
+        sampled_depth = raw_depth[::stride, ::stride].reshape(-1)
+        sampled_rays = self._depth_rays.reshape(height, width, 3)[
+            ::stride, ::stride
+        ].reshape(-1, 3)
+        measured = sampled_depth > 0
+        measured_count = int(np.count_nonzero(measured))
+        if measured_count == 0:
+            return np.empty((0, 3), dtype=np.float32), 0
+
+        z_m = sampled_depth[measured].astype(np.float32)
+        z_m *= np.float32(self.calibration.depth_scale_mm / 1000.0)
+        points = sampled_rays[measured] * z_m[:, None]
+        finite = np.isfinite(points).all(axis=1) & (points[:, 2] > 0.0)
+        return np.ascontiguousarray(points[finite], dtype=np.float32), measured_count
 
     @staticmethod
     def _distort_normalized(points: np.ndarray, coefficients: np.ndarray) -> np.ndarray:

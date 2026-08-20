@@ -124,6 +124,26 @@ class SoftwareDepthAlignerTest(unittest.TestCase):
         ).align(raw)
         self.assertEqual(float(aligned[0, 1]), 25.0)
 
+    def test_unproject_depth_samples_raw_geometry_without_color_alignment(self):
+        raw = np.array(
+            [[1000, 2000, 3000, 4000], [5000, 6000, 7000, 8000]],
+            dtype=np.uint16,
+        )
+        aligner = SoftwareDepthAligner(
+            calibration(
+                color_shape=(4, 8),
+                depth_shape=(2, 4),
+                depth_scale_mm=1.0,
+                translation=np.array([500.0, 0.0, 0.0]),
+            )
+        )
+        points, measured = aligner.unproject_depth(raw, stride=2)
+        self.assertEqual(measured, 2)
+        np.testing.assert_allclose(
+            points,
+            np.array([[0.0, 0.0, 1.0], [6.0, 0.0, 3.0]], dtype=np.float32),
+        )
+
     def test_known_translation_shifts_projection(self):
         raw = np.array([[1000]], dtype=np.uint16)
         aligned = SoftwareDepthAligner(
@@ -359,6 +379,14 @@ class MockTeleimagerTest(unittest.TestCase):
                 self.assertIsNone(
                     camera.info()["aligned_generation"],
                     "仅接收 ZMQ 推流时不应执行深度对齐",
+                )
+                geometry = camera.depth_geometry_snapshot(max_dimension=2)
+                self.assertIsNotNone(geometry)
+                self.assertEqual(geometry["points_depth_m"].shape[1], 3)
+                self.assertGreater(geometry["measured_pixels"], 0)
+                self.assertIsNone(
+                    camera.info()["aligned_generation"],
+                    "原始深度几何采样不应触发 RGB 深度对齐",
                 )
                 picked = {"ok": False}
                 jpeg = None

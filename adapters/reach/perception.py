@@ -295,23 +295,55 @@ def _fit_surface_plane(p_cam_surface: np.ndarray, radius: float = 0.12) -> dict 
 
 def _fit_view_plane(dmin: float, dmax: float) -> dict:
     """整幅深度图（限定深度范围）拟合平面，返回垂直度指标。失败时 ok=False。"""
-    snap = state.camera.depth_snapshot()
-    if snap is None:
-        return {"ok": False, "error": "拿不到深度帧"}
-    depth_mm, (fx, fy, cx, cy) = snap
-    h, w = depth_mm.shape
-    stride = max(1, int(round(max(h, w) / 240)))
-    d = depth_mm[::stride, ::stride].astype(float) / 1000.0
-    vs, us = np.mgrid[0:h:stride, 0:w:stride]
-    measured = d > 0.05                       # 有回波的像素（0 = 无效）
-    valid = measured & (d > dmin) & (d < dmax)
-    n_meas = int(measured.sum())
-    if valid.sum() < 200:
+    # ZMQ RGB-D camera exposes a geometry-only path: downsample and unproject
+    # raw 1280x800 depth directly, fit in the depth-camera frame, then transform
+    # only the fitted plane into the color-camera frame.  This avoids the full
+    # 1920x1080 depth-to-color projection and four-neighbour z-buffer.
+    geometry_snapshot = getattr(state.camera, "depth_geometry_snapshot", None)
+    depth_to_color: tuple[np.ndarray, np.ndarray] | None = None
+    processing = "color_aligned_fallback"
+    if callable(geometry_snapshot):
+        try:
+            snap = geometry_snapshot(max_dimension=240)
+        except Exception as exc:
+            return {"ok": False, "error": f"原始深度几何采样失败: {exc}"}
+        if snap is None:
+            return {"ok": False, "error": "拿不到原始深度帧"}
+        pts_measured = np.asarray(snap["points_depth_m"], dtype=float)
+        if pts_measured.ndim != 2 or pts_measured.shape[1:] != (3,):
+            return {"ok": False, "error": "原始深度几何点格式错误"}
+        n_meas = int(snap.get("measured_pixels", len(pts_measured)))
+        valid = ((pts_measured[:, 2] > dmin)
+                 & (pts_measured[:, 2] < dmax)
+                 & np.isfinite(pts_measured).all(axis=1))
+        pts = pts_measured[valid]
+        rotation = np.asarray(snap["depth_to_color_rotation"], dtype=float)
+        translation = np.asarray(snap["depth_to_color_translation_m"], dtype=float)
+        if rotation.shape != (3, 3) or translation.shape != (3,):
+            return {"ok": False, "error": "深度到彩色相机外参格式错误"}
+        depth_to_color = rotation, translation
+        processing = "raw_depth_geometry"
+    else:
+        # Compatibility fallback for camera implementations that only provide
+        # an already aligned depth image.
+        snap = state.camera.depth_snapshot()
+        if snap is None:
+            return {"ok": False, "error": "拿不到深度帧"}
+        depth_mm, (fx, fy, cx, cy) = snap
+        h, w = depth_mm.shape
+        stride = max(1, int(round(max(h, w) / 240)))
+        d = depth_mm[::stride, ::stride].astype(float) / 1000.0
+        vs, us = np.mgrid[0:h:stride, 0:w:stride]
+        measured = d > 0.05                   # 有回波的像素（0 = 无效）
+        valid = measured & (d > dmin) & (d < dmax)
+        n_meas = int(measured.sum())
+        pts = np.stack([(us[valid] - cx) * d[valid] / fx,
+                        (vs[valid] - cy) * d[valid] / fy,
+                        d[valid]], axis=1)
+
+    if len(pts) < 200:
         return {"ok": False, "error": f"深度在 {dmin:.2f}~{dmax:.2f} m 内的点太少"
-                                      f"（{int(valid.sum())} 个），请靠近/对准柜面"}
-    pts = np.stack([(us[valid] - cx) * d[valid] / fx,
-                    (vs[valid] - cy) * d[valid] / fy,
-                    d[valid]], axis=1)
+                                      f"（{len(pts)} 个），请靠近/对准柜面"}
 
     def fit(p):
         c = p.mean(axis=0)
@@ -324,8 +356,15 @@ def _fit_view_plane(dmin: float, dmax: float) -> dict:
     center, n, rms = fit(pts)
     resid = np.abs((pts - center) @ n)
     inlier = resid < max(0.008, 3.0 * rms)
+    points_used = len(pts)
     if inlier.sum() >= 200:
         center, n, rms = fit(pts[inlier])
+        points_used = int(inlier.sum())
+    if depth_to_color is not None:
+        rotation, translation = depth_to_color
+        center = rotation @ center + translation
+        n = rotation @ n
+        n /= float(np.linalg.norm(n))
     if float(np.dot(n, -center)) < 0:
         n = -n                                # 法线指向相机一侧
 
@@ -345,10 +384,11 @@ def _fit_view_plane(dmin: float, dmax: float) -> dict:
         "normal_cam": n.tolist(),
         "normal_root": n_root,
         "rms_mm": rms * 1000.0,
-        "points_used": int(inlier.sum()),
-        "in_range_ratio": float(valid.sum()) / max(1, n_meas),
+        "points_used": points_used,
+        "in_range_ratio": float(len(pts)) / max(1, n_meas),
         "dmin": dmin,
         "dmax": dmax,
+        "depth_processing": processing,
     }
 
 

@@ -443,6 +443,36 @@ class ZmqRGBDCamera:
             "pixel": [u, v],
         }
 
+    def depth_geometry_snapshot(
+        self,
+        *,
+        max_dimension: int = 240,
+    ) -> dict[str, Any] | None:
+        """Sample raw depth for geometry without color alignment or z-buffering."""
+        if not isinstance(max_dimension, int) or max_dimension < 1:
+            raise ValueError("max_dimension 必须是正整数")
+        source = self._raw_snapshot()
+        if source is None:
+            return None
+        generation, _jpeg, raw_depth, metadata, _frame_at = source
+        height, width = raw_depth.shape
+        stride = max(1, int(round(max(height, width) / max_dimension)))
+        points_depth_m, measured_pixels = self.aligner.unproject_depth(
+            raw_depth,
+            stride=stride,
+        )
+        return {
+            "generation": generation,
+            "points_depth_m": points_depth_m,
+            "measured_pixels": measured_pixels,
+            "stride": stride,
+            "depth_to_color_rotation": self.calibration.depth_to_color_rotation.copy(),
+            "depth_to_color_translation_m": (
+                self.calibration.depth_to_color_translation_mm.copy() / 1000.0
+            ),
+            "metadata": dict(metadata),
+        }
+
     def depth_snapshot(self):
         aligned = self._align_on_demand()
         if aligned is None:
