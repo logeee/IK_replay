@@ -29,6 +29,7 @@ class GravityCalibrationTests(unittest.TestCase):
         with gravity._lock:
             gravity._plan = None
             gravity._batch = None
+            gravity._run_cancel.clear()
             gravity._operation.update(
                 phase="idle",
                 message="等待选择位点",
@@ -120,6 +121,16 @@ class GravityCalibrationTests(unittest.TestCase):
         self.assertAlmostEqual(aggregate["estimated_joint_torque_nm"]["mean"][0], 4.2)
         self.assertAlmostEqual(aggregate["command_minus_measured_rad"][0], 0.15)
 
+    def test_plan_is_split_into_overlapping_static_sample_segments(self):
+        waypoints = [{"j1": float(index)} for index in range(9)]
+        segments = gravity._split_plan_waypoints(waypoints, 3)
+        self.assertEqual(len(segments), 4)
+        self.assertEqual(
+            [segment["end_index"] for segment in segments], [2, 4, 6, 8]
+        )
+        self.assertEqual(segments[1]["waypoints"][0], segments[0]["waypoints"][-1])
+        self.assertTrue(segments[-1]["final"])
+
     def test_batch_preserves_selected_order_and_can_skip(self):
         for point_id, name in (("111111111111", "低位"), ("222222222222", "高位")):
             gravity._atomic_json(
@@ -198,6 +209,8 @@ class GravityCalibrationTests(unittest.TestCase):
             "point_id": point["id"],
             "point_name": point["name"],
             "duration_s": 0.0,
+            "max_speed_rad_s": 0.2,
+            "waypoints": [{"j1": 0.0}, {"j1": 0.2}],
         }
         run = {"id": "abcdabcdabcd", "point_id": point["id"], "status": "running"}
 
@@ -226,8 +239,64 @@ class GravityCalibrationTests(unittest.TestCase):
         updated = gravity._load_point(point["id"])
         self.assertEqual(persisted["status"], "completed")
         self.assertGreaterEqual(persisted["sample_count"], 3)
+        self.assertEqual(len(persisted["sample_points"]), 1)
+        self.assertEqual(persisted["sample_points"][0]["type"], "final")
         self.assertEqual(updated["completed_runs"], 1)
         self.assertEqual(gravity._operation["phase"], "completed")
+
+    def test_intermediate_samples_restart_from_each_held_segment(self):
+        point = {
+            "id": "123456789abc",
+            "name": "分段点",
+            "named_joints": {"j1": 0.3},
+            "completed_runs": 0,
+        }
+        gravity._atomic_json(gravity._point_path(point["id"]), point)
+        plan = {
+            "id": "111122223333",
+            "point_id": point["id"],
+            "point_name": point["name"],
+            "duration_s": 3.0,
+            "max_speed_rad_s": 0.2,
+            "waypoints": [{"j1": 0.0}, {"j1": 0.1}, {"j1": 0.2}, {"j1": 0.3}],
+        }
+        run = {"id": "987654321abc", "point_id": point["id"], "status": "running"}
+        started_segments = []
+
+        def fake_reach(method, path, **kwargs):
+            if path.endswith("/exec_status"):
+                return {"running": False, "progress": 1.0, "message": "完成（刚性保持）"}
+            if path.endswith("/diagnostics"):
+                return {
+                    "arm": {
+                        "armed": True,
+                        "cmd_rad": [0.1],
+                        "measured_rad": [0.1],
+                        "tau_grav_nm": [1.0],
+                    }
+                }
+            if method == "POST" and path.endswith("/execute"):
+                started_segments.append(kwargs["body"]["waypoints"])
+                return {"ok": True, "running": True, "message": "执行中"}
+            raise AssertionError((method, path))
+
+        with patch.object(gravity, "_request_reach", side_effect=fake_reach):
+            gravity._monitor_and_sample(
+                plan,
+                run,
+                settle_s=0.0,
+                sample_s=0.04,
+                sample_hz=100.0,
+                intermediate_stops=2,
+            )
+
+        persisted = json.loads(
+            (gravity.RUNS_DIR / f"{run['id']}.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(len(persisted["sample_points"]), 3)
+        self.assertEqual(len(started_segments), 2)
+        self.assertEqual(started_segments[0][0], {"j1": 0.1})
+        self.assertEqual(started_segments[1][-1], {"j1": 0.3})
 
 
 if __name__ == "__main__":

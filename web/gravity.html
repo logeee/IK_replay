@@ -159,7 +159,7 @@
           <div id="selectedNote" class="selected-note">位点准备和实验执行彼此独立。</div>
           <div class="form-row"><label>轨迹时长</label><input id="duration" type="number" min="2" max="30" step="0.5" value="6" /><label>s</label><label>关节限速</label><input id="speed" type="number" min=".05" max=".5" step=".05" value=".2" /></div>
           <div class="form-row"><label>到位稳定</label><input id="settle" type="number" min=".5" max="20" step=".5" value="3" /><label>s</label><label>采样</label><input id="sample" type="number" min=".5" max="20" step=".5" value="2" /><label>s</label></div>
-          <div class="form-row"><label>采样频率</label><input id="sampleHz" type="number" min="2" max="50" step="1" value="10" /><label>Hz</label></div>
+          <div class="form-row"><label>中途停顿</label><input id="intermediateStops" type="number" min="0" max="8" step="1" value="3" /><label>次</label><label>采样频率</label><input id="sampleHz" type="number" min="2" max="50" step="1" value="10" /><label>Hz</label></div>
           <div class="safety"><label><input id="safetyCheck" type="checkbox" /><span>已确认人员远离、周围无障碍、手臂已恢复刚性保持，并准备好随时急停。</span></label></div>
           <div class="action-row"><button id="planBtn" class="primary">① 规划并预览</button><button id="executeBtn" class="execute" disabled>② 真机执行</button><button id="stopBtn" class="danger">急停</button></div>
         </div>
@@ -267,15 +267,16 @@ function drawPreview(plan){
   const svg=$("pathSvg"),path=plan?.preview?.tcp_path_root_m||[];if(path.length<2){svg.innerHTML='<text x="180" y="76" text-anchor="middle" fill="#60778e" font-size="11">暂无规划路径</text>';return;}
   const xs=path.map(p=>Number(p[0])),zs=path.map(p=>Number(p[2])),minX=Math.min(...xs),maxX=Math.max(...xs),minZ=Math.min(...zs),maxZ=Math.max(...zs),pad=18;
   const sx=x=>pad+(x-minX)/(maxX-minX||1)*(360-pad*2),sz=z=>145-pad-(z-minZ)/(maxZ-minZ||1)*(145-pad*2);
-  const points=path.map(p=>`${sx(p[0]).toFixed(1)},${sz(p[2]).toFixed(1)}`).join(" ");
+  const points=path.map(p=>`${sx(p[0]).toFixed(1)},${sz(p[2]).toFixed(1)}`).join(" "),fractions=plan?.preview?.sample_fractions||[];
+  const stops=fractions.map((fraction,index)=>{const p=path[Math.round(Number(fraction)*(path.length-1))],final=index===fractions.length-1;return `<circle cx="${sx(p[0])}" cy="${sz(p[2])}" r="${final?5:4}" fill="${final?"#54d68b":"#a78bfa"}" stroke="#091522" stroke-width="2"/>`;}).join("");
   svg.innerHTML=`<defs><linearGradient id="g" x1="0" x2="1"><stop stop-color="#66aaff"/><stop offset="1" stop-color="#43d6c5"/></linearGradient></defs>
-  <polyline points="${points}" fill="none" stroke="url(#g)" stroke-width="3"/><circle cx="${sx(path[0][0])}" cy="${sz(path[0][2])}" r="5" fill="#66aaff"/><circle cx="${sx(path.at(-1)[0])}" cy="${sz(path.at(-1)[2])}" r="5" fill="#54d68b"/>`;
+  <polyline points="${points}" fill="none" stroke="url(#g)" stroke-width="3"/><circle cx="${sx(path[0][0])}" cy="${sz(path[0][2])}" r="5" fill="#66aaff"/>${stops}`;
 }
 function renderSelected(){
   const p=selectedPoint(),plan=data.plan&&data.plan.point_id===selectedId?data.plan:null;
   $("selectedTitle").textContent=p?p.name:"尚未选择位点";$("selectedNote").textContent=p?(p.note||"无备注"):"位点准备和实验执行彼此独立。";
   $("planBtn").disabled=!p||phaseBusy()||!data.reach;$("executeBtn").disabled=!p||!plan||data.operation.phase!=="ready"||!data.reach?.armed||data.reach?.hand_move;
-  drawPreview(plan);$("previewMeta").textContent=plan?`${plan.planner||"规划"} · ${plan.waypoint_count}帧 · ${plan.duration_s}s · 碰撞检查${plan.collision?.status==="collision"?"未通过":"通过"}`:"规划成功后显示路径";
+  drawPreview(plan);$("previewMeta").textContent=plan?`${plan.planner||"规划"} · ${plan.waypoint_count}帧 · 中途停顿${plan.intermediate_stops||0}次 · 共${(plan.intermediate_stops||0)+1}个采样姿态 · 碰撞检查${plan.collision?.status==="collision"?"未通过":"通过"}`:"规划成功后显示路径";
   if(!p){$("jointMini").innerHTML="";return;}const names=p.joint_names||Object.keys(p.named_joints||{});
   $("jointMini").innerHTML=names.map(n=>`<div><span>${esc(n.replace("right_",""))}</span><b>${deg(p.named_joints[n])}</b></div>`).join("");
 }
@@ -283,7 +284,7 @@ function renderHistory(){
   const runs=data.runs||[];$("runSummary").textContent=`${data.summary.completed_runs} 次完成 · ${data.summary.failed_runs} 次失败`;
   if(!runs.length){$("historyList").innerHTML='<div class="empty">尚无实验记录</div>';return;}
   $("historyList").innerHTML=runs.slice(0,12).map(r=>{const err=r.aggregate?.command_minus_measured_deg;const max=err?.length?Math.max(...err.map(Math.abs)).toFixed(2):null;
-    return `<div class="run"><div><div class="run-title">${esc(r.point_name||r.point_id)}</div><div class="run-meta">${r.started_at?.replace("T"," ").slice(0,19)||""}${max?` · 最大静差 ${max}°`:""} · ${r.sample_count||0}帧</div></div><div class="run-status ${r.status==="failed"?"failed":""}">${r.status==="completed"?"已完成":"失败"}</div></div>`}).join("");
+    return `<div class="run"><div><div class="run-title">${esc(r.point_name||r.point_id)}</div><div class="run-meta">${r.started_at?.replace("T"," ").slice(0,19)||""}${max?` · 终点最大静差 ${max}°`:""} · ${r.sample_points?.length||r.settings?.sample_point_count||1}个姿态 · ${r.sample_count||0}帧</div></div><div class="run-status ${r.status==="failed"?"failed":""}">${r.status==="completed"?"已完成":"失败"}</div></div>`}).join("");
 }
 function render(){if(!data)return;renderHeader();renderPoints();renderOperation();renderBatch();renderSelected();renderHistory();}
 
@@ -293,13 +294,13 @@ $("releaseBtn").onclick=async()=>{if(!confirm("确认释放手臂控制权？请
 $("dragBtn").onclick=async()=>{const on=!data?.reach?.hand_move;if(on&&!confirm("拖动模式会卸力并可能下坠，请扶住手臂。继续？"))return;try{await api("/api/gravity/hand_move","POST",{on});toast(on?"已开启拖动，请扶稳手臂":"已恢复当前位置刚性保持");await poll();}catch(e){toast(e.message,true);}};
 $("savePointBtn").onclick=async()=>{const name=$("pointName").value.trim();if(!name){toast("请输入位点名称",true);return;}try{const r=await api("/api/gravity/waypoints","POST",{name,note:$("pointNote").value.trim()});$("pointName").value="";$("pointNote").value="";selectedId=r.point.id;queue.add(r.point.id);saveQueue();toast("已保存当前位置，可继续拖动并保存下一个点");await poll();}catch(e){toast(e.message,true);}};
 $("clearQueueBtn").onclick=()=>{queue.clear();saveQueue();render();};
-$("createBatchBtn").onclick=async()=>{const ids=(data.points||[]).filter(p=>queue.has(p.id)).map(p=>p.id);if(!ids.length){toast("请先从左侧勾选位点",true);return;}try{await api("/api/gravity/batches","POST",{name:$("batchName").value.trim(),point_ids:ids,duration_s:Number($("duration").value),max_speed_rad_s:Number($("speed").value),settle_s:Number($("settle").value),sample_s:Number($("sample").value),sample_hz:Number($("sampleHz").value)});toast("实验批次已建立，可选择半自动或自动批量");await poll();}catch(e){toast(e.message,true);}};
+$("createBatchBtn").onclick=async()=>{const ids=(data.points||[]).filter(p=>queue.has(p.id)).map(p=>p.id);if(!ids.length){toast("请先从左侧勾选位点",true);return;}try{await api("/api/gravity/batches","POST",{name:$("batchName").value.trim(),point_ids:ids,duration_s:Number($("duration").value),max_speed_rad_s:Number($("speed").value),settle_s:Number($("settle").value),sample_s:Number($("sample").value),sample_hz:Number($("sampleHz").value),intermediate_stops:Number($("intermediateStops").value)});toast("实验批次已建立，可选择半自动或自动批量");await poll();}catch(e){toast(e.message,true);}};
 $("nextBatchBtn").onclick=async()=>{const batch=data.batch;if(!batch)return;if(!$("safetyCheck").checked){toast("请先勾选安全确认",true);return;}const next=batch.items.find(i=>i.status==="pending");if(!confirm(`半自动执行下一个位点「${next?.point_name||""}」？`))return;try{selectedId=next.point_id;await api(`/api/gravity/batches/${batch.id}/next`,"POST",{confirm:true});toast("已开始规划并执行下一个位点");await poll();}catch(e){toast(e.message,true);}};
 $("autoBatchBtn").onclick=async()=>{const batch=data.batch;if(!batch)return;if(!$("safetyCheck").checked){toast("请先勾选安全确认",true);return;}if(!confirm("自动批量会在每个点采样成功后直接运行下一个点，不再逐点确认。确认人员已远离并开始？"))return;try{await api(`/api/gravity/batches/${batch.id}/auto`,"POST",{confirm:true});toast("自动批量已启动，可点击“完成本点后暂停”");await poll();}catch(e){toast(e.message,true);}};
 $("pauseBatchBtn").onclick=async()=>{try{const r=await api(`/api/gravity/batches/${data.batch.id}/pause`,"POST",{});toast(r.message);await poll();}catch(e){toast(e.message,true);}};
 $("skipBatchBtn").onclick=async()=>{if(!confirm("跳过当前失败项或下一个待执行位点？"))return;try{await api(`/api/gravity/batches/${data.batch.id}/skip`,"POST",{});toast("已跳过该位点");await poll();}catch(e){toast(e.message,true);}};
-$("planBtn").onclick=async()=>{const p=selectedPoint();if(!p)return;try{await api(`/api/gravity/plan/${p.id}`,"POST",{duration_s:Number($("duration").value),max_speed_rad_s:Number($("speed").value),steps:120,planner_type:"linear",check_collision:true});toast("规划完成，请检查预览后确认真机执行");$("safetyCheck").checked=false;await poll();}catch(e){toast(e.message,true);await poll();}};
-$("executeBtn").onclick=async()=>{const p=selectedPoint(),plan=data?.plan;if(!p||!plan)return;if(!$("safetyCheck").checked){toast("请先勾选安全确认",true);return;}if(!confirm(`真机将运动到「${p.name}」，随后稳定并采样。确认执行？`))return;try{await api(`/api/gravity/execute/${p.id}`,"POST",{confirm:true,plan_id:plan.id,settle_s:Number($("settle").value),sample_s:Number($("sample").value),sample_hz:Number($("sampleHz").value)});toast("真机执行已启动");await poll();}catch(e){toast(e.message,true);await poll();}};
+$("planBtn").onclick=async()=>{const p=selectedPoint();if(!p)return;try{await api(`/api/gravity/plan/${p.id}`,"POST",{duration_s:Number($("duration").value),max_speed_rad_s:Number($("speed").value),intermediate_stops:Number($("intermediateStops").value),steps:120,planner_type:"linear",check_collision:true});toast("规划完成，紫色标记为中途停顿采样点");$("safetyCheck").checked=false;await poll();}catch(e){toast(e.message,true);await poll();}};
+$("executeBtn").onclick=async()=>{const p=selectedPoint(),plan=data?.plan;if(!p||!plan)return;if(!$("safetyCheck").checked){toast("请先勾选安全确认",true);return;}if(!confirm(`真机将分${(plan.intermediate_stops||0)+1}段运动到「${p.name}」，每段停稳并采样。确认执行？`))return;try{await api(`/api/gravity/execute/${p.id}`,"POST",{confirm:true,plan_id:plan.id,settle_s:Number($("settle").value),sample_s:Number($("sample").value),sample_hz:Number($("sampleHz").value),intermediate_stops:Number($("intermediateStops").value)});toast("分段真机执行已启动");await poll();}catch(e){toast(e.message,true);await poll();}};
 $("stopBtn").onclick=async()=>{if(!confirm("立即停止当前运动并保持当前位置？"))return;try{await api("/api/gravity/stop","POST",{});toast("已发送急停");await poll();}catch(e){toast(e.message,true);}};
 drawPreview(null);poll();setInterval(()=>{if(!document.hidden)poll();},700);document.addEventListener("visibilitychange",()=>{if(!document.hidden)poll();});
 </script>

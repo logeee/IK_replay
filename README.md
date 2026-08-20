@@ -49,6 +49,9 @@ order any subset for the experiment. Each confirmed run plans and previews the
 trajectory, moves the arm, waits for settling, and records command/measured
 joints, measured velocity, estimated motor torque, controller gains,
 gravity/feedforward torque, TCP, and torso diagnostics.
+The run settings can insert 0–8 intermediate holds; every hold keeps rigid
+position/gravity support active, settles, and is stored as a separate static
+sample point before the remaining trajectory continues.
 
 ## Reach RGB-D source
 

@@ -41,6 +41,7 @@ _reach_base = "http://127.0.0.1:18001"
 _lock = threading.RLock()
 _plan: dict[str, Any] | None = None
 _batch: dict[str, Any] | None = None
+_run_cancel = threading.Event()
 _operation: dict[str, Any] = {
     "phase": "idle",
     "message": "等待选择位点",
@@ -211,6 +212,7 @@ def _plan_summary(plan: dict[str, Any] | None) -> dict[str, Any] | None:
             "created_at",
             "duration_s",
             "max_speed_rad_s",
+            "intermediate_stops",
             "planner",
             "waypoint_count",
             "collision",
@@ -415,6 +417,7 @@ def arm_control(body: dict[str, Any]):
 @app.post("/api/gravity/hand_move")
 def hand_move(body: dict[str, Any]):
     try:
+        _run_cancel.clear()
         result = _request_reach(
             "POST", "/api/reach/hand_move", body={"on": bool(body.get("on"))}
         )
@@ -425,6 +428,7 @@ def hand_move(body: dict[str, Any]):
 
 @app.post("/api/gravity/stop")
 def stop_execution():
+    _run_cancel.set()
     try:
         result = _request_reach("POST", "/api/reach/stop", body={})
     except GravityServiceError as exc:
@@ -456,6 +460,7 @@ def plan_waypoint(point_id: str, body: dict[str, Any] | None = None):
         joints = _request_reach("GET", "/api/reach/joints")
         duration = min(30.0, max(2.0, float(body.get("duration_s", 6.0))))
         max_speed = min(0.5, max(0.05, float(body.get("max_speed_rad_s", 0.2))))
+        intermediate_stops = min(8, max(0, int(body.get("intermediate_stops", 0))))
         payload = {
             "robot": point.get("robot") or reach.get("robot") or "h2",
             "chain_id": point.get("chain_id") or reach.get("chain_id") or "right_arm",
@@ -503,6 +508,7 @@ def plan_waypoint(point_id: str, body: dict[str, Any] | None = None):
             "created_at": _now(),
             "duration_s": duration,
             "max_speed_rad_s": max_speed,
+            "intermediate_stops": intermediate_stops,
             "planner": planned.get("planner"),
             "waypoint_count": len(waypoints),
             "collision": collision,
@@ -511,6 +517,10 @@ def plan_waypoint(point_id: str, body: dict[str, Any] | None = None):
                 "tcp_path_root_m": tcp_path,
                 "start_joints": waypoints[0],
                 "target_joints": waypoints[-1],
+                "sample_fractions": [
+                    index / (intermediate_stops + 1)
+                    for index in range(1, intermediate_stops + 1)
+                ] + [1.0],
             },
         }
         with _lock:
@@ -540,6 +550,134 @@ def _mark_point_completed(point_id: str, run_id: str, completed_at: str) -> None
     _atomic_json(_point_path(point_id), point)
 
 
+def _split_plan_waypoints(
+    waypoints: list[dict[str, float]], intermediate_stops: int
+) -> list[dict[str, Any]]:
+    """Split one continuous plan into overlapping hold-and-sample segments."""
+    if len(waypoints) < 2:
+        raise GravityServiceError("轨迹至少需要两个路点")
+    stop_count = min(max(0, int(intermediate_stops)), len(waypoints) - 2)
+    last = len(waypoints) - 1
+    boundaries = [
+        round(index * last / (stop_count + 1))
+        for index in range(1, stop_count + 1)
+    ] + [last]
+    segments: list[dict[str, Any]] = []
+    start = 0
+    for sequence, end in enumerate(boundaries, 1):
+        if end <= start:
+            continue
+        segments.append(
+            {
+                "sequence": sequence,
+                "start_index": start,
+                "end_index": end,
+                "fraction": end / last,
+                "waypoints": waypoints[start : end + 1],
+                "final": end == last,
+            }
+        )
+        start = end
+    return segments
+
+
+def _wait_for_segment(
+    *,
+    segment_number: int,
+    segment_count: int,
+    duration_s: float,
+) -> None:
+    deadline = time.monotonic() + duration_s + 40.0
+    while time.monotonic() < deadline:
+        if _run_cancel.is_set():
+            raise GravityServiceError("实验已由操作员停止")
+        status = _request_reach("GET", "/api/reach/exec_status", timeout=2.0)
+        local = min(1.0, max(0.0, float(status.get("progress") or 0.0)))
+        _set_operation(
+            phase="executing",
+            message=(
+                f"第{segment_number}/{segment_count}段 · "
+                f"{status.get('message') or '轨迹执行中'}"
+            ),
+            progress=((segment_number - 1) + local * 0.65) / segment_count,
+        )
+        if not status.get("running"):
+            message = str(status.get("message") or "")
+            if not message.startswith("完成"):
+                raise GravityServiceError(message or "轨迹未正常完成")
+            return
+        time.sleep(0.2)
+    raise GravityServiceError(f"等待第{segment_number}段轨迹完成超时")
+
+
+def _settle_and_sample(
+    *,
+    segment: dict[str, Any],
+    segment_count: int,
+    settle_s: float,
+    sample_s: float,
+    sample_hz: float,
+) -> dict[str, Any]:
+    number = int(segment["sequence"])
+    settle_started = time.monotonic()
+    while time.monotonic() - settle_started < settle_s:
+        if _run_cancel.is_set():
+            raise GravityServiceError("实验已由操作员停止")
+        elapsed = time.monotonic() - settle_started
+        _set_operation(
+            phase="settling",
+            message=(
+                f"第{number}/{segment_count}个采样姿态 · "
+                f"稳定等待 {max(0.0, settle_s - elapsed):.1f}s"
+            ),
+            progress=(
+                (number - 1)
+                + 0.65
+                + 0.15 * min(1.0, elapsed / max(settle_s, 1e-6))
+            ) / segment_count,
+        )
+        time.sleep(min(0.1, max(0.0, settle_s - elapsed)))
+
+    samples: list[dict[str, Any]] = []
+    sample_started = time.monotonic()
+    interval = 1.0 / sample_hz
+    while time.monotonic() - sample_started < sample_s:
+        if _run_cancel.is_set():
+            raise GravityServiceError("实验已由操作员停止")
+        tick = time.monotonic()
+        sample = _request_reach("GET", "/api/reach/diagnostics", timeout=2.0)
+        arm = sample.get("arm") or {}
+        if not arm.get("armed"):
+            raise GravityServiceError("采样期间手臂已释放")
+        sample["trajectory_fraction"] = float(segment["fraction"])
+        sample["sample_point_index"] = number
+        sample["sample_point_type"] = "final" if segment["final"] else "intermediate"
+        samples.append(sample)
+        elapsed = time.monotonic() - sample_started
+        _set_operation(
+            phase="sampling",
+            message=f"第{number}/{segment_count}个姿态 · 已采样 {len(samples)} 帧",
+            progress=(
+                (number - 1)
+                + 0.8
+                + 0.2 * min(1.0, elapsed / max(sample_s, 1e-6))
+            ) / segment_count,
+        )
+        time.sleep(max(0.0, interval - (time.monotonic() - tick)))
+    if len(samples) < max(3, int(sample_s * sample_hz * 0.5)):
+        raise GravityServiceError(f"第{number}个姿态有效采样不足（仅{len(samples)}帧）")
+    return {
+        "index": number,
+        "type": "final" if segment["final"] else "intermediate",
+        "trajectory_fraction": float(segment["fraction"]),
+        "planned_named_joints": segment["waypoints"][-1],
+        "sample_count": len(samples),
+        "samples": samples,
+        "aggregate": _aggregate_samples(samples),
+        "completed_at": _now(),
+    }
+
+
 def _monitor_and_sample(
     plan: dict[str, Any],
     run: dict[str, Any],
@@ -547,69 +685,76 @@ def _monitor_and_sample(
     settle_s: float,
     sample_s: float,
     sample_hz: float,
+    intermediate_stops: int = 0,
 ) -> None:
     try:
-        deadline = time.monotonic() + float(plan["duration_s"]) + 40.0
-        while time.monotonic() < deadline:
-            status = _request_reach("GET", "/api/reach/exec_status", timeout=2.0)
-            progress = float(status.get("progress") or 0.0)
-            _set_operation(
-                phase="executing",
-                message=str(status.get("message") or "轨迹执行中"),
-                progress=min(0.7, max(0.0, progress * 0.7)),
+        segments = _split_plan_waypoints(plan["waypoints"], intermediate_stops)
+        sample_points: list[dict[str, Any]] = []
+        total_frames = 0
+        for index, segment in enumerate(segments):
+            if _run_cancel.is_set():
+                raise GravityServiceError("实验已由操作员停止")
+            segment_duration = max(
+                0.2,
+                float(plan["duration_s"])
+                * (segment["end_index"] - segment["start_index"])
+                / (len(plan["waypoints"]) - 1),
             )
-            if not status.get("running"):
-                message = str(status.get("message") or "")
-                if not message.startswith("完成"):
-                    raise GravityServiceError(message or "轨迹未正常完成")
-                break
-            time.sleep(0.2)
-        else:
-            raise GravityServiceError("等待轨迹执行完成超时")
-
-        settle_started = time.monotonic()
-        while time.monotonic() - settle_started < settle_s:
-            elapsed = time.monotonic() - settle_started
-            _set_operation(
-                phase="settling",
-                message=f"已到位，稳定等待 {max(0.0, settle_s - elapsed):.1f}s",
-                progress=0.7 + 0.1 * min(1.0, elapsed / max(settle_s, 1e-6)),
+            if index > 0:
+                result = _request_reach(
+                    "POST",
+                    "/api/reach/execute",
+                    body={
+                        "waypoints": segment["waypoints"],
+                        "duration": segment_duration,
+                        "max_speed_rad_s": plan["max_speed_rad_s"],
+                        "label": f"gravity_{plan['point_id'][:8]}_s{index + 1}",
+                    },
+                    timeout=10.0,
+                )
+                if not result.get("running"):
+                    raise GravityServiceError(
+                        str(result.get("message") or f"第{index + 1}段未启动")
+                    )
+            _wait_for_segment(
+                segment_number=index + 1,
+                segment_count=len(segments),
+                duration_s=segment_duration,
             )
-            time.sleep(min(0.1, max(0.0, settle_s - elapsed)))
-
-        samples: list[dict[str, Any]] = []
-        sample_started = time.monotonic()
-        interval = 1.0 / sample_hz
-        while time.monotonic() - sample_started < sample_s:
-            tick = time.monotonic()
-            sample = _request_reach("GET", "/api/reach/diagnostics", timeout=2.0)
-            arm = sample.get("arm") or {}
-            if not arm.get("armed"):
-                raise GravityServiceError("采样期间手臂已释放")
-            samples.append(sample)
-            elapsed = time.monotonic() - sample_started
-            _set_operation(
-                phase="sampling",
-                message=f"重力数据采样 {len(samples)} 帧",
-                progress=0.8 + 0.2 * min(1.0, elapsed / max(sample_s, 1e-6)),
+            sample_point = _settle_and_sample(
+                segment=segment,
+                segment_count=len(segments),
+                settle_s=settle_s,
+                sample_s=sample_s,
+                sample_hz=sample_hz,
             )
-            time.sleep(max(0.0, interval - (time.monotonic() - tick)))
-        if len(samples) < max(3, int(sample_s * sample_hz * 0.5)):
-            raise GravityServiceError(f"有效采样不足（仅{len(samples)}帧）")
+            sample_points.append(sample_point)
+            total_frames += int(sample_point["sample_count"])
 
         completed_at = _now()
+        all_samples = [
+            sample
+            for sample_point in sample_points
+            for sample in sample_point["samples"]
+        ]
         run.update(
             status="completed",
             completed_at=completed_at,
-            sample_count=len(samples),
-            samples=samples,
-            aggregate=_aggregate_samples(samples),
+            sample_count=total_frames,
+            samples=all_samples,
+            sample_points=sample_points,
+            # Keep the top-level aggregate tied to one static pose. Combining
+            # different poses would make the mean physically meaningless.
+            aggregate=sample_points[-1]["aggregate"],
         )
         _save_run(run)
         _mark_point_completed(plan["point_id"], run["id"], completed_at)
         _set_operation(
             phase="completed",
-            message=f"「{plan['point_name']}」采样完成，记录{len(samples)}帧",
+            message=(
+                f"「{plan['point_name']}」完成："
+                f"{len(sample_points)}个姿态，共{total_frames}帧"
+            ),
             error=None,
             progress=1.0,
         )
@@ -638,6 +783,10 @@ def execute_waypoint(point_id: str, body: dict[str, Any]):
         settle_s = min(20.0, max(0.5, float(body.get("settle_s", 3.0))))
         sample_s = min(20.0, max(0.5, float(body.get("sample_s", 2.0))))
         sample_hz = min(50.0, max(2.0, float(body.get("sample_hz", 10.0))))
+        raw_stops = body.get("intermediate_stops")
+        intermediate_stops = (
+            None if raw_stops is None else min(8, max(0, int(raw_stops)))
+        )
     except (TypeError, ValueError) as exc:
         return JSONResponse({"ok": False, "error": f"采样参数非法: {exc}"}, status_code=400)
     with _lock:
@@ -650,6 +799,16 @@ def execute_waypoint(point_id: str, body: dict[str, Any]):
     if str(body.get("plan_id") or "") != plan.get("id"):
         return JSONResponse({"ok": False, "error": "规划编号已变化，请重新确认"}, status_code=409)
     try:
+        if intermediate_stops is None:
+            intermediate_stops = min(8, max(0, int(plan.get("intermediate_stops", 0))))
+        segments = _split_plan_waypoints(plan["waypoints"], intermediate_stops)
+        first_segment = segments[0]
+        first_duration = max(
+            0.2,
+            float(plan["duration_s"])
+            * (first_segment["end_index"] - first_segment["start_index"])
+            / (len(plan["waypoints"]) - 1),
+        )
         reach = _reach_status()
         if not reach.get("armed"):
             raise GravityServiceError("手臂尚未接管")
@@ -674,6 +833,8 @@ def execute_waypoint(point_id: str, body: dict[str, Any]):
                 "settle_s": settle_s,
                 "sample_s": sample_s,
                 "sample_hz": sample_hz,
+                "intermediate_stops": intermediate_stops,
+                "sample_point_count": len(segments),
                 "planner": plan.get("planner"),
             },
         }
@@ -681,10 +842,10 @@ def execute_waypoint(point_id: str, body: dict[str, Any]):
             "POST",
             "/api/reach/execute",
             body={
-                "waypoints": plan["waypoints"],
-                "duration": plan["duration_s"],
+                "waypoints": first_segment["waypoints"],
+                "duration": first_duration,
                 "max_speed_rad_s": plan["max_speed_rad_s"],
-                "label": f"gravity_{point_id[:8]}",
+                "label": f"gravity_{point_id[:8]}_s1",
             },
             timeout=10.0,
         )
@@ -704,6 +865,7 @@ def execute_waypoint(point_id: str, body: dict[str, Any]):
                 "settle_s": settle_s,
                 "sample_s": sample_s,
                 "sample_hz": sample_hz,
+                "intermediate_stops": intermediate_stops,
             },
             daemon=True,
             name=f"gravity-run-{run_id}",
@@ -746,6 +908,9 @@ def create_batch(body: dict[str, Any]):
             "settle_s": min(20.0, max(0.5, float(body.get("settle_s", 3.0)))),
             "sample_s": min(20.0, max(0.5, float(body.get("sample_s", 2.0)))),
             "sample_hz": min(50.0, max(2.0, float(body.get("sample_hz", 10.0)))),
+            "intermediate_stops": min(
+                8, max(0, int(body.get("intermediate_stops", 0)))
+            ),
         }
     except (GravityServiceError, TypeError, ValueError) as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
@@ -809,6 +974,7 @@ def _run_batch(batch_id: str, *, automatic: bool) -> None:
                 {
                     "duration_s": settings["duration_s"],
                     "max_speed_rad_s": settings["max_speed_rad_s"],
+                    "intermediate_stops": settings["intermediate_stops"],
                     "steps": 120,
                     "planner_type": "linear",
                     "check_collision": True,
@@ -830,6 +996,7 @@ def _run_batch(batch_id: str, *, automatic: bool) -> None:
                     "settle_s": settings["settle_s"],
                     "sample_s": settings["sample_s"],
                     "sample_hz": settings["sample_hz"],
+                    "intermediate_stops": settings["intermediate_stops"],
                     "batch_id": batch_id,
                 },
             )
