@@ -69,6 +69,12 @@
   #msg { min-height: 18px; font-size: 12px; color: var(--warn); margin-top: 6px; }
   .status-line { font-size: 12.5px; color: var(--dim); margin-top: 4px; }
   .status-line b { color: var(--fg); font-variant-numeric: tabular-nums; }
+  .config-stage { padding: 8px 0; border-top: 1px solid var(--line); }
+  .config-stage:first-of-type { border-top: 0; padding-top: 0; }
+  .config-stage h3 { margin: 0 0 5px; font-size: 12.5px; }
+  .config-stage .range-preview { color: var(--dim); font-size: 11px; margin-top: 4px; }
+  select { background: #14181e; color: var(--fg); border: 1px solid var(--line);
+           border-radius: 4px; padding: 3px 6px; }
 </style>
 </head>
 <body>
@@ -119,6 +125,40 @@
     </div>
 
     <div class="card">
+      <h2>任务两阶段腰部对齐配置</h2>
+      <div class="config-stage">
+        <h3>抬手前粗对齐</h3>
+        <div class="row">
+          <label>目标</label><input id="coarseTarget" type="number" step="0.1" />
+          <label>停止 ±</label><input id="coarseCmdTol" type="number" step="0.1" min="0.1" max="10" />
+        </div>
+        <div class="row">
+          <label>流程验收</label><input id="coarseMin" type="number" step="0.1" /> ~
+          <input id="coarseMax" type="number" step="0.1" /><label>°</label>
+        </div>
+        <div class="range-preview" id="coarsePreview"></div>
+      </div>
+      <div class="config-stage">
+        <h3>抬手后细对齐</h3>
+        <div class="row">
+          <label>目标</label><input id="fineTarget" type="number" step="0.1" />
+          <label>停止 ±</label><input id="fineCmdTol" type="number" step="0.1" min="0.1" max="10" />
+        </div>
+        <div class="row">
+          <label>流程验收</label><input id="fineMin" type="number" step="0.1" /> ~
+          <input id="fineMax" type="number" step="0.1" /><label>°</label>
+        </div>
+        <div class="range-preview" id="finePreview"></div>
+      </div>
+      <div class="row">
+        <button id="saveAlignConfig" class="primary">保存到 JSON</button>
+        <button id="reloadAlignConfig">重新读取</button>
+      </div>
+      <div id="configMsg" class="status-line">正在读取配置…</div>
+      <div id="rangeState" class="status-line"></div>
+    </div>
+
+    <div class="card">
       <h2>原地转身点动（真机！全身动作）</h2>
       <div class="row">
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
@@ -145,8 +185,12 @@
         <span class="status-line" style="margin:0" id="recState">未在记录（操作仍会落日志，但不带组名）</span>
       </div>
       <div class="row">
+        <select id="alignStage" title="新对中按钮使用哪个阶段的目标和停止范围">
+          <option value="coarse">按抬手前配置调试</option>
+          <option value="fine">按抬手后配置调试</option>
+        </select>
         <button id="alignBtn" class="primary" disabled
-                title="新对中（打杆式，参数学自手动纠偏数据）：测偏差→按模型算好时长一杆到位→再测。阈值自动选：手臂收回 0.35°，前伸 2.8°">◎ 新对中</button>
+                title="使用上方所选阶段的目标角和停止范围执行新对中">◎ 新对中</button>
         <span class="status-line" style="margin:0" id="alignState"></span>
       </div>
       <div class="status-line" id="turnState"></div>
@@ -174,6 +218,101 @@
 const $ = (id) => document.getElementById(id);
 let turnAvailable = false;
 let aligning = false;
+let currentYaw = null;
+
+const ALIGN_FIELDS = {
+  coarse: { target: "coarseTarget", tol: "coarseCmdTol", min: "coarseMin", max: "coarseMax", preview: "coarsePreview" },
+  fine: { target: "fineTarget", tol: "fineCmdTol", min: "fineMin", max: "fineMax", preview: "finePreview" },
+};
+
+function alignmentStageValues(stage) {
+  const ids = ALIGN_FIELDS[stage];
+  return {
+    target_deg: Number($(ids.target).value),
+    command_tolerance_deg: Number($(ids.tol).value),
+    accept_min_deg: Number($(ids.min).value),
+    accept_max_deg: Number($(ids.max).value),
+  };
+}
+
+function updateAlignmentPreview(stage) {
+  const values = alignmentStageValues(stage);
+  const ids = ALIGN_FIELDS[stage];
+  if (Object.values(values).some((v) => !Number.isFinite(v))) {
+    $(ids.preview).textContent = "配置值不完整";
+    return;
+  }
+  const stopMin = values.target_deg - values.command_tolerance_deg;
+  const stopMax = values.target_deg + values.command_tolerance_deg;
+  $(ids.preview).textContent =
+    `自动对中停止范围 ${stopMin.toFixed(1)}°~${stopMax.toFixed(1)}°；` +
+    `流程验收 ${values.accept_min_deg.toFixed(1)}°~${values.accept_max_deg.toFixed(1)}°`;
+}
+
+function fillAlignmentConfig(config) {
+  for (const stage of ["coarse", "fine"]) {
+    const ids = ALIGN_FIELDS[stage], values = config[stage];
+    $(ids.target).value = values.target_deg;
+    $(ids.tol).value = values.command_tolerance_deg;
+    $(ids.min).value = values.accept_min_deg;
+    $(ids.max).value = values.accept_max_deg;
+    updateAlignmentPreview(stage);
+  }
+  updateRangeState();
+}
+
+async function loadAlignmentConfig() {
+  $("configMsg").textContent = "正在读取配置…";
+  try {
+    const res = await fetch("/api/reach/alignment_config", { cache: "no-store" });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "读取失败");
+    fillAlignmentConfig(data.config);
+    $("configMsg").textContent = `当前文件：${data.path}`;
+  } catch (e) {
+    $("configMsg").textContent = "配置读取失败：" + e;
+  }
+}
+
+async function saveAlignmentConfig() {
+  const config = {
+    schema_version: 1,
+    coarse: alignmentStageValues("coarse"),
+    fine: alignmentStageValues("fine"),
+  };
+  $("configMsg").textContent = "正在保存…";
+  try {
+    const res = await fetch("/api/reach/alignment_config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(config),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "保存失败");
+    fillAlignmentConfig(data.config);
+    $("configMsg").textContent = `${data.message}（${data.path}）`;
+  } catch (e) {
+    $("configMsg").textContent = "配置保存失败：" + e;
+  }
+}
+
+function updateRangeState() {
+  if (!Number.isFinite(currentYaw)) {
+    $("rangeState").textContent = "";
+    return;
+  }
+  const stage = $("alignStage").value;
+  const values = alignmentStageValues(stage);
+  if (!Number.isFinite(values.accept_min_deg) || !Number.isFinite(values.accept_max_deg)) {
+    $("rangeState").textContent = "";
+    return;
+  }
+  const inside = currentYaw >= values.accept_min_deg && currentYaw <= values.accept_max_deg;
+  $("rangeState").textContent =
+    `当前 yaw ${currentYaw.toFixed(2)}°：${inside ? "已通过" : "未通过"}` +
+    `${stage === "coarse" ? "抬手前" : "抬手后"}验收范围`;
+  $("rangeState").style.color = inside ? "var(--ok)" : "var(--warn)";
+}
 
 function fmt(v, digits = 2) {
   return (v === null || v === undefined || Number.isNaN(v)) ? "--" : Number(v).toFixed(digits);
@@ -197,12 +336,16 @@ async function poll() {
     const data = await res.json();
     if (!data.ok) {
       $("fitMsg").textContent = data.error || "拟合失败";
+      currentYaw = null;
+      updateRangeState();
       ["yawErr", "pitchErr", "tilt"].forEach((id) => { $(id).textContent = "--"; $(id).className = "v"; });
       document.querySelector("table.kv").style.opacity = "0.35";  // 表中是旧值，置灰防误读
       return;
     }
     $("fitMsg").textContent = "";
     document.querySelector("table.kv").style.opacity = "";
+    currentYaw = Number(data.yaw_err_deg);
+    updateRangeState();
     setAngle($("yawErr"), data.yaw_err_deg);
     setAngle($("pitchErr"), data.pitch_err_deg);
     setAngle($("tilt"), data.tilt_deg);
@@ -307,6 +450,18 @@ $("holdRate").addEventListener("change", () => {
   $("holdRate").value = holdRate();  // 越界值拉回范围内
   localStorage.setItem("perp_hold_rate", holdRate());
 });
+for (const stage of ["coarse", "fine"]) {
+  const ids = ALIGN_FIELDS[stage];
+  for (const id of [ids.target, ids.tol, ids.min, ids.max]) {
+    $(id).addEventListener("input", () => {
+      updateAlignmentPreview(stage);
+      updateRangeState();
+    });
+  }
+}
+$("alignStage").addEventListener("change", updateRangeState);
+$("saveAlignConfig").addEventListener("click", saveAlignmentConfig);
+$("reloadAlignConfig").addEventListener("click", loadAlignmentConfig);
 
 async function holdBeat() {
   if (holdDir === 0 || holdInflight) return;
@@ -413,12 +568,20 @@ $("alignBtn").addEventListener("click", async () => {
   if (aligning) {
     await alignPost({ stop: true });
   } else {
+    const stage = alignmentStageValues($("alignStage").value);
+    if (!Number.isFinite(stage.target_deg) ||
+        !Number.isFinite(stage.command_tolerance_deg)) {
+      $("msg").textContent = "请先填写合法的目标角和停止范围";
+      return;
+    }
     await alignPost({
       start: true,
       mode: "hold",   // 新对中（打杆式）；去掉此行即回退旧版定长脉冲
       hand_raised: handUp(),
       dmin: Number($("dmin").value) || 0.4,
       dmax: Number($("dmax").value) || 1.0,
+      target_deg: stage.target_deg,
+      tol_deg: stage.command_tolerance_deg,
     });
   }
   aligning = !aligning;
@@ -447,6 +610,7 @@ document.querySelectorAll(".jog").forEach((b) => {
 });
 updateTurnButtons();
 
+loadAlignmentConfig();
 poll();
 setInterval(poll, 600);
 

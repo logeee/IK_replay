@@ -62,6 +62,8 @@ import requests
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from core.alignment_config import load_alignment_config
+
 from .client import ReachClient
 from .console_client import ConsoleClient
 from .flow import SwitchFlow
@@ -224,9 +226,27 @@ def _run_task(task: dict) -> None:
                                    f"本次任务不带人工兜底")
                 console = None
         yolo = None if _args.no_yolo else YoloClient(_args.yolo)
+        alignment = load_alignment_config()
+        coarse = alignment["coarse"]
+        fine = alignment["fine"]
+        task["log"].append(
+            "腰部对齐配置："
+            f"抬手前目标 {coarse['target_deg']:+.1f}°、验收 "
+            f"{coarse['accept_min_deg']:+.1f}°~{coarse['accept_max_deg']:+.1f}°；"
+            f"抬手后目标 {fine['target_deg']:+.1f}°、验收 "
+            f"{fine['accept_min_deg']:+.1f}°~{fine['accept_max_deg']:+.1f}°"
+        )
 
         flow = SwitchFlow(client=ReachClient(_args.reach_base),
                           console=console, yolo=yolo,
+                          coarse_target_deg=coarse["target_deg"],
+                          coarse_accept_min_deg=coarse["accept_min_deg"],
+                          coarse_accept_max_deg=coarse["accept_max_deg"],
+                          coarse_command_tol_deg=coarse["command_tolerance_deg"],
+                          fine_target_deg=fine["target_deg"],
+                          fine_accept_min_deg=fine["accept_min_deg"],
+                          fine_accept_max_deg=fine["accept_max_deg"],
+                          fine_command_tol_deg=fine["command_tolerance_deg"],
                           max_flip_rounds=int(task.get("retries") or 3))
         task["flow"] = flow
         if _estop.is_set():

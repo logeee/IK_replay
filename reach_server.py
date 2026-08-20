@@ -242,6 +242,7 @@ def main() -> int:
             "/api/reach/status",
             "/api/reach/stream",
             "/api/reach/perpendicular",
+            "/api/reach/alignment_config",
             "/api/reach/rgbd_snapshot",
         }
 

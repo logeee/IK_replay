@@ -16,12 +16,10 @@ POSE_UNAVAILABLE）；取点前的补位分三档：≥0.5m 起手式后加摆�
 
 不给 console 时保持旧行为：人工顶不上的步骤抛 FlowError(NOT_IMPLEMENTED)。
 
-腰部对齐目标（按 2026-07-28 流程定义）：
-  3️⃣ 粗对齐：平面指数（yaw）收进 -8.5 ~ -11.5°（target -10° ± 1.5°）
-     —— 故意过打，抵消抬手后身体自己回转的 +6.6°
-  6️⃣ 细保持：抬手后收进 -3° ± 2°。手臂前伸会把躯干配平带偏 +4.5~+8.2°（实测），
-     所以这一步必须转身纠偏；判据取 3 帧中位数防单帧污染，服务端在抬手状态下
-     限死单杆 ≤5°、累计 ≤15°，并有三道安全闸（见 adapters/reach.py）
+腰部对齐目标从 config/waist_alignment.json 读取：
+  3️⃣ 粗对齐：默认目标 -7°，验收 -8.5°~0°，预补偿抬手后的正向回转。
+  6️⃣ 细保持：默认目标 -3°，验收 -5°~5°。判据取 3 帧中位数防单帧污染；
+     超出范围才纠偏，服务端在抬手状态下限制单杆 ≤5°、累计 ≤30°并设安全闸。
 
 错误码：占位。等正式定义后替换 ErrorCode 的取值即可，接口形状不变。
 """
@@ -92,9 +90,15 @@ class SwitchFlow:
                  # 落点宁可偏 + 一点（可纠）也别偏 -（只能干等），故取 -7：
                  # 预计落 -1.6，落带内且在可纠的那一侧
                  coarse_target_deg: float = -7.0,
-                 coarse_tol_deg: float = 1.5,      # 3️⃣ 带半宽 → [-8.5, -5.5]
+                 coarse_tol_deg: float = 1.5,      # 兼容旧调用；未给 min/max 时生成对称带
+                 coarse_accept_min_deg: float | None = None,
+                 coarse_accept_max_deg: float | None = None,
+                 coarse_command_tol_deg: float | None = None,
                  fine_target_deg: float = -3.0,    # 6️⃣ 保持目标
-                 fine_tol_deg: float = 2.0,        # 6️⃣ 带半宽 → [-5, -1]
+                 fine_tol_deg: float = 2.0,        # 兼容旧调用；未给 min/max 时生成对称带
+                 fine_accept_min_deg: float | None = None,
+                 fine_accept_max_deg: float | None = None,
+                 fine_command_tol_deg: float | None = None,
                  align_mode: str = "hold",         # "hold"=新对中（打杆式）
                  dmin: float = 0.4, dmax: float = 1.0,
                  # ---- IK 拨动段参数（index.html 真机验证过的一组）----
@@ -111,9 +115,31 @@ class SwitchFlow:
         self.console = console
         self.yolo = yolo
         self.coarse_target_deg = coarse_target_deg
-        self.coarse_tol_deg = coarse_tol_deg
+        self.coarse_accept_min_deg = (
+            coarse_target_deg - coarse_tol_deg
+            if coarse_accept_min_deg is None else coarse_accept_min_deg
+        )
+        self.coarse_accept_max_deg = (
+            coarse_target_deg + coarse_tol_deg
+            if coarse_accept_max_deg is None else coarse_accept_max_deg
+        )
+        self.coarse_command_tol_deg = (
+            coarse_tol_deg / 2
+            if coarse_command_tol_deg is None else coarse_command_tol_deg
+        )
         self.fine_target_deg = fine_target_deg
-        self.fine_tol_deg = fine_tol_deg
+        self.fine_accept_min_deg = (
+            fine_target_deg - fine_tol_deg
+            if fine_accept_min_deg is None else fine_accept_min_deg
+        )
+        self.fine_accept_max_deg = (
+            fine_target_deg + fine_tol_deg
+            if fine_accept_max_deg is None else fine_accept_max_deg
+        )
+        self.fine_command_tol_deg = (
+            fine_tol_deg / 2
+            if fine_command_tol_deg is None else fine_command_tol_deg
+        )
         self.align_mode = align_mode
         self.dmin = dmin
         self.dmax = dmax
@@ -161,11 +187,11 @@ class SwitchFlow:
                                 "「从左向右」拨动暂未支持（只验证过从右向左），流程退出")
             self._log(f"场景: {scene}")
 
-            self._log(f"═══ 3️⃣ 腰部粗对齐：平面指数收进 "
-                      f"{self.coarse_target_deg:+.1f}°±{self.coarse_tol_deg}°"
-                      f"（即 {self.coarse_target_deg - self.coarse_tol_deg:+.1f}°"
-                      f"~{self.coarse_target_deg + self.coarse_tol_deg:+.1f}°，"
-                      f"已预补偿抬手后的回转）═══")
+            self._log(f"═══ 3️⃣ 腰部粗对齐：目标 "
+                      f"{self.coarse_target_deg:+.1f}°，验收 "
+                      f"{self.coarse_accept_min_deg:+.1f}°"
+                      f"~{self.coarse_accept_max_deg:+.1f}°，"
+                      f"已预补偿抬手后的回转 ═══")
             self._coarse_align_with_retry()
 
             self._log("═══ 4️⃣ 测距离 ═══")
@@ -208,8 +234,10 @@ class SwitchFlow:
                         self._log("重试轮：跳过起手式回放，插值回终点路点作为起手位")
                         self._goto_endpoint(f"重试第{round_no}轮")
 
-                    self._log(f"═══ 6️⃣ 腰部细对齐并保持："
-                              f"{self.fine_target_deg:+.1f}°±{self.fine_tol_deg}° ═══")
+                    self._log(f"═══ 6️⃣ 腰部细对齐并保持：目标 "
+                              f"{self.fine_target_deg:+.1f}°，验收 "
+                              f"{self.fine_accept_min_deg:+.1f}°"
+                              f"~{self.fine_accept_max_deg:+.1f}° ═══")
                     self._fine_align_with_retry()
 
                     points = self._detect_points_held()
@@ -309,21 +337,29 @@ class SwitchFlow:
     def measure_distance(self) -> float:
         return float(self.measure_plane()["distance_m"])
 
-    def waist_align(self, target_deg: float, tol_deg: float,
-                    cmd_tol_deg: float | None = None) -> None:
-        """腰部调节：把平面指数收进 target_deg ± tol_deg（真机转身）。
+    @staticmethod
+    def _in_band(yaw: float, minimum: float, maximum: float) -> bool:
+        return minimum <= yaw <= maximum
 
-        3️⃣ 抬手前和 6️⃣ 抬手后都用它；抬手后服务端会自动限幅（单杆 ≤5°、
-        累计 ≤15°）。cmd_tol_deg：发给服务器的收敛阈值（默认同 tol_deg），
-        必须比验收带更严，否则服务器停在带边缘、流程独立复测的噪声就会判失败。
+    @staticmethod
+    def _band_text(minimum: float, maximum: float) -> str:
+        return f"{minimum:+.1f}°~{maximum:+.1f}°"
+
+    def waist_align(self, target_deg: float, accept_min_deg: float,
+                    accept_max_deg: float, cmd_tol_deg: float) -> None:
+        """腰部调节：向 target_deg 闭环，最终按独立的验收范围判断。
+
+        3️⃣ 抬手前和 6️⃣ 抬手后都用它。cmd_tol_deg 是服务端围绕目标角的
+        停止阈值；accept_min/max 是流程验收范围，允许配置为非对称区间。
         """
         yaw = float(self.measure_plane()["yaw_err_deg"])
-        if abs(yaw - target_deg) <= tol_deg:
+        band = self._band_text(accept_min_deg, accept_max_deg)
+        if self._in_band(yaw, accept_min_deg, accept_max_deg):
             self._log(f"平面指数已在带内（yaw {yaw:+.2f}°，"
-                      f"目标 {target_deg:+.1f}°±{tol_deg}°），跳过")
+                      f"验收 {band}），跳过")
             return
         res = self.client.align_yaw_start(self.dmin, self.dmax,
-                                          tol_deg=cmd_tol_deg or tol_deg,
+                                          tol_deg=cmd_tol_deg,
                                           target_deg=target_deg,
                                           mode=self.align_mode)
         if not res.get("ok"):
@@ -343,10 +379,15 @@ class SwitchFlow:
                        if fit.get("ok") else None)
                 shown = "读不到" if err is None else f"{err:.2f}°"
                 self._log(f"对中结束: {align.get('message')}（复测残差 {shown}）")
-                if err is not None and err <= tol_deg:
+                yaw_final = (None if not fit.get("ok")
+                             else float(fit["yaw_err_deg"]))
+                if (yaw_final is not None
+                        and self._in_band(yaw_final, accept_min_deg, accept_max_deg)):
                     return
                 raise FlowError(ErrorCode.ALIGN_FAILED,
-                                f"对中结束但复测残差 {shown} 未达 ±{tol_deg}°")
+                                f"对中结束但 yaw "
+                                f"{'读不到' if yaw_final is None else f'{yaw_final:+.2f}°'}"
+                                f" 未进入验收范围 {band}")
             msg = align.get("message") or ""
             if msg != last_msg:          # 每秒轮询，同一杆别重复刷屏
                 self._log(f"对中中… {msg}")
@@ -357,19 +398,22 @@ class SwitchFlow:
     COARSE_ALIGN_ATTEMPTS = 3
 
     def _coarse_align_with_retry(self) -> None:
-        """3️⃣ 粗对齐：收进 coarse_target_deg ± coarse_tol_deg，未达标原地重试。
+        """3️⃣ 粗对齐：收进配置的粗对齐验收范围，未达标原地重试。
 
         目标角已经把"抬手后身体自己回转 +6.6°"预补偿进去了（见构造函数注释），
         所以这一步结束时看着是"过打"的，抬手之后才会落到 -3° 附近。
 
-        发给服务器的收敛阈值取验收半宽的一半：服务器要是停在验收带边缘，流程
-        用另一帧独立复测（噪声 ±0.2°）就可能量到带外——2026-07-30 18:08 的任务
-        就是这么挂的（服务器报残差 1.46° 完成，流程复测 1.57° 判 ALIGN_FAILED）。
+        服务端围绕目标角使用更窄的 command_tolerance 停止；流程再用独立一帧
+        按配置的非对称验收范围复测，避免把控制停止范围和业务通过范围绑死。
         """
         for i in range(1, self.COARSE_ALIGN_ATTEMPTS + 1):
             try:
-                self.waist_align(self.coarse_target_deg, self.coarse_tol_deg,
-                                 cmd_tol_deg=self.coarse_tol_deg / 2)
+                self.waist_align(
+                    self.coarse_target_deg,
+                    self.coarse_accept_min_deg,
+                    self.coarse_accept_max_deg,
+                    self.coarse_command_tol_deg,
+                )
                 return
             except FlowError as exc:
                 if (exc.code != ErrorCode.ALIGN_FAILED
@@ -403,8 +447,8 @@ class SwitchFlow:
         """6️⃣ 抬手后细对齐：把平面指数纠回 fine 带，失败原地重试。
 
         手臂前伸会被整机配平带着把躯干转过去，实测漂移 +3.5~+9.9°（越往前伸
-        越大，摆过「0.5以上」时最大），方向固定往正，所以这一步必须纠——不纠
-        任务永远过不去。历史上一杆约 3° 就够。
+        越大，摆过「0.5以上」时最大），方向固定往正。先按配置的验收范围判断，
+        超出时才向目标角纠偏。
         判据用 3 帧中位数（防单帧污染），纠偏由服务器闭环做，抬手状态下服务端
         只往 - 方向纠：yaw 低于目标时它只等不纠（那个方向和身体自己的 + 向
         回转同向，越纠越远，07-31 两次甩到 +30° 都是这么起头的）。所以真正靠
@@ -412,18 +456,26 @@ class SwitchFlow:
         另有单杆 ≤5°、累计 ≤30°，以及拟合点数、偏差上限（±24°）、运控无响应
         三道闸（见 adapters/reach.py）。
         """
-        band = f"{self.fine_target_deg:+.1f}°±{self.fine_tol_deg}°"
+        band = self._band_text(
+            self.fine_accept_min_deg, self.fine_accept_max_deg
+        )
         yaw = 0.0
         for i in range(1, attempts + 1):
             yaw = self._fine_yaw("6️⃣ 抬手后复查")
-            if abs(yaw - self.fine_target_deg) <= self.fine_tol_deg:
+            if self._in_band(
+                yaw, self.fine_accept_min_deg, self.fine_accept_max_deg
+            ):
                 self._log(f"在保持带 {band} 内")
                 return
             self._log(f"抬手后漂出保持带 {band}，转身纠偏"
                       f"（第 {i}/{attempts} 次）")
             try:
-                self.waist_align(self.fine_target_deg, self.fine_tol_deg,
-                                 cmd_tol_deg=self.fine_tol_deg / 2)
+                self.waist_align(
+                    self.fine_target_deg,
+                    self.fine_accept_min_deg,
+                    self.fine_accept_max_deg,
+                    self.fine_command_tol_deg,
+                )
             except FlowError as exc:
                 if exc.code != ErrorCode.ALIGN_FAILED or i == attempts:
                     raise
@@ -437,7 +489,9 @@ class SwitchFlow:
         for attempt in (1, 2):
             points = self.detect_points()
             yaw = self._fine_yaw("取点后复查")
-            if abs(yaw - self.fine_target_deg) <= self.fine_tol_deg:
+            if self._in_band(
+                yaw, self.fine_accept_min_deg, self.fine_accept_max_deg
+            ):
                 return points
             self._log(f"取点期间漂出保持带（yaw {yaw:+.2f}°），"
                       f"重新纠偏后重新取点（第 {attempt} 次）")

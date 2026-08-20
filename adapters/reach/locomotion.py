@@ -16,6 +16,12 @@ from typing import Any
 import numpy as np
 from fastapi.responses import JSONResponse
 
+from core.alignment_config import (
+    DEFAULT_ALIGNMENT_CONFIG_PATH,
+    load_alignment_config,
+    save_alignment_config,
+)
+
 from .execution import _tcp_position
 from .perception import _fit_view_plane
 from .state import _read_joints, _read_torso, router, state
@@ -42,6 +48,42 @@ def reach_perpendicular(dmin: float = 0.3, dmax: float = 1.0):
     out["hold_record"] = {"active": _hold_group is not None,
                           "group": _hold_group["name"] if _hold_group else None}
     return out
+
+
+@router.get("/alignment_config")
+def reach_alignment_config():
+    """Return the persisted two-stage waist-alignment configuration."""
+    try:
+        config = load_alignment_config()
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return {
+        "ok": True,
+        "config": config,
+        "path": str(DEFAULT_ALIGNMENT_CONFIG_PATH),
+        "applies_to": "next_flow",
+    }
+
+
+@router.post("/alignment_config")
+def reach_save_alignment_config(body: dict):
+    """Validate and atomically persist alignment settings for subsequent flows."""
+    try:
+        config = save_alignment_config(body)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except OSError as exc:
+        return JSONResponse(
+            {"ok": False, "error": f"保存腰部对齐配置失败: {exc}"},
+            status_code=500,
+        )
+    return {
+        "ok": True,
+        "config": config,
+        "path": str(DEFAULT_ALIGNMENT_CONFIG_PATH),
+        "applies_to": "next_flow",
+        "message": "配置已保存；下一次任务流程读取生效",
+    }
 
 
 TURN_RATE_DEG_S = 6.0      # 原地转身角速度
