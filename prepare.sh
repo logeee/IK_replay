@@ -104,5 +104,6 @@ check "确认台 7002"  "http://127.0.0.1:7002/api/console/pending"
 IP=$(ip route get 8.8.8.8 2>/dev/null | grep -oP 'src \K\S+')
 echo
 echo "对外入口: POST http://${IP:-<机器人IP>}:17001/task/flip"
+echo "流程监控: http://${IP:-<机器人IP>}:17001/"
 echo "确认台:   http://${IP:-<机器人IP>}:7002/"
 echo "点云选点: http://${IP:-<机器人IP>}:7005/"

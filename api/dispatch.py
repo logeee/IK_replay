@@ -60,7 +60,7 @@ from typing import Any
 
 import requests
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from core.alignment_config import load_alignment_config
 
@@ -70,6 +70,7 @@ from .flow import SwitchFlow
 from .yolo_client import YoloClient
 
 ROOT = Path(__file__).resolve().parent.parent
+WEB_DIR = ROOT / "web"
 
 app = FastAPI(title="flip-dispatch")
 
@@ -86,6 +87,37 @@ _check_reach_proc: subprocess.Popen | None = None
 # 收到 /emergency/stop 后置位：正在跑的检查/任务在最近的检查点退出。
 # 新的 /check/flip、/task/flip 会先清掉它。
 _estop = threading.Event()
+_service_started_at = datetime.now().isoformat(timespec="seconds")
+_service_started_monotonic = time.monotonic()
+_task_stats = {
+    "accepted": 0,
+    "succeeded": 0,
+    "failed": 0,
+    "rejected_busy": 0,
+}
+
+
+def _service_stats_locked() -> dict[str, Any]:
+    """Caller must hold _lock."""
+    return {
+        "started_at": _service_started_at,
+        "uptime_s": round(max(0.0, time.monotonic() - _service_started_monotonic), 1),
+        **_task_stats,
+    }
+
+
+def _count_finished_task_locked(task: dict) -> None:
+    """Count one accepted task exactly once. Caller must hold _lock."""
+    if task.get("stats_counted"):
+        return
+    result = task.get("result")
+    if not isinstance(result, dict):
+        return
+    if result.get("ok"):
+        _task_stats["succeeded"] += 1
+    else:
+        _task_stats["failed"] += 1
+    task["stats_counted"] = True
 
 
 # ------------------------------------------------------------ reach 生命周期
@@ -267,8 +299,10 @@ def _run_task(task: dict) -> None:
                 _stop_reach(task)
             except Exception as exc:
                 task["log"].append(f"⚠ 关闭 reach_server 出错: {exc}")
-        task["state"] = "done"
-        task["finished_at"] = datetime.now().isoformat(timespec="seconds")
+        with _lock:
+            task["state"] = "done"
+            task["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            _count_finished_task_locked(task)
 
 
 # ------------------------------------------------------------ 站位检查
@@ -574,11 +608,13 @@ def task_submit(body: dict | None = None):
 
     with _lock:
         if _task is not None and _task["state"] != "done":
+            _task_stats["rejected_busy"] += 1
             return JSONResponse(
                 {"ok": False, "error": "已有任务在执行",
                  "task_id": _task["id"], "state": _task["state"]},
                 status_code=409)
         if _check is not None and _check["state"] == "running":
+            _task_stats["rejected_busy"] += 1
             return JSONResponse(
                 {"ok": False, "error": "站位检查（/check/flip）执行中，请等它返回再触发任务"},
                 status_code=409)
@@ -589,7 +625,9 @@ def task_submit(body: dict | None = None):
                  "started_at": now, "finished_at": None,
                  "result": None, "flow": None,
                  "log": [f"指令: {language}（{kind}，最多 {retries} 轮）"],
-                 "reach_proc": None, "reach_external": False}
+                 "reach_proc": None, "reach_external": False,
+                 "stats_counted": False}
+        _task_stats["accepted"] += 1
         if kind == "remote_to_close":
             # 明知做不了就快速失败，不启动任何硬件——平台仍按统一的
             # 轮询路径拿到结果，错误码 NOT_IMPLEMENTED
@@ -599,6 +637,7 @@ def task_submit(body: dict | None = None):
                 "ok": False, "code": 1, "code_name": "NOT_IMPLEMENTED",
                 "message": "「远方 → 就地」暂未支持（镜像动作尚未真机验证）",
                 "detail": {}}
+            _count_finished_task_locked(_task)
             return {"ok": True, "task_id": _task["id"]}
         threading.Thread(target=_run_task, args=(_task,), daemon=True).start()
         return {"ok": True, "task_id": _task["id"]}
@@ -608,15 +647,28 @@ def task_submit(body: dict | None = None):
 def task_status():
     with _lock:
         t = _task
+        service = _service_stats_locked()
+        check = None if _check is None else {
+            "state": _check.get("state"),
+            "started_at": _check.get("started_at"),
+            "result": _check.get("result"),
+        }
+    common = {
+        "ok": True,
+        "service": service,
+        "check": check,
+        "server_time": datetime.now().isoformat(timespec="seconds"),
+    }
     if t is None:
-        return {"ok": True, "state": "idle", "task_id": None,
-                "reach_alive": _reach_alive(0.5)}
+        return {**common, "state": "idle", "task_id": None,
+                "reach_alive": _reach_alive(0.5), "log": [], "result": None}
     flow: SwitchFlow | None = t.get("flow")
     log = list(t["log"]) + (list(flow.log_lines) if flow is not None else [])
-    return {"ok": True, "state": t["state"], "task_id": t["id"],
+    return {**common, "state": t["state"], "task_id": t["id"],
             "language": t.get("language"), "retries": t.get("retries"),
             "started_at": t["started_at"], "finished_at": t["finished_at"],
-            "result": t["result"], "log": log[-60:]}
+            "reach_alive": _reach_alive(0.5),
+            "result": t["result"], "log": log[-120:]}
 
 
 def _reach_base() -> str:
@@ -728,6 +780,11 @@ def task_abort():
 
 @app.get("/")
 def index():
+    return FileResponse(WEB_DIR / "dispatch.html")
+
+
+@app.get("/api/info")
+def service_info():
     return {"service": "flip-dispatch",
             "usage": {"check": 'POST /check/flip  body={"language": "..."}'
                                '（站位检查，同步，客户端超时建议 ≥300s）',

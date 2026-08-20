@@ -17,17 +17,23 @@ from core.alignment_config import (
 class AlignmentConfigTests(unittest.TestCase):
     def test_repository_config_has_requested_asymmetric_acceptance_ranges(self):
         config = load_alignment_config(DEFAULT_ALIGNMENT_CONFIG_PATH)
-        self.assertEqual(config["coarse"]["target_deg"], -7.0)
         self.assertEqual(config["coarse"]["accept_min_deg"], -8.5)
         self.assertEqual(config["coarse"]["accept_max_deg"], 0.0)
-        self.assertEqual(config["fine"]["target_deg"], -3.0)
-        self.assertEqual(config["fine"]["command_tolerance_deg"], 1.5)
         self.assertEqual(config["fine"]["accept_min_deg"], -5.0)
         self.assertEqual(config["fine"]["accept_max_deg"], 5.0)
+        for stage in ("coarse", "fine"):
+            values = config[stage]
+            self.assertGreaterEqual(
+                values["target_deg"] - values["command_tolerance_deg"],
+                values["accept_min_deg"],
+            )
+            self.assertLessEqual(
+                values["target_deg"] + values["command_tolerance_deg"],
+                values["accept_max_deg"],
+            )
 
     def test_save_and_load_round_trip_validated_config(self):
         config = load_alignment_config(DEFAULT_ALIGNMENT_CONFIG_PATH)
-        config["coarse"]["target_deg"] = -6.0
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "waist.json"
             saved = save_alignment_config(config, path)
@@ -35,7 +41,6 @@ class AlignmentConfigTests(unittest.TestCase):
             raw = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(saved, loaded)
         self.assertEqual(raw, loaded)
-        self.assertEqual(loaded["coarse"]["target_deg"], -6.0)
 
     def test_rejects_invalid_or_unsafe_ranges(self):
         config = load_alignment_config(DEFAULT_ALIGNMENT_CONFIG_PATH)

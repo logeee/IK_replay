@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>拨闸任务流程监控</title>
+<style>
+  :root {
+    --bg: #07111f;
+    --panel: rgba(13, 28, 47, .88);
+    --panel-2: rgba(19, 39, 63, .8);
+    --line: rgba(151, 180, 213, .16);
+    --text: #edf5ff;
+    --muted: #8fa5bd;
+    --cyan: #4fd1c5;
+    --blue: #5aa7ff;
+    --green: #51d88a;
+    --amber: #f5bd58;
+    --red: #ff7171;
+    --shadow: 0 22px 55px rgba(0, 0, 0, .28);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    color: var(--text);
+    font: 14px/1.55 "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    background:
+      radial-gradient(circle at 15% -10%, rgba(52, 129, 210, .2), transparent 36%),
+      radial-gradient(circle at 90% 10%, rgba(79, 209, 197, .11), transparent 32%),
+      var(--bg);
+  }
+  body::before {
+    content: "";
+    position: fixed; inset: 0; pointer-events: none; opacity: .18;
+    background-image: linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+                      linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+    background-size: 34px 34px;
+  }
+  header {
+    height: 68px; display: flex; align-items: center; padding: 0 32px;
+    border-bottom: 1px solid var(--line); background: rgba(5, 14, 25, .72);
+    backdrop-filter: blur(18px); position: sticky; top: 0; z-index: 5;
+  }
+  .brand { display: flex; align-items: center; gap: 13px; }
+  .brand-mark {
+    width: 36px; height: 36px; border-radius: 11px; display: grid; place-items: center;
+    color: #07111f; font-weight: 900; background: linear-gradient(135deg, var(--cyan), var(--blue));
+    box-shadow: 0 0 26px rgba(79, 209, 197, .24);
+  }
+  .brand h1 { margin: 0; font-size: 16px; letter-spacing: .03em; }
+  .brand p { margin: 1px 0 0; color: var(--muted); font-size: 11px; }
+  .head-right { margin-left: auto; display: flex; align-items: center; gap: 18px; color: var(--muted); }
+  .connection { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+  .connection-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); }
+  .connection.online .connection-dot {
+    background: var(--green); box-shadow: 0 0 12px rgba(81, 216, 138, .7);
+  }
+  .connection.offline .connection-dot { background: var(--red); }
+  main { position: relative; max-width: 1440px; margin: 0 auto; padding: 26px 28px 40px; }
+  .panel {
+    background: linear-gradient(145deg, rgba(18, 37, 61, .9), rgba(10, 24, 41, .9));
+    border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow);
+  }
+  .hero {
+    padding: 25px 28px; min-height: 148px; display: flex; align-items: center; gap: 24px;
+    overflow: hidden; position: relative;
+  }
+  .hero::after {
+    content: ""; position: absolute; width: 260px; height: 260px; border-radius: 50%;
+    right: -90px; top: -130px; background: rgba(79, 209, 197, .08); filter: blur(4px);
+  }
+  .state-orb {
+    width: 76px; height: 76px; border-radius: 24px; flex: 0 0 auto;
+    display: grid; place-items: center; font-size: 29px; font-weight: 800;
+    background: rgba(143,165,189,.08); border: 1px solid rgba(143,165,189,.18);
+  }
+  .hero.running .state-orb {
+    color: var(--cyan); border-color: rgba(79,209,197,.42);
+    background: rgba(79,209,197,.1); animation: breathe 1.8s ease-in-out infinite;
+  }
+  .hero.success .state-orb { color: var(--green); background: rgba(81,216,138,.1); }
+  .hero.failed .state-orb { color: var(--red); background: rgba(255,113,113,.1); }
+  @keyframes breathe { 50% { box-shadow: 0 0 0 11px rgba(79,209,197,.04); transform: scale(1.03); } }
+  .hero-copy { min-width: 0; position: relative; z-index: 1; }
+  .eyebrow { color: var(--cyan); font-size: 11px; letter-spacing: .14em; font-weight: 700; }
+  .hero h2 { margin: 5px 0 4px; font-size: 25px; line-height: 1.25; }
+  .hero-desc { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hero-meta { margin-left: auto; text-align: right; position: relative; z-index: 1; }
+  .hero-meta .id { font: 600 13px/1.4 ui-monospace, monospace; color: #bed8f5; }
+  .hero-meta .time { color: var(--muted); font-size: 12px; margin-top: 5px; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 14px; }
+  .stat { padding: 15px 18px; }
+  .stat-label { color: var(--muted); font-size: 11px; letter-spacing: .05em; }
+  .stat-value { font-size: 25px; font-weight: 750; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .stat-note { color: var(--muted); font-size: 11px; margin-top: 1px; }
+  .stat.success .stat-value { color: var(--green); }
+  .stat.failed .stat-value { color: var(--red); }
+  .content-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(320px, .75fr); gap: 14px; margin-top: 14px; }
+  .section-head { padding: 18px 21px 11px; display: flex; align-items: center; }
+  .section-head h3 { margin: 0; font-size: 14px; }
+  .section-head span { margin-left: auto; color: var(--muted); font-size: 11px; }
+  .workflow { padding: 3px 21px 20px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .step {
+    min-height: 112px; padding: 13px 13px 11px; border-radius: 13px;
+    border: 1px solid var(--line); background: rgba(5, 16, 29, .36);
+    position: relative; transition: .25s ease;
+  }
+  .step::after {
+    content: ""; position: absolute; height: 2px; width: 10px; right: -11px; top: 29px;
+    background: var(--line);
+  }
+  .step:nth-child(4n)::after, .step:last-child::after { display: none; }
+  .step-index {
+    width: 27px; height: 27px; border-radius: 9px; display: grid; place-items: center;
+    color: var(--muted); background: rgba(143,165,189,.08); font-size: 11px; font-weight: 700;
+  }
+  .step-name { margin-top: 9px; font-weight: 650; font-size: 12px; }
+  .step-desc { color: var(--muted); font-size: 10.5px; margin-top: 3px; }
+  .step.done { border-color: rgba(81,216,138,.22); background: rgba(81,216,138,.045); }
+  .step.done .step-index { color: #07111f; background: var(--green); }
+  .step.active { border-color: rgba(79,209,197,.58); background: rgba(79,209,197,.08); transform: translateY(-2px); }
+  .step.active .step-index { color: #07111f; background: var(--cyan); box-shadow: 0 0 18px rgba(79,209,197,.25); }
+  .step.error { border-color: rgba(255,113,113,.5); background: rgba(255,113,113,.07); }
+  .step.error .step-index { color: #fff; background: var(--red); }
+  .details { padding: 2px 21px 20px; }
+  .detail-row {
+    display: grid; grid-template-columns: 88px minmax(0,1fr); gap: 10px;
+    padding: 10px 0; border-bottom: 1px solid rgba(151,180,213,.1);
+  }
+  .detail-row:last-child { border-bottom: 0; }
+  .detail-key { color: var(--muted); font-size: 11px; }
+  .detail-value { text-align: right; font-size: 12px; overflow-wrap: anywhere; }
+  .result-box { margin: 7px 0 3px; padding: 12px; border-radius: 11px; background: rgba(5,16,29,.45); }
+  .result-box.ok { border: 1px solid rgba(81,216,138,.28); }
+  .result-box.bad { border: 1px solid rgba(255,113,113,.3); }
+  .result-title { font-weight: 700; }
+  .result-message { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  .logs { margin-top: 14px; overflow: hidden; }
+  .log-toolbar { padding: 15px 20px; border-bottom: 1px solid var(--line); display: flex; align-items: center; }
+  .log-toolbar h3 { margin: 0; font-size: 13px; }
+  .log-toolbar span { margin-left: auto; color: var(--muted); font-size: 11px; }
+  .log-list {
+    height: 258px; overflow: auto; padding: 10px 0 14px;
+    font: 12px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    scrollbar-color: #2b4966 transparent;
+  }
+  .log-line { display: grid; grid-template-columns: 45px 1fr; padding: 3px 20px; }
+  .log-line:hover { background: rgba(90,167,255,.05); }
+  .log-no { color: #506a84; user-select: none; }
+  .log-text { white-space: pre-wrap; overflow-wrap: anywhere; color: #bcd0e4; }
+  .empty { height: 100%; display: grid; place-items: center; color: var(--muted); font: 12px/1.5 system-ui; }
+  @media (max-width: 950px) {
+    .content-grid { grid-template-columns: 1fr; }
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .hero-meta { display: none; }
+  }
+  @media (max-width: 640px) {
+    header { padding: 0 16px; }
+    .head-clock { display: none; }
+    main { padding: 16px 12px 28px; }
+    .hero { padding: 20px; }
+    .state-orb { width: 58px; height: 58px; border-radius: 18px; }
+    .hero h2 { font-size: 19px; }
+    .workflow { grid-template-columns: repeat(2, 1fr); }
+    .step:nth-child(2n)::after { display: none; }
+    .step:nth-child(4n)::after { display: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="brand-mark">IK</div>
+    <div><h1>拨闸任务流程监控</h1><p>DISPATCH SERVICE · PORT 17001</p></div>
+  </div>
+  <div class="head-right">
+    <div id="connection" class="connection"><span class="connection-dot"></span><span id="connectionText">连接中</span></div>
+    <div id="clock" class="head-clock"></div>
+  </div>
+</header>
+
+<main>
+  <section id="hero" class="panel hero idle">
+    <div id="stateOrb" class="state-orb">···</div>
+    <div class="hero-copy">
+      <div class="eyebrow">SERVICE STATE</div>
+      <h2 id="stateTitle">正在连接调度服务</h2>
+      <div id="stateDesc" class="hero-desc">等待获取实时运行状态</div>
+    </div>
+    <div class="hero-meta">
+      <div id="taskId" class="id">TASK —</div>
+      <div id="taskTime" class="time">尚无任务</div>
+    </div>
+  </section>
+
+  <section class="stats">
+    <div class="panel stat success"><div class="stat-label">成功调用</div><div id="successCount" class="stat-value">0</div><div class="stat-note">本次服务启动以来</div></div>
+    <div class="panel stat"><div class="stat-label">已接收任务</div><div id="acceptedCount" class="stat-value">0</div><div class="stat-note">有效 /task/flip 请求</div></div>
+    <div class="panel stat failed"><div class="stat-label">失败任务</div><div id="failedCount" class="stat-value">0</div><div class="stat-note">含流程及调度失败</div></div>
+    <div class="panel stat"><div class="stat-label">服务运行时间</div><div id="uptime" class="stat-value">--</div><div id="startedAt" class="stat-note">启动时间 --</div></div>
+  </section>
+
+  <section class="content-grid">
+    <div class="panel">
+      <div class="section-head"><h3>实时执行流程</h3><span id="progressText">等待任务</span></div>
+      <div id="workflow" class="workflow"></div>
+    </div>
+    <aside class="panel">
+      <div class="section-head"><h3>当前 / 最近任务</h3><span id="reachState">REACH —</span></div>
+      <div class="details">
+        <div class="detail-row"><div class="detail-key">任务编号</div><div id="detailId" class="detail-value">—</div></div>
+        <div class="detail-row"><div class="detail-key">调用指令</div><div id="detailLanguage" class="detail-value">—</div></div>
+        <div class="detail-row"><div class="detail-key">开始时间</div><div id="detailStart" class="detail-value">—</div></div>
+        <div class="detail-row"><div class="detail-key">持续时间</div><div id="detailDuration" class="detail-value">—</div></div>
+        <div class="detail-row"><div class="detail-key">最大轮次</div><div id="detailRetries" class="detail-value">—</div></div>
+        <div id="resultBox" class="result-box">
+          <div id="resultTitle" class="result-title">尚无执行结果</div>
+          <div id="resultMessage" class="result-message">服务正在等待新的API任务。</div>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <section class="panel logs">
+    <div class="log-toolbar"><h3>流程事件</h3><span id="logCount">0 条 · 自动刷新</span></div>
+    <div id="logList" class="log-list"><div class="empty">任务开始后，流程事件将在这里按顺序出现</div></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const FLOW_STEPS = [
+  { name: "接收API指令", desc: "校验指令并创建任务", tokens: ["指令:"] },
+  { name: "准备运行环境", desc: "启动相机与机器人服务", tokens: ["启动 reach_server", "reach_server 就绪", "复用站位检查", "外部启动"] },
+  { name: "场景判断", desc: "确认开关状态与方向", tokens: ["1️⃣", "2️⃣", "场景:"] },
+  { name: "抬手前对齐", desc: "柜面法向与腰部粗对齐", tokens: ["3️⃣", "腰部粗对齐"] },
+  { name: "测距与起手", desc: "选择距离对应起手式", tokens: ["4️⃣", "5️⃣", "起手式:"] },
+  { name: "抬手后对齐", desc: "三帧复测并加强纠偏", tokens: ["6️⃣", "抬手后复查"] },
+  { name: "识别规划执行", desc: "目标取点、IK规划与拨动", tokens: ["点位:", "IK 执行", "规划"] },
+  { name: "复核与收尾", desc: "确认结果、回落并释放", tokens: ["复核拨动", "拨动成功", "收尾", "释放"] },
+];
+
+let lastData = null;
+let pollBusy = false;
+let lastLogSignature = "";
+
+function renderWorkflow(data) {
+  const logs = data.log || [];
+  let reached = data.task_id ? 0 : -1;
+  FLOW_STEPS.forEach((step, index) => {
+    if (logs.some((line) => step.tokens.some((token) => line.includes(token)))) {
+      reached = Math.max(reached, index);
+    }
+  });
+  if (data.state === "starting") reached = Math.max(reached, 1);
+  const success = data.state === "done" && data.result && data.result.ok;
+  const failed = data.state === "done" && data.result && !data.result.ok;
+  if (success) reached = FLOW_STEPS.length - 1;
+
+  $("workflow").innerHTML = FLOW_STEPS.map((step, index) => {
+    let cls = "";
+    let mark = String(index + 1).padStart(2, "0");
+    if (success || index < reached) { cls = "done"; mark = "✓"; }
+    else if (index === reached && failed) { cls = "error"; mark = "!"; }
+    else if (index === reached && ["starting", "running"].includes(data.state)) { cls = "active"; mark = "●"; }
+    return `<div class="step ${cls}">
+      <div class="step-index">${mark}</div>
+      <div class="step-name">${step.name}</div>
+      <div class="step-desc">${step.desc}</div>
+    </div>`;
+  }).join("");
+
+  if (!data.task_id) $("progressText").textContent = "等待任务";
+  else if (success) $("progressText").textContent = "流程 100% · 执行成功";
+  else if (failed) $("progressText").textContent = `停止于 ${FLOW_STEPS[Math.max(0, reached)].name}`;
+  else $("progressText").textContent = `进行中 · ${FLOW_STEPS[Math.max(0, reached)].name}`;
+}
+
+function formatDuration(seconds) {
+  seconds = Math.max(0, Number(seconds) || 0);
+  if (seconds < 60) return `${Math.floor(seconds)}秒`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.floor(seconds % 60);
+  if (minutes < 60) return `${minutes}分${String(rest).padStart(2, "0")}秒`;
+  return `${Math.floor(minutes / 60)}时${String(minutes % 60).padStart(2, "0")}分`;
+}
+
+function taskDuration(data) {
+  if (!data.started_at) return null;
+  const start = new Date(data.started_at).getTime();
+  const end = data.finished_at ? new Date(data.finished_at).getTime() : Date.now();
+  return Math.max(0, (end - start) / 1000);
+}
+
+function renderHero(data) {
+  const hero = $("hero");
+  hero.className = "panel hero";
+  let title, desc, orb, cls;
+  if (!data.task_id) {
+    title = "服务当前未被调用";
+    desc = "调度服务在线，正在等待 POST /task/flip";
+    orb = "○"; cls = "idle";
+  } else if (data.state === "starting" || data.state === "running") {
+    title = "服务正在被调用";
+    desc = data.language || "任务流程正在执行";
+    orb = "↻"; cls = "running";
+  } else if (data.result && data.result.ok) {
+    title = "最近一次调用执行成功";
+    desc = data.result.message || "机器人任务已完成";
+    orb = "✓"; cls = "success";
+  } else {
+    title = "最近一次调用未成功";
+    desc = (data.result && data.result.message) || "任务已结束";
+    orb = "!"; cls = "failed";
+  }
+  hero.classList.add(cls);
+  $("stateTitle").textContent = title;
+  $("stateDesc").textContent = desc;
+  $("stateOrb").textContent = orb;
+  $("taskId").textContent = data.task_id ? `TASK ${data.task_id}` : "TASK —";
+  const duration = taskDuration(data);
+  $("taskTime").textContent = duration === null ? "尚无任务" : `已用时 ${formatDuration(duration)}`;
+}
+
+function renderStats(data) {
+  const stats = data.service || {};
+  $("successCount").textContent = stats.succeeded ?? 0;
+  $("acceptedCount").textContent = stats.accepted ?? 0;
+  $("failedCount").textContent = stats.failed ?? 0;
+  $("uptime").textContent = formatDuration(stats.uptime_s || 0);
+  $("startedAt").textContent = stats.started_at ? `启动于 ${stats.started_at.replace("T", " ")}` : "启动时间 —";
+}
+
+function renderDetails(data) {
+  $("detailId").textContent = data.task_id || "—";
+  $("detailLanguage").textContent = data.language || "—";
+  $("detailStart").textContent = data.started_at ? data.started_at.replace("T", " ") : "—";
+  const duration = taskDuration(data);
+  $("detailDuration").textContent = duration === null ? "—" : formatDuration(duration);
+  $("detailRetries").textContent = data.retries ? `${data.retries}轮` : "—";
+  $("reachState").textContent = `REACH ${data.reach_alive ? "ONLINE" : "OFFLINE"}`;
+  $("reachState").style.color = data.reach_alive ? "var(--green)" : "var(--muted)";
+
+  const box = $("resultBox");
+  box.className = "result-box";
+  if (!data.result) {
+    $("resultTitle").textContent = data.task_id ? "任务尚未结束" : "尚无执行结果";
+    $("resultMessage").textContent = data.task_id ? "流程状态将自动更新，无需手动刷新。" : "服务正在等待新的API任务。";
+  } else {
+    box.classList.add(data.result.ok ? "ok" : "bad");
+    $("resultTitle").textContent = data.result.ok ? "执行成功" : `执行失败 · ${data.result.code_name || data.result.code}`;
+    $("resultMessage").textContent = data.result.message || "未提供结果说明";
+  }
+}
+
+function renderLogs(data) {
+  const logs = data.log || [];
+  const signature = `${data.task_id || ""}:${logs.length}:${logs[logs.length - 1] || ""}`;
+  if (signature === lastLogSignature) return;
+  lastLogSignature = signature;
+  const list = $("logList");
+  const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 55;
+  if (!logs.length) {
+    list.innerHTML = '<div class="empty">任务开始后，流程事件将在这里按顺序出现</div>';
+  } else {
+    list.innerHTML = logs.map((line, index) =>
+      `<div class="log-line"><span class="log-no">${String(index + 1).padStart(3, "0")}</span>` +
+      `<span class="log-text">${escapeHtml(line)}</span></div>`
+    ).join("");
+    if (nearBottom) list.scrollTop = list.scrollHeight;
+  }
+  $("logCount").textContent = `${logs.length} 条 · 自动刷新`;
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+  })[char]);
+}
+
+function render(data) {
+  lastData = data;
+  renderHero(data);
+  renderStats(data);
+  renderWorkflow(data);
+  renderDetails(data);
+  renderLogs(data);
+}
+
+async function poll() {
+  if (pollBusy) return;
+  pollBusy = true;
+  try {
+    const response = await fetch("/task/status", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    if (!data.ok) throw new Error(data.error || "状态接口异常");
+    render(data);
+    $("connection").className = "connection online";
+    $("connectionText").textContent = "实时连接";
+  } catch (error) {
+    $("connection").className = "connection offline";
+    $("connectionText").textContent = "连接断开";
+    $("stateTitle").textContent = "无法连接调度服务";
+    $("stateDesc").textContent = String(error);
+  } finally {
+    pollBusy = false;
+  }
+}
+
+function tick() {
+  $("clock").textContent = new Date().toLocaleString("zh-CN", { hour12: false });
+  if (lastData && ["starting", "running"].includes(lastData.state)) {
+    const duration = taskDuration(lastData);
+    $("taskTime").textContent = `已用时 ${formatDuration(duration)}`;
+    $("detailDuration").textContent = formatDuration(duration);
+  }
+}
+
+renderWorkflow({ state: "idle", task_id: null, log: [] });
+tick();
+poll();
+setInterval(tick, 1000);
+setInterval(() => { if (!document.hidden) poll(); }, 800);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+</script>
+</body>
+</html>
