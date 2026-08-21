@@ -95,6 +95,18 @@ input, select {
   white-space: pre-line;
 }
 .muted { color: #7f91a8; }
+.auto-target {
+  width: 100%;
+  margin-bottom: 10px;
+  border-color: #c34d96;
+  background: linear-gradient(135deg, #7e285e, #9e356f);
+  color: #fff1fa;
+  font-weight: 700;
+}
+.auto-target:hover:not(:disabled) {
+  border-color: #ed76bd;
+  background: linear-gradient(135deg, #92316e, #b54182);
+}
 .target-controls { margin: 10px 0 8px; }
 .key-help { margin-bottom: 9px; color: #8fa0b7; font-size: 11px; line-height: 1.5; }
 .selection-lock {

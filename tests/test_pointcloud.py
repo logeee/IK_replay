@@ -431,6 +431,10 @@ class PointCloudBackendTest(unittest.TestCase):
                     "pixel": picked["pixel"],
                     "adjustment_camera_m": [0.001, 0.0, 0.0],
                     "approach_offset_m": 0.0,
+                    "selection_source": "target-finder/0.2.0-s",
+                    "model_version": "0.2.0-s",
+                    "target_point_slot": 1,
+                    "matched_detection_name": "远方",
                 },
             )
         self.assertTrue(confirmed["ok"])
@@ -439,11 +443,103 @@ class PointCloudBackendTest(unittest.TestCase):
         self.assertEqual(sent["capture_id"], metadata["capture_id"])
         self.assertEqual(sent["pixel"], [1, 1])
         self.assertEqual(sent["adjustment_camera_m"], [0.001, 0.0, 0.0])
+        self.assertEqual(sent["selection_source"], "target-finder/0.2.0-s")
+        self.assertEqual(sent["model_version"], "0.2.0-s")
+        self.assertEqual(sent["target_point_slot"], 1)
+        self.assertEqual(sent["matched_detection_name"], "远方")
         restored = pointcloud_viewer.capture_metadata(metadata["capture_id"])
         self.assertEqual(
             restored["confirmed_selection"]["result"]["p_root"],
             [0.005, 0.005, 1.0],
         )
+
+    def test_auto_target_uses_frozen_capture_and_caches_result(self):
+        bgr = np.full((2, 2, 3), [10, 20, 30], dtype=np.uint8)
+        ok, jpeg = cv2.imencode(".jpg", bgr)
+        self.assertTrue(ok)
+        snapshot = {
+            "jpeg": jpeg.tobytes(),
+            "depth_mm": np.full((2, 2), 1000, dtype=np.float32),
+            "intrinsics": (100.0, 100.0, 0.5, 0.5),
+            "metadata": {"frame_id": "auto-1"},
+            "T_cam2root": np.eye(4).tolist(),
+        }
+        with mock.patch.object(
+            pointcloud_viewer, "_fetch_rgbd_snapshot", return_value=snapshot
+        ):
+            metadata = pointcloud_viewer.capture({"stride": 1})
+
+        wall = {
+            "calibrated": True,
+            "origin_camera_m": [0.0, 0.0, 1.0],
+            "x_axis_camera": [1.0, 0.0, 0.0],
+            "y_axis_camera": [0.0, 0.0, 1.0],
+            "z_axis_camera": [0.0, -1.0, 0.0],
+        }
+        panel = {
+            "available": True,
+            "rectangle_center_camera_m": [0.0, 0.0, 1.0],
+            "detection": {"name": "远方", "conf": 0.9},
+        }
+        prediction = {
+            "model_version": "0.2.0-s",
+            "selection_source": "target-finder/0.2.0-s",
+            "target_point_slot": 1,
+            "matched_detection_name": "远方",
+            "target_camera_m": [0.05, 0.0, 1.0],
+            "target_wall_m": [0.05, 0.0, 0.0],
+            "offset_wall_m": [0.05, 0.0, 0.0],
+        }
+        with (
+            mock.patch(
+                "api.cabinet_wall_frame.build_wall_coordinate_frame",
+                return_value=wall,
+            ) as build_wall,
+            mock.patch(
+                "api.cabinet_panel_fit.analyze_yolo_mask_panel",
+                return_value=panel,
+            ) as fit_panel,
+            mock.patch(
+                "api.cabinet_target_finder.predict_target",
+                return_value=prediction,
+            ) as predict,
+        ):
+            first = pointcloud_viewer.auto_target(metadata["capture_id"])
+            second = pointcloud_viewer.auto_target(metadata["capture_id"])
+
+        self.assertTrue(first["ok"])
+        self.assertEqual(second, first)
+        self.assertEqual(first["target_point_slot"], 1)
+        self.assertEqual(first["panel_center_camera_m"], [0.0, 0.0, 1.0])
+        build_wall.assert_called_once()
+        fit_panel.assert_called_once()
+        predict.assert_called_once()
+
+    def test_auto_target_failure_keeps_manual_pointcloud_available(self):
+        bgr = np.full((2, 2, 3), [10, 20, 30], dtype=np.uint8)
+        ok, jpeg = cv2.imencode(".jpg", bgr)
+        self.assertTrue(ok)
+        snapshot = {
+            "jpeg": jpeg.tobytes(),
+            "depth_mm": np.full((2, 2), 1000, dtype=np.float32),
+            "intrinsics": (100.0, 100.0, 0.5, 0.5),
+            "metadata": {"frame_id": "auto-fail"},
+            "T_cam2root": np.eye(4).tolist(),
+        }
+        with mock.patch.object(
+            pointcloud_viewer, "_fetch_rgbd_snapshot", return_value=snapshot
+        ):
+            metadata = pointcloud_viewer.capture({"stride": 1})
+        with mock.patch(
+            "api.cabinet_wall_frame.build_wall_coordinate_frame",
+            side_effect=ValueError("柜面点不足"),
+        ):
+            response = pointcloud_viewer.auto_target(metadata["capture_id"])
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("柜面点不足", response.body.decode("utf-8"))
+        cloud_response = pointcloud_viewer.pointcloud_data(metadata["capture_id"])
+        self.assertEqual(cloud_response.status_code, 200)
 
     def test_live_stream_proxies_reach_mjpeg_and_closes_upstream(self):
         upstream = mock.Mock()
@@ -495,6 +591,10 @@ class ReachPointCloudConfirmationTest(unittest.TestCase):
                     "adjustment_camera_m": [0.001, -0.002, 0.003],
                     "approach_offset_m": 0.01,
                     "source_frame_id": "frame-1",
+                    "selection_source": "target-finder/0.2.0-s",
+                    "model_version": "0.2.0-s",
+                    "target_point_slot": 3,
+                    "matched_detection_name": "就地",
                     "plane": {
                         "center_cam": [0.0, 0.0, 1.0],
                         "normal_cam": [0.0, 0.0, -1.0],
@@ -512,6 +612,14 @@ class ReachPointCloudConfirmationTest(unittest.TestCase):
                 state.pick_context["selection_mode"],
                 "frozen_rgbd_pointcloud",
             )
+            self.assertEqual(
+                state.pick_context["selection_source"],
+                "target-finder/0.2.0-s",
+            )
+            self.assertEqual(state.pick_context["model_version"], "0.2.0-s")
+            self.assertEqual(state.pick_context["target_point_slot"], 3)
+            self.assertEqual(state.pick_context["matched_detection_name"], "就地")
+            self.assertEqual(result["target_point_slot"], 3)
             np.testing.assert_allclose(state.pick_target_root, result["p_root"])
         finally:
             for name, value in saved.items():

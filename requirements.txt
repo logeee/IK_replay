@@ -6,3 +6,4 @@ numpy>=1.26
 scipy>=1.11
 opencv-python-headless>=4.8
 pyzmq>=25.1
+ultralytics

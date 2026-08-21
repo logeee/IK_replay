@@ -60,6 +60,27 @@ marker.renderOrder = 1000;
 marker.visible = false;
 scene.add(marker);
 
+const panelCenterGeometry = new THREE.BufferGeometry();
+panelCenterGeometry.setAttribute(
+  "position",
+  new THREE.Float32BufferAttribute([0, 0, 0], 3),
+);
+const panelCenterMarker = new THREE.Points(
+  panelCenterGeometry,
+  new THREE.PointsMaterial({
+    color: 0xffffff,
+    map: markerTexture("#ff66c4"),
+    transparent: true,
+    alphaTest: 0.1,
+    depthTest: false,
+    size: 16,
+    sizeAttenuation: false,
+  }),
+);
+panelCenterMarker.renderOrder = 1001;
+panelCenterMarker.visible = false;
+scene.add(panelCenterMarker);
+
 const PALETTE = [
   [239, 83, 80], [66, 165, 245], [102, 187, 106], [255, 202, 40],
   [171, 71, 188], [255, 112, 67], [38, 198, 218], [141, 110, 99],
@@ -81,6 +102,9 @@ let replacementArmed = false;
 let selectionPending = false;
 let semanticLabels = [];
 let restoringState = false;
+let autoTargetPending = false;
+let capturePending = false;
+let panelCenterCamera = null;
 const STORAGE_KEY = "ik-replay-pointcloud-state-v1";
 
 function resize() {
@@ -125,6 +149,7 @@ function persistState() {
       cameraPosition: camera.position.toArray(),
       controlsTarget: controls.target.toArray(),
       selection,
+      panelCenterCamera,
     }));
   } catch (_) {
     // Browser privacy modes may disable localStorage; picking must still work.
@@ -236,15 +261,41 @@ function installCloud(decoded, { preserveView = false } = {}) {
   points = new THREE.Points(geometry, material);
   scene.add(points);
   marker.visible = false;
+  panelCenterMarker.visible = false;
+  panelCenterCamera = null;
   selection = null;
   replacementArmed = false;
   selectionPending = false;
   $("confirmTarget").disabled = true;
   $("selection").textContent = "点击点云选择一个点";
   $("selection").classList.add("muted");
+  $("keyHelp").textContent =
+    "相机轴微调　R：解锁一次重新选点　A/D：X−/X+　W/S：Y−/Y+　Q/E：Z−/Z+";
   updateSelectionLock();
   rebuildSemanticLabels();
   if (!preserveView) resetView();
+}
+
+function setPanelCenterMarker(point) {
+  if (!Array.isArray(point) || point.length !== 3
+      || point.some((value) => !Number.isFinite(Number(value)))) {
+    panelCenterCamera = null;
+    panelCenterMarker.visible = false;
+    return;
+  }
+  panelCenterCamera = point.map(Number);
+  panelCenterMarker.position.set(
+    panelCenterCamera[0],
+    -panelCenterCamera[1],
+    -panelCenterCamera[2],
+  );
+  panelCenterMarker.visible = true;
+}
+
+function updateAutoTargetButton() {
+  const button = $("autoTarget");
+  button.disabled = !captureMeta || capturePending || selectionPending || autoTargetPending;
+  button.textContent = autoTargetPending ? "算法找点中…" : "算法找点1/3（Tab）";
 }
 
 function setColorMode(mode) {
@@ -405,7 +456,22 @@ function renderCaptureInfo(meta) {
 
 function restoredSelection(meta, stored) {
   if (stored?.captureId === meta.capture_id && stored.selection) {
-    return stored.selection;
+    const value = stored.selection;
+    if (!Array.isArray(value.pCamera) || value.pCamera.length !== 3) return null;
+    return {
+      ...value,
+      baseCamera: Array.isArray(value.baseCamera) && value.baseCamera.length === 3
+        ? value.baseCamera.map(Number) : value.pCamera.map(Number),
+      pCamera: value.pCamera.map(Number),
+      pixel: Array.isArray(value.pixel) && value.pixel.length === 2
+        ? value.pixel.map(Number) : null,
+      source: value.source || "restored",
+      cls: Number.isFinite(Number(value.cls)) ? Number(value.cls) : -1,
+      className: value.className || "背景",
+      adjustment: Array.isArray(value.adjustment) && value.adjustment.length === 3
+        ? value.adjustment.map(Number) : [0, 0, 0],
+      confirmed: value.confirmed || null,
+    };
   }
   const confirmed = meta.confirmed_selection;
   if (!confirmed) return null;
@@ -449,6 +515,10 @@ async function loadCapture(meta, { restore = false } = {}) {
     controls.update();
   }
   const recovered = restoredSelection(meta, stored);
+  const recoveredCenter = stored.captureId === meta.capture_id
+    ? (stored.panelCenterCamera || recovered?.panelCenterCamera)
+    : recovered?.panelCenterCamera;
+  setPanelCenterMarker(recoveredCenter);
   if (recovered) {
     selection = recovered;
     renderSelection();
@@ -459,11 +529,14 @@ async function loadCapture(meta, { restore = false } = {}) {
   if (preserveView && ["live", "snapshot", "rgb", "semantic"].includes(stored.viewMode)) {
     setViewMode(stored.viewMode);
   }
+  updateAutoTargetButton();
 }
 
 async function capture() {
   const button = $("captureBtn");
+  capturePending = true;
   button.disabled = true;
+  $("autoTarget").disabled = true;
   setStatus("正在获取同帧 RGB-D 并运行 YOLO…");
   try {
     const response = await fetch("/api/pointcloud/capture", {
@@ -488,7 +561,9 @@ async function capture() {
   } catch (error) {
     setStatus(error.message || String(error), "error");
   } finally {
+    capturePending = false;
     button.disabled = false;
+    updateAutoTargetButton();
   }
 }
 
@@ -544,14 +619,14 @@ function updateSelectionLock() {
     element.textContent = "重新选点已解锁：下一次点击将替换当前点";
     element.className = "selection-lock armed";
   } else {
-    element.textContent = "当前点已锁定；按 R 后才能重新选点";
+    element.textContent = "当前点已锁定；按 R 可手选，算法按钮可直接替换";
     element.className = "selection-lock locked";
   }
 }
 
 function selectionClickAllowed() {
   if (selectionPending) {
-    setStatus("正在读取上一次点击的冻结深度，请稍候");
+    setStatus("正在计算选点，请稍候");
     return false;
   }
   if (!selection || replacementArmed) return true;
@@ -560,11 +635,19 @@ function selectionClickAllowed() {
   return false;
 }
 
-function setSelection(pCamera, pixel, source, cls = null, className = null) {
+function setSelection(
+  pCamera,
+  pixel,
+  source,
+  cls = null,
+  className = null,
+  metadata = {},
+) {
   const point = pCamera.map(Number);
   const detected = cls == null ? classAtPixel(pixel) : { cls, name: className };
   selection = {
-    baseCamera: [...point],
+    baseCamera: Array.isArray(metadata.baseCamera)
+      ? metadata.baseCamera.map(Number) : [...point],
     pCamera: [...point],
     pixel: pixel ? pixel.map(Number) : null,
     source,
@@ -572,25 +655,101 @@ function setSelection(pCamera, pixel, source, cls = null, className = null) {
     className: detected.name || "背景",
     adjustment: [0, 0, 0],
     confirmed: null,
+    ...metadata,
   };
+  selection.baseCamera = selection.baseCamera.map(Number);
   replacementArmed = false;
   renderSelection();
   updateSelectionLock();
 }
 
+async function autoTarget() {
+  if (!captureMeta || capturePending) {
+    setStatus("请先点击“拍一下”生成点云", "error");
+    return;
+  }
+  if (autoTargetPending || selectionPending) {
+    setStatus("算法正在找点，请稍候");
+    return;
+  }
+  autoTargetPending = true;
+  selectionPending = true;
+  updateAutoTargetButton();
+  setStatus("正在按柜面模型寻找点1/3…");
+  try {
+    const response = await fetch(
+      `/api/pointcloud/auto-target/${captureMeta.capture_id}`,
+      { method: "POST" },
+    );
+    const result = await response.json();
+    if (!response.ok || !result.ok) {
+      throw new Error(result.error || `HTTP ${response.status}`);
+    }
+    const isVector3 = (value) => Array.isArray(value) && value.length === 3
+      && value.every((component) => Number.isFinite(Number(component)));
+    if (!isVector3(result.target_camera_m)
+        || !isVector3(result.panel_center_camera_m)
+        || !isVector3(result.target_wall_m)
+        || !Array.isArray(result.wall_axes_camera)
+        || result.wall_axes_camera.length !== 3
+        || !result.wall_axes_camera.every(isVector3)) {
+      throw new Error("算法找点响应缺少有效三维坐标或柜面轴");
+    }
+    setPanelCenterMarker(result.panel_center_camera_m);
+    setSelection(
+      result.target_camera_m,
+      null,
+      "target-finder/0.2.0-s",
+      -1,
+      result.matched_detection_name,
+      {
+        baseCamera: result.panel_center_camera_m,
+        modelVersion: result.model_version,
+        targetPointSlot: result.target_point_slot,
+        matchedDetectionName: result.matched_detection_name,
+        wallAxesCamera: result.wall_axes_camera,
+        panelCenterCamera: result.panel_center_camera_m,
+        targetWall: result.target_wall_m,
+      },
+    );
+    setStatus(
+      `算法找点成功：${result.matched_detection_name}·点${result.target_point_slot}`,
+      "ok",
+    );
+  } catch (error) {
+    setStatus(error.message || String(error), "error");
+  } finally {
+    autoTargetPending = false;
+    selectionPending = false;
+    updateAutoTargetButton();
+  }
+}
+
 function renderSelection() {
   if (!selection) return;
   const pCamera = selection.pCamera;
+  const algorithmSelection = typeof selection.source === "string"
+    && selection.source.startsWith("target-finder/");
+  if (algorithmSelection && selection.panelCenterCamera) {
+    setPanelCenterMarker(selection.panelCenterCamera);
+  }
   marker.position.set(pCamera[0], -pCamera[1], -pCamera[2]);
   marker.material.map = selection.confirmed
     ? confirmedMarkerTexture : draftMarkerTexture;
   marker.material.needsUpdate = true;
   marker.visible = true;
   const pRoot = rootPoint(pCamera);
+  if (!Array.isArray(selection.adjustment) || selection.adjustment.length !== 3) {
+    selection.adjustment = [0, 0, 0];
+  }
   const adjustmentMm = selection.adjustment.map((value) => value * 1000);
+  $("keyHelp").textContent = algorithmSelection
+    ? "柜面轴微调　A/D：X−/X+　W/S：Z+/Z−　Q/E：Y−/Y+"
+    : "相机轴微调　R：解锁一次重新选点　A/D：X−/X+　W/S：Y−/Y+　Q/E：Z−/Z+";
   const lines = [
     `来源: ${selection.source === "rgb" ? "RGB 图像"
-      : selection.source === "restored" ? "已恢复的确认点" : "三维点云"}`,
+      : selection.source === "restored" ? "已恢复的确认点"
+        : algorithmSelection ? selection.source : "三维点云"}`,
     selection.pixel ? `像素: (${selection.pixel[0]}, ${selection.pixel[1]})` : "像素: -",
     `类别: ${selection.className}`,
     `深度: ${(pCamera[2] * 1000).toFixed(1)} mm`,
@@ -600,6 +759,22 @@ function renderSelection() {
       ? `p_root: [${pRoot.map((value) => value.toFixed(5)).join(", ")}] m`
       : "p_root: 无手眼标定",
   ];
+  if (algorithmSelection) {
+    lines.splice(
+      1,
+      0,
+      `算法版本: ${selection.modelVersion || "-"}`,
+      `算法目标: ${selection.matchedDetectionName || "-"}·点${selection.targetPointSlot ?? "-"}`,
+      Array.isArray(selection.panelCenterCamera)
+        ? `粉色中心 p_camera: [${selection.panelCenterCamera
+          .map((value) => Number(value).toFixed(5)).join(", ")}] m`
+        : "粉色中心 p_camera: -",
+      Array.isArray(selection.targetWall)
+        ? `墙面目标坐标: [${selection.targetWall
+          .map((value) => Number(value).toFixed(5)).join(", ")}] m`
+        : "墙面目标坐标: -",
+    );
+  }
   if (selection.confirmed) {
     lines.push(
       `18001: 已确认 · p_root [${selection.confirmed.p_root
@@ -632,6 +807,7 @@ async function selectSnapshotPixel(event) {
   ));
   selectionPending = true;
   setStatus(`正在读取 RGB 像素 (${u}, ${v}) 的冻结深度…`);
+  updateAutoTargetButton();
   try {
     const response = await fetch(`/api/pointcloud/pixel/${captureMeta.capture_id}`, {
       method: "POST",
@@ -654,17 +830,17 @@ async function selectSnapshotPixel(event) {
     setStatus(error.message || String(error), "error");
   } finally {
     selectionPending = false;
+    updateAutoTargetButton();
   }
 }
 
 function nudgeSelection(code) {
-  const commands = {
+  const cameraCommands = {
     KeyA: [0, -1], KeyD: [0, 1],
     KeyW: [1, -1], KeyS: [1, 1],
     KeyQ: [2, -1], KeyE: [2, 1],
   };
-  const command = commands[code];
-  if (!command) return false;
+  if (!cameraCommands[code]) return false;
   if (!selection) {
     setStatus("请先从点云或 RGB 图像中选择目标", "error");
     return true;
@@ -674,19 +850,41 @@ function nudgeSelection(code) {
     setStatus("微调步长必须大于零", "error");
     return true;
   }
-  const [axis, direction] = command;
+  const algorithmSelection = typeof selection.source === "string"
+    && selection.source.startsWith("target-finder/")
+    && Array.isArray(selection.wallAxesCamera)
+    && selection.wallAxesCamera.length === 3
+    && selection.wallAxesCamera.every(
+      (axis) => Array.isArray(axis) && axis.length === 3
+        && axis.every((value) => Number.isFinite(Number(value))),
+    );
+  const wallCommands = {
+    KeyA: [0, -1], KeyD: [0, 1],
+    KeyW: [2, 1], KeyS: [2, -1],
+    KeyQ: [1, -1], KeyE: [1, 1],
+  };
+  const [axis, direction] = algorithmSelection
+    ? wallCommands[code] : cameraCommands[code];
+  const deltaCamera = algorithmSelection
+    ? selection.wallAxesCamera[axis].map(
+      (component) => Number(component) * direction * step,
+    )
+    : [0, 1, 2].map(
+      (cameraAxis) => (cameraAxis === axis ? direction * step : 0),
+    );
   const next = [...selection.pCamera];
-  next[axis] += direction * step;
+  for (let i = 0; i < 3; i += 1) next[i] += deltaCamera[i];
   if (next[2] <= 0.05) {
     setStatus("Z 深度不能小于 50 mm", "error");
     return true;
   }
   selection.pCamera = next;
-  selection.adjustment[axis] += direction * step;
+  for (let i = 0; i < 3; i += 1) selection.adjustment[i] += deltaCamera[i];
   selection.confirmed = null;
   renderSelection();
   setStatus(
-    `${["X", "Y", "Z"][axis]} ${direction > 0 ? "+" : "−"}`
+    `${algorithmSelection ? "柜面" : "相机"}${["X", "Y", "Z"][axis]}`
+      + ` ${direction > 0 ? "+" : "−"}`
       + `${(step * 1000).toFixed(1)} mm`,
     "ok",
   );
@@ -713,6 +911,10 @@ async function confirmTarget() {
           pixel: selection.pixel,
           adjustment_camera_m: selection.adjustment,
           approach_offset_m: Number($("approachOffset").value || 0),
+          selection_source: selection.source || null,
+          model_version: selection.modelVersion || null,
+          target_point_slot: selection.targetPointSlot ?? null,
+          matched_detection_name: selection.matchedDetectionName || null,
         }),
       },
     );
@@ -797,6 +999,7 @@ renderer.domElement.addEventListener("pointerup", (event) => {
 });
 
 $("captureBtn").addEventListener("click", capture);
+$("autoTarget").addEventListener("click", autoTarget);
 $("snapshotImage").addEventListener("click", selectSnapshotPixel);
 $("confirmTarget").addEventListener("click", confirmTarget);
 $("liveMode").addEventListener("click", () => setViewMode("live"));
@@ -820,6 +1023,11 @@ window.addEventListener("keydown", (event) => {
   const target = event.target;
   if (target instanceof HTMLElement
       && (target.matches("input, textarea, select") || target.isContentEditable)) {
+    return;
+  }
+  if (event.code === "Tab" && captureMeta && !capturePending) {
+    event.preventDefault();
+    autoTarget();
     return;
   }
   if (event.code === "KeyR") {

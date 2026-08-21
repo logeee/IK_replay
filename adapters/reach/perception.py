@@ -192,6 +192,10 @@ def confirm_pointcloud_pick(body: dict):
     state.torso_diag = None
     state.pick_context = {
         "selection_mode": "frozen_rgbd_pointcloud",
+        "selection_source": body.get("selection_source", "manual"),
+        "model_version": body.get("model_version"),
+        "target_point_slot": body.get("target_point_slot"),
+        "matched_detection_name": body.get("matched_detection_name"),
         "source_frame_id": body.get("source_frame_id"),
         "capture_id": body.get("capture_id"),
         "pixel": pixel,
@@ -207,6 +211,10 @@ def confirm_pointcloud_pick(body: dict):
     return {
         "ok": True,
         "selection_mode": "frozen_rgbd_pointcloud",
+        "selection_source": body.get("selection_source", "manual"),
+        "model_version": body.get("model_version"),
+        "target_point_slot": body.get("target_point_slot"),
+        "matched_detection_name": body.get("matched_detection_name"),
         "source_frame_id": body.get("source_frame_id"),
         "pixel": pixel,
         "depth_mm": float(p_cam[2] * 1000.0),

@@ -25,6 +25,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 
 from .pointcloud_core import (
+    PointCloud,
     build_pointcloud,
     detection_pixel_mask,
     encode_pointcloud,
@@ -49,6 +50,7 @@ _default_conf = 0.25
 _box_padding_ratio = 0.1
 _model_lock = threading.Lock()
 _capture_lock = threading.Lock()
+_auto_target_lock = threading.Lock()
 
 
 @dataclass
@@ -61,6 +63,12 @@ class Capture:
     intrinsics: tuple[float, float, float, float]
     distortion: np.ndarray
     created_monotonic: float
+    bgr: np.ndarray
+    cloud: PointCloud
+    boxes: list[dict[str, Any]]
+    wall_plane: dict[str, Any] | None = None
+    panel_fit: dict[str, Any] | None = None
+    auto_target: dict[str, Any] | None = None
 
 
 _latest: Capture | None = None
@@ -327,6 +335,9 @@ def capture(body: dict | None = None):
             intrinsics=snapshot["intrinsics"],
             distortion=distortion,
             created_monotonic=time.monotonic(),
+            bgr=bgr,
+            cloud=cloud,
+            boxes=boxes,
         )
     return metadata
 
@@ -380,6 +391,132 @@ def _capture_by_id(capture_id: str) -> Capture | None:
     if capture_value is None or capture_value.capture_id != capture_id:
         return None
     return capture_value
+
+
+@app.post("/api/pointcloud/auto-target/{capture_id}")
+def auto_target(capture_id: str):
+    """Use the frozen RGB-D frame to predict point 1 or point 3 in memory."""
+    capture_value = _capture_by_id(capture_id)
+    if capture_value is None:
+        return JSONResponse(
+            {"ok": False, "error": "快照不存在或已被新快照替换"},
+            status_code=404,
+        )
+    with _auto_target_lock:
+        if capture_value.auto_target is not None:
+            return capture_value.auto_target
+        started = time.perf_counter()
+        timings: dict[str, float] = {}
+        try:
+            from .cabinet_panel_fit import analyze_yolo_mask_panel
+            from .cabinet_target_finder import predict_target
+            from .cabinet_wall_frame import build_wall_coordinate_frame
+
+            wall_started = time.perf_counter()
+            wall_cloud = build_pointcloud(
+                capture_value.depth_mm,
+                capture_value.bgr,
+                capture_value.intrinsics,
+                [],
+                stride=3,
+                z_min_m=float(capture_value.metadata["z_min_m"]),
+                z_max_m=float(capture_value.metadata["z_max_m"]),
+                max_points=350_000,
+                dense_box_sampling=False,
+                distortion=capture_value.distortion,
+            )
+            wall_plane = build_wall_coordinate_frame(
+                wall_cloud.positions,
+                wall_cloud.pixels,
+                capture_value.depth_mm.shape,
+                plane_threshold_m=0.008,
+                stride=3,
+                min_plane_points=300,
+                plane_analysis_max_points=200_000,
+            )
+            timings["wall"] = round(
+                (time.perf_counter() - wall_started) * 1000.0, 1
+            )
+
+            panel_started = time.perf_counter()
+            panel_fit = analyze_yolo_mask_panel(
+                capture_value.cloud,
+                capture_value.boxes,
+                image_shape=capture_value.depth_mm.shape,
+                wall_plane=wall_plane,
+            )
+            timings["panel"] = round(
+                (time.perf_counter() - panel_started) * 1000.0, 1
+            )
+            if not panel_fit.get("available"):
+                raise ValueError(
+                    "YOLO Mask 面板拟合失败"
+                    + (
+                        f"：{panel_fit.get('reason')}"
+                        if panel_fit.get("reason")
+                        else ""
+                    )
+                )
+
+            predict_started = time.perf_counter()
+            prediction = predict_target(panel_fit, wall_plane)
+            timings["predict"] = round(
+                (time.perf_counter() - predict_started) * 1000.0, 1
+            )
+            timings["total"] = round(
+                (time.perf_counter() - started) * 1000.0, 1
+            )
+            result = {
+                "ok": True,
+                **prediction,
+                "panel_center_camera_m": panel_fit[
+                    "rectangle_center_camera_m"
+                ],
+                "wall_axes_camera": [
+                    wall_plane["x_axis_camera"],
+                    wall_plane["y_axis_camera"],
+                    wall_plane["z_axis_camera"],
+                ],
+                "wall_coordinate": wall_plane,
+                "panel_fit": panel_fit,
+                "timings_ms": timings,
+            }
+        except (TypeError, ValueError, np.linalg.LinAlgError) as exc:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "model_version": "0.2.0-s",
+                    "timings_ms": {
+                        **timings,
+                        "total": round(
+                            (time.perf_counter() - started) * 1000.0, 1
+                        ),
+                    },
+                },
+                status_code=422,
+            )
+        except Exception as exc:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": f"算法找点失败: {exc}",
+                    "model_version": "0.2.0-s",
+                    "timings_ms": {
+                        **timings,
+                        "total": round(
+                            (time.perf_counter() - started) * 1000.0, 1
+                        ),
+                    },
+                },
+                status_code=500,
+            )
+        with _capture_lock:
+            if _latest is capture_value:
+                capture_value.wall_plane = wall_plane
+                capture_value.panel_fit = panel_fit
+                capture_value.auto_target = result
+        return result
 
 
 @app.post("/api/pointcloud/pixel/{capture_id}")
@@ -457,6 +594,32 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
             ),
             "capture_id": capture_id,
         }
+        selection_source = str(body.get("selection_source") or "manual")
+        model_version = body.get("model_version")
+        matched_detection_name = body.get("matched_detection_name")
+        target_point_slot = body.get("target_point_slot")
+        if len(selection_source) > 80:
+            raise ValueError("selection_source 过长")
+        if model_version is not None:
+            model_version = str(model_version)
+            if len(model_version) > 40:
+                raise ValueError("model_version 过长")
+        if matched_detection_name is not None:
+            matched_detection_name = str(matched_detection_name)
+            if len(matched_detection_name) > 40:
+                raise ValueError("matched_detection_name 过长")
+        if target_point_slot is not None:
+            target_point_slot = int(target_point_slot)
+            if target_point_slot not in {1, 3}:
+                raise ValueError("target_point_slot 仅支持 1 或 3")
+        request_body.update(
+            {
+                "selection_source": selection_source,
+                "model_version": model_version,
+                "target_point_slot": target_point_slot,
+                "matched_detection_name": matched_detection_name,
+            }
+        )
     except (KeyError, TypeError, ValueError) as exc:
         return JSONResponse(
             {"ok": False, "error": f"确认目标参数非法: {exc}"},
@@ -489,6 +652,10 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
                 "p_camera": p_camera.tolist(),
                 "pixel": body.get("pixel"),
                 "adjustment": adjustment.tolist(),
+                "selection_source": selection_source,
+                "model_version": model_version,
+                "target_point_slot": target_point_slot,
+                "matched_detection_name": matched_detection_name,
                 "result": result,
             }
     return result

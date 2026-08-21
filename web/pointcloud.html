@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RGB / YOLO 语义点云</title>
-    <link rel="stylesheet" href="/web/pointcloud.css?v=20260821-1" />
+    <link rel="stylesheet" href="/web/pointcloud.css?v=20260822-1" />
     <script type="importmap">
       {
         "imports": {
@@ -61,6 +61,7 @@
 
       <section class="panel">
         <h2>选中点</h2>
+        <button id="autoTarget" class="auto-target" disabled>算法找点1/3（Tab）</button>
         <div id="selection" class="details muted">点击点云选择一个点</div>
         <div class="form-grid target-controls">
           <label>微调步长 mm
@@ -70,7 +71,7 @@
             <input id="approachOffset" type="number" min="-0.05" max="0.1" step="0.005" value="0" />
           </label>
         </div>
-        <div class="key-help">R：解锁一次重新选点　A/D：X−/X+　W/S：Y−/Y+　Q/E：Z−/Z+</div>
+        <div id="keyHelp" class="key-help">相机轴微调　R：解锁一次重新选点　A/D：X−/X+　W/S：Y−/Y+　Q/E：Z−/Z+</div>
         <div id="selectionLock" class="selection-lock ready">首次选点：直接点击点云或RGB图像</div>
         <button id="confirmTarget" class="primary" disabled>确定目标并发送到 18001</button>
       </section>
@@ -100,6 +101,6 @@
       <div id="axisNote" class="axis-note hidden">显示坐标：X 右，Y 上，视线向前；数值返回彩色相机系 X右/Y下/Z前</div>
     </main>
 
-    <script type="module" src="/web/pointcloud.js?v=20260821-2"></script>
+    <script type="module" src="/web/pointcloud.js?v=20260822-1"></script>
   </body>
 </html>
