@@ -14,6 +14,10 @@ const dx = document.getElementById("compareDx");
 const dy = document.getElementById("compareDy");
 const dz = document.getElementById("compareDz");
 const jointErrors = document.getElementById("compareJointErrors");
+const ikBreakdown = document.getElementById("ikErrorBreakdown");
+const ikResidual = document.getElementById("compareIkResidual");
+const trackingError = document.getElementById("compareTrackError");
+const totalError = document.getElementById("compareTotalError");
 const showTheoretical = document.getElementById("showTheoretical");
 const showMeasured = document.getElementById("showMeasured");
 const resetButton = document.getElementById("resetCompareView");
@@ -27,6 +31,7 @@ const ERROR_COLOR = 0xf3bc5b;
 
 const state = {
   currentRunId: null,
+  comparisonKind: "gravity_run",
   requestSequence: 0,
   availableSamples: [],
   sampleIndex: null,
@@ -493,15 +498,25 @@ function renderMetrics(comparison) {
   dx.textContent = formatMillimetres(comparison.tcp_delta_mm[0]);
   dy.textContent = formatMillimetres(comparison.tcp_delta_mm[1]);
   dz.textContent = formatMillimetres(comparison.tcp_delta_mm[2]);
+  const breakdown = comparison.error_breakdown;
+  ikBreakdown.classList.toggle("hidden", !breakdown);
+  if (breakdown) {
+    ikResidual.textContent = `${Number(breakdown.ik?.norm_mm).toFixed(1)} mm`;
+    trackingError.textContent =
+      `${Number(breakdown.tracking?.norm_mm).toFixed(1)} mm`;
+    totalError.textContent = `${Number(breakdown.total?.norm_mm).toFixed(1)} mm`;
+  }
   jointErrors.innerHTML = comparison.joint_names
     .map((name, index) => {
       const error = Number(comparison.joint_error_deg[index]);
+      const theoretical = Number(comparison.theoretical.named_joints[name]);
+      const measured = Number(comparison.measured.named_joints[name]);
       const color = Math.abs(error) > 2
         ? "#ff8b5c"
         : Math.abs(error) > 0.5
           ? "#f3bc5b"
           : "#54d68b";
-      return `<div class="joint-error"><span>${name.replace("right_", "").replace("_joint", "")}</span><b style="color:${color}">${error >= 0 ? "+" : ""}${error.toFixed(2)}°</b></div>`;
+      return `<div class="joint-error"><span>${name.replace("right_", "").replace("_joint", "")}<br><small>理论 ${(theoretical * 180 / Math.PI).toFixed(2)}° · 实测 ${(measured * 180 / Math.PI).toFixed(2)}°</small></span><b style="color:${color}">${error >= 0 ? "+" : ""}${error.toFixed(2)}°</b></div>`;
     })
     .join("");
 }
@@ -512,15 +527,18 @@ function updateSampleControls(comparison) {
   const optionKey = state.availableSamples
     .map((item) => `${item.index}:${item.trajectory_fraction}`)
     .join("|");
-  if (sampleSelect.dataset.key !== `${state.currentRunId}:${optionKey}`) {
+  const controlKey = `${state.comparisonKind}:${state.currentRunId}:${optionKey}`;
+  if (sampleSelect.dataset.key !== controlKey) {
     sampleSelect.innerHTML = state.availableSamples
       .map((item) => {
         const percentage = Math.round(Number(item.trajectory_fraction) * 100);
-        const label = item.type === "final" ? "终点" : `中途 ${percentage}%`;
+        const label = item.type === "ik_validation"
+          ? "IK落点"
+          : item.type === "final" ? "终点" : `中途 ${percentage}%`;
         return `<option value="${item.index}">${item.index}. ${label} · ${item.sample_count}帧</option>`;
       })
       .join("");
-    sampleSelect.dataset.key = `${state.currentRunId}:${optionKey}`;
+    sampleSelect.dataset.key = controlKey;
   }
   sampleSelect.value = String(state.sampleIndex);
   sampleSelect.disabled = false;
@@ -569,8 +587,11 @@ async function loadComparison(runId, sampleIndex, resetView = false) {
   previousButton.disabled = true;
   nextButton.disabled = true;
   try {
+    const url = state.comparisonKind === "pointcloud_ik"
+      ? `/api/gravity/ik_validation/${encodeURIComponent(runId)}/comparison`
+      : `/api/gravity/runs/${encodeURIComponent(runId)}/comparison?sample_index=${encodeURIComponent(sampleIndex)}`;
     const response = await fetch(
-      `/api/gravity/runs/${encodeURIComponent(runId)}/comparison?sample_index=${encodeURIComponent(sampleIndex)}`,
+      url,
       { cache: "no-store" },
     );
     const payload = await response.json();
@@ -596,7 +617,17 @@ function adjacentSample(delta) {
 }
 
 window.addEventListener("gravity:open-comparison", (event) => {
+  state.comparisonKind = "gravity_run";
   state.currentRunId = event.detail.runId;
+  state.availableSamples = [];
+  state.sampleIndex = null;
+  sampleSelect.disabled = true;
+  samplePosition.textContent = "— / —";
+  loadComparison(state.currentRunId, 1, true);
+});
+window.addEventListener("gravity:open-ik-comparison", (event) => {
+  state.comparisonKind = "pointcloud_ik";
+  state.currentRunId = event.detail.validationId;
   state.availableSamples = [];
   state.sampleIndex = null;
   sampleSelect.disabled = true;

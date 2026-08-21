@@ -87,6 +87,17 @@ def reach_pick(body: dict):
     state.pick_pixel = [u, v]
     state.pick_torso = _read_torso()
     state.torso_diag = None
+    state.pick_context = {
+        "selection_mode": "live_rgb_depth",
+        "source_frame_id": result.get("frame_id"),
+        "pixel": [u, v],
+        "p_camera_surface": p_cam.tolist(),
+        "adjustment_camera_m": [0.0, 0.0, 0.0],
+        "approach_offset_m": offset,
+        "p_root_surface": p_root_surface,
+        "p_root": list(state.pick_target_root),
+        "captured_at_monotonic": time.monotonic(),
+    }
 
     return {
         "ok": True,
@@ -179,6 +190,19 @@ def confirm_pointcloud_pick(body: dict):
     state.pick_pixel = pixel
     state.pick_torso = _read_torso()
     state.torso_diag = None
+    state.pick_context = {
+        "selection_mode": "frozen_rgbd_pointcloud",
+        "source_frame_id": body.get("source_frame_id"),
+        "capture_id": body.get("capture_id"),
+        "pixel": pixel,
+        "p_camera_surface": p_cam.tolist(),
+        "adjustment_camera_m": adjustment.tolist(),
+        "approach_offset_m": offset,
+        "p_root_surface": p_root_surface,
+        "p_root": list(state.pick_target_root),
+        "plane": plane,
+        "captured_at_monotonic": time.monotonic(),
+    }
 
     return {
         "ok": True,

@@ -6,6 +6,8 @@ import json
 import math
 import threading
 import time
+import uuid
+from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
@@ -158,6 +160,28 @@ def _exec_status() -> dict:
     }
 
 
+def _execution_summary(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: deepcopy(record.get(key))
+        for key in (
+            "id",
+            "ts",
+            "session",
+            "segment",
+            "result",
+            "robot",
+            "chain_id",
+            "gravity_profile",
+            "pick_context",
+            "joint_names",
+            "target_rad",
+            "reach_error_max_deg",
+            "follow_error_max_deg",
+            "tcp",
+        )
+    }
+
+
 @router.get("/diagnostics")
 def reach_diagnostics():
     """现场排查用：重力前馈在出多大力、躯干相对取点时刻漂了多少。"""
@@ -208,6 +232,43 @@ def reach_diagnostics():
 @router.get("/exec_status")
 def reach_exec_status():
     return _exec_status()
+
+
+@router.get("/executions")
+def reach_executions(limit: int = 12, pointcloud_only: bool = False):
+    safe_limit = max(1, min(int(limit), 30))
+    with state.execution_history_lock:
+        records = [
+            _execution_summary(value)
+            for value in reversed(state.execution_history)
+        ]
+    if pointcloud_only:
+        records = [
+            value
+            for value in records
+            if (value.get("pick_context") or {}).get("selection_mode")
+            == "frozen_rgbd_pointcloud"
+        ]
+    return {"ok": True, "executions": records[:safe_limit]}
+
+
+@router.get("/executions/{execution_id}")
+def reach_execution(execution_id: str):
+    with state.execution_history_lock:
+        record = next(
+            (
+                deepcopy(value)
+                for value in state.execution_history
+                if value.get("id") == execution_id
+            ),
+            None,
+        )
+    if record is None:
+        return JSONResponse(
+            {"ok": False, "error": "执行记录不存在或已被较新记录替换"},
+            status_code=404,
+        )
+    return {"ok": True, "execution": record}
 
 
 def _position_jacobian(named: dict[str, float]) -> np.ndarray:
@@ -315,6 +376,13 @@ def reach_execute(body: dict):
             "snapshot_age_ms": snapshot_meta["age_ms"],
             "last_sent_tau_ff_nm": snapshot_meta["tau_ff_nm"],
         }
+        execution_context = {
+            "pick_context": deepcopy(state.pick_context),
+            "pick_target_root": deepcopy(state.pick_target_root),
+            "pick_target_torso": deepcopy(state.pick_target_torso),
+            "pick_pixel": deepcopy(state.pick_pixel),
+            "pick_torso": deepcopy(state.pick_torso),
+        }
 
         state.exec_cancel.clear()
         state.exec_running = True
@@ -329,6 +397,7 @@ def reach_execute(body: dict):
                 "label": label,
                 "command_start_q": command_start,
                 "command_handoff": command_handoff,
+                "execution_context": execution_context,
             },
             daemon=True)
         state.exec_thread.start()
@@ -349,7 +418,8 @@ def _tcp_position(q) -> list[float] | None:
 
 def _log_exec(kind: str, result: str, q_target, *, sag=None,
               duration=None, speed=None, pushing: bool = False, push_tau=None,
-              trace=None, command_handoff=None) -> None:
+              trace=None, command_handoff=None,
+              execution_context: dict | None = None) -> None:
     """每段真机动作落一行 JSONL：logs/reach/reach_YYYYMMDD.jsonl。
 
     调参靠的是横向对比（改了 α / payload / kp 之后到底好了多少），
@@ -360,8 +430,6 @@ def _log_exec(kind: str, result: str, q_target, *, sag=None,
       track_mm   指令关节角 vs 实测关节角（下垂/摩擦，重力前馈治的就是它）
       total_mm   取点目标 vs 实际指尖（前两者叠加，加上躯干漂移和标定误差）
     """
-    if state.log_dir is None:
-        return
     try:
         ctl = state.controller
         st = ctl.status() if ctl is not None else {}
@@ -369,12 +437,29 @@ def _log_exec(kind: str, result: str, q_target, *, sag=None,
         measured = np.asarray(st.get("measured_rad") or [], dtype=float)
         cmd = np.asarray(st.get("cmd_rad") or [], dtype=float)
         deg = np.degrees
+        completed_at = datetime.now()
+        context = execution_context or {
+            "pick_context": state.pick_context,
+            "pick_target_root": state.pick_target_root,
+            "pick_target_torso": state.pick_target_torso,
+            "pick_pixel": state.pick_pixel,
+            "pick_torso": state.pick_torso,
+        }
+        pick_target_root = context.get("pick_target_root")
+        pick_target_torso = context.get("pick_target_torso")
+        pick_torso = context.get("pick_torso")
 
         rec: dict[str, Any] = {
-            "ts": datetime.now().isoformat(timespec="seconds"),
+            "id": uuid.uuid4().hex[:12],
+            "ts": completed_at.isoformat(timespec="milliseconds"),
+            "completed_monotonic": time.monotonic(),
             "session": state.session_id,
             "segment": kind,
             "result": result,
+            "robot": state.robot_id,
+            "chain_id": state.chain_id,
+            "gravity_profile": deepcopy(state.gravity_profile),
+            "pick_context": deepcopy(context.get("pick_context")),
             "params": {
                 "duration_s": duration,
                 "max_speed_rad_s": speed,
@@ -408,7 +493,7 @@ def _log_exec(kind: str, result: str, q_target, *, sag=None,
         tcp_target = _tcp_position(target)
         tcp_actual = _tcp_position(measured) if measured.size == target.size else None
         rec["tcp"] = {
-            "pick_target_root": state.pick_target_root,
+            "pick_target_root": pick_target_root,
             "planned_root": tcp_target,
             "actual_root": tcp_actual,
         }
@@ -419,36 +504,43 @@ def _log_exec(kind: str, result: str, q_target, *, sag=None,
             return round(float(np.linalg.norm(np.asarray(a) - np.asarray(b))) * 1000.0, 1)
 
         torso_end = _read_torso()
-        rec["tcp"]["ik_mm"] = mm(state.pick_target_root, tcp_target)
+        rec["tcp"]["ik_mm"] = mm(pick_target_root, tcp_target)
         rec["tcp"]["track_mm"] = mm(tcp_target, tcp_actual)
-        rec["tcp"]["total_mm"] = mm(state.pick_target_root, tcp_actual)
+        rec["tcp"]["total_mm"] = mm(pick_target_root, tcp_actual)
         # 验收指标：对"按结束时躯干姿态折算的真实开关位置"的误差。
         # 开了重瞄后 total_mm 会一直 ≈ 漂移量（手臂故意不去旧目标了），
         # 看这个才知道到底打没打中开关。
         try:
-            R0 = _torso_rotation(state.pick_torso) if state.pick_torso else None
+            R0 = _torso_rotation(pick_torso) if pick_torso else None
             R1 = _torso_rotation(torso_end) if torso_end else None
             if (R0 is not None and R1 is not None
-                    and state.pick_target_torso and state.pick_target_root):
-                p0 = np.asarray(state.pick_target_torso, dtype=float)
-                drifted = (np.asarray(state.pick_target_root, dtype=float)
+                    and pick_target_torso and pick_target_root):
+                p0 = np.asarray(pick_target_torso, dtype=float)
+                drifted = (np.asarray(pick_target_root, dtype=float)
                            + ((R1.T @ R0) @ p0 - p0))
                 rec["tcp"]["drifted_target_root"] = [round(float(v), 4) for v in drifted]
                 rec["tcp"]["total_vs_drifted_mm"] = mm(drifted.tolist(), tcp_actual)
         except Exception:
             pass
 
-        rec["pick"] = {"pixel": state.pick_pixel, "target_torso": state.pick_target_torso}
-        rec["torso_at_pick"] = state.pick_torso
+        rec["pick"] = {
+            "pixel": context.get("pick_pixel"),
+            "target_torso": pick_target_torso,
+        }
+        rec["torso_at_pick"] = pick_torso
         rec["torso_at_end"] = torso_end
         rec["torso_drift"] = state.torso_diag
         # 快照拷贝：采样线程可能还在往里 append
         rec["torso_trace"] = [dict(s) for s in list(trace)] if trace else None
 
-        state.log_dir.mkdir(parents=True, exist_ok=True)
-        path = state.log_dir / f"reach_{datetime.now():%Y%m%d}.jsonl"
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        rec = _json_safe_value(rec)
+        with state.execution_history_lock:
+            state.execution_history.append(rec)
+        if state.log_dir is not None:
+            state.log_dir.mkdir(parents=True, exist_ok=True)
+            path = state.log_dir / f"reach_{completed_at:%Y%m%d}.jsonl"
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
         pass    # 记日志永远不能把执行搞挂
 
@@ -503,11 +595,13 @@ def _start_torso_trace(ctl) -> tuple[list, threading.Event]:
 def _exec_loop(q_list: list[np.ndarray], duration: float,
                push_tau: np.ndarray | None = None, speed: float = 0.2,
                label: str = "reach", command_start_q: np.ndarray | None = None,
-               command_handoff: dict | None = None) -> None:
+               command_handoff: dict | None = None,
+               execution_context: dict | None = None) -> None:
     ctl = state.controller
     trace, trace_stop = _start_torso_trace(ctl)
     log = dict(duration=duration, speed=speed, pushing=push_tau is not None,
-               push_tau=push_tau, trace=trace, command_handoff=command_handoff)
+               push_tau=push_tau, trace=trace, command_handoff=command_handoff,
+               execution_context=execution_context)
     try:
         if command_start_q is None:
             raise RuntimeError("缺少上一帧已发送关节命令，拒绝启动轨迹")

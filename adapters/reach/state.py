@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import threading
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,7 @@ class ReachState:
         self.pick_target_torso: list[float] | None = None
         self.pick_target_root: list[float] | None = None
         self.pick_pixel: list[int] | None = None
+        self.pick_context: dict[str, Any] | None = None
         self.torso_diag: dict | None = None        # 最近一次执行的躯干漂移诊断
         self.log_dir: Path | None = None           # 每段执行落一行 JSONL
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -77,6 +79,8 @@ class ReachState:
         self.exec_message = "空闲"
         self.exec_running = False
         self.exec_phase = "idle"           # traj/converge/settle/push_hold/release
+        self.execution_history: deque[dict[str, Any]] = deque(maxlen=30)
+        self.execution_history_lock = threading.Lock()
 
 
 state = ReachState()

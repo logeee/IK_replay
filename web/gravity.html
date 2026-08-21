@@ -121,6 +121,22 @@
   .run:hover { background:rgba(102,170,255,.06); }
   .run:last-child { border-bottom:0; } .run-title { font-size:11px;font-weight:650; } .run-meta { color:var(--muted);font-size:10px;margin-top:2px; }
   .run-status { font-size:10px;color:var(--green); } .run-status.failed { color:var(--red); }
+  .ik-panel { margin-top:14px; }
+  .ik-controls { padding:12px 14px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:end;flex-wrap:wrap; }
+  .ik-controls label { color:var(--muted);font-size:10px; }
+  .ik-controls input { display:block;margin-top:4px; }
+  .ik-controls .wide { min-width:180px;flex:1; }
+  .ik-layout { display:grid;grid-template-columns:1fr 1fr;min-height:190px; }
+  .ik-column { padding:10px 12px;min-width:0; }
+  .ik-column + .ik-column { border-left:1px solid var(--line); }
+  .ik-column h3 { margin:0 0 7px;font-size:11px;color:var(--muted);font-weight:600; }
+  .ik-list { display:grid;gap:6px;max-height:250px;overflow:auto; }
+  .ik-item { padding:9px 10px;border:1px solid rgba(41,59,80,.72);border-radius:9px;background:rgba(7,17,28,.38);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:9px;align-items:center; }
+  .ik-item.clickable { cursor:pointer; } .ik-item.clickable:hover { border-color:#47749b;background:rgba(102,170,255,.06); }
+  .ik-title { font-size:11px;font-weight:700; } .ik-meta { margin-top:3px;color:var(--muted);font-size:9.5px;line-height:1.45; }
+  .ik-metrics { display:flex;gap:5px;flex-wrap:wrap;margin-top:5px; }
+  .ik-metrics span { padding:3px 6px;border-radius:5px;background:#0b1724;color:var(--muted);font-size:9px; }
+  .ik-metrics b { color:var(--text);margin-left:3px; }
   .compare-panel { margin-top:14px; }
   .compare-toolbar { display:flex;align-items:center;gap:8px;flex-wrap:wrap; }
   .compare-toolbar select { min-width:180px; }
@@ -136,6 +152,10 @@
   .compare-side { border-left:1px solid var(--line);padding:14px;overflow:auto;max-height:430px; }
   .tcp-error { padding:13px;border-radius:11px;background:rgba(255,115,115,.07);border:1px solid rgba(255,115,115,.2); }
   .tcp-error small { color:var(--muted);display:block; } .tcp-error strong { font-size:27px;color:#ff9a83; }
+  .ik-error-breakdown { display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px; }
+  .ik-error-card { padding:8px;border-radius:8px;background:#0b1724;border:1px solid var(--line); }
+  .ik-error-card small { display:block;color:var(--muted);font-size:9px; }
+  .ik-error-card b { display:block;margin-top:2px;font-size:15px; }
   .delta-grid { display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:8px; }
   .delta-grid div { text-align:center;background:#0b1724;border-radius:7px;padding:6px;font-size:10px;color:var(--muted); }
   .delta-grid b { display:block;color:var(--text);font-size:12px; }
@@ -163,7 +183,7 @@
   .import-state { color:var(--green);font-size:10px; }
   .modal-foot { padding:11px 15px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center; }
   .modal-foot input { flex:1; }
-  @media(max-width:1050px){.grid{grid-template-columns:1fr}.point-list{height:400px}.compare-layout{grid-template-columns:1fr}.compare-side{border-left:0;border-top:1px solid var(--line);max-height:none}}
+  @media(max-width:1050px){.grid{grid-template-columns:1fr}.point-list{height:400px}.ik-layout,.compare-layout{grid-template-columns:1fr}.ik-column+.ik-column{border-left:0;border-top:1px solid var(--line)}.compare-side{border-left:0;border-top:1px solid var(--line);max-height:none}}
   @media(max-width:680px){header{padding:0 13px}.head-status .pill:nth-child(n+2){display:none}main{padding:12px 9px}.phase-strip{grid-template-columns:1fr}.author-form{grid-template-columns:1fr}.run-layout{grid-template-columns:1fr}.run-controls{border-right:0;border-bottom:1px solid var(--line)}}
 </style>
 </head>
@@ -267,6 +287,29 @@
       </div>
     </section>
   </div>
+  <section class="panel ik-panel">
+    <div class="panel-head">
+      <h2>点云IK落点验证</h2>
+      <span id="ikSummary" class="hint">等待读取18001执行记录</span>
+    </div>
+    <div class="ik-controls">
+      <label class="wide">起点标签<input id="ikStartLabel" value="0.5以上" maxlength="80" /></label>
+      <label>补采时长<input id="ikSampleSeconds" type="number" min=".5" max="10" step=".5" value="2" /></label>
+      <label>采样频率<input id="ikSampleHz" type="number" min="2" max="30" step="1" value="10" /></label>
+      <label class="wide">备注<input id="ikNote" placeholder="例如：固定终点第3次" maxlength="300" /></label>
+      <button id="refreshIkBtn">刷新执行记录</button>
+    </div>
+    <div class="ik-layout">
+      <div class="ik-column">
+        <h3>18001最近完成的点云主轨迹</h3>
+        <div id="ikCandidateList" class="ik-list"><div class="empty">尚无可记录执行</div></div>
+      </div>
+      <div class="ik-column">
+        <h3>已保存验证 · 点击查看双机器人对比</h3>
+        <div id="ikRecordList" class="ik-list"><div class="empty">尚无IK验证记录</div></div>
+      </div>
+    </div>
+  </section>
   <section id="comparePanel" class="panel compare-panel">
     <div class="panel-head">
       <h2>理论 / 实测完整机器人姿态对比</h2>
@@ -288,6 +331,11 @@
         <div id="comparePlaceholder" class="compare-placeholder">点击一条已完成的实验记录<br>查看双完整机器人、标定点与TCP偏差</div>
       </div>
       <aside class="compare-side">
+        <div id="ikErrorBreakdown" class="ik-error-breakdown hidden">
+          <div class="ik-error-card"><small>IK残差</small><b id="compareIkResidual">— mm</b></div>
+          <div class="ik-error-card"><small>跟踪误差</small><b id="compareTrackError">— mm</b></div>
+          <div class="ik-error-card"><small>总落点误差</small><b id="compareTotalError">— mm</b></div>
+        </div>
         <div class="tcp-error"><small>理论TCP ↔ 实测TCP 空间偏差</small><strong id="compareTcpError">— mm</strong>
           <div class="delta-grid"><div>ΔX<b id="compareDx">—</b></div><div>ΔY<b id="compareDy">—</b></div><div>ΔZ<b id="compareDz">—</b></div></div>
         </div>
@@ -306,7 +354,7 @@
   </div>
 </div>
 <div id="toast" class="toast"></div>
-<script type="module" src="/web/gravity-viewer.js?v=20260821-6"></script>
+<script type="module" src="/web/gravity-viewer.js?v=20260821-7"></script>
 <script type="module" src="/web/gravity-plan-viewer.js?v=20260821-2"></script>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -318,6 +366,8 @@ let profileEditorInitialized = false;
 let importWaypoints = [];
 let importSelection = new Set();
 let lastPreviewPlanId = "";
+let ikData = null;
+let ikBusy = false;
 
 async function api(path, method="GET", body=null) {
   const response = await fetch(path, {method, headers: body ? {"Content-Type":"application/json"} : {}, body: body ? JSON.stringify(body) : null, cache:"no-store"});
@@ -447,6 +497,44 @@ function renderHistory(){
   $("historyList").innerHTML=runs.slice(0,12).map(r=>{const err=r.aggregate?.command_minus_measured_deg;const max=err?.length?Math.max(...err.map(Math.abs)).toFixed(2):null,gv=r.gravity_profile?.version;
     return `<div class="run" onclick="openRunComparison('${r.id}','${r.status}')"><div><div class="run-title">${esc(r.point_name||r.point_id)}${gv?`<span class="badge">重力 ${esc(gv)}</span>`:""}</div><div class="run-meta">${r.started_at?.replace("T"," ").slice(0,19)||""}${max?` · 终点最大静差 ${max}°`:""} · ${r.sample_points?.length||r.settings?.sample_point_count||1}个姿态 · ${r.sample_count||0}帧 · 点击查看3D对比</div></div><div class="run-status ${r.status==="failed"?"failed":""}">${r.status==="completed"?"已完成":"失败"}</div></div>`}).join("");
 }
+function fmtMm(value){const number=Number(value);return Number.isFinite(number)?`${number.toFixed(1)} mm`:"—";}
+function renderIkValidation(){
+  const candidates=ikData?.candidates||[],records=ikData?.records||[];
+  $("ikSummary").textContent=ikData?.reach_error?`18001读取失败：${ikData.reach_error}`:`${candidates.length}次可选执行 · ${records.length}条已保存`;
+  $("ikCandidateList").innerHTML=candidates.length?candidates.map(item=>{
+    const captured=item.captured_validation_id,when=item.ts?.replace("T"," ").slice(0,23)||"时间未知",pixel=Array.isArray(item.pixel)?`像素 (${item.pixel.join(", ")})`:"无像素";
+    return `<div class="ik-item"><div><div class="ik-title">${esc(item.segment||"主轨迹")} · 重力 ${esc(item.gravity_version||"未记录")}</div><div class="ik-meta">${esc(when)} · ${esc(pixel)} · 源帧 ${esc(item.source_frame_id||"未知")}</div></div><button data-ik-capture="${esc(item.id)}" ${captured?"disabled":""}>${captured?"已保存":"记录当前落点"}</button></div>`;
+  }).join(""):'<div class="empty">完成一次7005点云选点后的“主轨迹”，记录会自动出现在这里</div>';
+  $("ikCandidateList").querySelectorAll("[data-ik-capture]").forEach(button=>button.addEventListener("click",()=>captureIkValidation(button.dataset.ikCapture)));
+  $("ikRecordList").innerHTML=records.length?records.slice(0,20).map(record=>{
+    const metrics=record.metrics||{},when=record.started_at?.replace("T"," ").slice(0,23)||"";
+    return `<div class="ik-item clickable" data-ik-record="${esc(record.id)}"><div><div class="ik-title">${esc(record.start_label||"未标注起点")} · 重力 ${esc(record.gravity_profile?.version||"未记录")}</div><div class="ik-meta">${esc(when)} · ${record.sample_count||0}帧 · ${esc(record.note||"无备注")}</div><div class="ik-metrics"><span>IK<b>${fmtMm(metrics.ik?.norm_mm)}</b></span><span>跟踪<b>${fmtMm(metrics.tracking?.norm_mm)}</b></span><span>总误差<b>${fmtMm(metrics.total?.norm_mm)}</b></span></div></div><span class="run-status">查看</span></div>`;
+  }).join(""):'<div class="empty">尚无IK验证记录</div>';
+  $("ikRecordList").querySelectorAll("[data-ik-record]").forEach(element=>element.addEventListener("click",()=>openIkComparison(element.dataset.ikRecord)));
+}
+async function pollIkValidation(){
+  if(ikBusy)return;
+  ikBusy=true;
+  try{ikData=await api("/api/gravity/ik_validation");renderIkValidation();}
+  catch(e){$("ikSummary").textContent=`读取失败：${e.message}`;}
+  finally{ikBusy=false;}
+}
+async function captureIkValidation(executionId){
+  const startLabel=$("ikStartLabel").value.trim()||"未标注起点";
+  if(!confirm(`记录从“${startLabel}”出发的这次点云IK落点？采样期间请保持手臂不动。`))return;
+  ikBusy=true;
+  try{
+    const result=await api(`/api/gravity/ik_validation/capture/${encodeURIComponent(executionId)}`,"POST",{start_label:startLabel,note:$("ikNote").value.trim(),sample_s:Number($("ikSampleSeconds").value),sample_hz:Number($("ikSampleHz").value)});
+    toast(`IK落点已保存：${result.validation.sample_count}帧`);
+    ikBusy=false;
+    await pollIkValidation();
+    openIkComparison(result.validation.id);
+  }catch(e){ikBusy=false;toast(e.message,true);await pollIkValidation();}
+}
+function openIkComparison(validationId){
+  $("comparePanel").scrollIntoView({behavior:"smooth",block:"start"});
+  window.dispatchEvent(new CustomEvent("gravity:open-ik-comparison",{detail:{validationId}}));
+}
 function render(){if(!data)return;renderProfiles();renderHeader();renderPoints();renderOperation();renderBatch();renderSelected();renderHistory();}
 
 async function poll(){if(busy)return;busy=true;try{data=await api("/api/gravity/status");if(selectedId&&!selectedPoint())selectedId="";render();}catch(e){toast(`状态读取失败：${e.message}`,true);}finally{busy=false;}}
@@ -473,7 +561,8 @@ $("skipBatchBtn").onclick=async()=>{if(!confirm("跳过当前失败项或下一�
 $("planBtn").onclick=async()=>{const p=selectedPoint();if(!p)return;try{await api(`/api/gravity/plan/${p.id}`,"POST",{duration_s:Number($("duration").value),max_speed_rad_s:Number($("speed").value),intermediate_stops:Number($("intermediateStops").value),steps:120,planner_type:"linear",check_collision:true});toast("规划完成，紫色标记为中途停顿采样点");$("safetyCheck").checked=false;await poll();}catch(e){toast(e.message,true);await poll();}};
 $("executeBtn").onclick=async()=>{const p=selectedPoint(),plan=data?.plan;if(!p||!plan)return;if(!$("safetyCheck").checked){toast("请先勾选安全确认",true);return;}if(!confirm(`真机将分${(plan.intermediate_stops||0)+1}段运动到「${p.name}」，每段停稳并采样。确认执行？`))return;try{await api(`/api/gravity/execute/${p.id}`,"POST",{confirm:true,plan_id:plan.id,settle_s:Number($("settle").value),sample_s:Number($("sample").value),sample_hz:Number($("sampleHz").value),intermediate_stops:Number($("intermediateStops").value)});toast("分段真机执行已启动");await poll();}catch(e){toast(e.message,true);await poll();}};
 $("stopBtn").onclick=async()=>{if(!confirm("立即停止当前运动并保持当前位置？"))return;try{await api("/api/gravity/stop","POST",{});toast("已发送急停");await poll();}catch(e){toast(e.message,true);}};
-poll();setInterval(()=>{if(!document.hidden)poll();},700);document.addEventListener("visibilitychange",()=>{if(!document.hidden)poll();});
+$("refreshIkBtn").onclick=pollIkValidation;
+poll();pollIkValidation();setInterval(()=>{if(!document.hidden)poll();},700);setInterval(()=>{if(!document.hidden)pollIkValidation();},2500);document.addEventListener("visibilitychange",()=>{if(!document.hidden){poll();pollIkValidation();}});
 </script>
 </body>
 </html>

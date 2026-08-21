@@ -436,6 +436,7 @@ class PointCloudBackendTest(unittest.TestCase):
         self.assertTrue(confirmed["ok"])
         sent = post.call_args.kwargs["json"]
         self.assertEqual(sent["source_frame_id"], "frozen-9")
+        self.assertEqual(sent["capture_id"], metadata["capture_id"])
         self.assertEqual(sent["pixel"], [1, 1])
         self.assertEqual(sent["adjustment_camera_m"], [0.001, 0.0, 0.0])
         restored = pointcloud_viewer.capture_metadata(metadata["capture_id"])
@@ -475,7 +476,7 @@ class ReachPointCloudConfirmationTest(unittest.TestCase):
         attributes = [
             "enabled", "T_cam2root", "T_cam2torso", "collision_checker",
             "plane", "pick_target_torso", "pick_target_root", "pick_pixel",
-            "pick_torso", "torso_diag",
+            "pick_torso", "pick_context", "torso_diag",
         ]
         saved = {name: getattr(state, name) for name in attributes}
         try:
@@ -507,6 +508,10 @@ class ReachPointCloudConfirmationTest(unittest.TestCase):
             self.assertEqual(result["selection_mode"], "frozen_rgbd_pointcloud")
             self.assertEqual(result["pixel"], [320, 240])
             self.assertEqual(result["plane"]["source"], "frozen_rgbd")
+            self.assertEqual(
+                state.pick_context["selection_mode"],
+                "frozen_rgbd_pointcloud",
+            )
             np.testing.assert_allclose(state.pick_target_root, result["p_root"])
         finally:
             for name, value in saved.items():

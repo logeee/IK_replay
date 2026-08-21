@@ -42,6 +42,7 @@ DATA_ROOT = ROOT / "data" / "gravity_calibration"
 WAYPOINTS_DIR = DATA_ROOT / "waypoints"
 RUNS_DIR = DATA_ROOT / "runs"
 BATCHES_DIR = DATA_ROOT / "batches"
+IK_VALIDATIONS_DIR = DATA_ROOT / "ik_validation"
 REGULAR_WAYPOINTS_DIR = ROOT / "data" / "waypoints"
 GRAVITY_PROFILES_PATH = DEFAULT_GRAVITY_PROFILES_PATH
 
@@ -224,6 +225,80 @@ def _list_runs(*, include_samples: bool = False) -> list[dict[str, Any]]:
     return sorted(runs, key=lambda item: str(item.get("started_at", "")), reverse=True)
 
 
+def _ik_validation_version(record: dict[str, Any]) -> str:
+    profile = record.get("gravity_profile")
+    version = str(profile.get("version") or "") if isinstance(profile, dict) else ""
+    return version if VERSION_PATTERN.fullmatch(version) else "unversioned"
+
+
+def _ik_validation_path(record: dict[str, Any]) -> Path:
+    return (
+        IK_VALIDATIONS_DIR
+        / _ik_validation_version(record)
+        / f"{record['id']}.json"
+    )
+
+
+def _save_ik_validation(record: dict[str, Any]) -> None:
+    version = _ik_validation_version(record)
+    record["storage_version"] = version
+    record["storage_relative_path"] = f"{version}/{record['id']}.json"
+    _atomic_json(_ik_validation_path(record), record)
+
+
+def _list_ik_validations(
+    *, include_samples: bool = False
+) -> list[dict[str, Any]]:
+    IK_VALIDATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    records: list[dict[str, Any]] = []
+    for path in IK_VALIDATIONS_DIR.rglob("*.json"):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(value, dict):
+                continue
+            value["storage_version"] = (
+                path.parent.name
+                if path.parent != IK_VALIDATIONS_DIR
+                else "legacy_flat"
+            )
+            value["storage_relative_path"] = str(
+                path.relative_to(IK_VALIDATIONS_DIR)
+            )
+            if not include_samples:
+                value.pop("samples", None)
+                value.pop("execution", None)
+            records.append(value)
+        except (OSError, json.JSONDecodeError):
+            continue
+    return sorted(
+        records,
+        key=lambda item: str(item.get("started_at", "")),
+        reverse=True,
+    )
+
+
+def _find_ik_validation_path(validation_id: str) -> Path | None:
+    safe_id = _safe_id(validation_id)
+    legacy = IK_VALIDATIONS_DIR / f"{safe_id}.json"
+    if legacy.is_file():
+        return legacy
+    matches = list(IK_VALIDATIONS_DIR.glob(f"*/{safe_id}.json"))
+    return matches[0] if matches else None
+
+
+def _load_ik_validation(validation_id: str) -> dict[str, Any]:
+    path = _find_ik_validation_path(validation_id)
+    if path is None:
+        raise GravityServiceError("IK验证记录不存在")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise GravityServiceError(f"IK验证记录损坏: {exc}") from exc
+    if not isinstance(value, dict):
+        raise GravityServiceError("IK验证记录格式错误")
+    return value
+
+
 def _batch_path(batch_id: str) -> Path:
     return BATCHES_DIR / f"{_safe_id(batch_id)}.json"
 
@@ -377,6 +452,136 @@ def _aggregate_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _finite_vector(value: Any, name: str) -> list[float]:
+    if not isinstance(value, list) or not value:
+        raise GravityServiceError(f"{name}缺失")
+    try:
+        vector = [float(item) for item in value]
+    except (TypeError, ValueError) as exc:
+        raise GravityServiceError(f"{name}格式错误") from exc
+    if not all(math.isfinite(item) for item in vector):
+        raise GravityServiceError(f"{name}包含非有限数值")
+    return vector
+
+
+def _ik_error_metrics(
+    execution: dict[str, Any],
+    aggregate: dict[str, Any],
+) -> dict[str, Any]:
+    tcp = execution.get("tcp") or {}
+    pick = execution.get("pick_context") or {}
+    target = _finite_vector(
+        pick.get("p_root") or tcp.get("pick_target_root"),
+        "点云目标TCP",
+    )
+    planned = _finite_vector(tcp.get("planned_root"), "IK理论TCP")
+    measured = _finite_vector(
+        (aggregate.get("tcp_measured_root_m") or {}).get("mean"),
+        "实测TCP",
+    )
+    if not (len(target) == len(planned) == len(measured) == 3):
+        raise GravityServiceError("TCP坐标必须为三维")
+
+    def delta(destination: list[float], source: list[float]) -> list[float]:
+        return [
+            (destination_value - source_value) * 1000.0
+            for destination_value, source_value in zip(destination, source)
+        ]
+
+    def metric(vector: list[float]) -> dict[str, Any]:
+        return {
+            "delta_mm": vector,
+            "norm_mm": float(np.linalg.norm(vector)),
+        }
+
+    ik_delta = delta(planned, target)
+    tracking_delta = delta(measured, planned)
+    total_delta = delta(measured, target)
+    return {
+        "target_root_m": target,
+        "planned_root_m": planned,
+        "measured_root_m": measured,
+        "ik": metric(ik_delta),
+        "tracking": metric(tracking_delta),
+        "total": metric(total_delta),
+    }
+
+
+def _sample_ik_execution(
+    execution: dict[str, Any],
+    *,
+    sample_s: float,
+    sample_hz: float,
+    command_tolerance_rad: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    target = np.asarray(
+        _finite_vector(execution.get("target_rad"), "IK理论关节值"),
+        dtype=float,
+    )
+    exec_status = _request_reach(
+        "GET", "/api/reach/exec_status", timeout=2.0
+    )
+    if exec_status.get("running"):
+        raise GravityServiceError("18001仍在执行轨迹，请等待主轨迹完成")
+
+    samples: list[dict[str, Any]] = []
+    started = time.monotonic()
+    interval = 1.0 / sample_hz
+    while time.monotonic() - started < sample_s:
+        tick = time.monotonic()
+        sample = _request_reach(
+            "GET", "/api/reach/diagnostics", timeout=2.0
+        )
+        arm = sample.get("arm") or {}
+        if not arm.get("armed"):
+            raise GravityServiceError("补采期间手臂未处于接管保持状态")
+        command = np.asarray(
+            _finite_vector(arm.get("cmd_rad"), "当前指令关节值"),
+            dtype=float,
+        )
+        if command.shape != target.shape:
+            raise GravityServiceError("当前指令与IK理论关节维度不一致")
+        gap = float(np.max(np.abs(command - target)))
+        if gap > command_tolerance_rad:
+            raise GravityServiceError(
+                "当前保持姿态已不是该次IK终点："
+                f"最大指令差 {gap:.4f} rad > {command_tolerance_rad:.4f} rad"
+            )
+        samples.append(sample)
+        time.sleep(max(0.0, interval - (time.monotonic() - tick)))
+    minimum = max(3, int(sample_s * sample_hz * 0.5))
+    if len(samples) < minimum:
+        raise GravityServiceError(
+            f"IK验证有效采样不足（仅{len(samples)}帧，需要至少{minimum}帧）"
+        )
+    return samples, _aggregate_samples(samples)
+
+
+def _ik_candidate_summary(
+    execution: dict[str, Any],
+    captured_by_execution: dict[str, str],
+) -> dict[str, Any]:
+    pick = execution.get("pick_context") or {}
+    return {
+        "id": execution.get("id"),
+        "ts": execution.get("ts"),
+        "segment": execution.get("segment"),
+        "result": execution.get("result"),
+        "robot": execution.get("robot"),
+        "chain_id": execution.get("chain_id"),
+        "gravity_version": (
+            execution.get("gravity_profile") or {}
+        ).get("version"),
+        "source_frame_id": pick.get("source_frame_id"),
+        "capture_id": pick.get("capture_id"),
+        "pixel": pick.get("pixel"),
+        "target_root_m": pick.get("p_root"),
+        "captured_validation_id": captured_by_execution.get(
+            str(execution.get("id"))
+        ),
+    }
+
+
 @app.get("/")
 def page():
     return FileResponse(WEB_DIR / "gravity.html")
@@ -390,6 +595,147 @@ def gravity_robot_metadata(robot: str = "h2"):
         return {"ok": True, "metadata": app_module.robot_metadata(robot)}
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/gravity/ik_validation")
+def ik_validation_status():
+    records = _list_ik_validations()
+    captured = {
+        str(record.get("execution_id")): str(record.get("id"))
+        for record in records
+        if record.get("execution_id") and record.get("id")
+    }
+    try:
+        payload = _request_reach(
+            "GET",
+            "/api/reach/executions?limit=20&pointcloud_only=true",
+            timeout=2.0,
+        )
+        candidates = [
+            _ik_candidate_summary(execution, captured)
+            for execution in payload.get("executions") or []
+            if str(execution.get("segment") or "").startswith("主轨迹")
+            and execution.get("result") == "done"
+        ]
+        reach_error = None
+    except GravityServiceError as exc:
+        candidates = []
+        reach_error = str(exc)
+    return {
+        "ok": True,
+        "candidates": candidates,
+        "records": records,
+        "reach_error": reach_error,
+    }
+
+
+@app.post("/api/gravity/ik_validation/capture/{execution_id}")
+def capture_ik_validation(execution_id: str, body: dict | None = None):
+    body = body or {}
+    try:
+        if _operation_snapshot().get("phase") in {
+            "planning", "executing", "settling", "sampling"
+        }:
+            raise GravityServiceError(
+                "重力位点实验正在运行，不能同时补采IK落点"
+            )
+        safe_execution_id = _safe_id(execution_id)
+        existing = next(
+            (
+                record
+                for record in _list_ik_validations()
+                if record.get("execution_id") == safe_execution_id
+            ),
+            None,
+        )
+        if existing is not None:
+            raise GravityServiceError(
+                f"该次执行已经保存为IK验证 {existing.get('id')}"
+            )
+        execution_payload = _request_reach(
+            "GET",
+            f"/api/reach/executions/{safe_execution_id}",
+            timeout=2.0,
+        )
+        execution = execution_payload.get("execution")
+        if not isinstance(execution, dict):
+            raise GravityServiceError("18001执行记录格式错误")
+        if execution.get("result") != "done":
+            raise GravityServiceError("只能验证正常完成的执行")
+        if not str(execution.get("segment") or "").startswith("主轨迹"):
+            raise GravityServiceError("该记录不是点云取点后的主轨迹")
+        pick = execution.get("pick_context") or {}
+        if pick.get("selection_mode") != "frozen_rgbd_pointcloud":
+            raise GravityServiceError("该主轨迹不是由7005冻结点云选点产生")
+
+        sample_s = min(
+            10.0, max(0.5, float(body.get("sample_s", 2.0)))
+        )
+        sample_hz = min(
+            30.0, max(2.0, float(body.get("sample_hz", 10.0)))
+        )
+        command_tolerance = min(
+            0.15,
+            max(0.005, float(body.get("command_tolerance_rad", 0.05))),
+        )
+        start_label = str(body.get("start_label") or "未标注起点").strip()[:80]
+        note = str(body.get("note") or "").strip()[:300]
+        started_at = _now()
+        samples, aggregate = _sample_ik_execution(
+            execution,
+            sample_s=sample_s,
+            sample_hz=sample_hz,
+            command_tolerance_rad=command_tolerance,
+        )
+        metrics = _ik_error_metrics(execution, aggregate)
+        reach = _reach_status()
+        validation = {
+            "schema": "pointcloud-ik-validation/v1",
+            "id": uuid.uuid4().hex[:12],
+            "execution_id": safe_execution_id,
+            "status": "completed",
+            "started_at": started_at,
+            "completed_at": _now(),
+            "start_label": start_label,
+            "note": note,
+            "robot": execution.get("robot") or "h2",
+            "chain_id": execution.get("chain_id") or "right_arm",
+            "joint_names": list(execution.get("joint_names") or []),
+            "theoretical_rad": _finite_vector(
+                execution.get("target_rad"), "IK理论关节值"
+            ),
+            "gravity_profile": deepcopy(
+                execution.get("gravity_profile")
+                or reach.get("gravity_profile")
+                or {}
+            ),
+            "pick_context": deepcopy(pick),
+            "execution": deepcopy(execution),
+            "settings": {
+                "sample_s": sample_s,
+                "sample_hz": sample_hz,
+                "command_tolerance_rad": command_tolerance,
+            },
+            "sample_count": len(samples),
+            "samples": samples,
+            "aggregate": aggregate,
+            "metrics": metrics,
+            "tool_visualization": _tool_visualization(reach),
+        }
+        _save_ik_validation(validation)
+        return {
+            "ok": True,
+            "validation": {
+                key: deepcopy(value)
+                for key, value in validation.items()
+                if key != "samples"
+            },
+        }
+    except (GravityServiceError, TypeError, ValueError) as exc:
+        return JSONResponse(
+            {"ok": False, "error": str(exc)},
+            status_code=400,
+        )
 
 
 @app.get("/api/gravity/plans/{plan_id}/preview")
@@ -1612,6 +1958,152 @@ def _pose_comparison(run: dict[str, Any], sample_index: int) -> dict[str, Any]:
         "tcp_delta_mm": tcp_delta_mm,
         "tcp_error_mm": float(np.linalg.norm(tcp_delta_mm)),
     }
+
+
+def _ik_validation_comparison(
+    validation: dict[str, Any],
+) -> dict[str, Any]:
+    theoretical = _finite_vector(
+        validation.get("theoretical_rad"), "IK理论关节值"
+    )
+    aggregate = validation.get("aggregate") or {}
+    measured = _finite_vector(
+        (aggregate.get("measured_rad") or {}).get("mean"),
+        "实测关节均值",
+    )
+    names = list(validation.get("joint_names") or [])
+    if (
+        not names
+        or len(names) != len(theoretical)
+        or len(names) != len(measured)
+    ):
+        raise GravityServiceError("IK验证缺少完整的关节名称或关节数据")
+
+    import app as app_module
+
+    robot_id = str(validation.get("robot") or "h2")
+    chain_id = str(validation.get("chain_id") or "right_arm")
+    if robot_id not in app_module.robots:
+        raise GravityServiceError(f"找不到机器人模型 {robot_id}")
+    model = app_module.robots[robot_id]
+    chain = model.chain_config(chain_id)
+    theoretical_named = dict(zip(names, theoretical))
+    measured_named = dict(zip(names, measured))
+    display_links = list(chain.display_links)
+    if not display_links:
+        display_links = [chain.base_link] + [
+            model.joints[name].child for name in model.joint_names(chain_id)
+        ]
+    theoretical_fk = model.forward_kinematics(
+        theoretical_named, only_links=display_links
+    )
+    measured_fk = model.forward_kinematics(
+        measured_named, only_links=display_links
+    )
+
+    def links(transforms: dict[str, Any]) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": name,
+                "xyz": [float(value) for value in transforms[name][:3, 3]],
+            }
+            for name in display_links
+            if name in transforms
+        ]
+
+    metrics = validation.get("metrics") or {}
+    tracking = metrics.get("tracking") or {}
+    tcp_delta = _finite_vector(
+        tracking.get("delta_mm"), "TCP跟踪误差"
+    )
+    joint_error_deg = [
+        math.degrees(theory - actual)
+        for theory, actual in zip(theoretical, measured)
+    ]
+    return {
+        "run_id": validation["id"],
+        "point_name": (
+            f"IK验证 · {validation.get('start_label') or '未标注起点'}"
+        ),
+        "gravity_version": (
+            validation.get("gravity_profile") or {}
+        ).get("version"),
+        "robot": robot_id,
+        "chain_id": chain_id,
+        "sample_index": 1,
+        "sample_type": "ik_validation",
+        "trajectory_fraction": 1.0,
+        "tool_visualization": deepcopy(
+            validation.get("tool_visualization") or {}
+        ),
+        "available_samples": [
+            {
+                "index": 1,
+                "type": "ik_validation",
+                "trajectory_fraction": 1.0,
+                "sample_count": validation.get("sample_count"),
+            }
+        ],
+        "joint_names": names,
+        "joint_error_deg": joint_error_deg,
+        "theoretical": {
+            "named_joints": theoretical_named,
+            "links": links(theoretical_fk),
+            "tcp_root_m": _finite_vector(
+                (metrics.get("planned_root_m")), "IK理论TCP"
+            ),
+        },
+        "measured": {
+            "named_joints": measured_named,
+            "links": links(measured_fk),
+            "tcp_root_m": _finite_vector(
+                (metrics.get("measured_root_m")), "实测TCP"
+            ),
+        },
+        "tcp_delta_mm": tcp_delta,
+        "tcp_error_mm": float(
+            tracking.get("norm_mm") or np.linalg.norm(tcp_delta)
+        ),
+        "error_breakdown": deepcopy(metrics),
+        "validation_kind": "pointcloud_ik",
+        "start_label": validation.get("start_label"),
+        "execution_id": validation.get("execution_id"),
+        "sample_count": validation.get("sample_count"),
+    }
+
+
+@app.get("/api/gravity/ik_validation/{validation_id}/comparison")
+def ik_validation_comparison(validation_id: str):
+    try:
+        validation = _load_ik_validation(validation_id)
+        comparison = _ik_validation_comparison(validation)
+        if not (comparison.get("tool_visualization") or {}).get("tcp_offset"):
+            try:
+                comparison["tool_visualization"] = _tool_visualization(
+                    _reach_status()
+                )
+            except GravityServiceError:
+                pass
+        return {"ok": True, "comparison": comparison}
+    except (GravityServiceError, TypeError, ValueError) as exc:
+        return JSONResponse(
+            {"ok": False, "error": str(exc)},
+            status_code=400,
+        )
+
+
+@app.get("/api/gravity/ik_validation/{validation_id}")
+def ik_validation_detail(validation_id: str):
+    try:
+        return {
+            "ok": True,
+            "validation": _load_ik_validation(validation_id),
+        }
+    except GravityServiceError as exc:
+        return JSONResponse(
+            {"ok": False, "error": str(exc)},
+            status_code=404,
+        )
 
 
 @app.get("/api/gravity/runs/{run_id}/comparison")

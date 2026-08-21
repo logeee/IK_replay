@@ -455,6 +455,7 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
             "source_frame_id": capture_value.metadata.get("source", {}).get(
                 "frame_id"
             ),
+            "capture_id": capture_id,
         }
     except (KeyError, TypeError, ValueError) as exc:
         return JSONResponse(

@@ -23,6 +23,7 @@ class GravityCalibrationTests(unittest.TestCase):
             patch.object(gravity, "WAYPOINTS_DIR", root / "waypoints"),
             patch.object(gravity, "RUNS_DIR", root / "runs"),
             patch.object(gravity, "BATCHES_DIR", root / "batches"),
+            patch.object(gravity, "IK_VALIDATIONS_DIR", root / "ik_validation"),
             patch.object(gravity, "REGULAR_WAYPOINTS_DIR", root / "regular_waypoints"),
             patch.object(gravity, "GRAVITY_PROFILES_PATH", root / "gravity.json"),
         ]
@@ -60,6 +61,8 @@ class GravityCalibrationTests(unittest.TestCase):
         self.assertIn("完整机器人轨迹回放预览", html)
         self.assertIn("gravity-plan-viewer.js", html)
         self.assertIn("planShowCollisions", html)
+        self.assertIn("点云IK落点验证", html)
+        self.assertIn("/api/gravity/ik_validation", html)
 
     def test_profile_api_saves_immutable_version_and_activates_it(self):
         result = gravity.save_gravity_profile(
@@ -123,6 +126,166 @@ class GravityCalibrationTests(unittest.TestCase):
             {run["storage_version"] for run in gravity._list_runs()},
             {"0.0.0", "0.1.0"},
         )
+
+    def test_ik_metrics_separate_solver_tracking_and_total_error(self):
+        execution = {
+            "tcp": {
+                "pick_target_root": [0.4, -0.2, 0.8],
+                "planned_root": [0.401, -0.198, 0.8],
+            },
+            "pick_context": {"p_root": [0.4, -0.2, 0.8]},
+        }
+        aggregate = {
+            "tcp_measured_root_m": {
+                "mean": [0.398, -0.197, 0.796],
+            }
+        }
+
+        metrics = gravity._ik_error_metrics(execution, aggregate)
+
+        self.assertAlmostEqual(metrics["ik"]["norm_mm"], (5.0 ** 0.5))
+        self.assertAlmostEqual(metrics["tracking"]["norm_mm"], (26.0 ** 0.5))
+        self.assertAlmostEqual(metrics["total"]["norm_mm"], (29.0 ** 0.5))
+        for actual, expected in zip(
+            metrics["tracking"]["delta_mm"], [-3.0, 1.0, -4.0]
+        ):
+            self.assertAlmostEqual(actual, expected)
+
+    def test_ik_validation_is_partitioned_by_gravity_version(self):
+        record = {
+            "id": "abababababab",
+            "execution_id": "cdcdcdcdcdcd",
+            "started_at": "2026-08-21T16:00:00",
+            "gravity_profile": {"version": "0.1.0"},
+        }
+
+        gravity._save_ik_validation(record)
+
+        path = gravity.IK_VALIDATIONS_DIR / "0.1.0" / "abababababab.json"
+        self.assertTrue(path.is_file())
+        listed = gravity._list_ik_validations()
+        self.assertEqual(listed[0]["storage_version"], "0.1.0")
+        self.assertEqual(
+            gravity._load_ik_validation("abababababab")["execution_id"],
+            "cdcdcdcdcdcd",
+        )
+
+    def test_capture_ik_validation_checks_pointcloud_execution_and_saves_samples(self):
+        names = [
+            "right_shoulder_pitch_joint",
+            "right_shoulder_roll_joint",
+            "right_shoulder_yaw_joint",
+            "right_elbow_joint",
+            "right_wrist_roll_joint",
+            "right_wrist_pitch_joint",
+            "right_wrist_yaw_joint",
+        ]
+        target = [0.2, -0.25, 0.0, 0.9, 0.0, -0.1, 0.0]
+        execution = {
+            "id": "edededededed",
+            "result": "done",
+            "segment": "主轨迹",
+            "robot": "h2",
+            "chain_id": "right_arm",
+            "joint_names": names,
+            "target_rad": target,
+            "gravity_profile": {"version": "0.1.0"},
+            "pick_context": {
+                "selection_mode": "frozen_rgbd_pointcloud",
+                "p_root": [0.4, -0.2, 0.8],
+                "pixel": [300, 200],
+            },
+            "tcp": {
+                "pick_target_root": [0.4, -0.2, 0.8],
+                "planned_root": [0.401, -0.2, 0.8],
+            },
+        }
+        samples = [
+            {
+                "arm": {
+                    "armed": True,
+                    "joint_names": names,
+                    "cmd_rad": target,
+                    "measured_rad": [value - 0.01 for value in target],
+                    "tcp_cmd_root_m": [0.401, -0.2, 0.8],
+                    "tcp_measured_root_m": [0.399, -0.2, 0.796],
+                }
+            }
+            for _ in range(5)
+        ]
+        aggregate = gravity._aggregate_samples(samples)
+
+        def request(method, path, **kwargs):
+            if path == "/api/reach/executions/edededededed":
+                return {"ok": True, "execution": execution}
+            raise AssertionError(path)
+
+        with (
+            patch.object(gravity, "_request_reach", side_effect=request),
+            patch.object(
+                gravity,
+                "_sample_ik_execution",
+                return_value=(samples, aggregate),
+            ),
+            patch.object(
+                gravity,
+                "_reach_status",
+                return_value={
+                    "gravity_profile": {"version": "0.1.0"},
+                    "p_tool": [0.3, 0.0, 0.0],
+                },
+            ),
+        ):
+            response = gravity.capture_ik_validation(
+                "edededededed",
+                {
+                    "start_label": "0.5以上",
+                    "sample_s": 2.0,
+                    "sample_hz": 10.0,
+                },
+            )
+
+        self.assertTrue(response["ok"])
+        saved = gravity._load_ik_validation(response["validation"]["id"])
+        self.assertEqual(saved["start_label"], "0.5以上")
+        self.assertEqual(saved["sample_count"], 5)
+        self.assertAlmostEqual(saved["metrics"]["ik"]["norm_mm"], 1.0)
+        self.assertGreater(saved["metrics"]["tracking"]["norm_mm"], 4.0)
+        comparison_response = gravity.ik_validation_comparison(saved["id"])
+        self.assertTrue(comparison_response["ok"])
+        comparison = comparison_response["comparison"]
+        self.assertEqual(comparison["validation_kind"], "pointcloud_ik")
+        self.assertEqual(len(comparison["joint_error_deg"]), 7)
+        self.assertAlmostEqual(
+            comparison["error_breakdown"]["total"]["norm_mm"],
+            saved["metrics"]["total"]["norm_mm"],
+        )
+        duplicate = gravity.capture_ik_validation("edededededed", {})
+        self.assertEqual(duplicate.status_code, 400)
+
+    def test_ik_sampling_rejects_when_current_command_left_theoretical_goal(self):
+        execution = {"target_rad": [0.0, 0.0]}
+
+        def request(method, path, **kwargs):
+            if path == "/api/reach/exec_status":
+                return {"running": False}
+            if path == "/api/reach/diagnostics":
+                return {
+                    "arm": {
+                        "armed": True,
+                        "cmd_rad": [0.2, 0.0],
+                    }
+                }
+            raise AssertionError(path)
+
+        with patch.object(gravity, "_request_reach", side_effect=request):
+            with self.assertRaisesRegex(gravity.GravityServiceError, "已不是"):
+                gravity._sample_ik_execution(
+                    execution,
+                    sample_s=1.0,
+                    sample_hz=10.0,
+                    command_tolerance_rad=0.05,
+                )
 
     def test_pose_comparison_returns_dual_fk_links_and_tcp_error(self):
         names = [
