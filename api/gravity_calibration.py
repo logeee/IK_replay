@@ -42,6 +42,7 @@ DATA_ROOT = ROOT / "data" / "gravity_calibration"
 WAYPOINTS_DIR = DATA_ROOT / "waypoints"
 RUNS_DIR = DATA_ROOT / "runs"
 BATCHES_DIR = DATA_ROOT / "batches"
+REGULAR_WAYPOINTS_DIR = ROOT / "data" / "waypoints"
 GRAVITY_PROFILES_PATH = DEFAULT_GRAVITY_PROFILES_PATH
 
 app = FastAPI(title="gravity-calibration")
@@ -134,6 +135,72 @@ def _list_points() -> list[dict[str, Any]]:
             str(item.get("created_at", "")),
         ),
     )
+
+
+def _regular_waypoint_path(filename: str) -> Path:
+    name = str(filename or "")
+    if (
+        not name.endswith(".json")
+        or "/" in name
+        or "\\" in name
+        or ".." in name
+        or Path(name).name != name
+    ):
+        raise GravityServiceError("原位点文件名非法")
+    return REGULAR_WAYPOINTS_DIR / name
+
+
+def _load_regular_waypoint(filename: str) -> dict[str, Any]:
+    path = _regular_waypoint_path(filename)
+    if not path.is_file():
+        raise GravityServiceError(f"原位点不存在: {filename}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise GravityServiceError(f"原位点文件损坏 {filename}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise GravityServiceError(f"原位点格式错误: {filename}")
+    named = payload.get("named_joints")
+    if not isinstance(named, dict) or not named:
+        raise GravityServiceError(f"原位点缺少关节角: {filename}")
+    try:
+        joints = {str(name): float(value) for name, value in named.items()}
+    except (TypeError, ValueError) as exc:
+        raise GravityServiceError(f"原位点关节角非法: {filename}") from exc
+    if not all(math.isfinite(value) for value in joints.values()):
+        raise GravityServiceError(f"原位点包含非有限关节角: {filename}")
+    return {
+        "file": path.name,
+        "name": str(payload.get("name") or path.stem),
+        "chain_id": str(payload.get("chain_id") or "right_arm"),
+        "robot": str(payload.get("robot") or "h2"),
+        "created_at": payload.get("created_at"),
+        "named_joints": joints,
+        "joint_names": list(joints),
+    }
+
+
+def _list_regular_waypoints() -> list[dict[str, Any]]:
+    if not REGULAR_WAYPOINTS_DIR.is_dir():
+        return []
+    imported = {
+        str(point.get("source_waypoint_file"))
+        for point in _list_points()
+        if point.get("source_waypoint_file")
+    }
+    items: list[dict[str, Any]] = []
+    for path in sorted(
+        REGULAR_WAYPOINTS_DIR.glob("*.json"),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    ):
+        try:
+            waypoint = _load_regular_waypoint(path.name)
+        except GravityServiceError:
+            continue
+        waypoint["already_imported"] = path.name in imported
+        items.append(waypoint)
+    return items
 
 
 def _list_runs(*, include_samples: bool = False) -> list[dict[str, Any]]:
@@ -384,6 +451,79 @@ def activate_gravity_profile(version: str):
         }
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/gravity/importable_waypoints")
+def importable_waypoints():
+    items = _list_regular_waypoints()
+    return {
+        "ok": True,
+        "source_directory": str(REGULAR_WAYPOINTS_DIR),
+        "waypoints": items,
+        "available_count": sum(not item["already_imported"] for item in items),
+    }
+
+
+@app.post("/api/gravity/waypoints/import")
+def import_waypoints(body: dict[str, Any]):
+    raw_files = body.get("files") or []
+    files = list(dict.fromkeys(str(value) for value in raw_files))
+    if not files:
+        return JSONResponse({"ok": False, "error": "请至少选择一个原位点"}, status_code=400)
+    prefix = str(body.get("name_prefix") or "").strip()
+    if len(prefix) > 40:
+        return JSONResponse({"ok": False, "error": "名称前缀不能超过40字"}, status_code=400)
+    try:
+        source_items = [_load_regular_waypoint(filename) for filename in files]
+    except GravityServiceError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    points = _list_points()
+    imported_sources = {
+        str(point.get("source_waypoint_file"))
+        for point in points
+        if point.get("source_waypoint_file")
+    }
+    next_order = max([int(point.get("order", 0)) for point in points] or [0]) + 1
+    imported: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    for source in source_items:
+        if source["file"] in imported_sources:
+            skipped.append({"file": source["file"], "reason": "已经导入"})
+            continue
+        point_id = uuid.uuid4().hex[:12]
+        timestamp = _now()
+        point = {
+            "schema_version": 1,
+            "id": point_id,
+            "name": f"{prefix}{source['name']}",
+            "note": f"从普通位点导入：{source['file']}",
+            "order": next_order,
+            "chain_id": source["chain_id"],
+            "robot": source["robot"],
+            "joint_names": source["joint_names"],
+            "named_joints": source["named_joints"],
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "completed_runs": 0,
+            "last_completed_at": None,
+            "last_run_id": None,
+            "source": "regular_waypoint_import",
+            "source_waypoint_file": source["file"],
+            "source_waypoint_created_at": source["created_at"],
+            "imported_at": timestamp,
+        }
+        _atomic_json(_point_path(point_id), point)
+        imported.append(point)
+        imported_sources.add(source["file"])
+        next_order += 1
+    return {
+        "ok": True,
+        "imported": imported,
+        "imported_count": len(imported),
+        "skipped": skipped,
+        "skipped_count": len(skipped),
+    }
 
 
 @app.post("/api/gravity/waypoints")

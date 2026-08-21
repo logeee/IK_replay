@@ -70,6 +70,10 @@ commanded and measured arm FK as translucent cyan/orange link models, marks
 every joint and both TCPs, draws displacement connectors, and reports per-joint
 angle error plus TCP XYZ/Euclidean error for each intermediate or final sample.
 
+The gravity waypoint library can also multi-select and copy existing
+`data/waypoints/*.json` poses. Imports retain their source filename, never edit
+the original waypoint, and skip a source file that has already been imported.
+
 ## Reach RGB-D source
 
 The production reach service is a read-only consumer of the external

@@ -12,6 +12,7 @@
     --green:#54d68b; --amber:#f3bc5b; --red:#ff7373; --purple:#a78bfa;
   }
   * { box-sizing:border-box; }
+  .hidden { display:none !important; }
   body { margin:0; min-height:100vh; color:var(--text); font:14px/1.5 "PingFang SC","Microsoft YaHei",system-ui,sans-serif;
     background:radial-gradient(circle at 10% -15%,#17385b 0,transparent 34%),
                radial-gradient(circle at 95% 0,rgba(67,214,197,.1),transparent 30%),var(--bg); }
@@ -136,6 +137,21 @@
   .toast { position:fixed;right:22px;bottom:22px;max-width:390px;padding:11px 15px;border-radius:10px;background:#183047;border:1px solid #345572;
     box-shadow:0 16px 40px rgba(0,0,0,.35);transform:translateY(20px);opacity:0;pointer-events:none;transition:.25s;z-index:20; }
   .toast.show { opacity:1;transform:none; } .toast.bad { border-color:#814653;background:#472831; }
+  .modal { position:fixed;inset:0;background:rgba(3,8,14,.76);backdrop-filter:blur(8px);display:grid;place-items:center;padding:18px;z-index:30; }
+  .modal-card { width:min(760px,96vw);max-height:min(760px,90vh);border:1px solid #39516a;border-radius:16px;background:#101d2b;box-shadow:0 28px 80px rgba(0,0,0,.55);overflow:hidden;display:flex;flex-direction:column; }
+  .modal-head { padding:14px 17px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px; }
+  .modal-head h2 { margin:0;font-size:15px; } .modal-head span { color:var(--muted);font-size:10px; }
+  .modal-head button { margin-left:auto; }
+  .import-tools { padding:10px 15px;display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--line);flex-wrap:wrap; }
+  .import-tools input[type=search] { flex:1;min-width:180px; }
+  .import-list { padding:8px;overflow:auto;min-height:240px; }
+  .import-item { display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;padding:10px;border-radius:9px;border:1px solid transparent; }
+  .import-item:hover { background:rgba(102,170,255,.05);border-color:var(--line); }
+  .import-item input { width:17px;height:17px;accent-color:var(--cyan); }
+  .import-name { font-weight:650; } .import-meta { color:var(--muted);font-size:10px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+  .import-state { color:var(--green);font-size:10px; }
+  .modal-foot { padding:11px 15px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center; }
+  .modal-foot input { flex:1; }
   @media(max-width:1050px){.grid{grid-template-columns:1fr}.point-list{height:400px}.compare-layout{grid-template-columns:1fr}.compare-side{border-left:0;border-top:1px solid var(--line);max-height:none}}
   @media(max-width:680px){header{padding:0 13px}.head-status .pill:nth-child(n+2){display:none}main{padding:12px 9px}.phase-strip{grid-template-columns:1fr}.author-form{grid-template-columns:1fr}.run-layout{grid-template-columns:1fr}.run-controls{border-right:0;border-bottom:1px solid var(--line)}}
 </style>
@@ -186,6 +202,7 @@
         <button id="armBtn" class="primary">接管手臂</button>
         <button id="dragBtn">开启拖动</button>
         <button id="releaseBtn" class="ghost">释放手臂</button>
+        <button id="openImportBtn">从原位点导入</button>
         <span class="spacer"></span>
         <button id="clearQueueBtn" class="ghost">清空选择</button>
       </div>
@@ -263,6 +280,14 @@
     </div>
   </section>
 </main>
+<div id="importModal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head"><div><h2>从普通位点库导入</h2><span id="importSource">读取 data/waypoints 中的已有位点；原文件不会被修改</span></div><button id="closeImportBtn">关闭</button></div>
+    <div class="import-tools"><input id="importSearch" type="search" placeholder="搜索位点名称或文件名" /><button id="selectAllImportBtn">选择全部未导入</button><button id="reloadImportBtn">重新读取</button><span id="importCount" class="pill">0个可导入</span></div>
+    <div id="importList" class="import-list"><div class="empty">正在读取原位点库…</div></div>
+    <div class="modal-foot"><input id="importPrefix" placeholder="导入名称前缀（可选）" maxlength="40" /><button id="confirmImportBtn" class="primary">导入选中位点</button></div>
+  </div>
+</div>
 <div id="toast" class="toast"></div>
 <script type="module" src="/web/gravity-viewer.js?v=20260821-1"></script>
 <script>
@@ -272,6 +297,8 @@ let selectedId = localStorage.getItem("gravity_selected_point") || "";
 let queue = new Set(JSON.parse(localStorage.getItem("gravity_queue") || "[]"));
 let busy = false;
 let profileEditorInitialized = false;
+let importWaypoints = [];
+let importSelection = new Set();
 
 async function api(path, method="GET", body=null) {
   const response = await fetch(path, {method, headers: body ? {"Content-Type":"application/json"} : {}, body: body ? JSON.stringify(body) : null, cache:"no-store"});
@@ -332,6 +359,23 @@ async function movePoint(id,delta){
   const pts=data.points||[],i=pts.findIndex(p=>p.id===id),j=i+delta;if(i<0||j<0||j>=pts.length)return;
   try{await Promise.all([api(`/api/gravity/waypoints/${pts[i].id}`,"PATCH",{order:pts[j].order}),api(`/api/gravity/waypoints/${pts[j].id}`,"PATCH",{order:pts[i].order})]);await poll();}catch(e){toast(e.message,true);}
 }
+async function loadImportableWaypoints(){
+  $("importList").innerHTML='<div class="empty">正在读取原位点库…</div>';
+  try{
+    const result=await api("/api/gravity/importable_waypoints");
+    importWaypoints=result.waypoints||[];$("importSource").textContent=`来源：${result.source_directory}；原文件不会被修改`;
+    importSelection=new Set([...importSelection].filter(file=>importWaypoints.some(item=>item.file===file&&!item.already_imported)));
+    renderImportList();
+  }catch(e){$("importList").innerHTML=`<div class="empty">读取失败：${esc(e.message)}</div>`;toast(e.message,true);}
+}
+function renderImportList(){
+  const query=$("importSearch").value.trim().toLowerCase(),visible=importWaypoints.filter(item=>!query||`${item.name} ${item.file}`.toLowerCase().includes(query));
+  const available=importWaypoints.filter(item=>!item.already_imported);$("importCount").textContent=`${available.length}个可导入 · 已选${importSelection.size}个`;
+  if(!visible.length){$("importList").innerHTML='<div class="empty">没有匹配的原位点</div>';return;}
+  $("importList").innerHTML=visible.map(item=>`<label class="import-item"><input type="checkbox" data-import-file="${esc(item.file)}" ${importSelection.has(item.file)?"checked":""} ${item.already_imported?"disabled":""}/><div><div class="import-name">${esc(item.name)}</div><div class="import-meta">${esc(item.file)} · ${esc(item.chain_id)} · ${esc(item.created_at||"时间未知")}</div></div><span class="import-state">${item.already_imported?"已导入":"可导入"}</span></label>`).join("");
+  $("importList").querySelectorAll("[data-import-file]").forEach(input=>input.addEventListener("change",()=>{input.checked?importSelection.add(input.dataset.importFile):importSelection.delete(input.dataset.importFile);renderImportList();}));
+}
+async function openImportModal(){$("importModal").classList.remove("hidden");await loadImportableWaypoints();}
 function renderPoints(){
   const points=data.points||[]; $("pointSummary").textContent=`${points.length} 个位点 · ${data.summary.completed_points} 个已完成`;
   $("queueSummary").textContent=queue.size?`本轮已选择 ${queue.size} 个位点`:"未选择实验位点";
@@ -397,6 +441,13 @@ function render(){if(!data)return;renderProfiles();renderHeader();renderPoints()
 async function poll(){if(busy)return;busy=true;try{data=await api("/api/gravity/status");if(selectedId&&!selectedPoint())selectedId="";render();}catch(e){toast(`状态读取失败：${e.message}`,true);}finally{busy=false;}}
 function openRunComparison(runId,status){if(status!=="completed"){toast("失败的实验没有完整姿态数据",true);return;}$("comparePanel").scrollIntoView({behavior:"smooth",block:"start"});window.dispatchEvent(new CustomEvent("gravity:open-comparison",{detail:{runId}}));}
 $("armBtn").onclick=async()=>{if(!confirm("确认接管手臂并在当前位置刚性保持？"))return;try{await api("/api/gravity/arm","POST",{on:true});toast("手臂已接管");await poll();}catch(e){toast(e.message,true);}};
+$("openImportBtn").onclick=openImportModal;
+$("closeImportBtn").onclick=()=>$("importModal").classList.add("hidden");
+$("reloadImportBtn").onclick=loadImportableWaypoints;
+$("importSearch").oninput=renderImportList;
+$("selectAllImportBtn").onclick=()=>{const query=$("importSearch").value.trim().toLowerCase();importWaypoints.filter(item=>!item.already_imported&&(!query||`${item.name} ${item.file}`.toLowerCase().includes(query))).forEach(item=>importSelection.add(item.file));renderImportList();};
+$("confirmImportBtn").onclick=async()=>{const files=[...importSelection];if(!files.length){toast("请选择至少一个未导入位点",true);return;}try{const result=await api("/api/gravity/waypoints/import","POST",{files,name_prefix:$("importPrefix").value});toast(`成功导入${result.imported_count}个位点${result.skipped_count?`，跳过${result.skipped_count}个`:""}`);importSelection.clear();await loadImportableWaypoints();await poll();}catch(e){toast(e.message,true);}};
+$("importModal").addEventListener("click",event=>{if(event.target===$("importModal"))$("importModal").classList.add("hidden");});
 $("activateProfileBtn").onclick=async()=>{const version=$("profileSelect").value;if(!version)return;if(!confirm(`切换重力补偿配置到 ${version}？当前运行中的18001不会在线改变，重启后生效。`))return;try{const r=await api(`/api/gravity/profiles/${encodeURIComponent(version)}/activate`,"POST",{});toast(r.message);await poll();}catch(e){toast(e.message,true);}};
 $("saveProfileBtn").onclick=async()=>{const version=$("newProfileVersion").value.trim(),label=$("newProfileLabel").value.trim();if(!version||!label){toast("请填写版本号和名称",true);return;}try{const r=await api("/api/gravity/profiles","POST",{version,label,description:$("newProfileDescription").value.trim(),activate:$("newProfileActivate").checked,parameters:{grav_alpha:Number($("newProfileAlpha").value),payload_kg:Number($("newProfilePayload").value),grav_in_float:$("newProfileFloat").checked,use_imu_gravity:$("newProfileImu").checked}});toast(`版本 ${r.profile.version} 已保存${r.active_version===r.profile.version?"并设为启用":""}；重启18001后生效`);$("newProfileVersion").value="";$("newProfileLabel").value="";$("newProfileDescription").value="";await poll();}catch(e){toast(e.message,true);}};
 $("releaseBtn").onclick=async()=>{if(!confirm("确认释放手臂控制权？请先扶住手臂。"))return;try{await api("/api/gravity/arm","POST",{on:false});toast("手臂已释放");await poll();}catch(e){toast(e.message,true);}};

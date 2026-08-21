@@ -23,6 +23,7 @@ class GravityCalibrationTests(unittest.TestCase):
             patch.object(gravity, "WAYPOINTS_DIR", root / "waypoints"),
             patch.object(gravity, "RUNS_DIR", root / "runs"),
             patch.object(gravity, "BATCHES_DIR", root / "batches"),
+            patch.object(gravity, "REGULAR_WAYPOINTS_DIR", root / "regular_waypoints"),
             patch.object(gravity, "GRAVITY_PROFILES_PATH", root / "gravity.json"),
         ]
         for item in self.patches:
@@ -215,6 +216,46 @@ class GravityCalibrationTests(unittest.TestCase):
         self.assertEqual(point["named_joints"]["j2"], -0.5)
         self.assertTrue((gravity.WAYPOINTS_DIR / f"{point['id']}.json").is_file())
         self.assertEqual(gravity._list_points()[0]["name"], "高位")
+
+    def test_regular_waypoints_can_be_imported_once_without_modifying_source(self):
+        gravity.REGULAR_WAYPOINTS_DIR.mkdir(parents=True)
+        source_path = gravity.REGULAR_WAYPOINTS_DIR / "起手点_20260821.json"
+        source_payload = {
+            "name": "起手点",
+            "chain_id": "right_arm",
+            "named_joints": {"j1": 0.25, "j2": -0.5},
+            "created_at": "2026-08-21 09:00:00",
+        }
+        source_path.write_text(
+            json.dumps(source_payload, ensure_ascii=False), encoding="utf-8"
+        )
+
+        available = gravity.importable_waypoints()
+        self.assertEqual(available["available_count"], 1)
+        imported = gravity.import_waypoints(
+            {"files": [source_path.name], "name_prefix": "旧库-"}
+        )
+
+        self.assertTrue(imported["ok"])
+        self.assertEqual(imported["imported_count"], 1)
+        point = imported["imported"][0]
+        self.assertEqual(point["name"], "旧库-起手点")
+        self.assertEqual(point["source_waypoint_file"], source_path.name)
+        self.assertEqual(point["named_joints"]["j2"], -0.5)
+        self.assertEqual(
+            json.loads(source_path.read_text(encoding="utf-8")), source_payload
+        )
+
+        duplicate = gravity.import_waypoints({"files": [source_path.name]})
+        self.assertEqual(duplicate["imported_count"], 0)
+        self.assertEqual(duplicate["skipped_count"], 1)
+        self.assertTrue(
+            gravity.importable_waypoints()["waypoints"][0]["already_imported"]
+        )
+
+    def test_waypoint_import_rejects_path_traversal(self):
+        response = gravity.import_waypoints({"files": ["../secret.json"]})
+        self.assertEqual(response.status_code, 400)
 
     def test_aggregate_reports_static_joint_and_torque_error(self):
         samples = [

@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "48b4b1108863",
+  "name": "0.46终点",
+  "note": "从普通位点导入：0.46终点_20260726_202923.json",
+  "order": 4,
+  "chain_id": "right_arm",
+  "robot": "h2",
+  "joint_names": [
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint",
+    "right_wrist_roll_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint"
+  ],
+  "named_joints": {
+    "right_shoulder_pitch_joint": -0.6563222408294678,
+    "right_shoulder_roll_joint": 0.24211131036281586,
+    "right_shoulder_yaw_joint": 0.09848636388778687,
+    "right_elbow_joint": -0.19614581763744354,
+    "right_wrist_roll_joint": -0.07319365441799164,
+    "right_wrist_pitch_joint": 0.030547790229320526,
+    "right_wrist_yaw_joint": -0.02954111620783806
+  },
+  "created_at": "2026-08-21T10:16:22.364",
+  "updated_at": "2026-08-21T10:16:22.364",
+  "completed_runs": 0,
+  "last_completed_at": null,
+  "last_run_id": null,
+  "source": "regular_waypoint_import",
+  "source_waypoint_file": "0.46终点_20260726_202923.json",
+  "source_waypoint_created_at": "2026-07-26 20:29:23",
+  "imported_at": "2026-08-21T10:16:22.364"
+}
