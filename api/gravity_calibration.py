@@ -510,7 +510,7 @@ def _retarget_sequence(
                     solver_options={
                         "solve_orientation": True,
                         "tolerance_mm": 2.0,
-                        "rotation_tolerance_deg": 5.0,
+                        "rotation_tolerance_deg": 8.0,
                         "rotation_weight": 0.05,
                         "regularization_weight": 0.0002,
                         "max_iterations": 320,
@@ -615,7 +615,7 @@ def _retarget_sequence(
                 "preserve_tcp_orientation": True,
                 "position_priority_frames": position_priority_frames,
                 "position_priority_rotation_tolerance_deg": (
-                    5.0 if position_priority_frames else None
+                    8.0 if position_priority_frames else None
                 ),
                 "max_joint_step_rad": 0.04,
             },
