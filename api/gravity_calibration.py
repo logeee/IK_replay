@@ -308,6 +308,8 @@ def _plan_summary(plan: dict[str, Any] | None) -> dict[str, Any] | None:
             "intermediate_stops",
             "planner",
             "waypoint_count",
+            "blocked",
+            "blocked_reason",
             "collision",
             "preview",
         )
@@ -406,6 +408,8 @@ def gravity_plan_preview(plan_id: str):
             "chain_id": plan.get("chain_id") or "right_arm",
             "duration_s": plan["duration_s"],
             "planner": plan.get("planner"),
+            "blocked": bool(plan.get("blocked")),
+            "blocked_reason": plan.get("blocked_reason"),
             "collision": plan.get("collision"),
             "frames": plan["waypoints"],
             "sample_fractions": plan.get("preview", {}).get("sample_fractions", []),
@@ -730,9 +734,14 @@ def plan_waypoint(point_id: str, body: dict[str, Any] | None = None):
             "POST", "/api/trajectory/plan", body=payload, timeout=45.0
         )
         collision = planned.get("collision")
-        if isinstance(collision, dict) and collision.get("status") == "collision":
-            detail = collision.get("rrt_error") or "规划轨迹存在碰撞"
-            raise GravityServiceError(str(detail))
+        blocked = bool(
+            isinstance(collision, dict) and collision.get("status") == "collision"
+        )
+        blocked_reason = (
+            str(collision.get("rrt_error") or "规划轨迹存在碰撞")
+            if blocked
+            else None
+        )
         waypoints = [
             item["named_joints"]
             for item in planned.get("waypoints") or []
@@ -759,6 +768,8 @@ def plan_waypoint(point_id: str, body: dict[str, Any] | None = None):
             "intermediate_stops": intermediate_stops,
             "planner": planned.get("planner"),
             "waypoint_count": len(waypoints),
+            "blocked": blocked,
+            "blocked_reason": blocked_reason,
             "collision": collision,
             "waypoints": waypoints,
             "tool_visualization": _tool_visualization(reach),
@@ -774,6 +785,22 @@ def plan_waypoint(point_id: str, body: dict[str, Any] | None = None):
         }
         with _lock:
             _plan = plan
+        if blocked:
+            _set_operation(
+                phase="error",
+                plan_id=plan["id"],
+                message="规划被碰撞检查阻止，可在预览中显示碰撞体",
+                error=blocked_reason,
+                progress=0.0,
+            )
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": blocked_reason,
+                    "plan": _plan_summary(plan),
+                },
+                status_code=409,
+            )
         _set_operation(
             phase="ready",
             plan_id=plan["id"],
@@ -1060,6 +1087,14 @@ def execute_waypoint(point_id: str, body: dict[str, Any]):
         return JSONResponse({"ok": False, "error": "请先为该位点重新规划"}, status_code=409)
     if str(body.get("plan_id") or "") != plan.get("id"):
         return JSONResponse({"ok": False, "error": "规划编号已变化，请重新确认"}, status_code=409)
+    if plan.get("blocked"):
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": str(plan.get("blocked_reason") or "规划存在碰撞，禁止执行"),
+            },
+            status_code=409,
+        )
     try:
         if intermediate_stops is None:
             intermediate_stops = min(8, max(0, int(plan.get("intermediate_stops", 0))))

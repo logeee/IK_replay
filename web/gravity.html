@@ -106,10 +106,12 @@
   .plan-robot-viewport { width:100%;height:220px;position:relative;border-radius:10px;background:radial-gradient(circle at 50% 40%,#172b3c,#07111d 72%);border:1px solid rgba(41,59,80,.8);overflow:hidden; }
   .plan-robot-viewport canvas { display:block;width:100%;height:100%; }
   .plan-placeholder { position:absolute;inset:0;display:grid;place-items:center;text-align:center;color:var(--muted);font-size:10px;pointer-events:none;z-index:2; }
-  .plan-replay-controls { display:grid;grid-template-columns:auto auto minmax(80px,1fr) auto;gap:6px;align-items:center;margin-top:7px; }
+  .plan-replay-controls { display:grid;grid-template-columns:auto auto auto minmax(80px,1fr) auto;gap:6px;align-items:center;margin-top:7px; }
   .plan-replay-controls button { padding:5px 8px;font-size:10px; }
   .plan-replay-controls input { width:100%;accent-color:var(--cyan);padding:0; }
   .plan-replay-controls span { color:var(--muted);font-size:9px;min-width:42px;text-align:right; }
+  .plan-replay-controls .collision-toggle { display:flex;align-items:center;gap:4px;color:var(--muted);font-size:10px;white-space:nowrap; }
+  .plan-replay-controls .collision-toggle input { width:14px;height:14px; }
   .preview-meta { color:var(--muted);font-size:10.5px;margin-top:7px; }
   .joint-mini { margin-top:10px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;max-height:90px;overflow:auto; }
   .joint-mini div { padding:4px 7px;background:rgba(7,17,28,.45);border-radius:6px;font-size:10px;display:flex;justify-content:space-between;gap:6px; }
@@ -254,7 +256,7 @@
         <div class="preview">
           <h3>完整机器人轨迹回放预览</h3>
           <div id="planRobotViewport" class="plan-robot-viewport"><div id="planRobotPlaceholder" class="plan-placeholder">规划成功后加载URDF机器人<br>逐帧回放关节轨迹</div></div>
-          <div class="plan-replay-controls"><button id="planReplayBtn" disabled>▶ 播放</button><button id="planResetViewBtn" disabled>复位</button><input id="planFrameSlider" type="range" min="0" max="0" value="0" disabled /><span id="planFrameLabel">0 / 0</span></div>
+          <div class="plan-replay-controls"><button id="planReplayBtn" disabled>▶ 播放</button><button id="planResetViewBtn" disabled>复位</button><label class="collision-toggle" title="显示当前轨迹帧使用的躯干盒、头部球体和手臂胶囊；碰撞对显示为红色"><input id="planShowCollisions" type="checkbox" />显示碰撞体</label><input id="planFrameSlider" type="range" min="0" max="0" value="0" disabled /><span id="planFrameLabel">0 / 0</span></div>
           <div id="previewMeta" class="preview-meta">规划成功后显示机器人回放</div>
           <div id="jointMini" class="joint-mini"></div>
         </div>
@@ -305,7 +307,7 @@
 </div>
 <div id="toast" class="toast"></div>
 <script type="module" src="/web/gravity-viewer.js?v=20260821-6"></script>
-<script type="module" src="/web/gravity-plan-viewer.js?v=20260821-1"></script>
+<script type="module" src="/web/gravity-plan-viewer.js?v=20260821-2"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 let data = null;
@@ -434,7 +436,7 @@ function renderSelected(){
   const p=selectedPoint(),plan=data.plan&&data.plan.point_id===selectedId?data.plan:null;
   $("selectedTitle").textContent=p?p.name:"尚未选择位点";$("selectedNote").textContent=p?(p.note||"无备注"):"位点准备和实验执行彼此独立。";
   $("planBtn").disabled=!p||phaseBusy()||!data.reach;$("executeBtn").disabled=!p||!plan||data.operation.phase!=="ready"||!data.reach?.armed||data.reach?.hand_move;
-  $("previewMeta").textContent=plan?`${plan.planner||"规划"} · ${plan.waypoint_count}帧 · 中途停顿${plan.intermediate_stops||0}次 · 彩色标定点 / 白色TCP / 黑色碰撞胶囊 · 碰撞检查${plan.collision?.status==="collision"?"未通过":"通过"}`:"规划成功后显示机器人回放";
+  $("previewMeta").textContent=plan?(plan.blocked?`已被碰撞检查阻止 · ${plan.blocked_reason||"轨迹存在碰撞"} · 已自动显示最严重碰撞帧`:`${plan.planner||"规划"} · ${plan.waypoint_count}帧 · 中途停顿${plan.intermediate_stops||0}次 · 彩色标定点 / 白色TCP / 黑色碰撞胶囊 · 碰撞检查通过`):"规划成功后显示机器人回放";
   if(plan&&plan.id!==lastPreviewPlanId){lastPreviewPlanId=plan.id;setTimeout(()=>window.dispatchEvent(new CustomEvent("gravity:preview-plan",{detail:{planId:plan.id}})),0);}
   if(!p){$("jointMini").innerHTML="";return;}const names=p.joint_names||Object.keys(p.named_joints||{});
   $("jointMini").innerHTML=names.map(n=>`<div><span>${esc(n.replace("right_",""))}</span><b>${deg(p.named_joints[n])}</b></div>`).join("");

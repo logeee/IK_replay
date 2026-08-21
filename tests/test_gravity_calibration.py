@@ -59,6 +59,7 @@ class GravityCalibrationTests(unittest.TestCase):
         self.assertIn("gravity-viewer.js", html)
         self.assertIn("完整机器人轨迹回放预览", html)
         self.assertIn("gravity-plan-viewer.js", html)
+        self.assertIn("planShowCollisions", html)
 
     def test_profile_api_saves_immutable_version_and_activates_it(self):
         result = gravity.save_gravity_profile(
@@ -255,6 +256,63 @@ class GravityCalibrationTests(unittest.TestCase):
         self.assertEqual(
             response["plan"]["tool_visualization"]["tcp_offset"],
             [0.3, 0.01, 0.04],
+        )
+
+    def test_collision_blocked_plan_is_retained_for_preview(self):
+        point_id = "ffffffffffff"
+        gravity._atomic_json(
+            gravity._point_path(point_id),
+            {
+                "id": point_id,
+                "name": "碰撞测试点",
+                "robot": "h2",
+                "chain_id": "right_arm",
+                "named_joints": {"j1": 0.4},
+            },
+        )
+        collision = {
+            "status": "collision",
+            "rrt_error": "终点姿态本身撞障",
+            "checks": [
+                {
+                    "index": 1,
+                    "status": "collision",
+                    "min_distance_m": -0.01,
+                    "min_distance_mm": -10.0,
+                    "pair": {"a": "arm", "b": "torso"},
+                    "shapes": {},
+                }
+            ],
+        }
+
+        def fake_reach(_method, path, **_kwargs):
+            if path.endswith("/status"):
+                return {
+                    "robot": "h2",
+                    "chain_id": "right_arm",
+                    "p_tool": [0.3, 0.0, 0.0],
+                }
+            if path.endswith("/joints"):
+                return {"named_joints": {"j1": 0.0}}
+            return {
+                "planner": "linear",
+                "collision": collision,
+                "waypoints": [
+                    {"named_joints": {"j1": 0.0}},
+                    {"named_joints": {"j1": 0.4}},
+                ],
+            }
+
+        with patch.object(gravity, "_request_reach", side_effect=fake_reach):
+            response = gravity.plan_waypoint(point_id, {"steps": 40})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(gravity._plan["blocked"])
+        preview = gravity.gravity_plan_preview(gravity._plan["id"])
+        self.assertTrue(preview["plan"]["blocked"])
+        self.assertEqual(
+            preview["plan"]["collision"]["checks"][0]["min_distance_mm"],
+            -10.0,
         )
 
     def test_robot_metadata_serves_urdf_for_full_preview(self):

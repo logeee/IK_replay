@@ -6,6 +6,7 @@ const viewport = document.getElementById("planRobotViewport");
 const placeholder = document.getElementById("planRobotPlaceholder");
 const playButton = document.getElementById("planReplayBtn");
 const resetButton = document.getElementById("planResetViewBtn");
+const showCollisions = document.getElementById("planShowCollisions");
 const slider = document.getElementById("planFrameSlider");
 const frameLabel = document.getElementById("planFrameLabel");
 
@@ -22,6 +23,8 @@ const grid = new THREE.GridHelper(2.4, 24, 0x3b566d, 0x1c3040);
 grid.rotation.x = Math.PI / 2;
 scene.add(grid);
 scene.add(new THREE.AxesHelper(0.18));
+const collisionGroup = new THREE.Group();
+scene.add(collisionGroup);
 
 const camera = new THREE.PerspectiveCamera(43, 1, 0.01, 30);
 camera.up.set(0, 0, 1);
@@ -52,6 +55,8 @@ const state = {
   sceneOffset: new THREE.Vector3(),
   frames: [],
   sampleFractions: [],
+  collision: null,
+  blocked: false,
   duration: 4,
   frameIndex: 0,
   playing: false,
@@ -383,6 +388,115 @@ function setRobotJoints(values) {
   state.robotGroup?.updateMatrixWorld(true);
 }
 
+function clearCollisionGroup() {
+  collisionGroup.traverse((object) => {
+    object.geometry?.dispose?.();
+    if (Array.isArray(object.material)) {
+      object.material.forEach((entry) => entry.dispose?.());
+    } else {
+      object.material?.dispose?.();
+    }
+  });
+  collisionGroup.clear();
+}
+
+function collisionMaterial(shape, highlighted, status) {
+  let color = shape.role === "body" ? 0x9aa5b2 : 0x43d6e8;
+  if (highlighted) {
+    color = status === "collision" ? 0xff3b30 : 0xf3bc5b;
+  }
+  return new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity: highlighted ? 0.42 : 0.14,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+}
+
+function collisionPrimitive(shape, material) {
+  if (shape.kind === "sphere") {
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(Number(shape.radius), 20, 14),
+      material,
+    );
+    mesh.position.set(...shape.center.map(Number));
+    return mesh;
+  }
+  if (shape.kind === "box") {
+    const [hx, hy, hz] = shape.half_extents.map(Number);
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2),
+      material,
+    );
+    const r = shape.rotation;
+    const matrix = new THREE.Matrix4().set(
+      r[0][0], r[0][1], r[0][2], 0,
+      r[1][0], r[1][1], r[1][2], 0,
+      r[2][0], r[2][1], r[2][2], 0,
+      0, 0, 0, 1,
+    );
+    mesh.quaternion.setFromRotationMatrix(matrix);
+    mesh.position.set(...shape.center.map(Number));
+    return mesh;
+  }
+  if (shape.kind === "capsule") {
+    const group = new THREE.Group();
+    const a = new THREE.Vector3(...shape.a.map(Number));
+    const b = new THREE.Vector3(...shape.b.map(Number));
+    const radius = Number(shape.radius);
+    const length = a.distanceTo(b);
+    const capA = new THREE.Mesh(
+      new THREE.SphereGeometry(radius, 16, 12),
+      material,
+    );
+    capA.position.copy(a);
+    const capB = new THREE.Mesh(
+      new THREE.SphereGeometry(radius, 16, 12),
+      material,
+    );
+    capB.position.copy(b);
+    const shaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(radius, radius, Math.max(length, 1e-4), 16, 1, true),
+      material,
+    );
+    shaft.position.copy(a).lerp(b, 0.5);
+    if (length > 1e-6) {
+      shaft.quaternion.setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0),
+        b.clone().sub(a).normalize(),
+      );
+    }
+    group.add(capA, capB, shaft);
+    return group;
+  }
+  return null;
+}
+
+function collisionCheckAt(index) {
+  const checks = state.collision?.checks || [];
+  return checks.find((check) => Number(check.index) === Number(index))
+    || checks[Math.max(0, Math.min(index, checks.length - 1))]
+    || null;
+}
+
+function updateCollisionOverlay() {
+  clearCollisionGroup();
+  if (!showCollisions.checked) return;
+  const check = collisionCheckAt(state.frameIndex);
+  if (!check?.shapes) return;
+  const pairNames = new Set([check.pair?.a, check.pair?.b].filter(Boolean));
+  for (const [name, shape] of Object.entries(check.shapes)) {
+    if (!["sphere", "box", "capsule"].includes(shape.kind)) continue;
+    const mesh = collisionPrimitive(
+      shape,
+      collisionMaterial(shape, pairNames.has(name), check.status),
+    );
+    if (mesh) collisionGroup.add(mesh);
+  }
+  collisionGroup.position.copy(state.sceneOffset);
+}
+
 function updateGroundAndView() {
   state.robotGroup.position.set(0, 0, 0);
   state.robotGroup.updateMatrixWorld(true);
@@ -419,7 +533,14 @@ function applyFrame(index) {
   const isSample = state.sampleFractions.some(
     (sample) => Math.abs(Number(sample) - fraction) <= 0.5 / Math.max(1, state.frames.length - 1),
   );
-  frameLabel.textContent = `${state.frameIndex + 1} / ${state.frames.length}${isSample ? " · 采样点" : ""}`;
+  const check = collisionCheckAt(state.frameIndex);
+  const collisionLabel = check?.status === "collision"
+    ? ` · 碰撞 ${Number(check.min_distance_mm).toFixed(1)}mm`
+    : check?.status === "near"
+      ? ` · 接近 ${Number(check.min_distance_mm).toFixed(1)}mm`
+      : "";
+  frameLabel.textContent = `${state.frameIndex + 1} / ${state.frames.length}${isSample ? " · 采样点" : ""}${collisionLabel}`;
+  updateCollisionOverlay();
 }
 
 async function loadPlan(planId) {
@@ -439,6 +560,8 @@ async function loadPlan(planId) {
     const plan = payload.plan;
     state.chainId = plan.chain_id || "right_arm";
     state.toolVisual = plan.tool_visualization || {};
+    state.collision = plan.collision || null;
+    state.blocked = Boolean(plan.blocked);
     await loadRobot(plan.robot);
     attachToolVisualization();
     state.frames = plan.frames || [];
@@ -449,12 +572,25 @@ async function loadPlan(planId) {
     slider.disabled = state.frames.length < 2;
     playButton.disabled = state.frames.length < 2;
     resetButton.disabled = false;
-    applyFrame(0);
+    if (state.blocked) showCollisions.checked = true;
+    const checks = state.collision?.checks || [];
+    const worst = checks.reduce(
+      (selected, check) => (
+        selected === null
+        || Number(check.min_distance_m) < Number(selected.min_distance_m)
+          ? check
+          : selected
+      ),
+      null,
+    );
+    applyFrame(state.blocked && worst ? Number(worst.index || 0) : 0);
     placeholder.style.display = "none";
   } catch (error) {
     placeholder.style.display = "grid";
     placeholder.textContent = `机器人规划预览失败：${error.message}`;
     state.frames = [];
+    state.collision = null;
+    clearCollisionGroup();
     playButton.disabled = true;
     slider.disabled = true;
   }
@@ -481,4 +617,5 @@ slider.addEventListener("input", () => {
   playButton.textContent = "▶ 播放";
   applyFrame(Number(slider.value));
 });
+showCollisions.addEventListener("change", updateCollisionOverlay);
 resetButton.addEventListener("click", frameRobot);

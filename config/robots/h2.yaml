@@ -104,15 +104,23 @@ initial_joints:
 collision:
   enabled: true
   near_margin_m: 0.05
-  # 前后/高按 STL 网格实测 bbox + ~1.5cm 余量；左右(y)故意比网格窄
-  # （网格全宽含肩部凸缘，会把垂放的大臂也算成碰撞）
+  # 躯干横截面接近圆角矩形：用两个相交的窄盒组成十字形近似，削掉单一
+  # 大盒的四个外角。肩部胶囊从这些角附近经过，保留方角会把真机已经
+  # 到达过的安全姿态误判成自碰；两个盒只把每状态的身体配对从 2×4
+  # 增到 3×4，远小于 FK/IK 和 RRT 采样本身的开销。
   body:
-    - name: torso_box
+    - name: torso_side_core
       kind: box
       link: torso_link
       xyz: [0.0, 0.0, 0.22]
       rpy: [0.0, 0.0, 0.0]
-      half_extents: [0.115, 0.105, 0.25]
+      half_extents: [0.075, 0.095, 0.25]
+    - name: torso_front_back_core
+      kind: box
+      link: torso_link
+      xyz: [0.0, 0.0, 0.22]
+      rpy: [0.0, 0.0, 0.0]
+      half_extents: [0.115, 0.075, 0.25]
     - name: head_sphere
       kind: sphere
       link: torso_link
