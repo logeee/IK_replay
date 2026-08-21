@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .pointcloud_core import (
     build_pointcloud,
+    detection_pixel_mask,
     encode_pointcloud,
     fit_surface_plane,
     point_from_pixel,
@@ -58,6 +59,7 @@ class Capture:
     metadata: dict[str, Any]
     depth_mm: np.ndarray
     intrinsics: tuple[float, float, float, float]
+    distortion: np.ndarray
     created_monotonic: float
 
 
@@ -75,6 +77,11 @@ def _fetch_rgbd_snapshot(timeout_s: float = 15.0) -> dict[str, Any]:
             jpeg = archive["jpeg"].astype(np.uint8, copy=True).tobytes()
             depth_mm = archive["depth_mm"].astype(np.float32, copy=True)
             intrinsics = archive["intrinsics"].astype(np.float64, copy=True)
+            distortion = (
+                archive["distortion"].astype(np.float64, copy=True)
+                if "distortion" in archive.files
+                else np.empty(0, dtype=np.float64)
+            )
             metadata = json.loads(
                 archive["metadata_json"].astype(np.uint8, copy=False).tobytes().decode("utf-8")
             )
@@ -83,6 +90,8 @@ def _fetch_rgbd_snapshot(timeout_s: float = 15.0) -> dict[str, Any]:
         raise RuntimeError(f"RGB-D 快照解析失败: {exc}") from exc
     if intrinsics.shape != (4,):
         raise RuntimeError(f"RGB-D 内参 shape 异常: {intrinsics.shape}")
+    if distortion.size not in {0, 4, 5, 8, 12, 14}:
+        raise RuntimeError(f"RGB-D 畸变参数 shape 异常: {distortion.shape}")
     if transform.size == 0:
         transform_value = None
     elif transform.shape == (4, 4):
@@ -93,6 +102,7 @@ def _fetch_rgbd_snapshot(timeout_s: float = 15.0) -> dict[str, Any]:
         "jpeg": jpeg,
         "depth_mm": depth_mm,
         "intrinsics": tuple(float(value) for value in intrinsics),
+        "distortion": distortion.reshape(-1),
         "metadata": metadata,
         "T_cam2root": transform_value,
     }
@@ -107,15 +117,54 @@ def _infer(bgr: np.ndarray, conf: float) -> list[dict[str, Any]]:
     for result in results:
         if result.boxes is None:
             continue
-        for box in result.boxes:
+        masks = getattr(getattr(result, "masks", None), "xy", None) or []
+        for index, box in enumerate(result.boxes):
             cls = int(box.cls[0])
-            boxes.append({
+            detection = {
                 "cls": cls,
                 "name": str(_names.get(cls, cls)),
                 "conf": round(float(box.conf[0]), 4),
                 "xyxy": [round(float(value), 2) for value in box.xyxy[0].tolist()],
-            })
+            }
+            if index < len(masks):
+                polygon = np.asarray(masks[index], dtype=np.float32)
+                if (
+                    polygon.ndim == 2
+                    and polygon.shape[0] >= 3
+                    and polygon.shape[1] == 2
+                    and np.isfinite(polygon).all()
+                ):
+                    detection["polygon"] = [
+                        [round(float(x), 2), round(float(y), 2)]
+                        for x, y in polygon
+                    ]
+            boxes.append(detection)
     return boxes
+
+
+def _semantic_clusters(
+    cloud,
+    boxes: list[dict[str, Any]],
+    image_shape: tuple[int, int],
+) -> list[dict[str, Any]]:
+    clusters: list[dict[str, Any]] = []
+    u = cloud.pixels[:, 0]
+    v = cloud.pixels[:, 1]
+    for index, box in enumerate(boxes):
+        inside = detection_pixel_mask(u, v, box, image_shape=image_shape)
+        points = cloud.positions[inside]
+        if not len(points):
+            continue
+        center = np.median(points, axis=0)
+        clusters.append({
+            "index": index,
+            "cls": int(box["cls"]),
+            "name": str(box.get("name") or box["cls"]),
+            "conf": float(box.get("conf") or 0.0),
+            "point_count": int(len(points)),
+            "centroid_camera_m": [float(value) for value in center],
+        })
+    return clusters
 
 
 @app.get("/")
@@ -167,7 +216,7 @@ def status():
         "conf": _default_conf,
         "reach_base": _reach_base,
         "latest_capture_id": latest_id,
-        "semantic_mode": "yolo_detection_boxes",
+        "semantic_mode": "yolo_instance_mask_fallback_box",
     }
 
 
@@ -199,6 +248,10 @@ def capture(body: dict | None = None):
     )
     if bgr is None:
         return JSONResponse({"ok": False, "error": "JPEG 解码失败"}, status_code=502)
+    distortion = np.asarray(
+        snapshot.get("distortion", []),
+        dtype=np.float64,
+    ).reshape(-1)
     try:
         boxes = _infer(bgr, conf)
         cloud = build_pointcloud(
@@ -211,6 +264,7 @@ def capture(body: dict | None = None):
             z_max_m=z_max_m,
             dense_box_sampling=True,
             box_padding_ratio=_box_padding_ratio,
+            distortion=distortion,
         )
         binary = encode_pointcloud(cloud)
     except Exception as exc:
@@ -225,6 +279,7 @@ def capture(body: dict | None = None):
         for cls in np.unique(cloud.class_ids)
         if int(cls) >= 0
     }
+    clusters = _semantic_clusters(cloud, boxes, bgr.shape[:2])
     metadata = {
         "ok": True,
         "capture_id": capture_id,
@@ -240,8 +295,17 @@ def capture(body: dict | None = None):
         "model": _model_name,
         "names": _names,
         "boxes": boxes,
+        "semantic_clusters": clusters,
         "class_point_counts": class_counts,
         "intrinsics": list(snapshot["intrinsics"]),
+        "distortion": distortion.tolist(),
+        "distortion_compensated": bool(
+            distortion.size in {4, 5, 8, 12, 14}
+            and np.any(np.abs(distortion) > 1e-12)
+        ),
+        "mask_instance_count": sum(
+            1 for box in boxes if len(box.get("polygon") or []) >= 3
+        ),
         "source": snapshot["metadata"],
         "T_cam2root": snapshot["T_cam2root"],
         "capture_ms": round((time.perf_counter() - started) * 1000.0, 1),
@@ -261,6 +325,7 @@ def capture(body: dict | None = None):
             metadata=metadata,
             depth_mm=snapshot["depth_mm"],
             intrinsics=snapshot["intrinsics"],
+            distortion=distortion,
             created_monotonic=time.monotonic(),
         )
     return metadata
@@ -280,6 +345,17 @@ def capture_image(capture_id: str):
         media_type="image/jpeg",
         headers={"Cache-Control": "no-store"},
     )
+
+
+@app.get("/api/pointcloud/capture/{capture_id}")
+def capture_metadata(capture_id: str):
+    capture_value = _capture_by_id(capture_id)
+    if capture_value is None:
+        return JSONResponse(
+            {"ok": False, "error": "快照不存在或已被新快照替换"},
+            status_code=404,
+        )
+    return capture_value.metadata
 
 
 @app.get("/api/pointcloud/data/{capture_id}")
@@ -327,6 +403,7 @@ def pointcloud_pixel(capture_id: str, body: dict):
             z_max_m=float(
                 body.get("z_max_m", capture_value.metadata["z_max_m"])
             ),
+            distortion=capture_value.distortion,
         )
     except (KeyError, TypeError, ValueError) as exc:
         return JSONResponse(
@@ -367,6 +444,7 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
             capture_value.depth_mm,
             capture_value.intrinsics,
             reference,
+            distortion=capture_value.distortion,
         )
         request_body = {
             "p_camera_surface": p_camera.tolist(),
@@ -403,6 +481,15 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
     result["capture_age_s"] = round(
         time.monotonic() - capture_value.created_monotonic, 3
     )
+    with _capture_lock:
+        if _latest is capture_value:
+            capture_value.metadata["confirmed_selection"] = {
+                "base_camera": reference.tolist(),
+                "p_camera": p_camera.tolist(),
+                "pixel": body.get("pixel"),
+                "adjustment": adjustment.tolist(),
+                "result": result,
+            }
     return result
 
 

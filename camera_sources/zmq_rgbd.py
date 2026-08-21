@@ -490,6 +490,7 @@ class ZmqRGBDCamera:
             "jpeg": bytes(jpeg),
             "depth_mm": depth.copy(),
             "intrinsics": tuple(float(v) for v in self.intrinsics),
+            "distortion": self.calibration.color_distortion.copy(),
             "metadata": dict(metadata),
         }
 

@@ -40,6 +40,7 @@ def reach_rgbd_snapshot():
         jpeg=np.frombuffer(snapshot["jpeg"], dtype=np.uint8),
         depth_mm=np.asarray(snapshot["depth_mm"], dtype=np.float32),
         intrinsics=np.asarray(snapshot["intrinsics"], dtype=np.float64),
+        distortion=np.asarray(snapshot.get("distortion", []), dtype=np.float64),
         metadata_json=np.frombuffer(
             json.dumps(metadata, ensure_ascii=False).encode("utf-8"),
             dtype=np.uint8,

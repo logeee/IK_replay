@@ -12,6 +12,7 @@ from api.pointcloud_core import (
     PALETTE,
     build_pointcloud,
     decode_pointcloud,
+    detection_pixel_mask,
     encode_pointcloud,
     fit_surface_plane,
     point_from_pixel,
@@ -97,6 +98,40 @@ class PointCloudGeometryTest(unittest.TestCase):
             result["p_camera"], [0.00625, 0.0, 1.25], atol=1e-8
         )
 
+    def test_distortion_compensation_matches_rgb_pick_and_cloud_point(self):
+        depth = np.full((5, 7), 1000, dtype=np.float32)
+        bgr = np.zeros((5, 7, 3), dtype=np.uint8)
+        intrinsics = (120.0, 118.0, 3.0, 2.0)
+        distortion = np.array([0.18, -0.04, 0.001, -0.002, 0.0])
+        cloud = build_pointcloud(
+            depth,
+            bgr,
+            intrinsics,
+            [],
+            stride=1,
+            distortion=distortion,
+        )
+        index = np.flatnonzero(
+            (cloud.pixels[:, 0] == 6) & (cloud.pixels[:, 1] == 1)
+        )[0]
+        picked = point_from_pixel(
+            depth,
+            intrinsics,
+            6,
+            1,
+            search_radius=0,
+            distortion=distortion,
+        )
+
+        np.testing.assert_allclose(
+            cloud.positions[index], picked["p_camera"], atol=1e-7
+        )
+        self.assertNotAlmostEqual(
+            float(cloud.positions[index, 0]),
+            (6.0 - intrinsics[2]) / intrinsics[0],
+            places=7,
+        )
+
     def test_fits_surface_plane_from_frozen_depth(self):
         depth = np.full((40, 50), 1000.0, dtype=np.float32)
         plane = fit_surface_plane(
@@ -113,6 +148,37 @@ class PointCloudGeometryTest(unittest.TestCase):
 
 
 class SemanticColoringTest(unittest.TestCase):
+    def test_instance_polygon_masks_out_box_background(self):
+        u, v = np.meshgrid(np.arange(5), np.arange(5))
+        detection = {
+            "xyxy": [0, 0, 4, 4],
+            "polygon": [[0, 0], [4, 0], [0, 4]],
+        }
+        inside = detection_pixel_mask(
+            u.reshape(-1),
+            v.reshape(-1),
+            detection,
+            image_shape=(5, 5),
+        ).reshape(5, 5)
+
+        self.assertTrue(inside[1, 1])
+        self.assertFalse(inside[4, 4])
+        cloud = build_pointcloud(
+            np.full((5, 5), 1000, dtype=np.float32),
+            np.zeros((5, 5, 3), dtype=np.uint8),
+            (100, 100, 2, 2),
+            [{"cls": 2, "conf": 0.9, **detection}],
+            stride=1,
+        )
+        inside_index = np.flatnonzero(
+            (cloud.pixels[:, 0] == 1) & (cloud.pixels[:, 1] == 1)
+        )[0]
+        outside_index = np.flatnonzero(
+            (cloud.pixels[:, 0] == 4) & (cloud.pixels[:, 1] == 4)
+        )[0]
+        self.assertEqual(int(cloud.class_ids[inside_index]), 2)
+        self.assertEqual(int(cloud.class_ids[outside_index]), -1)
+
     def test_yolo_neighborhood_is_sampled_at_every_pixel(self):
         depth = np.full((8, 8), 1000, dtype=np.float32)
         bgr = np.zeros((8, 8, 3), dtype=np.uint8)
@@ -282,6 +348,7 @@ class PointCloudBackendTest(unittest.TestCase):
         self.assertEqual(metadata["point_count"], 4)
         self.assertEqual(metadata["source"]["frame_id"], "frame-7")
         self.assertEqual(metadata["boxes"][0]["name"], "target")
+        self.assertEqual(metadata["mask_instance_count"], 0)
         image_response = pointcloud_viewer.capture_image(metadata["capture_id"])
         self.assertEqual(image_response.media_type, "image/jpeg")
         self.assertEqual(image_response.body, jpeg.tobytes())
@@ -289,6 +356,31 @@ class PointCloudBackendTest(unittest.TestCase):
         cloud = decode_pointcloud(response.body)
         self.assertEqual(cloud.count, 4)
         np.testing.assert_array_equal(cloud.class_ids, np.full(4, 2))
+        restored = pointcloud_viewer.capture_metadata(metadata["capture_id"])
+        self.assertEqual(restored["capture_id"], metadata["capture_id"])
+
+    def test_inference_exports_instance_mask_polygon(self):
+        class FakeMasks:
+            xy = [np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])]
+
+        class FakeMaskResult:
+            boxes = [_FakeBox()]
+            masks = FakeMasks()
+
+        class FakeMaskModel:
+            def predict(self, image, *, conf, verbose):
+                return [FakeMaskResult()]
+
+        pointcloud_viewer._model = FakeMaskModel()
+        detections = pointcloud_viewer._infer(
+            np.zeros((2, 2, 3), dtype=np.uint8),
+            0.25,
+        )
+
+        self.assertEqual(
+            detections[0]["polygon"],
+            [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+        )
 
     def test_old_or_unknown_capture_id_is_not_downloadable(self):
         response = pointcloud_viewer.pointcloud_data("missing")
@@ -346,6 +438,11 @@ class PointCloudBackendTest(unittest.TestCase):
         self.assertEqual(sent["source_frame_id"], "frozen-9")
         self.assertEqual(sent["pixel"], [1, 1])
         self.assertEqual(sent["adjustment_camera_m"], [0.001, 0.0, 0.0])
+        restored = pointcloud_viewer.capture_metadata(metadata["capture_id"])
+        self.assertEqual(
+            restored["confirmed_selection"]["result"]["p_root"],
+            [0.005, 0.005, 1.0],
+        )
 
     def test_live_stream_proxies_reach_mjpeg_and_closes_upstream(self):
         upstream = mock.Mock()

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "active_version": "0.0.0",
+  "active_version": "0.1.0",
   "versions": [
     {
       "version": "0.0.0",
@@ -12,6 +12,20 @@
       "parameters": {
         "grav_alpha": 1.0,
         "payload_kg": 0.0,
+        "grav_in_float": true,
+        "use_imu_gravity": false
+      }
+    },
+    {
+      "version": "0.1.0",
+      "label": "首轮双向数据保守标定",
+      "description": "由智能体选取0.0.0下完整上抬实验f3b4635a6ab5（4姿态/79帧）与完整下落实验812753897cc4（4姿态/78帧）进行拟合。使用上下方向均值削弱摩擦影响，以URDF自重项和末端1kg负载力矩基函数做受约束搜索，并用其余已完成实验检查残差与力矩余量；未采用落在alpha上限的最小误差解，而选择保守测试参数。",
+      "created_at": "2026-08-21T15:31:00+08:00",
+      "parent_version": "0.0.0",
+      "source": "agent_calibration",
+      "parameters": {
+        "grav_alpha": 1.1,
+        "payload_kg": 0.5,
         "grav_in_float": true,
         "use_imu_gravity": false
       }

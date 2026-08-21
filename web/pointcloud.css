@@ -131,6 +131,18 @@ input, select {
 #snapshotFrame { position: relative; }
 #snapshotImage { display: block; width: 100%; height: 100%; cursor: crosshair; }
 #snapshotBoxes { position: absolute; inset: 0; pointer-events: none; }
+.snapshot-mask {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.snapshot-mask polygon {
+  fill-opacity: .18;
+  stroke-opacity: .9;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
 .snapshot-box {
   position: absolute;
   border: 2px solid;
@@ -164,6 +176,31 @@ input, select {
 }
 #viewport { position: absolute; inset: 0; }
 #viewport canvas { display: block; width: 100%; height: 100%; }
+.semantic-labels { position: absolute; inset: 0; pointer-events: none; }
+.semantic-label {
+  position: absolute;
+  z-index: 3;
+  transform: translate(-50%, calc(-100% - 9px));
+  padding: 4px 7px;
+  border: 1px solid rgba(255, 255, 255, .45);
+  border-radius: 5px;
+  background: rgba(8, 12, 18, .84);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .4);
+  color: #f1f6fc;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.semantic-label::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+  transform: translate(-50%, 5px);
+}
 .hidden { display: none !important; }
 
 .viewer-help, .axis-note {

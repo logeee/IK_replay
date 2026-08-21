@@ -25,15 +25,20 @@ const pointer = new THREE.Vector2();
 const markerCanvas = document.createElement("canvas");
 markerCanvas.width = 64;
 markerCanvas.height = 64;
-const markerContext = markerCanvas.getContext("2d");
-markerContext.beginPath();
-markerContext.arc(32, 32, 20, 0, Math.PI * 2);
-markerContext.fillStyle = "#ff5964";
-markerContext.fill();
-markerContext.lineWidth = 8;
-markerContext.strokeStyle = "#ffffff";
-markerContext.stroke();
-const markerTexture = new THREE.CanvasTexture(markerCanvas);
+function markerTexture(color) {
+  const canvas = markerCanvas.cloneNode();
+  const context = canvas.getContext("2d");
+  context.beginPath();
+  context.arc(32, 32, 20, 0, Math.PI * 2);
+  context.fillStyle = color;
+  context.fill();
+  context.lineWidth = 8;
+  context.strokeStyle = "#ffffff";
+  context.stroke();
+  return new THREE.CanvasTexture(canvas);
+}
+const draftMarkerTexture = markerTexture("#ff5964");
+const confirmedMarkerTexture = markerTexture("#45d483");
 const markerGeometry = new THREE.BufferGeometry();
 markerGeometry.setAttribute(
   "position",
@@ -43,7 +48,7 @@ const marker = new THREE.Points(
   markerGeometry,
   new THREE.PointsMaterial({
     color: 0xffffff,
-    map: markerTexture,
+    map: draftMarkerTexture,
     transparent: true,
     alphaTest: 0.1,
     depthTest: false,
@@ -72,6 +77,9 @@ let captureMeta = null;
 let colorMode = "rgb";
 let viewMode = "live";
 let selection = null;
+let semanticLabels = [];
+let restoringState = false;
+const STORAGE_KEY = "ik-replay-pointcloud-state-v1";
 
 function resize() {
   const { clientWidth, clientHeight } = viewport;
@@ -87,12 +95,38 @@ function animate() {
   requestAnimationFrame(animate);
   controls.update();
   renderer.render(scene, camera);
+  updateSemanticLabels();
 }
 animate();
+controls.addEventListener("end", persistState);
 
 function setStatus(text, kind = "") {
   $("status").textContent = text;
   $("status").className = `status ${kind}`;
+}
+
+function savedState() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+  } catch (_) {
+    return {};
+  }
+}
+
+function persistState() {
+  if (restoringState || !captureMeta) return;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      captureId: captureMeta.capture_id,
+      viewMode,
+      colorMode,
+      cameraPosition: camera.position.toArray(),
+      controlsTarget: controls.target.toArray(),
+      selection,
+    }));
+  } catch (_) {
+    // Browser privacy modes may disable localStorage; picking must still work.
+  }
 }
 
 function setViewMode(mode) {
@@ -116,6 +150,7 @@ function setViewMode(mode) {
   controls.enabled = pointcloud;
   if (pointcloud) resize();
   if (snapshot) layoutSnapshot();
+  persistState();
 }
 
 function decodeBinary(buffer) {
@@ -170,7 +205,7 @@ function resetView() {
   controls.update();
 }
 
-function installCloud(decoded) {
+function installCloud(decoded, { preserveView = false } = {}) {
   if (points) {
     scene.remove(points);
     points.geometry.dispose();
@@ -203,7 +238,8 @@ function installCloud(decoded) {
   $("confirmTarget").disabled = true;
   $("selection").textContent = "点击点云选择一个点";
   $("selection").classList.add("muted");
-  resetView();
+  rebuildSemanticLabels();
+  if (!preserveView) resetView();
 }
 
 function setColorMode(mode) {
@@ -216,6 +252,8 @@ function setColorMode(mode) {
   points.geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3, true));
   points.geometry.attributes.color.needsUpdate = true;
   setViewMode(mode);
+  rebuildSemanticLabels();
+  persistState();
 }
 
 function renderBoxes(meta) {
@@ -245,6 +283,48 @@ function renderBoxes(meta) {
   }
 }
 
+function rebuildSemanticLabels() {
+  const root = $("semanticLabels");
+  root.replaceChildren();
+  semanticLabels = [];
+  for (const cluster of captureMeta?.semantic_clusters || []) {
+    if (!Array.isArray(cluster.centroid_camera_m)
+        || cluster.centroid_camera_m.length !== 3) continue;
+    const element = document.createElement("div");
+    element.className = "semantic-label";
+    element.textContent =
+      `${cluster.name} ${(Number(cluster.conf || 0) * 100).toFixed(0)}%`;
+    root.appendChild(element);
+    semanticLabels.push({
+      element,
+      point: new THREE.Vector3(
+        cluster.centroid_camera_m[0],
+        -cluster.centroid_camera_m[1],
+        -cluster.centroid_camera_m[2],
+      ),
+    });
+  }
+}
+
+function updateSemanticLabels() {
+  const visible = viewMode === "semantic" && !viewport.classList.contains("hidden");
+  const width = viewport.clientWidth;
+  const height = viewport.clientHeight;
+  for (const item of semanticLabels) {
+    if (!visible || !width || !height) {
+      item.element.classList.add("hidden");
+      continue;
+    }
+    const projected = item.point.clone().project(camera);
+    const onScreen = projected.z >= -1 && projected.z <= 1
+      && Math.abs(projected.x) <= 1.05 && Math.abs(projected.y) <= 1.05;
+    item.element.classList.toggle("hidden", !onScreen);
+    if (!onScreen) continue;
+    item.element.style.left = `${(projected.x * 0.5 + 0.5) * width}px`;
+    item.element.style.top = `${(-projected.y * 0.5 + 0.5) * height}px`;
+  }
+}
+
 function layoutSnapshot() {
   const image = $("snapshotImage");
   const stage = $("snapshotStage");
@@ -266,6 +346,21 @@ function drawSnapshotBoxes() {
     const [x1, y1, x2, y2] = box.xyxy;
     const color = PALETTE[((box.cls % PALETTE.length) + PALETTE.length) % PALETTE.length];
     const cssColor = `rgb(${color.join(",")})`;
+    if (Array.isArray(box.polygon) && box.polygon.length >= 3) {
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.classList.add("snapshot-mask");
+      svg.setAttribute("viewBox", `0 0 ${image.naturalWidth} ${image.naturalHeight}`);
+      svg.setAttribute("preserveAspectRatio", "none");
+      const polygon = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+      polygon.setAttribute(
+        "points",
+        box.polygon.map((point) => `${point[0]},${point[1]}`).join(" "),
+      );
+      polygon.setAttribute("fill", cssColor);
+      polygon.setAttribute("stroke", cssColor);
+      svg.appendChild(polygon);
+      root.appendChild(svg);
+    }
     const element = document.createElement("div");
     element.className = "snapshot-box";
     element.style.left = `${x1 / image.naturalWidth * 100}%`;
@@ -288,6 +383,79 @@ function drawSnapshotBoxes() {
   }
 }
 
+function renderCaptureInfo(meta) {
+  $("captureInfo").classList.remove("muted");
+  $("captureInfo").innerHTML = [
+    `点数: ${meta.point_count.toLocaleString()}`,
+    `YOLO实例: ${meta.boxes.length}（Mask ${meta.mask_instance_count || 0}）`,
+    `stride: ${meta.stride}`,
+    `YOLO邻域: 全像素（外扩 ${(meta.box_padding_ratio * 100).toFixed(0)}%）`,
+    `范围: ${meta.z_min_m.toFixed(2)}–${meta.z_max_m.toFixed(2)} m`,
+    `畸变补偿: ${meta.distortion_compensated ? "已启用" : "无需/无参数"}`,
+    `耗时: ${meta.capture_ms.toFixed(1)} ms`,
+    `源帧: ${meta.source?.frame_id ?? "?"}`,
+    `模型: ${meta.model}`,
+  ].join("<br>");
+}
+
+function restoredSelection(meta, stored) {
+  if (stored?.captureId === meta.capture_id && stored.selection) {
+    return stored.selection;
+  }
+  const confirmed = meta.confirmed_selection;
+  if (!confirmed) return null;
+  const pixel = Array.isArray(confirmed.pixel) ? confirmed.pixel : null;
+  const detected = classAtPixel(pixel);
+  return {
+    baseCamera: confirmed.base_camera,
+    pCamera: confirmed.p_camera,
+    pixel,
+    source: "restored",
+    cls: detected.cls,
+    className: detected.name,
+    adjustment: confirmed.adjustment || [0, 0, 0],
+    confirmed: confirmed.result || null,
+  };
+}
+
+async function loadCapture(meta, { restore = false } = {}) {
+  const binaryResponse = await fetch(meta.data_url, { cache: "no-store" });
+  if (!binaryResponse.ok) {
+    throw new Error(`点云下载失败 HTTP ${binaryResponse.status}`);
+  }
+  const decoded = decodeBinary(await binaryResponse.arrayBuffer());
+  const stored = restore ? savedState() : {};
+  const preserveView = stored.captureId === meta.capture_id
+    && Array.isArray(stored.cameraPosition)
+    && Array.isArray(stored.controlsTarget);
+  captureMeta = meta;
+  const snapshotImage = $("snapshotImage");
+  snapshotImage.onload = () => {
+    layoutSnapshot();
+    drawSnapshotBoxes();
+  };
+  snapshotImage.src = `${meta.image_url}?t=${Date.now()}`;
+  installCloud(decoded, { preserveView });
+  renderBoxes(meta);
+  renderCaptureInfo(meta);
+  if (preserveView) {
+    camera.position.fromArray(stored.cameraPosition);
+    controls.target.fromArray(stored.controlsTarget);
+    controls.update();
+  }
+  const recovered = restoredSelection(meta, stored);
+  if (recovered) {
+    selection = recovered;
+    renderSelection();
+  }
+  const restoredColor = preserveView && ["rgb", "semantic"].includes(stored.colorMode)
+    ? stored.colorMode : "rgb";
+  setColorMode(restoredColor);
+  if (preserveView && ["live", "snapshot", "rgb", "semantic"].includes(stored.viewMode)) {
+    setViewMode(stored.viewMode);
+  }
+}
+
 async function capture() {
   const button = $("captureBtn");
   button.disabled = true;
@@ -305,30 +473,12 @@ async function capture() {
     });
     const meta = await response.json();
     if (!response.ok || !meta.ok) throw new Error(meta.error || `HTTP ${response.status}`);
-    const binaryResponse = await fetch(meta.data_url, { cache: "no-store" });
-    if (!binaryResponse.ok) throw new Error(`点云下载失败 HTTP ${binaryResponse.status}`);
-    const decoded = decodeBinary(await binaryResponse.arrayBuffer());
-    captureMeta = meta;
-    const snapshotImage = $("snapshotImage");
-    snapshotImage.onload = () => {
-      layoutSnapshot();
-      drawSnapshotBoxes();
-    };
-    snapshotImage.src = meta.image_url;
-    installCloud(decoded);
-    setColorMode("rgb");
-    renderBoxes(meta);
-    $("captureInfo").classList.remove("muted");
-    $("captureInfo").innerHTML = [
-      `点数: ${meta.point_count.toLocaleString()}`,
-      `YOLO框: ${meta.boxes.length}`,
-      `stride: ${meta.stride}`,
-      `YOLO邻域: 全像素（外扩 ${(meta.box_padding_ratio * 100).toFixed(0)}%）`,
-      `范围: ${meta.z_min_m.toFixed(2)}–${meta.z_max_m.toFixed(2)} m`,
-      `耗时: ${meta.capture_ms.toFixed(1)} ms`,
-      `源帧: ${meta.source?.frame_id ?? "?"}`,
-      `模型: ${meta.model}`,
-    ].join("<br>");
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (_) {
+      // Persistence is optional; a successful capture must remain usable.
+    }
+    await loadCapture(meta);
     setStatus(`捕获成功：${meta.point_count.toLocaleString()} 点`, "ok");
   } catch (error) {
     setStatus(error.message || String(error), "error");
@@ -350,11 +500,28 @@ function rootPoint(cameraPoint) {
   ];
 }
 
+function pointInPolygon(pixel, polygon) {
+  if (!pixel || !Array.isArray(polygon) || polygon.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+    const [xi, yi] = polygon[i];
+    const [xj, yj] = polygon[j];
+    const crosses = ((yi > pixel[1]) !== (yj > pixel[1]))
+      && (pixel[0] < (xj - xi) * (pixel[1] - yi) / (yj - yi) + xi);
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+
 function classAtPixel(pixel) {
+  if (!pixel) return { cls: -1, name: "背景" };
   let best = null;
   for (const box of captureMeta?.boxes || []) {
     const [x1, y1, x2, y2] = box.xyxy;
-    if (x1 <= pixel[0] && pixel[0] <= x2 && y1 <= pixel[1] && pixel[1] <= y2) {
+    const matched = Array.isArray(box.polygon) && box.polygon.length >= 3
+      ? pointInPolygon(pixel, box.polygon)
+      : x1 <= pixel[0] && pixel[0] <= x2 && y1 <= pixel[1] && pixel[1] <= y2;
+    if (matched) {
       if (!best || box.conf > best.conf) best = box;
     }
   }
@@ -383,11 +550,15 @@ function renderSelection() {
   if (!selection) return;
   const pCamera = selection.pCamera;
   marker.position.set(pCamera[0], -pCamera[1], -pCamera[2]);
+  marker.material.map = selection.confirmed
+    ? confirmedMarkerTexture : draftMarkerTexture;
+  marker.material.needsUpdate = true;
   marker.visible = true;
   const pRoot = rootPoint(pCamera);
   const adjustmentMm = selection.adjustment.map((value) => value * 1000);
   const lines = [
-    `来源: ${selection.source === "rgb" ? "RGB 图像" : "三维点云"}`,
+    `来源: ${selection.source === "rgb" ? "RGB 图像"
+      : selection.source === "restored" ? "已恢复的确认点" : "三维点云"}`,
     selection.pixel ? `像素: (${selection.pixel[0]}, ${selection.pixel[1]})` : "像素: -",
     `类别: ${selection.className}`,
     `深度: ${(pCamera[2] * 1000).toFixed(1)} mm`,
@@ -407,6 +578,7 @@ function renderSelection() {
   $("selection").textContent = lines.join("\n");
   $("confirmTarget").disabled = !captureMeta?.T_cam2root;
   drawSnapshotBoxes();
+  persistState();
 }
 
 async function selectSnapshotPixel(event) {
@@ -622,11 +794,36 @@ if (Number.isFinite(requestedOffset)) {
   $("approachOffset").value = String(requestedOffset);
 }
 
-fetch("/api/pointcloud/status")
-  .then((response) => response.json())
-  .then((value) => {
-    if (value.ok) setStatus(`服务就绪 · ${value.model || "模型加载中"}`);
-  })
-  .catch((error) => setStatus(`状态检查失败: ${error}`, "error"));
+async function initialize() {
+  try {
+    const response = await fetch("/api/pointcloud/status", { cache: "no-store" });
+    const value = await response.json();
+    if (!response.ok || !value.ok) {
+      throw new Error(value.error || `HTTP ${response.status}`);
+    }
+    if (!value.latest_capture_id) {
+      setStatus(`服务就绪 · ${value.model || "模型加载中"}`);
+      return;
+    }
+    setStatus("正在恢复最近一次冻结点云…");
+    const metadataResponse = await fetch(
+      `/api/pointcloud/capture/${value.latest_capture_id}`,
+      { cache: "no-store" },
+    );
+    const metadata = await metadataResponse.json();
+    if (!metadataResponse.ok || !metadata.ok) {
+      throw new Error(metadata.error || `HTTP ${metadataResponse.status}`);
+    }
+    restoringState = true;
+    await loadCapture(metadata, { restore: true });
+    restoringState = false;
+    persistState();
+    setStatus(`已恢复最近快照：${metadata.point_count.toLocaleString()} 点`, "ok");
+  } catch (error) {
+    restoringState = false;
+    setStatus(`状态检查失败: ${error.message || error}`, "error");
+  }
+}
 
 setViewMode(viewMode);
+initialize();

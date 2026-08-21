@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RGB / YOLO 语义点云</title>
-    <link rel="stylesheet" href="/web/pointcloud.css?v=20260819-1" />
+    <link rel="stylesheet" href="/web/pointcloud.css?v=20260821-1" />
     <script type="importmap">
       {
         "imports": {
@@ -17,7 +17,7 @@
     <aside class="sidebar">
       <header>
         <h1>RGB / 语义点云</h1>
-        <p>单帧捕获 · YOLO 检测框区域着色 · 三维选点</p>
+        <p>单帧捕获 · YOLO实例Mask语义 · RGB/三维选点</p>
       </header>
 
       <section class="panel capture-panel">
@@ -94,10 +94,11 @@
         </div>
       </div>
       <div id="viewport" class="hidden"></div>
+      <div id="semanticLabels" class="semantic-labels"></div>
       <div id="viewerHelp" class="viewer-help">实时 ZMQ 彩色画面 · 点击“拍一下”生成点云</div>
       <div id="axisNote" class="axis-note hidden">显示坐标：X 右，Y 上，视线向前；数值返回彩色相机系 X右/Y下/Z前</div>
     </main>
 
-    <script type="module" src="/web/pointcloud.js?v=20260820-2"></script>
+    <script type="module" src="/web/pointcloud.js?v=20260821-1"></script>
   </body>
 </html>
