@@ -307,7 +307,7 @@ function attachToolVisualization() {
       referenceIsTcp = true;
     }
     const dot = new THREE.Mesh(
-      new THREE.SphereGeometry(0.009, 18, 12),
+      new THREE.SphereGeometry(0.012, 20, 14),
       new THREE.MeshBasicMaterial({
         color: markerColors[markerId] ?? 0xffffff,
         depthTest: false,
@@ -319,7 +319,7 @@ function attachToolVisualization() {
   }
   if (!referenceIsTcp) {
     const tcpDot = new THREE.Mesh(
-      new THREE.SphereGeometry(0.013, 20, 14),
+      new THREE.SphereGeometry(0.018, 24, 16),
       new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false }),
     );
     tcpDot.position.copy(tcp);
@@ -543,14 +543,16 @@ function applyFrame(index) {
   updateCollisionOverlay();
 }
 
-async function loadPlan(planId) {
+async function loadPlan(planId, options = {}) {
   state.playing = false;
   playButton.textContent = "▶ 播放";
   placeholder.style.display = "grid";
-  placeholder.textContent = "正在加载机器人规划轨迹…";
+  placeholder.textContent = options.loadingText || "正在加载机器人规划轨迹…";
   try {
+    const previewUrl = options.previewUrl
+      || `/api/gravity/plans/${encodeURIComponent(planId)}/preview`;
     const response = await fetch(
-      `/api/gravity/plans/${encodeURIComponent(planId)}/preview`,
+      previewUrl,
       { cache: "no-store" },
     );
     const payload = await response.json();
@@ -585,9 +587,10 @@ async function loadPlan(planId) {
     );
     applyFrame(state.blocked && worst ? Number(worst.index || 0) : 0);
     placeholder.style.display = "none";
+    window.dispatchEvent(new CustomEvent("gravity:preview-loaded", { detail: { plan } }));
   } catch (error) {
     placeholder.style.display = "grid";
-    placeholder.textContent = `机器人规划预览失败：${error.message}`;
+    placeholder.textContent = `${options.errorLabel || "机器人规划预览失败"}：${error.message}`;
     state.frames = [];
     state.collision = null;
     clearCollisionGroup();
@@ -597,7 +600,7 @@ async function loadPlan(planId) {
 }
 
 window.addEventListener("gravity:preview-plan", (event) => {
-  loadPlan(event.detail.planId);
+  loadPlan(event.detail.planId, event.detail);
 });
 playButton.addEventListener("click", () => {
   if (!state.frames.length) return;

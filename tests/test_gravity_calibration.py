@@ -25,6 +25,7 @@ class GravityCalibrationTests(unittest.TestCase):
             patch.object(gravity, "BATCHES_DIR", root / "batches"),
             patch.object(gravity, "IK_VALIDATIONS_DIR", root / "ik_validation"),
             patch.object(gravity, "REGULAR_WAYPOINTS_DIR", root / "regular_waypoints"),
+            patch.object(gravity, "SEQUENCES_DIR", root / "sequences"),
             patch.object(gravity, "GRAVITY_PROFILES_PATH", root / "gravity.json"),
         ]
         for item in self.patches:
@@ -58,11 +59,105 @@ class GravityCalibrationTests(unittest.TestCase):
         self.assertIn("PORT 18002", html)
         self.assertIn("理论 / 实测完整机器人姿态对比", html)
         self.assertIn("gravity-viewer.js", html)
-        self.assertIn("完整机器人轨迹回放预览", html)
+        self.assertIn("离线轨迹库与完整机器人回放", html)
         self.assertIn("gravity-plan-viewer.js", html)
         self.assertIn("planShowCollisions", html)
+        self.assertIn("离线轨迹库", html)
+        self.assertIn("/api/gravity/sequences", html)
+        self.assertIn("offlineTrajectoryPanel", html)
+        self.assertIn("彩色标定点", html)
         self.assertIn("点云IK落点验证", html)
         self.assertIn("/api/gravity/ik_validation", html)
+        self.assertLess(
+            html.index("理论 / 实测完整机器人姿态对比"),
+            html.index("离线轨迹库与完整机器人回放"),
+        )
+
+    def test_offline_sequence_preview_never_calls_reach_server(self):
+        gravity.SEQUENCES_DIR.mkdir(parents=True)
+        filename = "0.46避障起手式_20260726_202946.json"
+        (gravity.SEQUENCES_DIR / filename).write_text(
+            json.dumps(
+                {
+                    "name": "0.46避障起手式",
+                    "chain_id": "right_arm",
+                    "waypoints": ["起点.json", "0.46终点.json"],
+                    "created_at": "2026-07-26 20:29:46",
+                    "trajectory": {
+                        "joint_names": ["j1", "j2"],
+                        "frames": [[0.1, -0.2], [0.3, -0.4]],
+                        "recorded_at": "2026-07-28T20:03:49",
+                        "planner": "line-else-rrt",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        gravity._save_run(
+            {
+                "id": "aaaaaaaaaaaa",
+                "started_at": "2026-08-21T12:00:00",
+                "robot": "h2",
+                "chain_id": "right_arm",
+                "gravity_profile": {"version": "0.0.0"},
+                "tool_visualization": {
+                    "tcp_offset": [0.28, 0.01, 0.03],
+                    "markers": {
+                        "red": [0.28, 0.0, 0.04],
+                        "blue": [0.28, 0.02, 0.03],
+                    },
+                    "reference_marker": None,
+                    "wrist_link": "right_wrist_yaw_link",
+                },
+            }
+        )
+
+        with patch.object(
+            gravity,
+            "_request_reach",
+            side_effect=AssertionError("离线回放不应访问18001"),
+        ):
+            listing = gravity.offline_sequences()
+            preview = gravity.offline_sequence_preview(filename)
+
+        self.assertEqual(listing["sequences"][0]["name"], "0.46避障起手式")
+        self.assertEqual(listing["sequences"][0]["frame_count"], 2)
+        self.assertEqual(preview["plan"]["source"], "offline_sequence")
+        self.assertEqual(preview["plan"]["frames"][1], {"j1": 0.3, "j2": -0.4})
+        self.assertEqual(
+            preview["plan"]["tool_visualization"]["source"],
+            "saved_gravity_run",
+        )
+        self.assertEqual(
+            set(preview["plan"]["tool_visualization"]["markers"]),
+            {"red", "blue"},
+        )
+        self.assertEqual(
+            preview["plan"]["source_waypoints"],
+            ["起点.json", "0.46终点.json"],
+        )
+
+    def test_offline_sequence_rejects_traversal_and_invalid_frames(self):
+        traversal = gravity.offline_sequence_preview("../outside.json")
+        self.assertEqual(traversal.status_code, 404)
+
+        gravity.SEQUENCES_DIR.mkdir(parents=True)
+        filename = "broken.json"
+        (gravity.SEQUENCES_DIR / filename).write_text(
+            json.dumps(
+                {
+                    "trajectory": {
+                        "joint_names": ["j1", "j2"],
+                        "frames": [[0.1]],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        invalid = gravity.offline_sequence_preview(filename)
+        self.assertEqual(invalid.status_code, 404)
+        self.assertEqual(gravity.offline_sequences()["sequences"], [])
 
     def test_profile_api_saves_immutable_version_and_activates_it(self):
         result = gravity.save_gravity_profile(

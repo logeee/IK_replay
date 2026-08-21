@@ -44,6 +44,7 @@ RUNS_DIR = DATA_ROOT / "runs"
 BATCHES_DIR = DATA_ROOT / "batches"
 IK_VALIDATIONS_DIR = DATA_ROOT / "ik_validation"
 REGULAR_WAYPOINTS_DIR = ROOT / "data" / "waypoints"
+SEQUENCES_DIR = ROOT / "data" / "sequences"
 GRAVITY_PROFILES_PATH = DEFAULT_GRAVITY_PROFILES_PATH
 IK_START_MATCH_MAX_ERROR_RAD = 0.15
 
@@ -206,6 +207,129 @@ def _list_regular_waypoints() -> list[dict[str, Any]]:
     return items
 
 
+def _sequence_path(filename: str) -> Path:
+    name = str(filename or "")
+    if (
+        not name.endswith(".json")
+        or "/" in name
+        or "\\" in name
+        or ".." in name
+        or Path(name).name != name
+    ):
+        raise GravityServiceError("轨迹文件名非法")
+    return SEQUENCES_DIR / name
+
+
+def _load_sequence_preview(
+    filename: str, *, include_tool_visualization: bool = True
+) -> dict[str, Any]:
+    path = _sequence_path(filename)
+    if not path.is_file():
+        raise GravityServiceError(f"轨迹不存在: {filename}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise GravityServiceError(f"轨迹文件损坏 {filename}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise GravityServiceError(f"轨迹格式错误: {filename}")
+    trajectory = payload.get("trajectory")
+    if not isinstance(trajectory, dict):
+        raise GravityServiceError(f"轨迹缺少 trajectory: {filename}")
+    raw_names = trajectory.get("joint_names")
+    raw_frames = trajectory.get("frames")
+    if not isinstance(raw_names, list) or not raw_names:
+        raise GravityServiceError(f"轨迹缺少关节名称: {filename}")
+    joint_names = [str(name) for name in raw_names]
+    if len(set(joint_names)) != len(joint_names) or any(not name for name in joint_names):
+        raise GravityServiceError(f"轨迹关节名称非法: {filename}")
+    if not isinstance(raw_frames, list) or not raw_frames:
+        raise GravityServiceError(f"轨迹没有可回放帧: {filename}")
+    frames: list[dict[str, float]] = []
+    for index, raw_frame in enumerate(raw_frames):
+        if not isinstance(raw_frame, list) or len(raw_frame) != len(joint_names):
+            raise GravityServiceError(
+                f"轨迹第{index + 1}帧维度与{len(joint_names)}个关节不一致"
+            )
+        try:
+            values = [float(value) for value in raw_frame]
+        except (TypeError, ValueError) as exc:
+            raise GravityServiceError(f"轨迹第{index + 1}帧包含非法关节角") from exc
+        if not all(math.isfinite(value) for value in values):
+            raise GravityServiceError(f"轨迹第{index + 1}帧包含非有限关节角")
+        frames.append(dict(zip(joint_names, values)))
+
+    raw_duration = trajectory.get("duration_s", payload.get("duration_s", 6.0))
+    try:
+        duration_s = float(raw_duration)
+    except (TypeError, ValueError) as exc:
+        raise GravityServiceError(f"轨迹回放时长非法: {filename}") from exc
+    if not math.isfinite(duration_s) or duration_s <= 0:
+        duration_s = 6.0
+    return {
+        "file": path.name,
+        "name": str(payload.get("name") or path.stem),
+        "robot": str(payload.get("robot") or "h2"),
+        "chain_id": str(payload.get("chain_id") or "right_arm"),
+        "created_at": payload.get("created_at"),
+        "recorded_at": trajectory.get("recorded_at"),
+        "planner": trajectory.get("planner"),
+        "source_waypoints": list(payload.get("waypoints") or []),
+        "duration_s": min(120.0, max(0.1, duration_s)),
+        "frames": frames,
+        "joint_names": joint_names,
+        "sample_fractions": [],
+        "tool_visualization": (
+            _offline_tool_visualization(
+                str(payload.get("robot") or "h2"),
+                str(payload.get("chain_id") or "right_arm"),
+            )
+            if include_tool_visualization
+            else {}
+        ),
+        "collision": None,
+        "blocked": False,
+    }
+
+
+def _list_sequences() -> list[dict[str, Any]]:
+    if not SEQUENCES_DIR.is_dir():
+        return []
+    sequences: list[dict[str, Any]] = []
+    for path in SEQUENCES_DIR.glob("*.json"):
+        try:
+            preview = _load_sequence_preview(
+                path.name, include_tool_visualization=False
+            )
+        except GravityServiceError:
+            continue
+        sequences.append(
+            {
+                key: deepcopy(preview.get(key))
+                for key in (
+                    "file",
+                    "name",
+                    "robot",
+                    "chain_id",
+                    "created_at",
+                    "recorded_at",
+                    "planner",
+                    "source_waypoints",
+                    "duration_s",
+                    "joint_names",
+                )
+            }
+            | {"frame_count": len(preview["frames"])}
+        )
+    return sorted(
+        sequences,
+        key=lambda item: (
+            str(item.get("created_at") or item.get("recorded_at") or ""),
+            str(item.get("name") or ""),
+        ),
+        reverse=True,
+    )
+
+
 def _list_runs(*, include_samples: bool = False) -> list[dict[str, Any]]:
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     runs: list[dict[str, Any]] = []
@@ -224,6 +348,52 @@ def _list_runs(*, include_samples: bool = False) -> list[dict[str, Any]]:
         except (OSError, json.JSONDecodeError):
             continue
     return sorted(runs, key=lambda item: str(item.get("started_at", "")), reverse=True)
+
+
+def _offline_tool_visualization(robot: str, chain_id: str) -> dict[str, Any]:
+    """Use the newest locally saved calibrated tool points, without 18001."""
+    for run in _list_runs():
+        if str(run.get("robot") or "h2") != robot:
+            continue
+        if str(run.get("chain_id") or "right_arm") != chain_id:
+            continue
+        raw = run.get("tool_visualization")
+        if not isinstance(raw, dict):
+            continue
+        try:
+            tcp = [float(value) for value in raw.get("tcp_offset") or []]
+            if len(tcp) != 3 or not all(math.isfinite(value) for value in tcp):
+                continue
+            markers: dict[str, list[float]] = {}
+            for name, raw_point in (raw.get("markers") or {}).items():
+                point = [float(value) for value in raw_point]
+                if len(point) == 3 and all(math.isfinite(value) for value in point):
+                    markers[str(name)] = point
+        except (TypeError, ValueError):
+            continue
+        return {
+            "tcp_offset": tcp,
+            "markers": markers,
+            "reference_marker": raw.get("reference_marker"),
+            "wrist_link": raw.get("wrist_link"),
+            "source": "saved_gravity_run",
+            "source_run_id": run.get("id"),
+        }
+
+    try:
+        import app as app_module
+
+        model = app_module.robots[robot]
+        return {
+            "tcp_offset": list(model.tcp_offset(chain_id).xyz),
+            "markers": {},
+            "reference_marker": None,
+            "wrist_link": model.end_link(chain_id),
+            "source": "robot_config_fallback",
+            "source_run_id": None,
+        }
+    except Exception:
+        return {}
 
 
 def _ik_validation_version(record: dict[str, Any]) -> str:
@@ -678,6 +848,31 @@ def _ik_candidate_summary(
 @app.get("/")
 def page():
     return FileResponse(WEB_DIR / "gravity.html")
+
+
+@app.get("/api/gravity/sequences")
+def offline_sequences():
+    return {
+        "ok": True,
+        "source_directory": str(SEQUENCES_DIR),
+        "sequences": _list_sequences(),
+    }
+
+
+@app.get("/api/gravity/sequences/{filename}/preview")
+def offline_sequence_preview(filename: str):
+    try:
+        sequence = _load_sequence_preview(filename)
+        return {
+            "ok": True,
+            "plan": {
+                "id": f"offline:{sequence['file']}",
+                "source": "offline_sequence",
+                **sequence,
+            },
+        }
+    except GravityServiceError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
 
 
 @app.get("/api/gravity/robot_metadata")
