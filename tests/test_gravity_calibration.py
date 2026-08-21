@@ -68,7 +68,10 @@ class GravityCalibrationTests(unittest.TestCase):
         self.assertIn("offlineSequenceClearBtn", html)
         self.assertIn("gravity:preview-multiple", html)
         self.assertIn("黑色工具柱", html)
-        self.assertIn("101个对比帧", html)
+        self.assertIn("统一对比帧", html)
+        self.assertIn("规划帧与对比帧分离", html)
+        self.assertIn("offlineCompareMode", html)
+        self.assertIn("按原始规划帧", html)
         self.assertIn("彩色标定点", html)
         self.assertIn("点云IK落点验证", html)
         self.assertIn("/api/gravity/ik_validation", html)
@@ -127,8 +130,10 @@ class GravityCalibrationTests(unittest.TestCase):
 
         self.assertEqual(listing["sequences"][0]["name"], "0.46避障起手式")
         self.assertEqual(listing["sequences"][0]["frame_count"], 2)
+        self.assertEqual(listing["sequences"][0]["comparison_frame_count"], 2)
         self.assertEqual(preview["plan"]["source"], "offline_sequence")
         self.assertEqual(preview["plan"]["frames"][1], {"j1": 0.3, "j2": -0.4})
+        self.assertEqual(preview["plan"]["comparison_frames"], preview["plan"]["frames"])
         self.assertEqual(preview["plan"]["comparison_progress"], [0.0, 1.0])
         self.assertEqual(
             preview["plan"]["tool_visualization"]["source"],
@@ -142,6 +147,40 @@ class GravityCalibrationTests(unittest.TestCase):
             preview["plan"]["source_waypoints"],
             ["起点.json", "0.46终点.json"],
         )
+
+    def test_offline_sequence_keeps_dense_execution_and_sparse_comparison_frames(self):
+        gravity.SEQUENCES_DIR.mkdir(parents=True)
+        filename = "0.47避障起手式.json"
+        (gravity.SEQUENCES_DIR / filename).write_text(
+            json.dumps(
+                {
+                    "name": "0.47避障起手式",
+                    "chain_id": "right_arm",
+                    "trajectory": {
+                        "joint_names": ["j1", "j2"],
+                        "frames": [
+                            [0.0, 0.0],
+                            [0.1, -0.1],
+                            [0.2, -0.2],
+                        ],
+                        "comparison_frames": [
+                            [0.0, 0.0],
+                            [0.2, -0.2],
+                        ],
+                        "comparison_progress": [0.0, 1.0],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        preview = gravity.offline_sequence_preview(filename)["plan"]
+        listing = gravity.offline_sequences()["sequences"][0]
+
+        self.assertEqual(len(preview["frames"]), 3)
+        self.assertEqual(len(preview["comparison_frames"]), 2)
+        self.assertEqual(listing["frame_count"], 3)
+        self.assertEqual(listing["comparison_frame_count"], 2)
 
     def test_offline_sequence_rejects_traversal_and_invalid_frames(self):
         traversal = gravity.offline_sequence_preview("../outside.json")

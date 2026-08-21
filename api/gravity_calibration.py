@@ -221,37 +221,28 @@ def _sequence_path(filename: str) -> Path:
     return SEQUENCES_DIR / name
 
 
-def _sequence_tcp_progress(
-    robot: str,
-    chain_id: str,
-    frames: list[dict[str, float]],
-    tool_visualization: dict[str, Any],
+def _sequence_recorded_progress(
+    trajectory: dict[str, Any],
+    frame_count: int,
+    key: str,
 ) -> list[float]:
-    """Map recorded frames onto normalized TCP arc length for comparison."""
-    fallback = np.linspace(0.0, 1.0, len(frames)).tolist()
-    tcp_offset = tool_visualization.get("tcp_offset")
-    if not isinstance(tcp_offset, list) or len(tcp_offset) != 3:
+    """Use recorded normalized timing when present; otherwise use frame time."""
+    fallback = np.linspace(0.0, 1.0, frame_count).tolist()
+    raw = trajectory.get(key)
+    if not isinstance(raw, list) or len(raw) != frame_count:
         return fallback
     try:
-        import app as app_module
-        from core.types import Pose
-
-        model = app_module.robots[robot]
-        tool = Pose(xyz=[float(value) for value in tcp_offset])
-        positions = np.asarray(
-            [
-                model.tcp_pose(frame, chain_id, tool).xyz
-                for frame in frames
-            ],
-            dtype=float,
-        )
-        lengths = np.linalg.norm(np.diff(positions, axis=0), axis=1)
-        cumulative = np.concatenate([[0.0], np.cumsum(lengths)])
-        if not math.isfinite(float(cumulative[-1])) or cumulative[-1] <= 1e-9:
-            return fallback
-        return (cumulative / cumulative[-1]).tolist()
-    except Exception:
+        progress = [float(value) for value in raw]
+    except (TypeError, ValueError):
         return fallback
+    if (
+        not all(math.isfinite(value) for value in progress)
+        or any(a > b for a, b in zip(progress, progress[1:]))
+        or abs(progress[0]) > 1e-6
+        or abs(progress[-1] - 1.0) > 1e-6
+    ):
+        return fallback
+    return progress
 
 
 def _load_sequence_preview(
@@ -276,21 +267,36 @@ def _load_sequence_preview(
     joint_names = [str(name) for name in raw_names]
     if len(set(joint_names)) != len(joint_names) or any(not name for name in joint_names):
         raise GravityServiceError(f"轨迹关节名称非法: {filename}")
-    if not isinstance(raw_frames, list) or not raw_frames:
-        raise GravityServiceError(f"轨迹没有可回放帧: {filename}")
-    frames: list[dict[str, float]] = []
-    for index, raw_frame in enumerate(raw_frames):
-        if not isinstance(raw_frame, list) or len(raw_frame) != len(joint_names):
-            raise GravityServiceError(
-                f"轨迹第{index + 1}帧维度与{len(joint_names)}个关节不一致"
-            )
-        try:
-            values = [float(value) for value in raw_frame]
-        except (TypeError, ValueError) as exc:
-            raise GravityServiceError(f"轨迹第{index + 1}帧包含非法关节角") from exc
-        if not all(math.isfinite(value) for value in values):
-            raise GravityServiceError(f"轨迹第{index + 1}帧包含非有限关节角")
-        frames.append(dict(zip(joint_names, values)))
+    def parse_frames(raw: Any, label: str) -> list[dict[str, float]]:
+        if not isinstance(raw, list) or not raw:
+            raise GravityServiceError(f"轨迹没有可用{label}: {filename}")
+        parsed: list[dict[str, float]] = []
+        for index, raw_frame in enumerate(raw):
+            if not isinstance(raw_frame, list) or len(raw_frame) != len(joint_names):
+                raise GravityServiceError(
+                    f"轨迹{label}第{index + 1}帧维度与"
+                    f"{len(joint_names)}个关节不一致"
+                )
+            try:
+                values = [float(value) for value in raw_frame]
+            except (TypeError, ValueError) as exc:
+                raise GravityServiceError(
+                    f"轨迹{label}第{index + 1}帧包含非法关节角"
+                ) from exc
+            if not all(math.isfinite(value) for value in values):
+                raise GravityServiceError(
+                    f"轨迹{label}第{index + 1}帧包含非有限关节角"
+                )
+            parsed.append(dict(zip(joint_names, values)))
+        return parsed
+
+    frames = parse_frames(raw_frames, "执行帧")
+    raw_comparison_frames = trajectory.get("comparison_frames")
+    comparison_frames = (
+        parse_frames(raw_comparison_frames, "对比帧")
+        if raw_comparison_frames is not None
+        else frames
+    )
 
     raw_duration = trajectory.get("duration_s", payload.get("duration_s", 6.0))
     try:
@@ -317,16 +323,17 @@ def _load_sequence_preview(
         "source_waypoints": list(payload.get("waypoints") or []),
         "duration_s": min(120.0, max(0.1, duration_s)),
         "frames": frames,
+        "comparison_frames": comparison_frames,
         "joint_names": joint_names,
-        "comparison_progress": (
-            _sequence_tcp_progress(
-                robot,
-                chain_id,
-                frames,
-                tool_visualization,
-            )
-            if include_tool_visualization
-            else []
+        "comparison_progress": _sequence_recorded_progress(
+            trajectory,
+            len(comparison_frames),
+            "comparison_progress",
+        ),
+        "execution_progress": _sequence_recorded_progress(
+            trajectory,
+            len(frames),
+            "execution_progress",
         ),
         "sample_fractions": [],
         "tool_visualization": tool_visualization,
@@ -362,7 +369,10 @@ def _list_sequences() -> list[dict[str, Any]]:
                     "joint_names",
                 )
             }
-            | {"frame_count": len(preview["frames"])}
+            | {
+                "frame_count": len(preview["frames"]),
+                "comparison_frame_count": len(preview["comparison_frames"]),
+            }
         )
     return sorted(
         sequences,
@@ -374,10 +384,40 @@ def _list_sequences() -> list[dict[str, Any]]:
     )
 
 
+def _densify_joint_frames(
+    frames: list[np.ndarray],
+    *,
+    max_joint_step_rad: float = 0.04,
+    minimum_subdivisions: int = 1,
+) -> tuple[list[np.ndarray], list[float]]:
+    dense = [frames[0]]
+    progress = [0.0]
+    segment_count = max(1, len(frames) - 1)
+    for segment_index, (start, end) in enumerate(zip(frames, frames[1:])):
+        count = max(
+            minimum_subdivisions,
+            int(
+                math.ceil(
+                    float(np.max(np.abs(end - start)))
+                    / max_joint_step_rad
+                )
+            ),
+        )
+        for step in range(1, count + 1):
+            blend = step / count
+            dense.append(start + (end - start) * blend)
+            progress.append((segment_index + blend) / segment_count)
+    return dense, progress
+
+
 def _retarget_sequence(
     source_filename: str,
     target_name: str,
     forward_offset_m: float,
+    *,
+    offset_root_m: list[float] | None = None,
+    endpoint_name: str | None = None,
+    output_timestamp: str | None = None,
 ) -> dict[str, Any]:
     """Retarget one recorded motion style over its full TCP arc length."""
     clean_name = str(target_name or "").strip()
@@ -387,8 +427,19 @@ def _retarget_sequence(
     if not match:
         raise GravityServiceError("新轨迹名称必须以距离开头，例如0.47避障起手式")
     offset = float(forward_offset_m)
-    if not math.isfinite(offset) or abs(offset) < 1e-5 or abs(offset) > 0.20:
-        raise GravityServiceError("前伸偏移必须在0.01mm到200mm之间")
+    raw_offset = offset_root_m if offset_root_m is not None else [offset, 0.0, 0.0]
+    try:
+        offset_vector = np.asarray([float(value) for value in raw_offset], dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise GravityServiceError("末端偏移必须是根坐标系XYZ三维向量") from exc
+    offset_norm = float(np.linalg.norm(offset_vector))
+    if (
+        offset_vector.shape != (3,)
+        or not np.all(np.isfinite(offset_vector))
+        or offset_norm < 1e-5
+        or offset_norm > 0.20
+    ):
+        raise GravityServiceError("末端偏移长度必须在0.01mm到200mm之间")
 
     source = _load_sequence_preview(source_filename)
     visual = source.get("tool_visualization") or {}
@@ -405,7 +456,7 @@ def _retarget_sequence(
         chain_id = source["chain_id"]
         joint_names = model.joint_names(chain_id)
         tool = Pose(xyz=[float(value) for value in tcp_offset])
-        original_frames = source["frames"]
+        original_frames = source["comparison_frames"]
         original_poses = [
             model.tcp_pose(frame, chain_id, tool) for frame in original_frames
         ]
@@ -422,6 +473,7 @@ def _retarget_sequence(
     weights = 6.0 * progress**5 - 15.0 * progress**4 + 10.0 * progress**3
 
     retargeted: list[np.ndarray] = []
+    position_priority_frames: list[int] = []
     previous_named = original_frames[0]
     retargeted.append(
         np.asarray([float(previous_named[name]) for name in joint_names], dtype=float)
@@ -429,17 +481,20 @@ def _retarget_sequence(
     for index in range(1, len(original_frames)):
         pose = original_poses[index]
         target_xyz = np.asarray(pose.xyz, dtype=float)
-        target_xyz[0] += offset * float(weights[index])
+        target_xyz += offset_vector * float(weights[index])
+        request_kwargs = {
+            "chain_id": chain_id,
+            "current_joints": previous_named,
+            "target_pose": Pose(xyz=target_xyz.tolist(), rpy=list(pose.rpy)),
+            "tcp_offset": tool,
+            "base_link": model.base_link(chain_id),
+            "end_link": model.end_link(chain_id),
+            "joint_names": joint_names,
+            "seed": previous_named,
+        }
         result = solver.solve(
             IKRequest(
-                chain_id=chain_id,
-                current_joints=previous_named,
-                target_pose=Pose(xyz=target_xyz.tolist(), rpy=list(pose.rpy)),
-                tcp_offset=tool,
-                base_link=model.base_link(chain_id),
-                end_link=model.end_link(chain_id),
-                joint_names=joint_names,
-                seed=previous_named,
+                **request_kwargs,
                 solver_options={
                     "solve_orientation": True,
                     "tolerance_mm": 2.0,
@@ -449,6 +504,22 @@ def _retarget_sequence(
             )
         )
         if not result.success:
+            result = solver.solve(
+                IKRequest(
+                    **request_kwargs,
+                    solver_options={
+                        "solve_orientation": True,
+                        "tolerance_mm": 2.0,
+                        "rotation_tolerance_deg": 5.0,
+                        "rotation_weight": 0.05,
+                        "regularization_weight": 0.0002,
+                        "max_iterations": 320,
+                    },
+                )
+            )
+            if result.success:
+                position_priority_frames.append(index)
+        if not result.success:
             raise GravityServiceError(
                 f"第{index + 1}/{len(original_frames)}帧重定向IK失败："
                 f"{result.error_mm:.2f}mm，"
@@ -457,16 +528,11 @@ def _retarget_sequence(
         previous_named = result.named_target_joints
         retargeted.append(np.asarray(result.target_joints, dtype=float))
 
-    dense_frames: list[np.ndarray] = [retargeted[0]]
-    for start, end in zip(retargeted, retargeted[1:]):
-        count = max(
-            1,
-            int(math.ceil(float(np.max(np.abs(end - start))) / 0.04)),
-        )
-        dense_frames.extend(
-            start + (end - start) * (step / count)
-            for step in range(1, count + 1)
-        )
+    dense_frames, dense_progress = _densify_joint_frames(
+        retargeted,
+        max_joint_step_rad=0.04,
+        minimum_subdivisions=1,
+    )
 
     checks = [
         checker.check_state(frame.tolist(), chain_id, tool)
@@ -484,10 +550,10 @@ def _retarget_sequence(
             f"{collision.get('min_distance_mm', 0):.1f}mm"
         )
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = output_timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
     distance_prefix = match.group(1)
-    endpoint_name = f"{distance_prefix}终点"
-    endpoint_file = f"{endpoint_name}_{timestamp}.json"
+    resolved_endpoint_name = str(endpoint_name or f"{distance_prefix}终点").strip()
+    endpoint_file = f"{resolved_endpoint_name}_{timestamp}.json"
     sequence_file = f"{clean_name}_{timestamp}.json"
     endpoint_named = {
         name: float(value)
@@ -495,12 +561,13 @@ def _retarget_sequence(
     }
     now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     endpoint_payload = {
-        "name": endpoint_name,
+        "name": resolved_endpoint_name,
         "chain_id": chain_id,
         "named_joints": endpoint_named,
         "created_at": now_text,
         "generated_from": source_filename,
         "forward_offset_m": offset,
+        "offset_root_m": offset_vector.tolist(),
     }
     source_waypoints = source.get("source_waypoints") or []
     if not source_waypoints:
@@ -520,16 +587,36 @@ def _retarget_sequence(
                 [round(float(value), 5) for value in frame]
                 for frame in dense_frames
             ],
+            "comparison_frames": [
+                [round(float(value), 5) for value in frame]
+                for frame in retargeted
+            ],
             "joint_names": joint_names,
+            "comparison_progress": [
+                round(float(value), 8)
+                for value in np.linspace(0.0, 1.0, len(retargeted))
+            ],
+            "execution_progress": [
+                round(float(value), 8) for value in dense_progress
+            ],
             "duration_s": round(duration_s, 3),
             "recorded_at": datetime.now().isoformat(timespec="seconds"),
             "planner": "task-space-style-retarget",
             "retarget": {
                 "source_sequence": source_filename,
                 "forward_offset_m": offset,
-                "axis_root": [1.0, 0.0, 0.0],
+                "offset_root_m": offset_vector.tolist(),
+                "axis_root": (
+                    offset_vector / offset_norm
+                ).tolist(),
                 "progress": "quintic-smoothstep-over-tcp-arclength",
+                "timing": "source-phase-recorded-separately",
+                "posture_reference": "previous-planned-frame",
                 "preserve_tcp_orientation": True,
+                "position_priority_frames": position_priority_frames,
+                "position_priority_rotation_tolerance_deg": (
+                    5.0 if position_priority_frames else None
+                ),
                 "max_joint_step_rad": 0.04,
             },
         },
@@ -544,8 +631,10 @@ def _retarget_sequence(
         "endpoint_file": endpoint_file,
         "name": clean_name,
         "frame_count": len(dense_frames),
+        "comparison_frame_count": len(retargeted),
         "duration_s": round(duration_s, 3),
         "forward_offset_m": offset,
+        "offset_root_m": offset_vector.tolist(),
         "minimum_model_clearance_mm": minimum_clearance,
         "source_file": source_filename,
     }

@@ -117,6 +117,8 @@
   .offline-sequence-choice b { display:block;font-size:10.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
   .offline-sequence-choice small { display:block;color:var(--muted);font-size:9px;margin-top:1px; }
   .offline-sequence-actions { display:grid;grid-template-columns:1fr 1fr;gap:6px; }
+  .offline-compare-mode { display:grid;gap:4px;color:var(--muted);font-size:9.5px; }
+  .offline-compare-mode select { width:100%;padding:7px 8px;font-size:10px; }
   .offline-viewer { padding:14px;min-width:0; }
   .offline-viewer .plan-robot-viewport { height:clamp(480px,62vh,720px); }
   .offline-viewer .plan-replay-controls { grid-template-columns:auto auto auto minmax(180px,1fr) auto;max-width:1100px;margin:10px auto 0; }
@@ -366,12 +368,13 @@
   <section id="offlineTrajectoryPanel" class="panel offline-panel">
     <div class="panel-head">
       <h2>离线轨迹库与多轨迹叠加回放</h2>
-      <span class="hint">公共机身只显示一次 · 多彩手臂/TCP · 无需18001</span>
+      <span class="hint">规划帧与对比帧分离 · 多彩手臂/TCP · 无需18001</span>
     </div>
     <div class="offline-workspace">
       <div class="offline-toolbar">
         <div class="offline-sequence-bar">
           <div id="offlineSequenceList" class="offline-sequence-list"><div class="empty">正在读取 data/sequences…</div></div>
+          <label class="offline-compare-mode">对比数据来源<select id="offlineCompareMode"><option value="comparison">按统一对比帧</option><option value="original">按原始规划帧</option></select></label>
           <div class="offline-sequence-actions"><button id="offlineSequenceLoadBtn" class="primary" disabled>叠加回放</button><button id="offlineSequenceClearBtn">清空选择</button></div>
           <div id="offlineSequenceHint" class="offline-sequence-hint">直接读取已保存的关节轨迹。</div>
         </div>
@@ -401,7 +404,7 @@
 </div>
 <div id="toast" class="toast"></div>
 <script type="module" src="/web/gravity-viewer.js?v=20260821-7"></script>
-<script type="module" src="/web/gravity-plan-viewer.js?v=20260822-2"></script>
+<script type="module" src="/web/gravity-plan-viewer.js?v=20260822-6"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 let data = null;
@@ -418,6 +421,7 @@ let offlineSequences = [];
 let offlineSequenceSelection = new Set();
 try{offlineSequenceSelection=new Set(JSON.parse(localStorage.getItem("gravity_offline_sequences")||"[]"));}catch(_error){localStorage.removeItem("gravity_offline_sequences");}
 let activeOfflineSequences = [];
+let activeOfflineComparisonMode = "comparison";
 
 async function api(path, method="GET", body=null) {
   const response = await fetch(path, {method, headers: body ? {"Content-Type":"application/json"} : {}, body: body ? JSON.stringify(body) : null, cache:"no-store"});
@@ -499,7 +503,7 @@ const sequenceColors=["#43d6e8","#ff8b5c","#a78bfa","#54d68b","#f3bc5b","#ff69b4
 function renderOfflineSequenceList(){
   const list=$("offlineSequenceList");
   if(!offlineSequences.length){list.innerHTML='<div class="empty">data/sequences 中没有可回放轨迹</div>';$("offlineSequenceLoadBtn").disabled=true;return;}
-  list.innerHTML=offlineSequences.map((item,index)=>`<label class="offline-sequence-choice" style="--sequence-color:${sequenceColors[index%sequenceColors.length]}"><input type="checkbox" data-offline-file="${esc(item.file)}" ${offlineSequenceSelection.has(item.file)?"checked":""}/><span><b>${esc(item.name)}</b><small>${item.frame_count}帧 · ${esc(item.planner||"已录制")}</small></span></label>`).join("");
+  list.innerHTML=offlineSequences.map((item,index)=>`<label class="offline-sequence-choice" style="--sequence-color:${sequenceColors[index%sequenceColors.length]}"><input type="checkbox" data-offline-file="${esc(item.file)}" ${offlineSequenceSelection.has(item.file)?"checked":""}/><span><b>${esc(item.name)}</b><small>${item.frame_count}规划帧 · ${item.comparison_frame_count||item.frame_count}对比帧 · ${esc(item.planner||"已录制")}</small></span></label>`).join("");
   list.querySelectorAll("[data-offline-file]").forEach(input=>input.addEventListener("change",()=>{input.checked?offlineSequenceSelection.add(input.dataset.offlineFile):offlineSequenceSelection.delete(input.dataset.offlineFile);localStorage.setItem("gravity_offline_sequences",JSON.stringify([...offlineSequenceSelection]));$("offlineSequenceLoadBtn").disabled=!offlineSequenceSelection.size;}));
   $("offlineSequenceLoadBtn").disabled=!offlineSequenceSelection.size;
 }
@@ -517,21 +521,29 @@ async function loadOfflineSequences(){
       (defaults.length?defaults:offlineSequences.slice(0,1)).forEach(item=>offlineSequenceSelection.add(item.file));
     }
     localStorage.setItem("gravity_offline_sequences",JSON.stringify([...offlineSequenceSelection]));renderOfflineSequenceList();button.disabled=!offlineSequenceSelection.size;
-    hint.textContent=`${offlineSequences.length}条离线轨迹 · 已选${offlineSequenceSelection.size}条 · 多选时按TCP路径进度统一为101个对比帧`;
+    hint.textContent=`${offlineSequences.length}条离线轨迹 · 已选${offlineSequenceSelection.size}条 · 帧数相同时直接逐帧对比`;
   }catch(e){
     offlineSequences=[];offlineSequenceSelection.clear();renderOfflineSequenceList();button.disabled=true;hint.textContent=e.message;toast(e.message,true);
   }
 }
+function offlineComparisonText(items,mode=activeOfflineComparisonMode){
+  if(mode==="original"){
+    const counts=items.map(item=>Number(item.frame_count||0));
+    return `原始规划帧 ${counts.join(" vs ")} · 按规划节点归一进度对比`;
+  }
+  const counts=items.map(item=>Number(item.comparison_frame_count||item.frame_count||0)),direct=counts.length>0&&counts.every(count=>count===counts[0]);
+  return direct?`${counts[0]}个统一对比帧直接一一对应`:"对比帧数不同，按源时间相位插值";
+}
 function playOfflineSequences(){
   const items=offlineSequences.filter(item=>offlineSequenceSelection.has(item.file));
   if(!items.length)return;
-  activeOfflineSequences=items;
-  $("previewMeta").textContent=`离线叠加 · ${items.map(item=>item.name).join(" / ")} · 101个对比帧按TCP路径进度一一对应`;
-  $("jointMini").innerHTML=items.map((item,index)=>`<div><span style="color:${sequenceColors[index%sequenceColors.length]}">${esc(item.name)}</span><b>${item.frame_count}帧</b></div>`).join("");
+  activeOfflineSequences=items;activeOfflineComparisonMode=$("offlineCompareMode").value;
+  $("previewMeta").textContent=`离线叠加 · ${items.map(item=>item.name).join(" / ")} · ${offlineComparisonText(items,activeOfflineComparisonMode)}`;
+  $("jointMini").innerHTML=items.map((item,index)=>`<div><span style="color:${sequenceColors[index%sequenceColors.length]}">${esc(item.name)}</span><b>${item.frame_count}规划 / ${item.comparison_frame_count||item.frame_count}对比</b></div>`).join("");
   if(items.length===1){
     const item=items[0];window.dispatchEvent(new CustomEvent("gravity:preview-plan",{detail:{previewUrl:`/api/gravity/sequences/${encodeURIComponent(item.file)}/preview`,loadingText:`正在加载离线轨迹「${item.name}」…`,errorLabel:"离线轨迹回放失败"}}));return;
   }
-  window.dispatchEvent(new CustomEvent("gravity:preview-multiple",{detail:{items:items.map((item,index)=>({name:item.name,file:item.file,color:sequenceColors[index%sequenceColors.length],previewUrl:`/api/gravity/sequences/${encodeURIComponent(item.file)}/preview`}))}}));
+  window.dispatchEvent(new CustomEvent("gravity:preview-multiple",{detail:{comparisonMode:activeOfflineComparisonMode,items:items.map((item,index)=>({name:item.name,file:item.file,color:sequenceColors[index%sequenceColors.length],previewUrl:`/api/gravity/sequences/${encodeURIComponent(item.file)}/preview`}))}}));
 }
 function renderPoints(){
   const points=data.points||[]; $("pointSummary").textContent=`${points.length} 个位点 · ${data.summary.completed_points} 个已完成`;
@@ -574,9 +586,9 @@ function renderSelected(){
   const p=selectedPoint(),plan=data.plan&&data.plan.point_id===selectedId?data.plan:null;
   $("selectedTitle").textContent=p?p.name:"尚未选择位点";$("selectedNote").textContent=p?(p.note||"无备注"):"位点准备和实验执行彼此独立。";
   $("planBtn").disabled=!p||phaseBusy()||!data.reach;$("executeBtn").disabled=!p||!plan||data.operation.phase!=="ready"||!data.reach?.armed||data.reach?.hand_move;
-  $("previewMeta").textContent=activeOfflineSequences.length?`离线叠加 · ${activeOfflineSequences.map(item=>item.name).join(" / ")} · 101个对比帧按TCP路径进度一一对应`:plan?(plan.blocked?`已被碰撞检查阻止 · ${plan.blocked_reason||"轨迹存在碰撞"} · 已自动显示最严重碰撞帧`:`${plan.planner||"规划"} · ${plan.waypoint_count}帧 · 中途停顿${plan.intermediate_stops||0}次 · 彩色标定点 / 白色TCP / 黑色碰撞胶囊 · 碰撞检查通过`):"选择离线轨迹，或在线规划成功后显示机器人回放";
+  $("previewMeta").textContent=activeOfflineSequences.length?`离线叠加 · ${activeOfflineSequences.map(item=>item.name).join(" / ")} · ${offlineComparisonText(activeOfflineSequences,activeOfflineComparisonMode)}`:plan?(plan.blocked?`已被碰撞检查阻止 · ${plan.blocked_reason||"轨迹存在碰撞"} · 已自动显示最严重碰撞帧`:`${plan.planner||"规划"} · ${plan.waypoint_count}帧 · 中途停顿${plan.intermediate_stops||0}次 · 彩色标定点 / 白色TCP / 黑色碰撞胶囊 · 碰撞检查通过`):"选择离线轨迹，或在线规划成功后显示机器人回放";
   if(plan&&plan.id!==lastPreviewPlanId){lastPreviewPlanId=plan.id;setTimeout(()=>window.dispatchEvent(new CustomEvent("gravity:preview-plan",{detail:{planId:plan.id}})),0);}
-  if(activeOfflineSequences.length){$("jointMini").innerHTML=activeOfflineSequences.map((item,index)=>`<div><span style="color:${sequenceColors[index%sequenceColors.length]}">${esc(item.name)}</span><b>${item.frame_count}帧</b></div>`).join("");return;}
+  if(activeOfflineSequences.length){$("jointMini").innerHTML=activeOfflineSequences.map((item,index)=>`<div><span style="color:${sequenceColors[index%sequenceColors.length]}">${esc(item.name)}</span><b>${item.frame_count}规划 / ${item.comparison_frame_count||item.frame_count}对比</b></div>`).join("");return;}
   if(!p){$("jointMini").innerHTML="";return;}const names=p.joint_names||Object.keys(p.named_joints||{});
   $("jointMini").innerHTML=names.map(n=>`<div><span>${esc(n.replace("right_",""))}</span><b>${deg(p.named_joints[n])}</b></div>`).join("");
 }
@@ -633,11 +645,13 @@ $("openImportBtn").onclick=openImportModal;
 $("openOfflineViewerBtn").onclick=()=>$("offlineTrajectoryPanel").scrollIntoView({behavior:"smooth",block:"start"});
 $("offlineSequenceLoadBtn").onclick=playOfflineSequences;
 $("offlineSequenceClearBtn").onclick=()=>{offlineSequenceSelection.clear();localStorage.setItem("gravity_offline_sequences","[]");renderOfflineSequenceList();};
+$("offlineCompareMode").value=localStorage.getItem("gravity_offline_compare_mode")==="original"?"original":"comparison";
+$("offlineCompareMode").onchange=()=>localStorage.setItem("gravity_offline_compare_mode",$("offlineCompareMode").value);
 window.addEventListener("gravity:preview-loaded",event=>{
   const visual=event.detail?.plan?.tool_visualization||{},count=Object.keys(visual.markers||{}).length,source=visual.source;
   $("offlineToolSource").textContent=source==="saved_gravity_run"?`本地实验记录 ${visual.source_run_id||""} · ${count}个彩色标定点 · 白色TCP工作点`:source==="robot_config_fallback"?"未找到本地标定点；当前仅显示机器人配置TCP工作点":`${count}个彩色标定点 · 白色TCP工作点`;
 });
-window.addEventListener("gravity:preview-multiple-loaded",event=>{$("offlineToolSource").textContent=`${event.detail.count}条轨迹叠加 · 101个TCP路径进度对比帧 · 仅右臂/TCP分色 · 黑色工具柱`;});
+window.addEventListener("gravity:preview-multiple-loaded",event=>{$("offlineToolSource").textContent=`${event.detail.count}条轨迹叠加 · ${event.detail.comparisonMode==="original"?`原始规划帧模式（${event.detail.comparisonFrameCount}档归一进度）`:`${event.detail.comparisonFrameCount}个统一对比帧`} · 仅右臂/TCP分色 · 黑色工具柱`;});
 $("closeImportBtn").onclick=()=>$("importModal").classList.add("hidden");
 $("reloadImportBtn").onclick=loadImportableWaypoints;
 $("importSearch").oninput=renderImportList;

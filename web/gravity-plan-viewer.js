@@ -65,6 +65,8 @@ const state = {
   startedFrame: 0,
   multiMode: false,
   multiOverlays: [],
+  directFrameComparison: false,
+  originalFrameComparison: false,
 };
 
 function resize() {
@@ -281,6 +283,8 @@ function clearMultiOverlays() {
   }
   state.multiOverlays = [];
   state.multiMode = false;
+  state.directFrameComparison = false;
+  state.originalFrameComparison = false;
 }
 
 function restoreSingleAppearance() {
@@ -441,6 +445,24 @@ function jointsAtComparisonProgress(instance, targetProgress) {
     values[name] = a + (b - a) * blend;
   });
   return values;
+}
+
+function jointsAtNearestProgress(instance, targetProgress) {
+  const frames = instance.frames || [];
+  if (!frames.length) return {};
+  const progress = instance.comparisonProgress?.length === frames.length
+    ? instance.comparisonProgress
+    : frames.map((_, index) => index / Math.max(1, frames.length - 1));
+  let closest = 0;
+  for (let index = 1; index < progress.length; index += 1) {
+    if (
+      Math.abs(Number(progress[index]) - targetProgress)
+      < Math.abs(Number(progress[closest]) - targetProgress)
+    ) {
+      closest = index;
+    }
+  }
+  return frames[closest];
 }
 
 function attachComparisonTool(instance, visual, color, chainId) {
@@ -783,7 +805,10 @@ function applyFrame(index) {
   slider.value = String(state.frameIndex);
   const fraction = state.frameIndex / Math.max(1, state.frames.length - 1);
   if (state.multiMode) {
-    const firstJoints = jointsAtComparisonProgress(
+    const frameResolver = state.originalFrameComparison
+      ? jointsAtNearestProgress
+      : jointsAtComparisonProgress;
+    const firstJoints = frameResolver(
       state.multiOverlays[0],
       fraction,
     );
@@ -791,10 +816,10 @@ function applyFrame(index) {
     for (const overlay of state.multiOverlays) {
       setInstanceJoints(
         overlay,
-        jointsAtComparisonProgress(overlay, fraction),
+        frameResolver(overlay, fraction),
       );
     }
-    frameLabel.textContent = `对比帧 ${state.frameIndex + 1} / ${state.frames.length} · TCP路径 ${(fraction * 100).toFixed(0)}%`;
+    frameLabel.textContent = `${state.originalFrameComparison ? "规划帧对比" : "统一对比帧"} ${state.frameIndex + 1} / ${state.frames.length} · ${(fraction * 100).toFixed(0)}%`;
     clearCollisionGroup();
     return;
   }
@@ -812,7 +837,7 @@ function applyFrame(index) {
   updateCollisionOverlay();
 }
 
-async function loadMultiple(items) {
+async function loadMultiple(items, comparisonMode = "comparison") {
   state.playing = false;
   playButton.textContent = "▶ 播放";
   placeholder.style.display = "grid";
@@ -838,10 +863,15 @@ async function loadMultiple(items) {
     state.toolGroup?.removeFromParent();
     state.toolGroup = null;
     applyMultiContextAppearance(state.chainId);
+    state.originalFrameComparison = comparisonMode === "original";
     for (const item of previews) {
       const overlay = await buildArmOverlay(state.chainId, item.color);
-      overlay.frames = item.plan.frames || [];
-      overlay.comparisonProgress = item.plan.comparison_progress || [];
+      overlay.frames = state.originalFrameComparison
+        ? item.plan.frames || []
+        : item.plan.comparison_frames || item.plan.frames || [];
+      overlay.comparisonProgress = state.originalFrameComparison
+        ? item.plan.execution_progress || []
+        : item.plan.comparison_progress || [];
       overlay.name = item.name;
       overlay.root.position.copy(state.sceneOffset);
       setInstanceJoints(overlay, overlay.frames[0] || {});
@@ -855,7 +885,14 @@ async function loadMultiple(items) {
       state.multiOverlays.push(overlay);
     }
     state.multiMode = true;
-    state.frames = Array.from({ length: 101 }, () => ({}));
+    const frameCounts = state.multiOverlays.map((overlay) => overlay.frames.length);
+    state.directFrameComparison = frameCounts.every(
+      (count) => count === frameCounts[0],
+    );
+    const comparisonFrameCount = state.originalFrameComparison
+      ? Math.max(...frameCounts)
+      : state.directFrameComparison ? frameCounts[0] : 101;
+    state.frames = Array.from({ length: comparisonFrameCount }, () => ({}));
     state.sampleFractions = [];
     state.collision = null;
     state.blocked = false;
@@ -873,7 +910,13 @@ async function loadMultiple(items) {
     frameRobot();
     placeholder.style.display = "none";
     window.dispatchEvent(new CustomEvent("gravity:preview-multiple-loaded", {
-      detail: { count: state.multiOverlays.length, plans: previews.map((item) => item.plan) },
+      detail: {
+        count: state.multiOverlays.length,
+        plans: previews.map((item) => item.plan),
+        comparisonFrameCount,
+        directFrameComparison: state.directFrameComparison,
+        comparisonMode,
+      },
     }));
   } catch (error) {
     placeholder.style.display = "grid";
@@ -946,7 +989,10 @@ window.addEventListener("gravity:preview-plan", (event) => {
   loadPlan(event.detail.planId, event.detail);
 });
 window.addEventListener("gravity:preview-multiple", (event) => {
-  loadMultiple(event.detail.items || []);
+  loadMultiple(
+    event.detail.items || [],
+    event.detail.comparisonMode || "comparison",
+  );
 });
 playButton.addEventListener("click", () => {
   if (!state.frames.length) return;

@@ -1,0 +1,21 @@
+{
+  "name": "0.51-起手式新终点",
+  "chain_id": "right_arm",
+  "named_joints": {
+    "right_shoulder_pitch_joint": -0.7707651751544455,
+    "right_shoulder_roll_joint": -0.032587218109683534,
+    "right_shoulder_yaw_joint": 0.06563642137413088,
+    "right_elbow_joint": 0.033297396012141114,
+    "right_wrist_roll_joint": 0.20705435827771443,
+    "right_wrist_pitch_joint": -0.1147143074268076,
+    "right_wrist_yaw_joint": -0.05202173836727063
+  },
+  "created_at": "2026-08-22 03:16:34",
+  "generated_from": "0.46-起手式新_20260822_031411.json",
+  "forward_offset_m": 0.04999999999999999,
+  "offset_root_m": [
+    0.04999999999999999,
+    0.0,
+    0.0
+  ]
+}
