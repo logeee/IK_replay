@@ -121,7 +121,7 @@
   .offline-compare-mode select { width:100%;padding:7px 8px;font-size:10px; }
   .offline-viewer { padding:14px;min-width:0; }
   .offline-viewer .plan-robot-viewport { height:clamp(480px,62vh,720px); }
-  .offline-viewer .plan-replay-controls { grid-template-columns:auto auto auto minmax(180px,1fr) auto;max-width:1100px;margin:10px auto 0; }
+  .offline-viewer .plan-replay-controls { grid-template-columns:auto auto auto auto minmax(180px,1fr) auto;max-width:1180px;margin:10px auto 0; }
   .offline-viewer-meta { display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-top:10px; }
   .tool-legend { display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:var(--muted);font-size:9px; }
   .tool-legend span { display:inline-flex;align-items:center;gap:4px; }
@@ -136,6 +136,8 @@
   .plan-replay-controls span { color:var(--muted);font-size:9px;min-width:42px;text-align:right; }
   .plan-replay-controls .collision-toggle { display:flex;align-items:center;gap:4px;color:var(--muted);font-size:10px;white-space:nowrap; }
   .plan-replay-controls .collision-toggle input { width:14px;height:14px; }
+  .plan-replay-controls .speed-control { display:flex;align-items:center;gap:4px;color:var(--muted);font-size:10px;white-space:nowrap; }
+  .plan-replay-controls .speed-control select { width:66px;padding:4px 6px;font-size:10px; }
   .preview-meta { color:var(--muted);font-size:10.5px;margin-top:7px; }
   .joint-mini { margin-top:10px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;max-height:90px;overflow:auto; }
   .joint-mini div { padding:4px 7px;background:rgba(7,17,28,.45);border-radius:6px;font-size:10px;display:flex;justify-content:space-between;gap:6px; }
@@ -382,7 +384,7 @@
       </div>
       <div class="offline-viewer">
         <div id="planRobotViewport" class="plan-robot-viewport"><div id="planRobotPlaceholder" class="plan-placeholder">选择左侧离线轨迹，或先完成在线规划<br>随后逐帧回放完整URDF机器人</div></div>
-        <div class="plan-replay-controls"><button id="planReplayBtn" disabled>▶ 播放</button><button id="planResetViewBtn" disabled>复位视角</button><label class="collision-toggle" title="显示当前轨迹帧使用的躯干盒、头部球体和手臂胶囊；碰撞对显示为红色"><input id="planShowCollisions" type="checkbox" />显示碰撞体</label><input id="planFrameSlider" type="range" min="0" max="0" value="0" disabled /><span id="planFrameLabel">0 / 0</span></div>
+        <div class="plan-replay-controls"><button id="planReplayBtn" disabled>▶ 播放</button><button id="planResetViewBtn" disabled>复位视角</button><label class="collision-toggle" title="显示当前轨迹帧使用的躯干盒、头部球体和手臂胶囊；碰撞对显示为红色"><input id="planShowCollisions" type="checkbox" />显示碰撞体</label><label class="speed-control" title="仅调整网页回放速度，不修改轨迹或真机速度">回放速度<select id="planPlaybackSpeed" disabled><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.5">1.5×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option><option value="5">5×</option></select></label><input id="planFrameSlider" type="range" min="0" max="0" value="0" disabled /><span id="planFrameLabel">0 / 0</span></div>
         <div class="offline-viewer-meta">
           <div id="previewMeta" class="preview-meta">选择离线轨迹，或在线规划成功后显示机器人回放</div>
           <div class="tool-legend">
@@ -404,7 +406,7 @@
 </div>
 <div id="toast" class="toast"></div>
 <script type="module" src="/web/gravity-viewer.js?v=20260821-7"></script>
-<script type="module" src="/web/gravity-plan-viewer.js?v=20260822-6"></script>
+<script type="module" src="/web/gravity-plan-viewer.js?v=20260822-7"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 let data = null;

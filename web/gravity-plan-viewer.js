@@ -7,6 +7,7 @@ const placeholder = document.getElementById("planRobotPlaceholder");
 const playButton = document.getElementById("planReplayBtn");
 const resetButton = document.getElementById("planResetViewBtn");
 const showCollisions = document.getElementById("planShowCollisions");
+const playbackSpeed = document.getElementById("planPlaybackSpeed");
 const slider = document.getElementById("planFrameSlider");
 const frameLabel = document.getElementById("planFrameLabel");
 
@@ -81,7 +82,12 @@ resize();
 
 function animate(now) {
   if (state.playing && state.frames.length > 1) {
-    const frameDuration = (state.duration * 1000) / (state.frames.length - 1);
+    const speedMultiplier = Math.max(0.1, Number(playbackSpeed.value) || 1);
+    const frameDuration = (
+      (state.duration * 1000)
+      / (state.frames.length - 1)
+      / speedMultiplier
+    );
     const elapsedFrames = Math.floor((now - state.startedAt) / Math.max(frameDuration, 1));
     const next = state.startedFrame + elapsedFrames;
     if (next >= state.frames.length) {
@@ -905,6 +911,7 @@ async function loadMultiple(items, comparisonMode = "comparison") {
     slider.max = String(Math.max(0, state.frames.length - 1));
     slider.disabled = state.frames.length < 2;
     playButton.disabled = state.frames.length < 2;
+    playbackSpeed.disabled = state.frames.length < 2;
     resetButton.disabled = false;
     applyFrame(0);
     frameRobot();
@@ -924,6 +931,7 @@ async function loadMultiple(items, comparisonMode = "comparison") {
     state.frames = [];
     clearMultiOverlays();
     playButton.disabled = true;
+    playbackSpeed.disabled = true;
     slider.disabled = true;
   }
 }
@@ -959,6 +967,7 @@ async function loadPlan(planId, options = {}) {
     slider.max = String(Math.max(0, state.frames.length - 1));
     slider.disabled = state.frames.length < 2;
     playButton.disabled = state.frames.length < 2;
+    playbackSpeed.disabled = state.frames.length < 2;
     resetButton.disabled = false;
     if (state.blocked) showCollisions.checked = true;
     const checks = state.collision?.checks || [];
@@ -981,6 +990,7 @@ async function loadPlan(planId, options = {}) {
     state.collision = null;
     clearCollisionGroup();
     playButton.disabled = true;
+    playbackSpeed.disabled = true;
     slider.disabled = true;
   }
 }
@@ -1011,6 +1021,15 @@ slider.addEventListener("input", () => {
   state.playing = false;
   playButton.textContent = "▶ 播放";
   applyFrame(Number(slider.value));
+});
+playbackSpeed.value = localStorage.getItem("gravity_plan_playback_speed") || "1";
+if (!playbackSpeed.value) playbackSpeed.value = "1";
+playbackSpeed.addEventListener("change", () => {
+  localStorage.setItem("gravity_plan_playback_speed", playbackSpeed.value);
+  if (state.playing) {
+    state.startedAt = performance.now();
+    state.startedFrame = state.frameIndex;
+  }
 });
 showCollisions.addEventListener("change", updateCollisionOverlay);
 resetButton.addEventListener("click", frameRobot);

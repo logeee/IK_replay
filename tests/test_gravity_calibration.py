@@ -62,6 +62,8 @@ class GravityCalibrationTests(unittest.TestCase):
         self.assertIn("离线轨迹库与多轨迹叠加回放", html)
         self.assertIn("gravity-plan-viewer.js", html)
         self.assertIn("planShowCollisions", html)
+        self.assertIn("planPlaybackSpeed", html)
+        self.assertIn("仅调整网页回放速度", html)
         self.assertIn("离线轨迹库", html)
         self.assertIn("/api/gravity/sequences", html)
         self.assertIn("offlineTrajectoryPanel", html)
