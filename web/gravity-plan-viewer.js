@@ -45,6 +45,7 @@ controls.update();
 const state = {
   robotId: null,
   metadata: null,
+  urdfXml: null,
   robotGroup: null,
   jointNodes: new Map(),
   linkGroups: new Map(),
@@ -62,6 +63,8 @@ const state = {
   playing: false,
   startedAt: 0,
   startedFrame: 0,
+  multiMode: false,
+  multiOverlays: [],
 };
 
 function resize() {
@@ -154,6 +157,7 @@ async function loadRobot(robotId) {
     "application/xml",
   );
   if (xml.querySelector("parsererror")) throw new Error("URDF解析失败");
+  state.urdfXml = xml;
 
   if (state.robotGroup) scene.remove(state.robotGroup);
   state.jointNodes.clear();
@@ -185,6 +189,10 @@ async function loadRobot(robotId) {
             geometry.computeVertexNormals();
             const mesh = new THREE.Mesh(geometry, material);
             mesh.scale.set(...scale);
+            mesh.userData.urdfLinkName = name;
+            mesh.userData.originalColor = material.color.getHex();
+            mesh.userData.originalEmissive = material.emissive.getHex();
+            mesh.userData.originalOpacity = material.opacity;
             mesh.castShadow = true;
             mesh.receiveShadow = true;
             visualGroup.add(mesh);
@@ -246,6 +254,256 @@ async function loadRobot(robotId) {
   setRobotJoints(initial);
   updateGroundAndView();
   state.robotId = robotId;
+}
+
+function activeArmLinks(chainId) {
+  const chain = state.metadata?.chains?.[chainId];
+  const links = new Set(
+    (chain?.chain_links || chain?.display_links || []).filter(
+      (name) => name !== chain?.base_link,
+    ),
+  );
+  links.add(chainId === "left_arm" ? "left_hand_link" : "right_hand_link");
+  return links;
+}
+
+function clearMultiOverlays() {
+  for (const overlay of state.multiOverlays) {
+    scene.remove(overlay.root);
+    overlay.root.traverse((object) => {
+      object.geometry?.dispose?.();
+      if (Array.isArray(object.material)) {
+        object.material.forEach((entry) => entry.dispose?.());
+      } else {
+        object.material?.dispose?.();
+      }
+    });
+  }
+  state.multiOverlays = [];
+  state.multiMode = false;
+}
+
+function restoreSingleAppearance() {
+  clearMultiOverlays();
+  state.robotGroup?.traverse((object) => {
+    if (!object.isMesh || object.userData.originalColor === undefined) return;
+    object.visible = true;
+    object.material.color.setHex(object.userData.originalColor);
+    object.material.emissive.setHex(object.userData.originalEmissive);
+    object.material.opacity = object.userData.originalOpacity;
+  });
+  showCollisions.disabled = false;
+}
+
+function applyMultiContextAppearance(chainId) {
+  const active = activeArmLinks(chainId);
+  state.robotGroup?.traverse((object) => {
+    if (!object.isMesh || !object.userData.urdfLinkName) return;
+    object.visible = !active.has(object.userData.urdfLinkName);
+    object.material.color.setHex(0x303a44);
+    object.material.emissive.setHex(0x202830);
+    object.material.opacity = 0.54;
+  });
+}
+
+async function buildArmOverlay(chainId, color) {
+  if (!state.urdfXml) throw new Error("URDF尚未加载");
+  const links = new Map();
+  const jointsByParent = new Map();
+  const childLinks = new Set();
+  const jointNodes = new Map();
+  const loader = new STLLoader();
+  const meshTasks = [];
+  const visibleLinks = activeArmLinks(chainId);
+  const modelColor = new THREE.Color(color);
+
+  for (const linkElement of state.urdfXml.querySelectorAll("link")) {
+    const name = linkElement.getAttribute("name");
+    const group = new THREE.Group();
+    group.name = name;
+    links.set(name, group);
+    if (!visibleLinks.has(name)) continue;
+    for (const visualElement of linkElement.querySelectorAll("visual")) {
+      const meshElement = visualElement.querySelector("geometry > mesh");
+      if (!meshElement) continue;
+      const visualGroup = new THREE.Group();
+      applyOrigin(visualGroup, parseOrigin(visualElement.querySelector("origin")));
+      const scale = parseVector(meshElement.getAttribute("scale"), [1, 1, 1]);
+      const filename = meshElement.getAttribute("filename");
+      meshTasks.push(
+        loader.loadAsync(meshUrl(filename))
+          .then((geometry) => {
+            geometry.computeVertexNormals();
+            const material = new THREE.MeshStandardMaterial({
+              color: modelColor,
+              emissive: modelColor,
+              emissiveIntensity: 0.035,
+              transparent: true,
+              opacity: 0.42,
+              roughness: 0.62,
+              metalness: 0.08,
+              depthWrite: false,
+            });
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.scale.set(...scale);
+            mesh.userData.urdfLinkName = name;
+            visualGroup.add(mesh);
+          })
+          .catch((error) => console.warn(`叠加手臂mesh加载失败: ${filename}`, error)),
+      );
+      group.add(visualGroup);
+    }
+  }
+
+  for (const jointElement of state.urdfXml.querySelectorAll("joint")) {
+    const parent = jointElement.querySelector("parent")?.getAttribute("link");
+    const child = jointElement.querySelector("child")?.getAttribute("link");
+    if (!parent || !child) continue;
+    const joint = {
+      name: jointElement.getAttribute("name"),
+      type: jointElement.getAttribute("type") || "fixed",
+      parent,
+      child,
+      axis: new THREE.Vector3(
+        ...parseVector(jointElement.querySelector("axis")?.getAttribute("xyz"), [0, 0, 1]),
+      ).normalize(),
+      origin: parseOrigin(jointElement.querySelector("origin")),
+    };
+    childLinks.add(child);
+    if (!jointsByParent.has(parent)) jointsByParent.set(parent, []);
+    jointsByParent.get(parent).push(joint);
+  }
+  const rootLink = [...links.keys()].find((name) => !childLinks.has(name));
+  if (!rootLink) throw new Error("URDF没有根link");
+  const root = new THREE.Group();
+  root.add(links.get(rootLink));
+  function attachChildren(parentName) {
+    const parent = links.get(parentName);
+    for (const joint of jointsByParent.get(parentName) || []) {
+      const origin = new THREE.Group();
+      applyOrigin(origin, joint.origin);
+      const motion = new THREE.Group();
+      origin.add(motion);
+      motion.add(links.get(joint.child));
+      parent.add(origin);
+      jointNodes.set(joint.name, { ...joint, motion });
+      attachChildren(joint.child);
+    }
+  }
+  attachChildren(rootLink);
+  await Promise.all(meshTasks);
+  return { root, links, jointNodes, toolGroup: null, frames: [], name: "", color };
+}
+
+function setInstanceJoints(instance, values) {
+  const defaults = {};
+  Object.values(state.metadata?.chains || {}).forEach((chain) => {
+    Object.assign(defaults, chain.default_current_joints || {});
+  });
+  const complete = { ...defaults, ...(values || {}) };
+  for (const [name, joint] of instance.jointNodes.entries()) {
+    const value = Number(complete[name] || 0);
+    joint.motion.position.set(0, 0, 0);
+    joint.motion.quaternion.identity();
+    if (joint.type === "revolute" || joint.type === "continuous") {
+      joint.motion.quaternion.setFromAxisAngle(joint.axis, value);
+    } else if (joint.type === "prismatic") {
+      joint.motion.position.copy(joint.axis).multiplyScalar(value);
+    }
+  }
+  instance.root.updateMatrixWorld(true);
+}
+
+function jointsAtComparisonProgress(instance, targetProgress) {
+  const frames = instance.frames || [];
+  if (!frames.length) return {};
+  if (frames.length === 1) return frames[0];
+  const progress = instance.comparisonProgress?.length === frames.length
+    ? instance.comparisonProgress
+    : frames.map((_, index) => index / (frames.length - 1));
+  let upper = progress.findIndex((value) => Number(value) >= targetProgress);
+  if (upper <= 0) return frames[0];
+  if (upper < 0) return frames[frames.length - 1];
+  const lower = upper - 1;
+  const start = Number(progress[lower]);
+  const end = Number(progress[upper]);
+  const blend = end - start > 1e-9
+    ? Math.max(0, Math.min(1, (targetProgress - start) / (end - start)))
+    : 0;
+  const values = {};
+  const names = new Set([
+    ...Object.keys(frames[lower] || {}),
+    ...Object.keys(frames[upper] || {}),
+  ]);
+  names.forEach((name) => {
+    const a = Number(frames[lower]?.[name] || 0);
+    const b = Number(frames[upper]?.[name] || 0);
+    values[name] = a + (b - a) * blend;
+  });
+  return values;
+}
+
+function attachComparisonTool(instance, visual, color, chainId) {
+  const tcpOffset = visual?.tcp_offset;
+  if (!Array.isArray(tcpOffset) || tcpOffset.length !== 3) return;
+  const chain = state.metadata?.chains?.[chainId];
+  const wrist = instance.links.get(visual.wrist_link || chain?.end_link);
+  if (!wrist) return;
+  const hand = instance.links.get(
+    chainId === "left_arm" ? "left_hand_link" : "right_hand_link",
+  );
+  const flange = new THREE.Vector3();
+  if (hand) {
+    wrist.updateWorldMatrix(true, false);
+    hand.updateWorldMatrix(true, false);
+    wrist.worldToLocal(hand.getWorldPosition(flange));
+  }
+  const group = new THREE.Group();
+  const tcp = new THREE.Vector3(...tcpOffset.map(Number));
+  const tcpDot = new THREE.Mesh(
+    new THREE.SphereGeometry(0.018, 24, 16),
+    new THREE.MeshBasicMaterial({ color, depthTest: false }),
+  );
+  tcpDot.position.copy(tcp);
+  tcpDot.renderOrder = 32;
+  group.add(tcpDot);
+  const normal = new THREE.Vector3(1, 0, 0);
+  const foot = tcp.clone().sub(
+    normal.clone().multiplyScalar(tcp.clone().sub(flange).dot(normal)),
+  );
+  const axis = tcp.clone().sub(foot);
+  if (axis.length() > 1e-6) {
+    const material = new THREE.MeshStandardMaterial({
+      color: 0x111418,
+      transparent: true,
+      opacity: 0.72,
+      roughness: 0.64,
+      depthWrite: false,
+    });
+    const radius = 0.04;
+    const shaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(radius, radius, axis.length(), 18, 1, true),
+      material,
+    );
+    shaft.position.copy(foot).lerp(tcp, 0.5);
+    shaft.quaternion.setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0),
+      axis.clone().normalize(),
+    );
+    const capA = new THREE.Mesh(
+      new THREE.SphereGeometry(radius, 16, 11),
+      material,
+    );
+    capA.position.copy(foot);
+    const capB = new THREE.Mesh(
+      new THREE.SphereGeometry(radius, 16, 11),
+      material,
+    );
+    capB.position.copy(tcp);
+    group.add(shaft, capA, capB);
+  }
+  wrist.add(group);
+  instance.toolGroup = group;
 }
 
 function attachToolVisualization() {
@@ -375,17 +633,11 @@ function attachToolVisualization() {
 }
 
 function setRobotJoints(values) {
-  for (const [name, joint] of state.jointNodes.entries()) {
-    const value = Number(values[name] || 0);
-    joint.motion.position.set(0, 0, 0);
-    joint.motion.quaternion.identity();
-    if (joint.type === "revolute" || joint.type === "continuous") {
-      joint.motion.quaternion.setFromAxisAngle(joint.axis, value);
-    } else if (joint.type === "prismatic") {
-      joint.motion.position.copy(joint.axis).multiplyScalar(value);
-    }
-  }
-  state.robotGroup?.updateMatrixWorld(true);
+  if (!state.robotGroup) return;
+  setInstanceJoints(
+    { jointNodes: state.jointNodes, root: state.robotGroup },
+    values,
+  );
 }
 
 function clearCollisionGroup() {
@@ -482,7 +734,7 @@ function collisionCheckAt(index) {
 
 function updateCollisionOverlay() {
   clearCollisionGroup();
-  if (!showCollisions.checked) return;
+  if (state.multiMode || !showCollisions.checked) return;
   const check = collisionCheckAt(state.frameIndex);
   if (!check?.shapes) return;
   const pairNames = new Set([check.pair?.a, check.pair?.b].filter(Boolean));
@@ -511,6 +763,7 @@ function updateGroundAndView() {
 function frameRobot() {
   if (!state.robotGroup) return;
   const bounds = new THREE.Box3().setFromObject(state.robotGroup);
+  state.multiOverlays.forEach((overlay) => bounds.expandByObject(overlay.root));
   const center = bounds.getCenter(new THREE.Vector3());
   const size = bounds.getSize(new THREE.Vector3());
   const radius = Math.max(size.length(), 1.0);
@@ -527,9 +780,25 @@ function frameRobot() {
 function applyFrame(index) {
   if (!state.frames.length) return;
   state.frameIndex = Math.max(0, Math.min(Number(index), state.frames.length - 1));
-  setRobotJoints(state.frames[state.frameIndex]);
   slider.value = String(state.frameIndex);
   const fraction = state.frameIndex / Math.max(1, state.frames.length - 1);
+  if (state.multiMode) {
+    const firstJoints = jointsAtComparisonProgress(
+      state.multiOverlays[0],
+      fraction,
+    );
+    setRobotJoints(firstJoints);
+    for (const overlay of state.multiOverlays) {
+      setInstanceJoints(
+        overlay,
+        jointsAtComparisonProgress(overlay, fraction),
+      );
+    }
+    frameLabel.textContent = `对比帧 ${state.frameIndex + 1} / ${state.frames.length} · TCP路径 ${(fraction * 100).toFixed(0)}%`;
+    clearCollisionGroup();
+    return;
+  }
+  setRobotJoints(state.frames[state.frameIndex]);
   const isSample = state.sampleFractions.some(
     (sample) => Math.abs(Number(sample) - fraction) <= 0.5 / Math.max(1, state.frames.length - 1),
   );
@@ -541,6 +810,79 @@ function applyFrame(index) {
       : "";
   frameLabel.textContent = `${state.frameIndex + 1} / ${state.frames.length}${isSample ? " · 采样点" : ""}${collisionLabel}`;
   updateCollisionOverlay();
+}
+
+async function loadMultiple(items) {
+  state.playing = false;
+  playButton.textContent = "▶ 播放";
+  placeholder.style.display = "grid";
+  placeholder.textContent = `正在加载${items.length}条轨迹的多彩手臂…`;
+  try {
+    const previews = await Promise.all(items.map(async (item) => {
+      const response = await fetch(item.previewUrl, { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) {
+        throw new Error(`${item.name}：${payload.error || `HTTP ${response.status}`}`);
+      }
+      return { ...item, plan: payload.plan };
+    }));
+    const first = previews[0].plan;
+    if (previews.some((item) => (
+      item.plan.robot !== first.robot || item.plan.chain_id !== first.chain_id
+    ))) {
+      throw new Error("只能叠加同一机器人、同一手臂的轨迹");
+    }
+    state.chainId = first.chain_id || "right_arm";
+    await loadRobot(first.robot);
+    clearMultiOverlays();
+    state.toolGroup?.removeFromParent();
+    state.toolGroup = null;
+    applyMultiContextAppearance(state.chainId);
+    for (const item of previews) {
+      const overlay = await buildArmOverlay(state.chainId, item.color);
+      overlay.frames = item.plan.frames || [];
+      overlay.comparisonProgress = item.plan.comparison_progress || [];
+      overlay.name = item.name;
+      overlay.root.position.copy(state.sceneOffset);
+      setInstanceJoints(overlay, overlay.frames[0] || {});
+      attachComparisonTool(
+        overlay,
+        item.plan.tool_visualization || {},
+        item.color,
+        state.chainId,
+      );
+      scene.add(overlay.root);
+      state.multiOverlays.push(overlay);
+    }
+    state.multiMode = true;
+    state.frames = Array.from({ length: 101 }, () => ({}));
+    state.sampleFractions = [];
+    state.collision = null;
+    state.blocked = false;
+    state.duration = Math.max(
+      ...previews.map((item) => Number(item.plan.duration_s || 4)),
+    );
+    showCollisions.checked = false;
+    showCollisions.disabled = true;
+    slider.min = "0";
+    slider.max = String(Math.max(0, state.frames.length - 1));
+    slider.disabled = state.frames.length < 2;
+    playButton.disabled = state.frames.length < 2;
+    resetButton.disabled = false;
+    applyFrame(0);
+    frameRobot();
+    placeholder.style.display = "none";
+    window.dispatchEvent(new CustomEvent("gravity:preview-multiple-loaded", {
+      detail: { count: state.multiOverlays.length, plans: previews.map((item) => item.plan) },
+    }));
+  } catch (error) {
+    placeholder.style.display = "grid";
+    placeholder.textContent = `多轨迹叠加回放失败：${error.message}`;
+    state.frames = [];
+    clearMultiOverlays();
+    playButton.disabled = true;
+    slider.disabled = true;
+  }
 }
 
 async function loadPlan(planId, options = {}) {
@@ -565,6 +907,7 @@ async function loadPlan(planId, options = {}) {
     state.collision = plan.collision || null;
     state.blocked = Boolean(plan.blocked);
     await loadRobot(plan.robot);
+    restoreSingleAppearance();
     attachToolVisualization();
     state.frames = plan.frames || [];
     state.sampleFractions = plan.sample_fractions || [];
@@ -601,6 +944,9 @@ async function loadPlan(planId, options = {}) {
 
 window.addEventListener("gravity:preview-plan", (event) => {
   loadPlan(event.detail.planId, event.detail);
+});
+window.addEventListener("gravity:preview-multiple", (event) => {
+  loadMultiple(event.detail.items || []);
 });
 playButton.addEventListener("click", () => {
   if (!state.frames.length) return;

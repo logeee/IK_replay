@@ -1,0 +1,16 @@
+{
+  "name": "0.47终点",
+  "chain_id": "right_arm",
+  "named_joints": {
+    "right_shoulder_pitch_joint": -0.6979126544423736,
+    "right_shoulder_roll_joint": 0.12460617879452461,
+    "right_shoulder_yaw_joint": 0.1652574876400128,
+    "right_elbow_joint": -0.13806257095823862,
+    "right_wrist_roll_joint": 0.03393765062388845,
+    "right_wrist_pitch_joint": -0.0037422489109028984,
+    "right_wrist_yaw_joint": -0.1340814025240408
+  },
+  "created_at": "2026-08-22 02:33:10",
+  "generated_from": "0.46避障起手式_20260726_202946.json",
+  "forward_offset_m": 0.01
+}

@@ -105,19 +105,26 @@
   .preview-relocated h3 { margin:0;color:var(--text);font-size:13px; }
   .preview-relocated p { max-width:300px;margin:7px 0 12px;font-size:10px; }
   .offline-panel { margin-top:14px; }
-  .offline-toolbar { padding:12px 16px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:minmax(260px,1fr) auto;gap:8px;align-items:center; }
-  .offline-sequence-bar { display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;margin-bottom:7px; }
-  .offline-sequence-bar select { min-width:0;width:100%;font-size:10px;padding:6px 8px; }
+  .offline-workspace { display:grid;grid-template-columns:minmax(250px,310px) minmax(0,1fr);min-height:0; }
+  .offline-toolbar { padding:14px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:10px;min-width:0; }
+  .offline-sequence-bar { display:flex;flex-direction:column;gap:8px;min-height:0; }
   .offline-sequence-bar button { padding:6px 9px;font-size:10px;white-space:nowrap; }
-  .offline-sequence-hint { grid-column:1/-1;color:var(--muted);font-size:9.5px;line-height:1.35; }
-  .offline-viewer { padding:14px; }
-  .offline-viewer .plan-robot-viewport { height:clamp(520px,68vh,820px); }
+  .offline-sequence-hint { color:var(--muted);font-size:9.5px;line-height:1.45; }
+  .offline-sequence-list { display:grid;grid-template-columns:1fr;gap:6px;max-height:clamp(320px,54vh,640px);overflow:auto; }
+  .offline-sequence-choice { display:grid;grid-template-columns:auto minmax(0,1fr);gap:7px;align-items:center;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:rgba(7,17,28,.42);cursor:pointer; }
+  .offline-sequence-choice:has(input:checked) { border-color:var(--sequence-color,var(--cyan));background:rgba(67,214,197,.06); }
+  .offline-sequence-choice input { width:15px;height:15px;accent-color:var(--sequence-color,var(--cyan)); }
+  .offline-sequence-choice b { display:block;font-size:10.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+  .offline-sequence-choice small { display:block;color:var(--muted);font-size:9px;margin-top:1px; }
+  .offline-sequence-actions { display:grid;grid-template-columns:1fr 1fr;gap:6px; }
+  .offline-viewer { padding:14px;min-width:0; }
+  .offline-viewer .plan-robot-viewport { height:clamp(480px,62vh,720px); }
   .offline-viewer .plan-replay-controls { grid-template-columns:auto auto auto minmax(180px,1fr) auto;max-width:1100px;margin:10px auto 0; }
   .offline-viewer-meta { display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-top:10px; }
   .tool-legend { display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:var(--muted);font-size:9px; }
   .tool-legend span { display:inline-flex;align-items:center;gap:4px; }
   .tool-legend i { width:9px;height:9px;border-radius:50%;box-shadow:0 0 6px currentColor; }
-  .tool-source { color:var(--muted);font-size:10px; }
+  .tool-source { color:var(--muted);font-size:10px;line-height:1.45;margin-top:auto;padding-top:10px;border-top:1px solid rgba(41,59,80,.55); }
   .plan-robot-viewport { width:100%;height:220px;position:relative;border-radius:10px;background:radial-gradient(circle at 50% 40%,#172b3c,#07111d 72%);border:1px solid rgba(41,59,80,.8);overflow:hidden; }
   .plan-robot-viewport canvas { display:block;width:100%;height:100%; }
   .plan-placeholder { position:absolute;inset:0;display:grid;place-items:center;text-align:center;color:var(--muted);font-size:10px;pointer-events:none;z-index:2; }
@@ -199,6 +206,7 @@
   .modal-foot { padding:11px 15px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center; }
   .modal-foot input { flex:1; }
   @media(max-width:1050px){.grid{grid-template-columns:1fr}.point-list{height:400px}.ik-layout,.compare-layout{grid-template-columns:1fr}.ik-column+.ik-column{border-left:0;border-top:1px solid var(--line)}.compare-side{border-left:0;border-top:1px solid var(--line);max-height:none}.offline-viewer .plan-robot-viewport{height:560px}}
+  @media(max-width:760px){.offline-workspace{grid-template-columns:1fr}.offline-toolbar{border-right:0;border-bottom:1px solid var(--line)}.offline-sequence-list{grid-template-columns:repeat(auto-fit,minmax(220px,1fr));max-height:180px}.offline-viewer .plan-robot-viewport{height:440px}}
   @media(max-width:680px){header{padding:0 13px}.head-status .pill:nth-child(n+2){display:none}main{padding:12px 9px}.phase-strip{grid-template-columns:1fr}.author-form{grid-template-columns:1fr}.run-layout{grid-template-columns:1fr}.run-controls{border-right:0;border-bottom:1px solid var(--line)}}
 </style>
 </head>
@@ -357,27 +365,29 @@
   </section>
   <section id="offlineTrajectoryPanel" class="panel offline-panel">
     <div class="panel-head">
-      <h2>离线轨迹库与完整机器人回放</h2>
-      <span class="hint">独立大画面 · 无需相机、手眼标定文件或18001</span>
+      <h2>离线轨迹库与多轨迹叠加回放</h2>
+      <span class="hint">公共机身只显示一次 · 多彩手臂/TCP · 无需18001</span>
     </div>
-    <div class="offline-toolbar">
-      <div class="offline-sequence-bar">
-        <select id="offlineSequenceSelect"><option value="">正在读取 data/sequences…</option></select>
-        <button id="offlineSequenceLoadBtn" class="primary" disabled>离线回放</button>
-        <div id="offlineSequenceHint" class="offline-sequence-hint">直接读取已保存的关节轨迹。</div>
-      </div>
-      <div id="offlineToolSource" class="tool-source">加载轨迹后显示彩色标定点和白色TCP工作点</div>
-    </div>
-    <div class="offline-viewer">
-      <div id="planRobotViewport" class="plan-robot-viewport"><div id="planRobotPlaceholder" class="plan-placeholder">选择上方离线轨迹，或先完成在线规划<br>随后逐帧回放完整URDF机器人</div></div>
-      <div class="plan-replay-controls"><button id="planReplayBtn" disabled>▶ 播放</button><button id="planResetViewBtn" disabled>复位视角</button><label class="collision-toggle" title="显示当前轨迹帧使用的躯干盒、头部球体和手臂胶囊；碰撞对显示为红色"><input id="planShowCollisions" type="checkbox" />显示碰撞体</label><input id="planFrameSlider" type="range" min="0" max="0" value="0" disabled /><span id="planFrameLabel">0 / 0</span></div>
-      <div class="offline-viewer-meta">
-        <div id="previewMeta" class="preview-meta">选择离线轨迹，或在线规划成功后显示机器人回放</div>
-        <div class="tool-legend">
-          <span><i style="background:#1687ff;color:#1687ff"></i>蓝</span><span><i style="background:#8b4513;color:#8b4513"></i>棕</span><span><i style="background:#ffd700;color:#ffd700"></i>金</span><span><i style="background:#b0b0b0;color:#b0b0b0"></i>灰</span><span><i style="background:#26c95c;color:#26c95c"></i>绿</span><span><i style="background:#ff8c00;color:#ff8c00"></i>橙</span><span><i style="background:#ff69b4;color:#ff69b4"></i>粉</span><span><i style="background:#9b59ff;color:#9b59ff"></i>紫</span><span><i style="background:#ff3030;color:#ff3030"></i>红</span><span><i style="background:#fff;color:#fff"></i>TCP工作点</span>
+    <div class="offline-workspace">
+      <div class="offline-toolbar">
+        <div class="offline-sequence-bar">
+          <div id="offlineSequenceList" class="offline-sequence-list"><div class="empty">正在读取 data/sequences…</div></div>
+          <div class="offline-sequence-actions"><button id="offlineSequenceLoadBtn" class="primary" disabled>叠加回放</button><button id="offlineSequenceClearBtn">清空选择</button></div>
+          <div id="offlineSequenceHint" class="offline-sequence-hint">直接读取已保存的关节轨迹。</div>
         </div>
+        <div id="offlineToolSource" class="tool-source">多选时隐藏彩色标定点，仅显示黑色工具柱与各色TCP工作点</div>
       </div>
-      <div id="jointMini" class="joint-mini"></div>
+      <div class="offline-viewer">
+        <div id="planRobotViewport" class="plan-robot-viewport"><div id="planRobotPlaceholder" class="plan-placeholder">选择左侧离线轨迹，或先完成在线规划<br>随后逐帧回放完整URDF机器人</div></div>
+        <div class="plan-replay-controls"><button id="planReplayBtn" disabled>▶ 播放</button><button id="planResetViewBtn" disabled>复位视角</button><label class="collision-toggle" title="显示当前轨迹帧使用的躯干盒、头部球体和手臂胶囊；碰撞对显示为红色"><input id="planShowCollisions" type="checkbox" />显示碰撞体</label><input id="planFrameSlider" type="range" min="0" max="0" value="0" disabled /><span id="planFrameLabel">0 / 0</span></div>
+        <div class="offline-viewer-meta">
+          <div id="previewMeta" class="preview-meta">选择离线轨迹，或在线规划成功后显示机器人回放</div>
+          <div class="tool-legend">
+            <span><i style="background:#43d6e8;color:#43d6e8"></i>轨迹1手臂/TCP</span><span><i style="background:#ff8b5c;color:#ff8b5c"></i>轨迹2手臂/TCP</span><span><i style="background:#111418;color:#111418"></i>黑色工具柱</span><span>多选时不显示彩色标定点</span>
+          </div>
+        </div>
+        <div id="jointMini" class="joint-mini"></div>
+      </div>
     </div>
   </section>
 </main>
@@ -391,7 +401,7 @@
 </div>
 <div id="toast" class="toast"></div>
 <script type="module" src="/web/gravity-viewer.js?v=20260821-7"></script>
-<script type="module" src="/web/gravity-plan-viewer.js?v=20260822-1"></script>
+<script type="module" src="/web/gravity-plan-viewer.js?v=20260822-2"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 let data = null;
@@ -405,7 +415,9 @@ let lastPreviewPlanId = "";
 let ikData = null;
 let ikBusy = false;
 let offlineSequences = [];
-let activeOfflineSequence = null;
+let offlineSequenceSelection = new Set();
+try{offlineSequenceSelection=new Set(JSON.parse(localStorage.getItem("gravity_offline_sequences")||"[]"));}catch(_error){localStorage.removeItem("gravity_offline_sequences");}
+let activeOfflineSequences = [];
 
 async function api(path, method="GET", body=null) {
   const response = await fetch(path, {method, headers: body ? {"Content-Type":"application/json"} : {}, body: body ? JSON.stringify(body) : null, cache:"no-store"});
@@ -483,29 +495,43 @@ function renderImportList(){
   $("importList").querySelectorAll("[data-import-file]").forEach(input=>input.addEventListener("change",()=>{input.checked?importSelection.add(input.dataset.importFile):importSelection.delete(input.dataset.importFile);renderImportList();}));
 }
 async function openImportModal(){$("importModal").classList.remove("hidden");await loadImportableWaypoints();}
+const sequenceColors=["#43d6e8","#ff8b5c","#a78bfa","#54d68b","#f3bc5b","#ff69b4"];
+function renderOfflineSequenceList(){
+  const list=$("offlineSequenceList");
+  if(!offlineSequences.length){list.innerHTML='<div class="empty">data/sequences 中没有可回放轨迹</div>';$("offlineSequenceLoadBtn").disabled=true;return;}
+  list.innerHTML=offlineSequences.map((item,index)=>`<label class="offline-sequence-choice" style="--sequence-color:${sequenceColors[index%sequenceColors.length]}"><input type="checkbox" data-offline-file="${esc(item.file)}" ${offlineSequenceSelection.has(item.file)?"checked":""}/><span><b>${esc(item.name)}</b><small>${item.frame_count}帧 · ${esc(item.planner||"已录制")}</small></span></label>`).join("");
+  list.querySelectorAll("[data-offline-file]").forEach(input=>input.addEventListener("change",()=>{input.checked?offlineSequenceSelection.add(input.dataset.offlineFile):offlineSequenceSelection.delete(input.dataset.offlineFile);localStorage.setItem("gravity_offline_sequences",JSON.stringify([...offlineSequenceSelection]));$("offlineSequenceLoadBtn").disabled=!offlineSequenceSelection.size;}));
+  $("offlineSequenceLoadBtn").disabled=!offlineSequenceSelection.size;
+}
 async function loadOfflineSequences(){
-  const select=$("offlineSequenceSelect"),button=$("offlineSequenceLoadBtn"),hint=$("offlineSequenceHint");
+  const button=$("offlineSequenceLoadBtn"),hint=$("offlineSequenceHint");
   try{
     const result=await api("/api/gravity/sequences");
     offlineSequences=result.sequences||[];
     if(!offlineSequences.length){
-      select.innerHTML='<option value="">data/sequences 中没有可回放轨迹</option>';button.disabled=true;hint.textContent="未找到格式有效的离线关节轨迹。";return;
+      offlineSequenceSelection.clear();renderOfflineSequenceList();hint.textContent="未找到格式有效的离线关节轨迹。";return;
     }
-    select.innerHTML=offlineSequences.map(item=>`<option value="${esc(item.file)}">${esc(item.name)} · ${item.frame_count}帧</option>`).join("");
-    const saved=localStorage.getItem("gravity_offline_sequence"),preferred=offlineSequences.find(item=>item.file===saved)||offlineSequences.find(item=>item.name.includes("0.46避障起手式"))||offlineSequences[0];
-    select.value=preferred.file;button.disabled=false;
-    hint.textContent=`${offlineSequences.length}条离线轨迹 · 来源 ${result.source_directory} · 无需18001`;
+    offlineSequenceSelection=new Set([...offlineSequenceSelection].filter(file=>offlineSequences.some(item=>item.file===file)));
+    if(!offlineSequenceSelection.size){
+      const defaults=offlineSequences.filter(item=>item.name.includes("0.46避障起手式")||item.name.includes("0.47避障起手式"));
+      (defaults.length?defaults:offlineSequences.slice(0,1)).forEach(item=>offlineSequenceSelection.add(item.file));
+    }
+    localStorage.setItem("gravity_offline_sequences",JSON.stringify([...offlineSequenceSelection]));renderOfflineSequenceList();button.disabled=!offlineSequenceSelection.size;
+    hint.textContent=`${offlineSequences.length}条离线轨迹 · 已选${offlineSequenceSelection.size}条 · 多选时按TCP路径进度统一为101个对比帧`;
   }catch(e){
-    offlineSequences=[];select.innerHTML='<option value="">离线轨迹读取失败</option>';button.disabled=true;hint.textContent=e.message;toast(e.message,true);
+    offlineSequences=[];offlineSequenceSelection.clear();renderOfflineSequenceList();button.disabled=true;hint.textContent=e.message;toast(e.message,true);
   }
 }
-function playOfflineSequence(){
-  const file=$("offlineSequenceSelect").value,item=offlineSequences.find(entry=>entry.file===file);
-  if(!item)return;
-  activeOfflineSequence=item;localStorage.setItem("gravity_offline_sequence",file);
-  $("previewMeta").textContent=`离线轨迹 · ${item.name} · ${item.frame_count}帧 · ${item.planner||"已录制"} · 不依赖18001`;
-  $("jointMini").innerHTML=(item.source_waypoints||[]).map((name,index)=>`<div><span>路点 ${index+1}</span><b>${esc(name)}</b></div>`).join("");
-  window.dispatchEvent(new CustomEvent("gravity:preview-plan",{detail:{previewUrl:`/api/gravity/sequences/${encodeURIComponent(file)}/preview`,loadingText:`正在加载离线轨迹「${item.name}」…`,errorLabel:"离线轨迹回放失败"}}));
+function playOfflineSequences(){
+  const items=offlineSequences.filter(item=>offlineSequenceSelection.has(item.file));
+  if(!items.length)return;
+  activeOfflineSequences=items;
+  $("previewMeta").textContent=`离线叠加 · ${items.map(item=>item.name).join(" / ")} · 101个对比帧按TCP路径进度一一对应`;
+  $("jointMini").innerHTML=items.map((item,index)=>`<div><span style="color:${sequenceColors[index%sequenceColors.length]}">${esc(item.name)}</span><b>${item.frame_count}帧</b></div>`).join("");
+  if(items.length===1){
+    const item=items[0];window.dispatchEvent(new CustomEvent("gravity:preview-plan",{detail:{previewUrl:`/api/gravity/sequences/${encodeURIComponent(item.file)}/preview`,loadingText:`正在加载离线轨迹「${item.name}」…`,errorLabel:"离线轨迹回放失败"}}));return;
+  }
+  window.dispatchEvent(new CustomEvent("gravity:preview-multiple",{detail:{items:items.map((item,index)=>({name:item.name,file:item.file,color:sequenceColors[index%sequenceColors.length],previewUrl:`/api/gravity/sequences/${encodeURIComponent(item.file)}/preview`}))}}));
 }
 function renderPoints(){
   const points=data.points||[]; $("pointSummary").textContent=`${points.length} 个位点 · ${data.summary.completed_points} 个已完成`;
@@ -548,9 +574,9 @@ function renderSelected(){
   const p=selectedPoint(),plan=data.plan&&data.plan.point_id===selectedId?data.plan:null;
   $("selectedTitle").textContent=p?p.name:"尚未选择位点";$("selectedNote").textContent=p?(p.note||"无备注"):"位点准备和实验执行彼此独立。";
   $("planBtn").disabled=!p||phaseBusy()||!data.reach;$("executeBtn").disabled=!p||!plan||data.operation.phase!=="ready"||!data.reach?.armed||data.reach?.hand_move;
-  $("previewMeta").textContent=activeOfflineSequence?`离线轨迹 · ${activeOfflineSequence.name} · ${activeOfflineSequence.frame_count}帧 · ${activeOfflineSequence.planner||"已录制"} · 不依赖18001`:plan?(plan.blocked?`已被碰撞检查阻止 · ${plan.blocked_reason||"轨迹存在碰撞"} · 已自动显示最严重碰撞帧`:`${plan.planner||"规划"} · ${plan.waypoint_count}帧 · 中途停顿${plan.intermediate_stops||0}次 · 彩色标定点 / 白色TCP / 黑色碰撞胶囊 · 碰撞检查通过`):"选择离线轨迹，或在线规划成功后显示机器人回放";
+  $("previewMeta").textContent=activeOfflineSequences.length?`离线叠加 · ${activeOfflineSequences.map(item=>item.name).join(" / ")} · 101个对比帧按TCP路径进度一一对应`:plan?(plan.blocked?`已被碰撞检查阻止 · ${plan.blocked_reason||"轨迹存在碰撞"} · 已自动显示最严重碰撞帧`:`${plan.planner||"规划"} · ${plan.waypoint_count}帧 · 中途停顿${plan.intermediate_stops||0}次 · 彩色标定点 / 白色TCP / 黑色碰撞胶囊 · 碰撞检查通过`):"选择离线轨迹，或在线规划成功后显示机器人回放";
   if(plan&&plan.id!==lastPreviewPlanId){lastPreviewPlanId=plan.id;setTimeout(()=>window.dispatchEvent(new CustomEvent("gravity:preview-plan",{detail:{planId:plan.id}})),0);}
-  if(activeOfflineSequence){$("jointMini").innerHTML=(activeOfflineSequence.source_waypoints||[]).map((name,index)=>`<div><span>路点 ${index+1}</span><b>${esc(name)}</b></div>`).join("");return;}
+  if(activeOfflineSequences.length){$("jointMini").innerHTML=activeOfflineSequences.map((item,index)=>`<div><span style="color:${sequenceColors[index%sequenceColors.length]}">${esc(item.name)}</span><b>${item.frame_count}帧</b></div>`).join("");return;}
   if(!p){$("jointMini").innerHTML="";return;}const names=p.joint_names||Object.keys(p.named_joints||{});
   $("jointMini").innerHTML=names.map(n=>`<div><span>${esc(n.replace("right_",""))}</span><b>${deg(p.named_joints[n])}</b></div>`).join("");
 }
@@ -605,12 +631,13 @@ function openRunComparison(runId,status){if(status!=="completed"){toast("失败�
 $("armBtn").onclick=async()=>{if(!confirm("确认接管手臂并在当前位置刚性保持？"))return;try{await api("/api/gravity/arm","POST",{on:true});toast("手臂已接管");await poll();}catch(e){toast(e.message,true);}};
 $("openImportBtn").onclick=openImportModal;
 $("openOfflineViewerBtn").onclick=()=>$("offlineTrajectoryPanel").scrollIntoView({behavior:"smooth",block:"start"});
-$("offlineSequenceLoadBtn").onclick=playOfflineSequence;
-$("offlineSequenceSelect").onchange=()=>{$("offlineSequenceLoadBtn").disabled=!$("offlineSequenceSelect").value;};
+$("offlineSequenceLoadBtn").onclick=playOfflineSequences;
+$("offlineSequenceClearBtn").onclick=()=>{offlineSequenceSelection.clear();localStorage.setItem("gravity_offline_sequences","[]");renderOfflineSequenceList();};
 window.addEventListener("gravity:preview-loaded",event=>{
   const visual=event.detail?.plan?.tool_visualization||{},count=Object.keys(visual.markers||{}).length,source=visual.source;
   $("offlineToolSource").textContent=source==="saved_gravity_run"?`本地实验记录 ${visual.source_run_id||""} · ${count}个彩色标定点 · 白色TCP工作点`:source==="robot_config_fallback"?"未找到本地标定点；当前仅显示机器人配置TCP工作点":`${count}个彩色标定点 · 白色TCP工作点`;
 });
+window.addEventListener("gravity:preview-multiple-loaded",event=>{$("offlineToolSource").textContent=`${event.detail.count}条轨迹叠加 · 101个TCP路径进度对比帧 · 仅右臂/TCP分色 · 黑色工具柱`;});
 $("closeImportBtn").onclick=()=>$("importModal").classList.add("hidden");
 $("reloadImportBtn").onclick=loadImportableWaypoints;
 $("importSearch").oninput=renderImportList;
@@ -628,7 +655,7 @@ $("nextBatchBtn").onclick=async()=>{const batch=data.batch;if(!batch)return;if(!
 $("autoBatchBtn").onclick=async()=>{const batch=data.batch;if(!batch)return;if(!$("safetyCheck").checked){toast("请先勾选安全确认",true);return;}if(!confirm("自动批量会在每个点采样成功后直接运行下一个点，不再逐点确认。确认人员已远离并开始？"))return;try{await api(`/api/gravity/batches/${batch.id}/auto`,"POST",{confirm:true});toast("自动批量已启动，可点击“完成本点后暂停”");await poll();}catch(e){toast(e.message,true);}};
 $("pauseBatchBtn").onclick=async()=>{try{const r=await api(`/api/gravity/batches/${data.batch.id}/pause`,"POST",{});toast(r.message);await poll();}catch(e){toast(e.message,true);}};
 $("skipBatchBtn").onclick=async()=>{if(!confirm("跳过当前失败项或下一个待执行位点？"))return;try{await api(`/api/gravity/batches/${data.batch.id}/skip`,"POST",{});toast("已跳过该位点");await poll();}catch(e){toast(e.message,true);}};
-$("planBtn").onclick=async()=>{const p=selectedPoint();if(!p)return;activeOfflineSequence=null;try{await api(`/api/gravity/plan/${p.id}`,"POST",{duration_s:Number($("duration").value),max_speed_rad_s:Number($("speed").value),intermediate_stops:Number($("intermediateStops").value),steps:120,planner_type:"linear",check_collision:true});toast("规划完成，紫色标记为中途停顿采样点");$("safetyCheck").checked=false;await poll();}catch(e){toast(e.message,true);await poll();}};
+$("planBtn").onclick=async()=>{const p=selectedPoint();if(!p)return;activeOfflineSequences=[];try{await api(`/api/gravity/plan/${p.id}`,"POST",{duration_s:Number($("duration").value),max_speed_rad_s:Number($("speed").value),intermediate_stops:Number($("intermediateStops").value),steps:120,planner_type:"linear",check_collision:true});toast("规划完成，紫色标记为中途停顿采样点");$("safetyCheck").checked=false;await poll();}catch(e){toast(e.message,true);await poll();}};
 $("executeBtn").onclick=async()=>{const p=selectedPoint(),plan=data?.plan;if(!p||!plan)return;if(!$("safetyCheck").checked){toast("请先勾选安全确认",true);return;}if(!confirm(`真机将分${(plan.intermediate_stops||0)+1}段运动到「${p.name}」，每段停稳并采样。确认执行？`))return;try{await api(`/api/gravity/execute/${p.id}`,"POST",{confirm:true,plan_id:plan.id,settle_s:Number($("settle").value),sample_s:Number($("sample").value),sample_hz:Number($("sampleHz").value),intermediate_stops:Number($("intermediateStops").value)});toast("分段真机执行已启动");await poll();}catch(e){toast(e.message,true);await poll();}};
 $("stopBtn").onclick=async()=>{if(!confirm("立即停止当前运动并保持当前位置？"))return;try{await api("/api/gravity/stop","POST",{});toast("已发送急停");await poll();}catch(e){toast(e.message,true);}};
 $("refreshIkBtn").onclick=pollIkValidation;

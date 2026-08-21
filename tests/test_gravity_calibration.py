@@ -59,18 +59,22 @@ class GravityCalibrationTests(unittest.TestCase):
         self.assertIn("PORT 18002", html)
         self.assertIn("理论 / 实测完整机器人姿态对比", html)
         self.assertIn("gravity-viewer.js", html)
-        self.assertIn("离线轨迹库与完整机器人回放", html)
+        self.assertIn("离线轨迹库与多轨迹叠加回放", html)
         self.assertIn("gravity-plan-viewer.js", html)
         self.assertIn("planShowCollisions", html)
         self.assertIn("离线轨迹库", html)
         self.assertIn("/api/gravity/sequences", html)
         self.assertIn("offlineTrajectoryPanel", html)
+        self.assertIn("offlineSequenceClearBtn", html)
+        self.assertIn("gravity:preview-multiple", html)
+        self.assertIn("黑色工具柱", html)
+        self.assertIn("101个对比帧", html)
         self.assertIn("彩色标定点", html)
         self.assertIn("点云IK落点验证", html)
         self.assertIn("/api/gravity/ik_validation", html)
         self.assertLess(
             html.index("理论 / 实测完整机器人姿态对比"),
-            html.index("离线轨迹库与完整机器人回放"),
+            html.index("离线轨迹库与多轨迹叠加回放"),
         )
 
     def test_offline_sequence_preview_never_calls_reach_server(self):
@@ -125,6 +129,7 @@ class GravityCalibrationTests(unittest.TestCase):
         self.assertEqual(listing["sequences"][0]["frame_count"], 2)
         self.assertEqual(preview["plan"]["source"], "offline_sequence")
         self.assertEqual(preview["plan"]["frames"][1], {"j1": 0.3, "j2": -0.4})
+        self.assertEqual(preview["plan"]["comparison_progress"], [0.0, 1.0])
         self.assertEqual(
             preview["plan"]["tool_visualization"]["source"],
             "saved_gravity_run",

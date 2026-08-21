@@ -11,6 +11,7 @@ import argparse
 import json
 import math
 import os
+import re
 import statistics
 import tempfile
 import threading
@@ -220,6 +221,39 @@ def _sequence_path(filename: str) -> Path:
     return SEQUENCES_DIR / name
 
 
+def _sequence_tcp_progress(
+    robot: str,
+    chain_id: str,
+    frames: list[dict[str, float]],
+    tool_visualization: dict[str, Any],
+) -> list[float]:
+    """Map recorded frames onto normalized TCP arc length for comparison."""
+    fallback = np.linspace(0.0, 1.0, len(frames)).tolist()
+    tcp_offset = tool_visualization.get("tcp_offset")
+    if not isinstance(tcp_offset, list) or len(tcp_offset) != 3:
+        return fallback
+    try:
+        import app as app_module
+        from core.types import Pose
+
+        model = app_module.robots[robot]
+        tool = Pose(xyz=[float(value) for value in tcp_offset])
+        positions = np.asarray(
+            [
+                model.tcp_pose(frame, chain_id, tool).xyz
+                for frame in frames
+            ],
+            dtype=float,
+        )
+        lengths = np.linalg.norm(np.diff(positions, axis=0), axis=1)
+        cumulative = np.concatenate([[0.0], np.cumsum(lengths)])
+        if not math.isfinite(float(cumulative[-1])) or cumulative[-1] <= 1e-9:
+            return fallback
+        return (cumulative / cumulative[-1]).tolist()
+    except Exception:
+        return fallback
+
+
 def _load_sequence_preview(
     filename: str, *, include_tool_visualization: bool = True
 ) -> dict[str, Any]:
@@ -265,11 +299,18 @@ def _load_sequence_preview(
         raise GravityServiceError(f"轨迹回放时长非法: {filename}") from exc
     if not math.isfinite(duration_s) or duration_s <= 0:
         duration_s = 6.0
+    robot = str(payload.get("robot") or "h2")
+    chain_id = str(payload.get("chain_id") or "right_arm")
+    tool_visualization = (
+        _offline_tool_visualization(robot, chain_id)
+        if include_tool_visualization
+        else {}
+    )
     return {
         "file": path.name,
         "name": str(payload.get("name") or path.stem),
-        "robot": str(payload.get("robot") or "h2"),
-        "chain_id": str(payload.get("chain_id") or "right_arm"),
+        "robot": robot,
+        "chain_id": chain_id,
         "created_at": payload.get("created_at"),
         "recorded_at": trajectory.get("recorded_at"),
         "planner": trajectory.get("planner"),
@@ -277,15 +318,18 @@ def _load_sequence_preview(
         "duration_s": min(120.0, max(0.1, duration_s)),
         "frames": frames,
         "joint_names": joint_names,
-        "sample_fractions": [],
-        "tool_visualization": (
-            _offline_tool_visualization(
-                str(payload.get("robot") or "h2"),
-                str(payload.get("chain_id") or "right_arm"),
+        "comparison_progress": (
+            _sequence_tcp_progress(
+                robot,
+                chain_id,
+                frames,
+                tool_visualization,
             )
             if include_tool_visualization
-            else {}
+            else []
         ),
+        "sample_fractions": [],
+        "tool_visualization": tool_visualization,
         "collision": None,
         "blocked": False,
     }
@@ -328,6 +372,183 @@ def _list_sequences() -> list[dict[str, Any]]:
         ),
         reverse=True,
     )
+
+
+def _retarget_sequence(
+    source_filename: str,
+    target_name: str,
+    forward_offset_m: float,
+) -> dict[str, Any]:
+    """Retarget one recorded motion style over its full TCP arc length."""
+    clean_name = str(target_name or "").strip()
+    if not clean_name or len(clean_name) > 80:
+        raise GravityServiceError("新轨迹名称不能为空且不能超过80字")
+    match = re.match(r"^\s*(\d+(?:\.\d+)?)", clean_name)
+    if not match:
+        raise GravityServiceError("新轨迹名称必须以距离开头，例如0.47避障起手式")
+    offset = float(forward_offset_m)
+    if not math.isfinite(offset) or abs(offset) < 1e-5 or abs(offset) > 0.20:
+        raise GravityServiceError("前伸偏移必须在0.01mm到200mm之间")
+
+    source = _load_sequence_preview(source_filename)
+    visual = source.get("tool_visualization") or {}
+    tcp_offset = visual.get("tcp_offset")
+    if not isinstance(tcp_offset, list) or len(tcp_offset) != 3:
+        raise GravityServiceError("源轨迹缺少可用TCP工作点")
+    try:
+        import app as app_module
+        from core.types import IKRequest, Pose
+
+        model = app_module.robots[source["robot"]]
+        solver = app_module.solvers[source["robot"]]["numerical"]
+        checker = app_module.collision_checkers[source["robot"]]
+        chain_id = source["chain_id"]
+        joint_names = model.joint_names(chain_id)
+        tool = Pose(xyz=[float(value) for value in tcp_offset])
+        original_frames = source["frames"]
+        original_poses = [
+            model.tcp_pose(frame, chain_id, tool) for frame in original_frames
+        ]
+    except Exception as exc:
+        raise GravityServiceError(f"无法加载机器人模型或源轨迹: {exc}") from exc
+
+    positions = np.asarray([pose.xyz for pose in original_poses], dtype=float)
+    segment_lengths = np.linalg.norm(np.diff(positions, axis=0), axis=1)
+    cumulative = np.concatenate([[0.0], np.cumsum(segment_lengths)])
+    total_length = float(cumulative[-1])
+    if total_length <= 1e-9:
+        raise GravityServiceError("源轨迹TCP路径长度为零")
+    progress = cumulative / total_length
+    weights = 6.0 * progress**5 - 15.0 * progress**4 + 10.0 * progress**3
+
+    retargeted: list[np.ndarray] = []
+    previous_named = original_frames[0]
+    retargeted.append(
+        np.asarray([float(previous_named[name]) for name in joint_names], dtype=float)
+    )
+    for index in range(1, len(original_frames)):
+        pose = original_poses[index]
+        target_xyz = np.asarray(pose.xyz, dtype=float)
+        target_xyz[0] += offset * float(weights[index])
+        result = solver.solve(
+            IKRequest(
+                chain_id=chain_id,
+                current_joints=previous_named,
+                target_pose=Pose(xyz=target_xyz.tolist(), rpy=list(pose.rpy)),
+                tcp_offset=tool,
+                base_link=model.base_link(chain_id),
+                end_link=model.end_link(chain_id),
+                joint_names=joint_names,
+                seed=previous_named,
+                solver_options={
+                    "solve_orientation": True,
+                    "tolerance_mm": 2.0,
+                    "rotation_tolerance_deg": 2.0,
+                    "regularization_weight": 0.001,
+                },
+            )
+        )
+        if not result.success:
+            raise GravityServiceError(
+                f"第{index + 1}/{len(original_frames)}帧重定向IK失败："
+                f"{result.error_mm:.2f}mm，"
+                f"{math.degrees(result.error_rotation):.2f}°"
+            )
+        previous_named = result.named_target_joints
+        retargeted.append(np.asarray(result.target_joints, dtype=float))
+
+    dense_frames: list[np.ndarray] = [retargeted[0]]
+    for start, end in zip(retargeted, retargeted[1:]):
+        count = max(
+            1,
+            int(math.ceil(float(np.max(np.abs(end - start))) / 0.04)),
+        )
+        dense_frames.extend(
+            start + (end - start) * (step / count)
+            for step in range(1, count + 1)
+        )
+
+    checks = [
+        checker.check_state(frame.tolist(), chain_id, tool)
+        for frame in dense_frames
+    ]
+    collision = next(
+        (check for check in checks if check.get("status") == "collision"),
+        None,
+    )
+    if collision is not None:
+        pair = collision.get("pair") or {}
+        raise GravityServiceError(
+            "重定向轨迹发生模型碰撞："
+            f"{pair.get('a', '?')} ↔ {pair.get('b', '?')}，"
+            f"{collision.get('min_distance_mm', 0):.1f}mm"
+        )
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    distance_prefix = match.group(1)
+    endpoint_name = f"{distance_prefix}终点"
+    endpoint_file = f"{endpoint_name}_{timestamp}.json"
+    sequence_file = f"{clean_name}_{timestamp}.json"
+    endpoint_named = {
+        name: float(value)
+        for name, value in zip(joint_names, dense_frames[-1])
+    }
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    endpoint_payload = {
+        "name": endpoint_name,
+        "chain_id": chain_id,
+        "named_joints": endpoint_named,
+        "created_at": now_text,
+        "generated_from": source_filename,
+        "forward_offset_m": offset,
+    }
+    source_waypoints = source.get("source_waypoints") or []
+    if not source_waypoints:
+        raise GravityServiceError("源轨迹缺少起点路点引用")
+    travel = sum(
+        float(np.max(np.abs(end - start)))
+        for start, end in zip(dense_frames, dense_frames[1:])
+    )
+    duration_s = max(1.0, travel / 0.35)
+    sequence_payload = {
+        "name": clean_name,
+        "chain_id": chain_id,
+        "waypoints": [str(source_waypoints[0]), endpoint_file],
+        "created_at": now_text,
+        "trajectory": {
+            "frames": [
+                [round(float(value), 5) for value in frame]
+                for frame in dense_frames
+            ],
+            "joint_names": joint_names,
+            "duration_s": round(duration_s, 3),
+            "recorded_at": datetime.now().isoformat(timespec="seconds"),
+            "planner": "task-space-style-retarget",
+            "retarget": {
+                "source_sequence": source_filename,
+                "forward_offset_m": offset,
+                "axis_root": [1.0, 0.0, 0.0],
+                "progress": "quintic-smoothstep-over-tcp-arclength",
+                "preserve_tcp_orientation": True,
+                "max_joint_step_rad": 0.04,
+            },
+        },
+    }
+    _atomic_json(REGULAR_WAYPOINTS_DIR / endpoint_file, endpoint_payload)
+    _atomic_json(SEQUENCES_DIR / sequence_file, sequence_payload)
+    minimum_clearance = min(
+        float(check.get("min_distance_mm") or math.inf) for check in checks
+    )
+    return {
+        "sequence_file": sequence_file,
+        "endpoint_file": endpoint_file,
+        "name": clean_name,
+        "frame_count": len(dense_frames),
+        "duration_s": round(duration_s, 3),
+        "forward_offset_m": offset,
+        "minimum_model_clearance_mm": minimum_clearance,
+        "source_file": source_filename,
+    }
 
 
 def _list_runs(*, include_samples: bool = False) -> list[dict[str, Any]]:
@@ -857,6 +1078,19 @@ def offline_sequences():
         "source_directory": str(SEQUENCES_DIR),
         "sequences": _list_sequences(),
     }
+
+
+@app.post("/api/gravity/sequences/retarget")
+def retarget_offline_sequence(body: dict[str, Any]):
+    try:
+        result = _retarget_sequence(
+            str(body.get("source_file") or ""),
+            str(body.get("target_name") or ""),
+            float(body.get("forward_offset_m")),
+        )
+        return {"ok": True, "result": result}
+    except (GravityServiceError, TypeError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
 @app.get("/api/gravity/sequences/{filename}/preview")
