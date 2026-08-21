@@ -77,6 +77,8 @@ let captureMeta = null;
 let colorMode = "rgb";
 let viewMode = "live";
 let selection = null;
+let replacementArmed = false;
+let selectionPending = false;
 let semanticLabels = [];
 let restoringState = false;
 const STORAGE_KEY = "ik-replay-pointcloud-state-v1";
@@ -235,9 +237,12 @@ function installCloud(decoded, { preserveView = false } = {}) {
   scene.add(points);
   marker.visible = false;
   selection = null;
+  replacementArmed = false;
+  selectionPending = false;
   $("confirmTarget").disabled = true;
   $("selection").textContent = "点击点云选择一个点";
   $("selection").classList.add("muted");
+  updateSelectionLock();
   rebuildSemanticLabels();
   if (!preserveView) resetView();
 }
@@ -530,6 +535,31 @@ function classAtPixel(pixel) {
     : { cls: -1, name: "背景" };
 }
 
+function updateSelectionLock() {
+  const element = $("selectionLock");
+  if (!selection) {
+    element.textContent = "首次选点：直接点击点云或RGB图像";
+    element.className = "selection-lock ready";
+  } else if (replacementArmed) {
+    element.textContent = "重新选点已解锁：下一次点击将替换当前点";
+    element.className = "selection-lock armed";
+  } else {
+    element.textContent = "当前点已锁定；按 R 后才能重新选点";
+    element.className = "selection-lock locked";
+  }
+}
+
+function selectionClickAllowed() {
+  if (selectionPending) {
+    setStatus("正在读取上一次点击的冻结深度，请稍候");
+    return false;
+  }
+  if (!selection || replacementArmed) return true;
+  setStatus("当前点已锁定；如需重新选点，请先按 R", "error");
+  updateSelectionLock();
+  return false;
+}
+
 function setSelection(pCamera, pixel, source, cls = null, className = null) {
   const point = pCamera.map(Number);
   const detected = cls == null ? classAtPixel(pixel) : { cls, name: className };
@@ -543,7 +573,9 @@ function setSelection(pCamera, pixel, source, cls = null, className = null) {
     adjustment: [0, 0, 0],
     confirmed: null,
   };
+  replacementArmed = false;
   renderSelection();
+  updateSelectionLock();
 }
 
 function renderSelection() {
@@ -578,6 +610,7 @@ function renderSelection() {
   $("selection").textContent = lines.join("\n");
   $("confirmTarget").disabled = !captureMeta?.T_cam2root;
   drawSnapshotBoxes();
+  updateSelectionLock();
   persistState();
 }
 
@@ -586,6 +619,7 @@ async function selectSnapshotPixel(event) {
     setStatus("请先拍摄 RGB-D 快照", "error");
     return;
   }
+  if (!selectionClickAllowed()) return;
   const image = $("snapshotImage");
   const rect = image.getBoundingClientRect();
   const u = Math.max(0, Math.min(
@@ -596,6 +630,7 @@ async function selectSnapshotPixel(event) {
     image.naturalHeight - 1,
     Math.round((event.clientY - rect.top) / rect.height * image.naturalHeight),
   ));
+  selectionPending = true;
   setStatus(`正在读取 RGB 像素 (${u}, ${v}) 的冻结深度…`);
   try {
     const response = await fetch(`/api/pointcloud/pixel/${captureMeta.capture_id}`, {
@@ -617,6 +652,8 @@ async function selectSnapshotPixel(event) {
     setStatus(`RGB 选点成功：深度 ${result.depth_mm.toFixed(1)} mm${shifted}`, "ok");
   } catch (error) {
     setStatus(error.message || String(error), "error");
+  } finally {
+    selectionPending = false;
   }
 }
 
@@ -717,6 +754,7 @@ renderer.domElement.addEventListener("pointerup", (event) => {
   );
   pointerDown = null;
   if (movement > 4) return;
+  if (!selectionClickAllowed()) return;
   const rect = renderer.domElement.getBoundingClientRect();
   pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
@@ -784,6 +822,24 @@ window.addEventListener("keydown", (event) => {
       && (target.matches("input, textarea, select") || target.isContentEditable)) {
     return;
   }
+  if (event.code === "KeyR") {
+    event.preventDefault();
+    if (!selection) {
+      setStatus("首次选点无需解锁，直接点击即可", "ok");
+      return;
+    }
+    replacementArmed = true;
+    updateSelectionLock();
+    setStatus("重新选点已解锁；请点击一次点云或RGB图像", "ok");
+    return;
+  }
+  if (event.code === "Escape" && replacementArmed) {
+    event.preventDefault();
+    replacementArmed = false;
+    updateSelectionLock();
+    setStatus("已取消重新选点，当前点保持锁定");
+    return;
+  }
   if (nudgeSelection(event.code)) event.preventDefault();
 });
 
@@ -826,4 +882,5 @@ async function initialize() {
 }
 
 setViewMode(viewMode);
+updateSelectionLock();
 initialize();

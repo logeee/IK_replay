@@ -97,6 +97,21 @@ input, select {
 .muted { color: #7f91a8; }
 .target-controls { margin: 10px 0 8px; }
 .key-help { margin-bottom: 9px; color: #8fa0b7; font-size: 11px; line-height: 1.5; }
+.selection-lock {
+  margin-bottom: 9px;
+  padding: 7px 8px;
+  border: 1px solid #344154;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.selection-lock.ready { color: #8fc8ff; background: rgba(37, 132, 207, .1); }
+.selection-lock.locked { color: #b6c2d2; background: rgba(127, 145, 168, .08); }
+.selection-lock.armed {
+  color: #7ae2a2;
+  border-color: #2f9d60;
+  background: rgba(47, 157, 96, .15);
+}
 
 .box-list { display: flex; flex-direction: column; gap: 6px; }
 .box-row {

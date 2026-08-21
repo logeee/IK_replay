@@ -70,7 +70,8 @@
             <input id="approachOffset" type="number" min="-0.05" max="0.1" step="0.005" value="0" />
           </label>
         </div>
-        <div class="key-help">A/D：X−/X+　W/S：Y−/Y+　Q/E：Z−/Z+</div>
+        <div class="key-help">R：解锁一次重新选点　A/D：X−/X+　W/S：Y−/Y+　Q/E：Z−/Z+</div>
+        <div id="selectionLock" class="selection-lock ready">首次选点：直接点击点云或RGB图像</div>
         <button id="confirmTarget" class="primary" disabled>确定目标并发送到 18001</button>
       </section>
 
@@ -99,6 +100,6 @@
       <div id="axisNote" class="axis-note hidden">显示坐标：X 右，Y 上，视线向前；数值返回彩色相机系 X右/Y下/Z前</div>
     </main>
 
-    <script type="module" src="/web/pointcloud.js?v=20260821-1"></script>
+    <script type="module" src="/web/pointcloud.js?v=20260821-2"></script>
   </body>
 </html>
