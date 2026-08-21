@@ -13,6 +13,7 @@ from adapters.reach import recordings
 from adapters.reach.execution import (
     COMMAND_SNAPSHOT_MAX_AGE_S,
     _build_control_waypoints,
+    _json_safe_value,
     _validated_command_snapshot,
 )
 
@@ -34,6 +35,21 @@ class _SequenceController:
 
 
 class ExecutionHandoffTests(unittest.TestCase):
+    def test_numpy_command_snapshot_is_json_serializable(self):
+        snapshot = {
+            "q_rad": np.array([0.15, -0.18]),
+            "tau_ff_nm": np.array([3.5, 0.2]),
+            "sent_at_monotonic": np.float64(10.0),
+            "sequence": np.int64(42),
+        }
+
+        encoded = _json_safe_value(snapshot)
+
+        self.assertEqual(encoded["q_rad"], [0.15, -0.18])
+        self.assertEqual(encoded["tau_ff_nm"], [3.5, 0.2])
+        self.assertEqual(encoded["sequence"], 42)
+        json.dumps(encoded)
+
     def test_plan_keeps_measured_start_but_control_uses_last_sent(self):
         measured = np.array([0.10, -0.20, 0.30])
         last_sent = np.array([0.15, -0.18, 0.30])
