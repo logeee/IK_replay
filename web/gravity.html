@@ -124,6 +124,9 @@
   .compare-toolbar select { min-width:180px; }
   .compare-toolbar label { color:var(--muted);font-size:10px;display:flex;gap:5px;align-items:center; }
   .compare-toolbar input { accent-color:var(--cyan); }
+  .sample-nav { display:flex;align-items:center;gap:5px;padding:3px;border:1px solid var(--line);border-radius:9px;background:#0b1724; }
+  .sample-nav button { min-width:76px;padding:6px 9px; }
+  .sample-nav strong { min-width:54px;text-align:center;color:var(--text);font-size:11px; }
   .compare-layout { display:grid;grid-template-columns:minmax(0,1.65fr) minmax(310px,.75fr);min-height:430px; }
   .compare-viewport { position:relative;min-height:430px;background:radial-gradient(circle at 50% 40%,#14273a,#07111d 70%);overflow:hidden; }
   .compare-viewport canvas { display:block;width:100%;height:100%; }
@@ -264,9 +267,14 @@
   </div>
   <section id="comparePanel" class="panel compare-panel">
     <div class="panel-head">
-      <h2>理论 / 实测机械臂姿态对比</h2>
+      <h2>理论 / 实测完整机器人姿态对比</h2>
       <div class="hint compare-toolbar">
         <span id="compareRunLabel">从上方实验记录中选择一次已完成实验</span>
+        <div class="sample-nav">
+          <button id="comparePrevSample" disabled>← 上一个点</button>
+          <strong id="compareSamplePosition">— / —</strong>
+          <button id="compareNextSample" disabled>下一个点 →</button>
+        </div>
         <select id="compareSampleSelect" disabled><option>采样姿态</option></select>
         <label><input id="showTheoretical" type="checkbox" checked />理论</label>
         <label><input id="showMeasured" type="checkbox" checked />实测</label>
@@ -275,13 +283,13 @@
     </div>
     <div class="compare-layout">
       <div id="compareViewport" class="compare-viewport">
-        <div id="comparePlaceholder" class="compare-placeholder">点击一条已完成的实验记录<br>查看双机械臂姿态、关节标定点与TCP偏差</div>
+        <div id="comparePlaceholder" class="compare-placeholder">点击一条已完成的实验记录<br>查看双完整机器人、标定点与TCP偏差</div>
       </div>
       <aside class="compare-side">
         <div class="tcp-error"><small>理论TCP ↔ 实测TCP 空间偏差</small><strong id="compareTcpError">— mm</strong>
           <div class="delta-grid"><div>ΔX<b id="compareDx">—</b></div><div>ΔY<b id="compareDy">—</b></div><div>ΔZ<b id="compareDz">—</b></div></div>
         </div>
-        <div class="compare-legend"><span><i class="legend-dot" style="background:#43d6e8"></i>理论/命令</span><span><i class="legend-dot" style="background:#ff8b5c"></i>实测</span><span><i class="legend-dot" style="background:#f3bc5b"></i>偏差连线</span></div>
+        <div class="compare-legend"><span><i class="legend-dot" style="background:#7d8792"></i>未对比身体</span><span><i class="legend-dot" style="background:#43d6e8"></i>理论右臂</span><span><i class="legend-dot" style="background:#1687ff"></i>理论TCP</span><span><i class="legend-dot" style="background:#ff8b5c"></i>实测右臂/TCP</span><span><i class="legend-dot" style="background:#f3bc5b"></i>关节偏差</span><span><i class="legend-dot" style="background:#ff3b30"></i>TCP红色连线</span></div>
         <div id="compareJointErrors" class="joint-errors"><div class="empty">尚未加载关节偏差</div></div>
       </aside>
     </div>
@@ -296,7 +304,7 @@
   </div>
 </div>
 <div id="toast" class="toast"></div>
-<script type="module" src="/web/gravity-viewer.js?v=20260821-1"></script>
+<script type="module" src="/web/gravity-viewer.js?v=20260821-6"></script>
 <script type="module" src="/web/gravity-plan-viewer.js?v=20260821-1"></script>
 <script>
 const $ = (id) => document.getElementById(id);

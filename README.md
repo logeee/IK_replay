@@ -80,6 +80,9 @@ joint frame with play/pause, scrubbing, sampling-frame labels, orbit, zoom, pan,
 and camera reset controls. The wrist-attached nine color calibration markers,
 white TCP point, green flange plane, and dark hand collision capsule are carried
 through every preview frame; the old TCP-only 2D preview is not used.
+Completed gravity runs use the same URDF assets to overlay complete theoretical
+and measured robots, with previous/next controls for every sampled trajectory
+stop and per-stop joint/TCP error readouts.
 
 ## Reach RGB-D source
 

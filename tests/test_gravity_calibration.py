@@ -55,7 +55,7 @@ class GravityCalibrationTests(unittest.TestCase):
         self.assertIn("重力补偿标定实验台", html)
         self.assertIn("/api/gravity/execute/", html)
         self.assertIn("PORT 18002", html)
-        self.assertIn("理论 / 实测机械臂姿态对比", html)
+        self.assertIn("理论 / 实测完整机器人姿态对比", html)
         self.assertIn("gravity-viewer.js", html)
         self.assertIn("完整机器人轨迹回放预览", html)
         self.assertIn("gravity-plan-viewer.js", html)
@@ -141,6 +141,11 @@ class GravityCalibrationTests(unittest.TestCase):
             "robot": "h2",
             "chain_id": "right_arm",
             "gravity_profile": {"version": "0.0.0"},
+            "tool_visualization": {
+                "tcp_offset": [0.3, 0.01, 0.04],
+                "markers": {"red": [0.28, 0.0, 0.04]},
+                "wrist_link": "right_wrist_yaw_link",
+            },
             "sample_points": [
                 {
                     "index": 1,
@@ -171,6 +176,10 @@ class GravityCalibrationTests(unittest.TestCase):
         ):
             self.assertAlmostEqual(actual, expected)
         self.assertAlmostEqual(comparison["tcp_error_mm"], 22.3606798)
+        self.assertEqual(
+            comparison["tool_visualization"]["wrist_link"],
+            "right_wrist_yaw_link",
+        )
 
     def test_dashboard_inline_javascript_is_valid(self):
         node = shutil.which("node")
@@ -201,6 +210,12 @@ class GravityCalibrationTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+        viewer_source = (gravity.WEB_DIR / "gravity-viewer.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("STLLoader", viewer_source)
+        self.assertIn("comparePrevSample", viewer_source)
+        self.assertIn("compareNextSample", viewer_source)
         plan_result = subprocess.run(
             [node, "--check", str(gravity.WEB_DIR / "gravity-plan-viewer.js")],
             check=False,

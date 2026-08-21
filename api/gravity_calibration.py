@@ -273,6 +273,15 @@ def _reach_status() -> dict[str, Any]:
     return _request_reach("GET", "/api/reach/status", timeout=1.5)
 
 
+def _tool_visualization(reach: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "tcp_offset": reach.get("p_tool"),
+        "markers": reach.get("p_tool_wrist_m_by_marker") or {},
+        "reference_marker": reach.get("p_tool_reference_marker"),
+        "wrist_link": reach.get("wrist_link"),
+    }
+
+
 def _set_operation(**changes: Any) -> None:
     with _lock:
         _operation.update(changes)
@@ -752,12 +761,7 @@ def plan_waypoint(point_id: str, body: dict[str, Any] | None = None):
             "waypoint_count": len(waypoints),
             "collision": collision,
             "waypoints": waypoints,
-            "tool_visualization": {
-                "tcp_offset": reach.get("p_tool"),
-                "markers": reach.get("p_tool_wrist_m_by_marker") or {},
-                "reference_marker": reach.get("p_tool_reference_marker"),
-                "wrist_link": reach.get("wrist_link"),
-            },
+            "tool_visualization": _tool_visualization(reach),
             "preview": {
                 "tcp_path_root_m": tcp_path,
                 "start_joints": waypoints[0],
@@ -1085,6 +1089,7 @@ def execute_waypoint(point_id: str, body: dict[str, Any]):
             "started_at": _now(),
             "status": "running",
             "gravity_profile": deepcopy(reach.get("gravity_profile") or {}),
+            "tool_visualization": _tool_visualization(reach),
             "robot": plan.get("robot") or "h2",
             "chain_id": plan.get("chain_id") or "right_arm",
             "target_named_joints": plan["waypoints"][-1],
@@ -1534,6 +1539,7 @@ def _pose_comparison(run: dict[str, Any], sample_index: int) -> dict[str, Any]:
         "sample_index": sample_index,
         "sample_type": selected.get("type"),
         "trajectory_fraction": selected.get("trajectory_fraction"),
+        "tool_visualization": deepcopy(run.get("tool_visualization") or {}),
         "available_samples": [
             {
                 "index": int(point.get("index", index + 1)),
@@ -1563,9 +1569,16 @@ def _pose_comparison(run: dict[str, Any], sample_index: int) -> dict[str, Any]:
 @app.get("/api/gravity/runs/{run_id}/comparison")
 def run_comparison(run_id: str, sample_index: int = 1):
     try:
+        run = _load_run(run_id)
+        comparison = _pose_comparison(run, int(sample_index))
+        if not (comparison.get("tool_visualization") or {}).get("tcp_offset"):
+            try:
+                comparison["tool_visualization"] = _tool_visualization(_reach_status())
+            except GravityServiceError:
+                pass
         return {
             "ok": True,
-            "comparison": _pose_comparison(_load_run(run_id), int(sample_index)),
+            "comparison": comparison,
         }
     except (GravityServiceError, TypeError, ValueError) as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
