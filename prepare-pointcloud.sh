@@ -147,7 +147,7 @@ elif port_in_use "$REACH_PORT"; then
     echo "[启动失败] 端口 $REACH_PORT 已被其他服务占用，但 Reach 状态接口不可达"
     exit 1
 else
-    nohup "$PYTHON" reach_server.py \
+    nohup env PYTHONUNBUFFERED=1 "$PYTHON" reach_server.py \
         --port "$REACH_PORT" \
         --camera-source zmq \
         --camera-host "$CAMERA_HOST" \
@@ -183,7 +183,7 @@ else
         fi
         exit 1
     fi
-    nohup "$PYTHON" -m api.pointcloud_viewer \
+    nohup env PYTHONUNBUFFERED=1 "$PYTHON" -m api.pointcloud_viewer \
         --port "$POINTCLOUD_PORT" \
         --reach-base "$REACH_BASE" \
         --model "$POINTCLOUD_MODEL" \
