@@ -74,6 +74,11 @@ The gravity waypoint library can also multi-select and copy existing
 `data/waypoints/*.json` poses. Imports retain their source filename, never edit
 the original waypoint, and skip a source file that has already been imported.
 
+Planning preview uses the same H2 URDF/STL assets as the 18001 viewer. After a
+collision-checked plan, 18002 loads the complete robot and replays every named
+joint frame with play/pause, scrubbing, sampling-frame labels, orbit, zoom, pan,
+and camera reset controls; the old TCP-only 2D preview is not used.
+
 ## Reach RGB-D source
 
 The production reach service is a read-only consumer of the external

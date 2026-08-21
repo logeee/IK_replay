@@ -47,6 +47,7 @@ GRAVITY_PROFILES_PATH = DEFAULT_GRAVITY_PROFILES_PATH
 
 app = FastAPI(title="gravity-calibration")
 app.mount("/web", StaticFiles(directory=WEB_DIR), name="gravity-web")
+app.mount("/assets", StaticFiles(directory=ROOT / "assets"), name="gravity-assets")
 
 _http = requests.Session()
 _http.trust_env = False
@@ -368,6 +369,39 @@ def _aggregate_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
 @app.get("/")
 def page():
     return FileResponse(WEB_DIR / "gravity.html")
+
+
+@app.get("/api/gravity/robot_metadata")
+def gravity_robot_metadata(robot: str = "h2"):
+    try:
+        import app as app_module
+
+        return {"ok": True, "metadata": app_module.robot_metadata(robot)}
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/gravity/plans/{plan_id}/preview")
+def gravity_plan_preview(plan_id: str):
+    with _lock:
+        plan = deepcopy(_plan)
+    if plan is None or plan.get("id") != plan_id:
+        return JSONResponse({"ok": False, "error": "规划不存在或已被替换"}, status_code=404)
+    return {
+        "ok": True,
+        "plan": {
+            "id": plan["id"],
+            "point_id": plan["point_id"],
+            "point_name": plan["point_name"],
+            "robot": plan.get("robot") or "h2",
+            "chain_id": plan.get("chain_id") or "right_arm",
+            "duration_s": plan["duration_s"],
+            "planner": plan.get("planner"),
+            "collision": plan.get("collision"),
+            "frames": plan["waypoints"],
+            "sample_fractions": plan.get("preview", {}).get("sample_fractions", []),
+        },
+    }
 
 
 @app.get("/api/gravity/status")

@@ -1,0 +1,350 @@
+import * as THREE from "three";
+import { OrbitControls } from "/web/vendor/OrbitControls.js";
+import { STLLoader } from "/web/vendor/STLLoader.js";
+
+const viewport = document.getElementById("planRobotViewport");
+const placeholder = document.getElementById("planRobotPlaceholder");
+const playButton = document.getElementById("planReplayBtn");
+const resetButton = document.getElementById("planResetViewBtn");
+const slider = document.getElementById("planFrameSlider");
+const frameLabel = document.getElementById("planFrameLabel");
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x07111d);
+scene.add(new THREE.HemisphereLight(0xeaf5ff, 0x263544, 2.5));
+const keyLight = new THREE.DirectionalLight(0xffffff, 2.2);
+keyLight.position.set(1.8, -1.4, 2.8);
+scene.add(keyLight);
+const fillLight = new THREE.DirectionalLight(0x91c9ff, 0.8);
+fillLight.position.set(-1.5, 1.2, 1.5);
+scene.add(fillLight);
+const grid = new THREE.GridHelper(2.4, 24, 0x3b566d, 0x1c3040);
+grid.rotation.x = Math.PI / 2;
+scene.add(grid);
+scene.add(new THREE.AxesHelper(0.18));
+
+const camera = new THREE.PerspectiveCamera(43, 1, 0.01, 30);
+camera.up.set(0, 0, 1);
+camera.position.set(1.2, -2.1, 1.25);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+viewport.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0, 0.65);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.screenSpacePanning = true;
+controls.update();
+
+const state = {
+  robotId: null,
+  metadata: null,
+  robotGroup: null,
+  jointNodes: new Map(),
+  meshBaseUrl: "/assets/",
+  sceneOffset: new THREE.Vector3(),
+  frames: [],
+  sampleFractions: [],
+  duration: 4,
+  frameIndex: 0,
+  playing: false,
+  startedAt: 0,
+  startedFrame: 0,
+};
+
+function resize() {
+  const width = Math.max(1, viewport.clientWidth);
+  const height = Math.max(1, viewport.clientHeight);
+  renderer.setSize(width, height, false);
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(viewport);
+resize();
+
+function animate(now) {
+  if (state.playing && state.frames.length > 1) {
+    const frameDuration = (state.duration * 1000) / (state.frames.length - 1);
+    const elapsedFrames = Math.floor((now - state.startedAt) / Math.max(frameDuration, 1));
+    const next = state.startedFrame + elapsedFrames;
+    if (next >= state.frames.length) {
+      applyFrame(state.frames.length - 1);
+      state.playing = false;
+      playButton.textContent = "↻ 重播";
+    } else if (next !== state.frameIndex) {
+      applyFrame(next);
+    }
+  }
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
+
+function parseVector(value, fallback) {
+  if (!value) return fallback;
+  const parts = value.trim().split(/\s+/).map(Number);
+  return parts.length === 3 && parts.every(Number.isFinite) ? parts : fallback;
+}
+
+function parseOrigin(element) {
+  return {
+    xyz: parseVector(element?.getAttribute("xyz"), [0, 0, 0]),
+    rpy: parseVector(element?.getAttribute("rpy"), [0, 0, 0]),
+  };
+}
+
+function applyOrigin(object, origin) {
+  object.position.set(...origin.xyz);
+  object.rotation.set(...origin.rpy, "XYZ");
+}
+
+function meshUrl(filename) {
+  if (!filename) return "";
+  if (/^https?:\/\//.test(filename) || filename.startsWith("/")) return filename;
+  const clean = filename.replace(/^package:\/\/[^/]+\//, "").replace(/^file:\/\//, "");
+  return `${state.meshBaseUrl}${clean.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+function visualMaterial(visualElement) {
+  const attribute = visualElement
+    .querySelector("material > color")
+    ?.getAttribute("rgba");
+  const rgba = attribute
+    ? attribute.trim().split(/\s+/).map(Number)
+    : [0.58, 0.68, 0.76, 1];
+  return new THREE.MeshStandardMaterial({
+    color: new THREE.Color(rgba[0], rgba[1], rgba[2]),
+    transparent: rgba[3] < 1,
+    opacity: rgba[3],
+    roughness: 0.58,
+    metalness: 0.08,
+  });
+}
+
+async function loadRobot(robotId) {
+  if (state.robotId === robotId && state.robotGroup) return;
+  placeholder.style.display = "grid";
+  placeholder.textContent = "正在加载完整URDF机器人模型…";
+  const metadataResponse = await fetch(
+    `/api/gravity/robot_metadata?robot=${encodeURIComponent(robotId)}`,
+    { cache: "no-store" },
+  );
+  const metadataPayload = await metadataResponse.json();
+  if (!metadataResponse.ok || metadataPayload.ok === false) {
+    throw new Error(metadataPayload.error || "机器人元数据读取失败");
+  }
+  const metadata = metadataPayload.metadata;
+  const urdfResponse = await fetch(`${metadata.robot.urdf_url}?v=gravity-preview-1`);
+  if (!urdfResponse.ok) throw new Error(`URDF读取失败 HTTP ${urdfResponse.status}`);
+  const xml = new DOMParser().parseFromString(
+    await urdfResponse.text(),
+    "application/xml",
+  );
+  if (xml.querySelector("parsererror")) throw new Error("URDF解析失败");
+
+  if (state.robotGroup) scene.remove(state.robotGroup);
+  state.jointNodes.clear();
+  state.metadata = metadata;
+  state.meshBaseUrl = metadata.robot.mesh_base_url;
+  const links = new Map();
+  const jointsByParent = new Map();
+  const childLinks = new Set();
+  const loader = new STLLoader();
+  const meshTasks = [];
+
+  for (const linkElement of xml.querySelectorAll("link")) {
+    const name = linkElement.getAttribute("name");
+    const group = new THREE.Group();
+    group.name = name;
+    links.set(name, group);
+    for (const visualElement of linkElement.querySelectorAll("visual")) {
+      const meshElement = visualElement.querySelector("geometry > mesh");
+      if (!meshElement) continue;
+      const visualGroup = new THREE.Group();
+      applyOrigin(visualGroup, parseOrigin(visualElement.querySelector("origin")));
+      const scale = parseVector(meshElement.getAttribute("scale"), [1, 1, 1]);
+      const material = visualMaterial(visualElement);
+      const filename = meshElement.getAttribute("filename");
+      meshTasks.push(
+        loader
+          .loadAsync(meshUrl(filename))
+          .then((geometry) => {
+            geometry.computeVertexNormals();
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.scale.set(...scale);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            visualGroup.add(mesh);
+          })
+          .catch((error) => console.warn(`mesh加载失败: ${filename}`, error)),
+      );
+      group.add(visualGroup);
+    }
+  }
+
+  for (const jointElement of xml.querySelectorAll("joint")) {
+    const parent = jointElement.querySelector("parent")?.getAttribute("link");
+    const child = jointElement.querySelector("child")?.getAttribute("link");
+    if (!parent || !child) continue;
+    const joint = {
+      name: jointElement.getAttribute("name"),
+      type: jointElement.getAttribute("type") || "fixed",
+      parent,
+      child,
+      axis: new THREE.Vector3(
+        ...parseVector(jointElement.querySelector("axis")?.getAttribute("xyz"), [0, 0, 1]),
+      ).normalize(),
+      origin: parseOrigin(jointElement.querySelector("origin")),
+    };
+    childLinks.add(child);
+    if (!jointsByParent.has(parent)) jointsByParent.set(parent, []);
+    jointsByParent.get(parent).push(joint);
+  }
+
+  const rootLink = [...links.keys()].find((name) => !childLinks.has(name));
+  if (!rootLink) throw new Error("URDF没有根link");
+  const root = new THREE.Group();
+  root.name = metadata.robot.name;
+  root.add(links.get(rootLink));
+
+  function attachChildren(parentName) {
+    const parent = links.get(parentName);
+    for (const joint of jointsByParent.get(parentName) || []) {
+      const origin = new THREE.Group();
+      applyOrigin(origin, joint.origin);
+      const motion = new THREE.Group();
+      origin.add(motion);
+      motion.add(links.get(joint.child));
+      parent.add(origin);
+      state.jointNodes.set(joint.name, { ...joint, motion });
+      attachChildren(joint.child);
+    }
+  }
+  attachChildren(rootLink);
+  state.robotGroup = root;
+  scene.add(root);
+  await Promise.all(meshTasks);
+
+  const initial = {};
+  Object.values(metadata.chains || {}).forEach((chain) => {
+    Object.assign(initial, chain.default_current_joints || {});
+  });
+  setRobotJoints(initial);
+  updateGroundAndView();
+  state.robotId = robotId;
+}
+
+function setRobotJoints(values) {
+  for (const [name, joint] of state.jointNodes.entries()) {
+    const value = Number(values[name] || 0);
+    joint.motion.position.set(0, 0, 0);
+    joint.motion.quaternion.identity();
+    if (joint.type === "revolute" || joint.type === "continuous") {
+      joint.motion.quaternion.setFromAxisAngle(joint.axis, value);
+    } else if (joint.type === "prismatic") {
+      joint.motion.position.copy(joint.axis).multiplyScalar(value);
+    }
+  }
+  state.robotGroup?.updateMatrixWorld(true);
+}
+
+function updateGroundAndView() {
+  state.robotGroup.position.set(0, 0, 0);
+  state.robotGroup.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(state.robotGroup);
+  if (bounds.isEmpty()) return;
+  state.sceneOffset.set(0, 0, -bounds.min.z);
+  state.robotGroup.position.copy(state.sceneOffset);
+  state.robotGroup.updateMatrixWorld(true);
+  frameRobot();
+}
+
+function frameRobot() {
+  if (!state.robotGroup) return;
+  const bounds = new THREE.Box3().setFromObject(state.robotGroup);
+  const center = bounds.getCenter(new THREE.Vector3());
+  const size = bounds.getSize(new THREE.Vector3());
+  const radius = Math.max(size.length(), 1.0);
+  controls.target.copy(center);
+  camera.position.copy(center).add(
+    new THREE.Vector3(1.0, -1.7, 0.65).normalize().multiplyScalar(radius * 1.05),
+  );
+  camera.near = Math.max(0.01, radius / 100);
+  camera.far = Math.max(20, radius * 10);
+  camera.updateProjectionMatrix();
+  controls.update();
+}
+
+function applyFrame(index) {
+  if (!state.frames.length) return;
+  state.frameIndex = Math.max(0, Math.min(Number(index), state.frames.length - 1));
+  setRobotJoints(state.frames[state.frameIndex]);
+  slider.value = String(state.frameIndex);
+  const fraction = state.frameIndex / Math.max(1, state.frames.length - 1);
+  const isSample = state.sampleFractions.some(
+    (sample) => Math.abs(Number(sample) - fraction) <= 0.5 / Math.max(1, state.frames.length - 1),
+  );
+  frameLabel.textContent = `${state.frameIndex + 1} / ${state.frames.length}${isSample ? " · 采样点" : ""}`;
+}
+
+async function loadPlan(planId) {
+  state.playing = false;
+  playButton.textContent = "▶ 播放";
+  placeholder.style.display = "grid";
+  placeholder.textContent = "正在加载机器人规划轨迹…";
+  try {
+    const response = await fetch(
+      `/api/gravity/plans/${encodeURIComponent(planId)}/preview`,
+      { cache: "no-store" },
+    );
+    const payload = await response.json();
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.error || `HTTP ${response.status}`);
+    }
+    const plan = payload.plan;
+    await loadRobot(plan.robot);
+    state.frames = plan.frames || [];
+    state.sampleFractions = plan.sample_fractions || [];
+    state.duration = Number(plan.duration_s || 4);
+    slider.min = "0";
+    slider.max = String(Math.max(0, state.frames.length - 1));
+    slider.disabled = state.frames.length < 2;
+    playButton.disabled = state.frames.length < 2;
+    resetButton.disabled = false;
+    applyFrame(0);
+    placeholder.style.display = "none";
+  } catch (error) {
+    placeholder.style.display = "grid";
+    placeholder.textContent = `机器人规划预览失败：${error.message}`;
+    state.frames = [];
+    playButton.disabled = true;
+    slider.disabled = true;
+  }
+}
+
+window.addEventListener("gravity:preview-plan", (event) => {
+  loadPlan(event.detail.planId);
+});
+playButton.addEventListener("click", () => {
+  if (!state.frames.length) return;
+  if (state.playing) {
+    state.playing = false;
+    playButton.textContent = "▶ 继续";
+    return;
+  }
+  if (state.frameIndex >= state.frames.length - 1) applyFrame(0);
+  state.playing = true;
+  state.startedAt = performance.now();
+  state.startedFrame = state.frameIndex;
+  playButton.textContent = "Ⅱ 暂停";
+});
+slider.addEventListener("input", () => {
+  state.playing = false;
+  playButton.textContent = "▶ 播放";
+  applyFrame(Number(slider.value));
+});
+resetButton.addEventListener("click", frameRobot);

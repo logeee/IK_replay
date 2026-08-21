@@ -57,6 +57,8 @@ class GravityCalibrationTests(unittest.TestCase):
         self.assertIn("PORT 18002", html)
         self.assertIn("理论 / 实测机械臂姿态对比", html)
         self.assertIn("gravity-viewer.js", html)
+        self.assertIn("完整机器人轨迹回放预览", html)
+        self.assertIn("gravity-plan-viewer.js", html)
 
     def test_profile_api_saves_immutable_version_and_activates_it(self):
         result = gravity.save_gravity_profile(
@@ -199,6 +201,39 @@ class GravityCalibrationTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+        plan_result = subprocess.run(
+            [node, "--check", str(gravity.WEB_DIR / "gravity-plan-viewer.js")],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(plan_result.returncode, 0, plan_result.stderr)
+
+    def test_plan_preview_exposes_robot_and_all_joint_frames(self):
+        with gravity._lock:
+            gravity._plan = {
+                "id": "dddddddddddd",
+                "point_id": "eeeeeeeeeeee",
+                "point_name": "预览点",
+                "robot": "h2",
+                "chain_id": "right_arm",
+                "duration_s": 5.0,
+                "planner": "linear",
+                "collision": {"status": "free"},
+                "waypoints": [{"j1": 0.0}, {"j1": 0.2}, {"j1": 0.4}],
+                "preview": {"sample_fractions": [0.5, 1.0]},
+            }
+        response = gravity.gravity_plan_preview("dddddddddddd")
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["plan"]["robot"], "h2")
+        self.assertEqual(len(response["plan"]["frames"]), 3)
+        self.assertEqual(response["plan"]["sample_fractions"], [0.5, 1.0])
+
+    def test_robot_metadata_serves_urdf_for_full_preview(self):
+        response = gravity.gravity_robot_metadata("h2")
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["metadata"]["active_robot"], "h2")
+        self.assertTrue(response["metadata"]["robot"]["urdf_url"].endswith("robot.urdf"))
 
     def test_waypoint_storage_is_separate_and_records_measured_joints(self):
         def fake_reach(method, path, **_kwargs):
