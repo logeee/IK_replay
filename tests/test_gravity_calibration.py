@@ -519,7 +519,12 @@ class GravityCalibrationTests(unittest.TestCase):
 
         with patch.object(gravity, "_request_reach", side_effect=fake_reach):
             gravity._monitor_and_sample(
-                plan, run, settle_s=0.0, sample_s=0.06, sample_hz=100.0
+                plan,
+                run,
+                settle_s=0.0,
+                sample_s=0.06,
+                sample_hz=100.0,
+                cancel_event=gravity._run_cancel,
             )
 
         persisted = json.loads(
@@ -577,6 +582,7 @@ class GravityCalibrationTests(unittest.TestCase):
                 sample_s=0.04,
                 sample_hz=100.0,
                 intermediate_stops=2,
+                cancel_event=gravity._run_cancel,
             )
 
         persisted = json.loads(
@@ -586,6 +592,65 @@ class GravityCalibrationTests(unittest.TestCase):
         self.assertEqual(len(started_segments), 2)
         self.assertEqual(started_segments[0][0], {"j1": 0.1})
         self.assertEqual(started_segments[1][-1], {"j1": 0.3})
+
+    def test_new_execution_replaces_cancelled_event(self):
+        point_id = "123456789abc"
+        with gravity._lock:
+            gravity._plan = {
+                "id": "111122223333",
+                "point_id": point_id,
+                "point_name": "停止后重试",
+                "duration_s": 2.0,
+                "max_speed_rad_s": 0.2,
+                "intermediate_stops": 0,
+                "planner": "linear",
+                "waypoints": [{"j1": 0.0}, {"j1": 0.2}],
+            }
+            gravity._operation["phase"] = "error"
+            previous_event = gravity._run_cancel
+            previous_event.set()
+
+        thread_call = {}
+
+        class FakeThread:
+            def __init__(self, **kwargs):
+                thread_call.update(kwargs)
+
+            def start(self):
+                thread_call["started"] = True
+
+        with (
+            patch.object(
+                gravity,
+                "_reach_status",
+                return_value={
+                    "armed": True,
+                    "hand_move": False,
+                    "exec": {"running": False},
+                    "gravity_profile": {},
+                },
+            ),
+            patch.object(
+                gravity,
+                "_request_reach",
+                return_value={"running": True, "message": "执行中"},
+            ),
+            patch.object(gravity.threading, "Thread", FakeThread),
+        ):
+            result = gravity.execute_waypoint(
+                point_id,
+                {
+                    "confirm": True,
+                    "plan_id": "111122223333",
+                    "intermediate_stops": 0,
+                },
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertIsNot(gravity._run_cancel, previous_event)
+        self.assertFalse(gravity._run_cancel.is_set())
+        self.assertIs(thread_call["kwargs"]["cancel_event"], gravity._run_cancel)
+        self.assertTrue(thread_call["started"])
 
 
 if __name__ == "__main__":

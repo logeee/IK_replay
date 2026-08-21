@@ -667,7 +667,6 @@ def arm_control(body: dict[str, Any]):
 @app.post("/api/gravity/hand_move")
 def hand_move(body: dict[str, Any]):
     try:
-        _run_cancel.clear()
         result = _request_reach(
             "POST", "/api/reach/hand_move", body={"on": bool(body.get("on"))}
         )
@@ -678,7 +677,8 @@ def hand_move(body: dict[str, Any]):
 
 @app.post("/api/gravity/stop")
 def stop_execution():
-    _run_cancel.set()
+    with _lock:
+        _run_cancel.set()
     try:
         result = _request_reach("POST", "/api/reach/stop", body={})
     except GravityServiceError as exc:
@@ -875,10 +875,11 @@ def _wait_for_segment(
     segment_number: int,
     segment_count: int,
     duration_s: float,
+    cancel_event: threading.Event,
 ) -> None:
     deadline = time.monotonic() + duration_s + 40.0
     while time.monotonic() < deadline:
-        if _run_cancel.is_set():
+        if cancel_event.is_set():
             raise GravityServiceError("实验已由操作员停止")
         status = _request_reach("GET", "/api/reach/exec_status", timeout=2.0)
         local = min(1.0, max(0.0, float(status.get("progress") or 0.0)))
@@ -906,11 +907,12 @@ def _settle_and_sample(
     settle_s: float,
     sample_s: float,
     sample_hz: float,
+    cancel_event: threading.Event,
 ) -> dict[str, Any]:
     number = int(segment["sequence"])
     settle_started = time.monotonic()
     while time.monotonic() - settle_started < settle_s:
-        if _run_cancel.is_set():
+        if cancel_event.is_set():
             raise GravityServiceError("实验已由操作员停止")
         elapsed = time.monotonic() - settle_started
         _set_operation(
@@ -931,7 +933,7 @@ def _settle_and_sample(
     sample_started = time.monotonic()
     interval = 1.0 / sample_hz
     while time.monotonic() - sample_started < sample_s:
-        if _run_cancel.is_set():
+        if cancel_event.is_set():
             raise GravityServiceError("实验已由操作员停止")
         tick = time.monotonic()
         sample = _request_reach("GET", "/api/reach/diagnostics", timeout=2.0)
@@ -975,13 +977,14 @@ def _monitor_and_sample(
     sample_s: float,
     sample_hz: float,
     intermediate_stops: int = 0,
+    cancel_event: threading.Event,
 ) -> None:
     try:
         segments = _split_plan_waypoints(plan["waypoints"], intermediate_stops)
         sample_points: list[dict[str, Any]] = []
         total_frames = 0
         for index, segment in enumerate(segments):
-            if _run_cancel.is_set():
+            if cancel_event.is_set():
                 raise GravityServiceError("实验已由操作员停止")
             segment_duration = max(
                 0.2,
@@ -1009,6 +1012,7 @@ def _monitor_and_sample(
                 segment_number=index + 1,
                 segment_count=len(segments),
                 duration_s=segment_duration,
+                cancel_event=cancel_event,
             )
             sample_point = _settle_and_sample(
                 segment=segment,
@@ -1016,6 +1020,7 @@ def _monitor_and_sample(
                 settle_s=settle_s,
                 sample_s=sample_s,
                 sample_hz=sample_hz,
+                cancel_event=cancel_event,
             )
             sample_points.append(sample_point)
             total_frames += int(sample_point["sample_count"])
@@ -1063,6 +1068,7 @@ def _monitor_and_sample(
 
 @app.post("/api/gravity/execute/{point_id}")
 def execute_waypoint(point_id: str, body: dict[str, Any]):
+    global _run_cancel
     if body.get("confirm") is not True:
         return JSONResponse(
             {"ok": False, "error": "真机执行必须显式传 confirm=true"},
@@ -1113,6 +1119,12 @@ def execute_waypoint(point_id: str, body: dict[str, Any]):
             raise GravityServiceError("手臂仍在卸力拖动模式，请先恢复刚性保持")
         if (reach.get("exec") or {}).get("running"):
             raise GravityServiceError("18001已有轨迹正在执行")
+        # A stop belongs only to the run that was active when it was issued.
+        # Give each accepted execution its own event so an old stop cannot
+        # reject the next run, while an old monitor retains its cancelled event.
+        with _lock:
+            cancel_event = threading.Event()
+            _run_cancel = cancel_event
         run_id = uuid.uuid4().hex[:12]
         run = {
             "schema_version": 1,
@@ -1167,6 +1179,7 @@ def execute_waypoint(point_id: str, body: dict[str, Any]):
                 "sample_s": sample_s,
                 "sample_hz": sample_hz,
                 "intermediate_stops": intermediate_stops,
+                "cancel_event": cancel_event,
             },
             daemon=True,
             name=f"gravity-run-{run_id}",
