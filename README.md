@@ -53,6 +53,23 @@ The run settings can insert 0–8 intermediate holds; every hold keeps rigid
 position/gravity support active, settles, and is stored as a separate static
 sample point before the remaining trajectory continues.
 
+Gravity parameters are immutable, rollback-safe profiles in
+`config/gravity_compensation.json`. The initial active snapshot is
+`0.0.0 · 未标定前的重力补偿版本`. Saving or activating a profile in the 18002
+dashboard never changes live arm torque; restart 18001 to load the selected
+version. Every experiment record stores the effective version and any CLI
+overrides reported by 18001.
+
+Experiment runs are physically partitioned by that version:
+`data/gravity_calibration/runs/<version>/<run-id>.json`. Switching or rolling
+back the active profile only affects future 18001 startups; historical version
+directories and files are never moved or rewritten.
+
+Completed runs can be opened in the 18002 dual-pose viewer. It reconstructs
+commanded and measured arm FK as translucent cyan/orange link models, marks
+every joint and both TCPs, draws displacement connectors, and reports per-joint
+angle error plus TCP XYZ/Euclidean error for each intermediate or final sample.
+
 ## Reach RGB-D source
 
 The production reach service is a read-only consumer of the external

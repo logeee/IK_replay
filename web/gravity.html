@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>重力补偿标定实验台</title>
+<script type="importmap">{"imports":{"three":"/web/vendor/three.module.js"}}</script>
 <style>
   :root {
     --bg:#08101b; --panel:#111d2b; --panel2:#152436; --line:#293b50;
@@ -41,6 +42,20 @@
   .phase { border:1px solid var(--line);border-radius:14px;background:rgba(17,29,43,.86);padding:15px 18px;display:flex;gap:13px;align-items:center; }
   .phase-no { width:35px;height:35px;border-radius:10px;display:grid;place-items:center;font-weight:800;background:rgba(102,170,255,.1);color:var(--blue); }
   .phase:nth-child(2) .phase-no { color:var(--cyan);background:rgba(67,214,197,.1); }
+  .profile-panel { border:1px solid var(--line);border-radius:14px;background:rgba(17,29,43,.9);margin-bottom:14px;padding:13px 16px; }
+  .profile-top { display:flex;gap:14px;align-items:center;flex-wrap:wrap; }
+  .profile-active { min-width:235px; }
+  .profile-active b { color:var(--cyan);font-size:16px; }
+  .profile-active span { display:block;color:var(--muted);font-size:10px; }
+  .profile-params { color:var(--muted);font-size:11px;flex:1; }
+  .profile-actions { display:flex;gap:7px;align-items:center;flex-wrap:wrap; }
+  .profile-actions select { min-width:205px; }
+  .profile-editor { margin-top:10px;padding-top:10px;border-top:1px solid var(--line); }
+  .profile-editor summary { color:var(--blue);cursor:pointer;font-size:11px; }
+  .profile-form { display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:9px; }
+  .profile-form input[type=text] { width:150px; }
+  .profile-form .description { width:260px; }
+  .profile-form label { color:var(--muted);font-size:10px;display:flex;gap:4px;align-items:center; }
   .phase b { display:block; } .phase span { color:var(--muted);font-size:11px; }
   .grid { display:grid;grid-template-columns:minmax(400px,1.05fr) minmax(480px,1.45fr);gap:14px; }
   .panel { border:1px solid var(--line);border-radius:16px;background:linear-gradient(145deg,rgba(20,36,54,.95),rgba(12,24,38,.96));overflow:hidden; }
@@ -93,13 +108,35 @@
   .joint-mini div { padding:4px 7px;background:rgba(7,17,28,.45);border-radius:6px;font-size:10px;display:flex;justify-content:space-between;gap:6px; }
   .history { border-top:1px solid var(--line); }
   .history-list { max-height:226px;overflow:auto;padding:8px 12px 12px; }
-  .run { padding:9px 10px;border-bottom:1px solid rgba(41,59,80,.6);display:grid;grid-template-columns:1fr auto;gap:8px; }
+  .run { padding:9px 10px;border-bottom:1px solid rgba(41,59,80,.6);display:grid;grid-template-columns:1fr auto;gap:8px;cursor:pointer;border-radius:7px; }
+  .run:hover { background:rgba(102,170,255,.06); }
   .run:last-child { border-bottom:0; } .run-title { font-size:11px;font-weight:650; } .run-meta { color:var(--muted);font-size:10px;margin-top:2px; }
   .run-status { font-size:10px;color:var(--green); } .run-status.failed { color:var(--red); }
+  .compare-panel { margin-top:14px; }
+  .compare-toolbar { display:flex;align-items:center;gap:8px;flex-wrap:wrap; }
+  .compare-toolbar select { min-width:180px; }
+  .compare-toolbar label { color:var(--muted);font-size:10px;display:flex;gap:5px;align-items:center; }
+  .compare-toolbar input { accent-color:var(--cyan); }
+  .compare-layout { display:grid;grid-template-columns:minmax(0,1.65fr) minmax(310px,.75fr);min-height:430px; }
+  .compare-viewport { position:relative;min-height:430px;background:radial-gradient(circle at 50% 40%,#14273a,#07111d 70%);overflow:hidden; }
+  .compare-viewport canvas { display:block;width:100%;height:100%; }
+  .compare-placeholder { position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);text-align:center;pointer-events:none;z-index:2; }
+  .compare-side { border-left:1px solid var(--line);padding:14px;overflow:auto;max-height:430px; }
+  .tcp-error { padding:13px;border-radius:11px;background:rgba(255,115,115,.07);border:1px solid rgba(255,115,115,.2); }
+  .tcp-error small { color:var(--muted);display:block; } .tcp-error strong { font-size:27px;color:#ff9a83; }
+  .delta-grid { display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:8px; }
+  .delta-grid div { text-align:center;background:#0b1724;border-radius:7px;padding:6px;font-size:10px;color:var(--muted); }
+  .delta-grid b { display:block;color:var(--text);font-size:12px; }
+  .compare-legend { display:flex;gap:12px;margin:11px 0;color:var(--muted);font-size:10px; }
+  .legend-dot { width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:4px; }
+  .joint-errors { display:grid;gap:4px; }
+  .joint-error { display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:6px 8px;border-radius:7px;background:rgba(7,17,28,.52);font-size:10px; }
+  .joint-error span { overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted); }
+  .joint-error b { color:var(--text); }
   .toast { position:fixed;right:22px;bottom:22px;max-width:390px;padding:11px 15px;border-radius:10px;background:#183047;border:1px solid #345572;
     box-shadow:0 16px 40px rgba(0,0,0,.35);transform:translateY(20px);opacity:0;pointer-events:none;transition:.25s;z-index:20; }
   .toast.show { opacity:1;transform:none; } .toast.bad { border-color:#814653;background:#472831; }
-  @media(max-width:1050px){.grid{grid-template-columns:1fr}.point-list{height:400px}}
+  @media(max-width:1050px){.grid{grid-template-columns:1fr}.point-list{height:400px}.compare-layout{grid-template-columns:1fr}.compare-side{border-left:0;border-top:1px solid var(--line);max-height:none}}
   @media(max-width:680px){header{padding:0 13px}.head-status .pill:nth-child(n+2){display:none}main{padding:12px 9px}.phase-strip{grid-template-columns:1fr}.author-form{grid-template-columns:1fr}.run-layout{grid-template-columns:1fr}.run-controls{border-right:0;border-bottom:1px solid var(--line)}}
 </style>
 </head>
@@ -117,6 +154,31 @@
     <div class="phase"><div class="phase-no">1</div><div><b>先准备位点库</b><span>自由拖动并连续保存所有实验姿态，不要求保存后立即执行</span></div></div>
     <div class="phase"><div class="phase-no">2</div><div><b>再选择并运行实验</b><span>任意选择、排序、规划预览；逐点确认后真机执行并自动采样</span></div></div>
   </div>
+  <section class="profile-panel">
+    <div class="profile-top">
+      <div class="profile-active"><b id="profileVersion">版本 —</b><span id="profileLabel">正在读取重力补偿版本</span></div>
+      <div id="profileParams" class="profile-params"></div>
+      <div class="profile-actions">
+        <select id="profileSelect"></select>
+        <button id="activateProfileBtn">切换 / 回滚</button>
+        <span id="profileRuntime" class="pill">18001未加载</span>
+      </div>
+    </div>
+    <details class="profile-editor">
+      <summary>保存新的不可覆盖版本</summary>
+      <div class="profile-form">
+        <input id="newProfileVersion" type="text" placeholder="版本号，例如 0.1.0" />
+        <input id="newProfileLabel" type="text" placeholder="版本名称" />
+        <input id="newProfileDescription" class="description" type="text" placeholder="本次标定说明" />
+        <label>α <input id="newProfileAlpha" type="number" min="0" max="1.2" step="0.01" /></label>
+        <label>负载kg <input id="newProfilePayload" type="number" min="0" max="20" step="0.01" /></label>
+        <label><input id="newProfileFloat" type="checkbox" />拖动时补偿</label>
+        <label><input id="newProfileImu" type="checkbox" />IMU重力方向</label>
+        <label><input id="newProfileActivate" type="checkbox" checked />保存后启用</label>
+        <button id="saveProfileBtn" class="primary">保存版本</button>
+      </div>
+    </details>
+  </section>
   <div class="grid">
     <section class="panel">
       <div class="panel-head"><h2>重力标定位点库</h2><span id="pointSummary" class="hint">0 个位点</span></div>
@@ -176,14 +238,40 @@
       </div>
     </section>
   </div>
+  <section id="comparePanel" class="panel compare-panel">
+    <div class="panel-head">
+      <h2>理论 / 实测机械臂姿态对比</h2>
+      <div class="hint compare-toolbar">
+        <span id="compareRunLabel">从上方实验记录中选择一次已完成实验</span>
+        <select id="compareSampleSelect" disabled><option>采样姿态</option></select>
+        <label><input id="showTheoretical" type="checkbox" checked />理论</label>
+        <label><input id="showMeasured" type="checkbox" checked />实测</label>
+        <button id="resetCompareView" disabled>复位视角</button>
+      </div>
+    </div>
+    <div class="compare-layout">
+      <div id="compareViewport" class="compare-viewport">
+        <div id="comparePlaceholder" class="compare-placeholder">点击一条已完成的实验记录<br>查看双机械臂姿态、关节标定点与TCP偏差</div>
+      </div>
+      <aside class="compare-side">
+        <div class="tcp-error"><small>理论TCP ↔ 实测TCP 空间偏差</small><strong id="compareTcpError">— mm</strong>
+          <div class="delta-grid"><div>ΔX<b id="compareDx">—</b></div><div>ΔY<b id="compareDy">—</b></div><div>ΔZ<b id="compareDz">—</b></div></div>
+        </div>
+        <div class="compare-legend"><span><i class="legend-dot" style="background:#43d6e8"></i>理论/命令</span><span><i class="legend-dot" style="background:#ff8b5c"></i>实测</span><span><i class="legend-dot" style="background:#f3bc5b"></i>偏差连线</span></div>
+        <div id="compareJointErrors" class="joint-errors"><div class="empty">尚未加载关节偏差</div></div>
+      </aside>
+    </div>
+  </section>
 </main>
 <div id="toast" class="toast"></div>
+<script type="module" src="/web/gravity-viewer.js?v=20260821-1"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 let data = null;
 let selectedId = localStorage.getItem("gravity_selected_point") || "";
 let queue = new Set(JSON.parse(localStorage.getItem("gravity_queue") || "[]"));
 let busy = false;
+let profileEditorInitialized = false;
 
 async function api(path, method="GET", body=null) {
   const response = await fetch(path, {method, headers: body ? {"Content-Type":"application/json"} : {}, body: body ? JSON.stringify(body) : null, cache:"no-store"});
@@ -201,6 +289,24 @@ function phaseBusy(){return ["planning","executing","settling","sampling"].inclu
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));}
 function deg(v){return `${(Number(v)*180/Math.PI).toFixed(1)}°`;}
 
+function renderProfiles(){
+  const registry=data.gravity_profiles;
+  if(!registry){$("profileVersion").textContent="版本配置错误";$("profileLabel").textContent=data.gravity_profiles_error||"";return;}
+  const active=registry.versions.find(v=>v.version===registry.active_version),params=active?.parameters||{};
+  $("profileVersion").textContent=`版本 ${active?.version||"—"}`;$("profileLabel").textContent=active?.label||"";
+  $("profileParams").textContent=`α ${Number(params.grav_alpha??0).toFixed(2)} · 额外负载 ${Number(params.payload_kg??0).toFixed(3)}kg · 拖动补偿 ${params.grav_in_float?"开":"关"} · IMU修正 ${params.use_imu_gravity?"开":"关"}`;
+  const select=$("profileSelect"),key=registry.versions.map(v=>v.version).join("|");
+  if(select.dataset.key!==key){select.innerHTML=[...registry.versions].reverse().map(v=>`<option value="${esc(v.version)}">${esc(v.version)} · ${esc(v.label)}</option>`).join("");select.dataset.key=key;}
+  if(!select.matches(":focus"))select.value=registry.active_version;
+  const loaded=data.reach?.gravity_profile,overrides=loaded?.cli_overrides||{},overrideCount=Object.keys(overrides).length,matched=loaded?.version===registry.active_version&&!overrideCount;
+  $("profileRuntime").textContent=!data.reach?"18001离线":matched?`18001已加载 ${loaded.version}`:`需重启18001 · 当前 ${loaded?.version||"未知"}`;
+  $("profileRuntime").className="pill "+(!data.reach?"":matched?"ok":"warn");
+  if(!profileEditorInitialized&&active){
+    $("newProfileAlpha").value=params.grav_alpha;$("newProfilePayload").value=params.payload_kg;
+    $("newProfileFloat").checked=!!params.grav_in_float;$("newProfileImu").checked=!!params.use_imu_gravity;
+    profileEditorInitialized=true;
+  }
+}
 function renderHeader(){
   const reach=data.reach;
   $("reachPill").textContent=reach?"18001 在线":"18001 离线";
@@ -283,13 +389,16 @@ function renderSelected(){
 function renderHistory(){
   const runs=data.runs||[];$("runSummary").textContent=`${data.summary.completed_runs} 次完成 · ${data.summary.failed_runs} 次失败`;
   if(!runs.length){$("historyList").innerHTML='<div class="empty">尚无实验记录</div>';return;}
-  $("historyList").innerHTML=runs.slice(0,12).map(r=>{const err=r.aggregate?.command_minus_measured_deg;const max=err?.length?Math.max(...err.map(Math.abs)).toFixed(2):null;
-    return `<div class="run"><div><div class="run-title">${esc(r.point_name||r.point_id)}</div><div class="run-meta">${r.started_at?.replace("T"," ").slice(0,19)||""}${max?` · 终点最大静差 ${max}°`:""} · ${r.sample_points?.length||r.settings?.sample_point_count||1}个姿态 · ${r.sample_count||0}帧</div></div><div class="run-status ${r.status==="failed"?"failed":""}">${r.status==="completed"?"已完成":"失败"}</div></div>`}).join("");
+  $("historyList").innerHTML=runs.slice(0,12).map(r=>{const err=r.aggregate?.command_minus_measured_deg;const max=err?.length?Math.max(...err.map(Math.abs)).toFixed(2):null,gv=r.gravity_profile?.version;
+    return `<div class="run" onclick="openRunComparison('${r.id}','${r.status}')"><div><div class="run-title">${esc(r.point_name||r.point_id)}${gv?`<span class="badge">重力 ${esc(gv)}</span>`:""}</div><div class="run-meta">${r.started_at?.replace("T"," ").slice(0,19)||""}${max?` · 终点最大静差 ${max}°`:""} · ${r.sample_points?.length||r.settings?.sample_point_count||1}个姿态 · ${r.sample_count||0}帧 · 点击查看3D对比</div></div><div class="run-status ${r.status==="failed"?"failed":""}">${r.status==="completed"?"已完成":"失败"}</div></div>`}).join("");
 }
-function render(){if(!data)return;renderHeader();renderPoints();renderOperation();renderBatch();renderSelected();renderHistory();}
+function render(){if(!data)return;renderProfiles();renderHeader();renderPoints();renderOperation();renderBatch();renderSelected();renderHistory();}
 
 async function poll(){if(busy)return;busy=true;try{data=await api("/api/gravity/status");if(selectedId&&!selectedPoint())selectedId="";render();}catch(e){toast(`状态读取失败：${e.message}`,true);}finally{busy=false;}}
+function openRunComparison(runId,status){if(status!=="completed"){toast("失败的实验没有完整姿态数据",true);return;}$("comparePanel").scrollIntoView({behavior:"smooth",block:"start"});window.dispatchEvent(new CustomEvent("gravity:open-comparison",{detail:{runId}}));}
 $("armBtn").onclick=async()=>{if(!confirm("确认接管手臂并在当前位置刚性保持？"))return;try{await api("/api/gravity/arm","POST",{on:true});toast("手臂已接管");await poll();}catch(e){toast(e.message,true);}};
+$("activateProfileBtn").onclick=async()=>{const version=$("profileSelect").value;if(!version)return;if(!confirm(`切换重力补偿配置到 ${version}？当前运行中的18001不会在线改变，重启后生效。`))return;try{const r=await api(`/api/gravity/profiles/${encodeURIComponent(version)}/activate`,"POST",{});toast(r.message);await poll();}catch(e){toast(e.message,true);}};
+$("saveProfileBtn").onclick=async()=>{const version=$("newProfileVersion").value.trim(),label=$("newProfileLabel").value.trim();if(!version||!label){toast("请填写版本号和名称",true);return;}try{const r=await api("/api/gravity/profiles","POST",{version,label,description:$("newProfileDescription").value.trim(),activate:$("newProfileActivate").checked,parameters:{grav_alpha:Number($("newProfileAlpha").value),payload_kg:Number($("newProfilePayload").value),grav_in_float:$("newProfileFloat").checked,use_imu_gravity:$("newProfileImu").checked}});toast(`版本 ${r.profile.version} 已保存${r.active_version===r.profile.version?"并设为启用":""}；重启18001后生效`);$("newProfileVersion").value="";$("newProfileLabel").value="";$("newProfileDescription").value="";await poll();}catch(e){toast(e.message,true);}};
 $("releaseBtn").onclick=async()=>{if(!confirm("确认释放手臂控制权？请先扶住手臂。"))return;try{await api("/api/gravity/arm","POST",{on:false});toast("手臂已释放");await poll();}catch(e){toast(e.message,true);}};
 $("dragBtn").onclick=async()=>{const on=!data?.reach?.hand_move;if(on&&!confirm("拖动模式会卸力并可能下坠，请扶住手臂。继续？"))return;try{await api("/api/gravity/hand_move","POST",{on});toast(on?"已开启拖动，请扶稳手臂":"已恢复当前位置刚性保持");await poll();}catch(e){toast(e.message,true);}};
 $("savePointBtn").onclick=async()=>{const name=$("pointName").value.trim();if(!name){toast("请输入位点名称",true);return;}try{const r=await api("/api/gravity/waypoints","POST",{name,note:$("pointNote").value.trim()});$("pointName").value="";$("pointNote").value="";selectedId=r.point.id;queue.add(r.point.id);saveQueue();toast("已保存当前位置，可继续拖动并保存下一个点");await poll();}catch(e){toast(e.message,true);}};

@@ -21,9 +21,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import requests
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from core.gravity_profiles import (
+    DEFAULT_GRAVITY_PROFILES_PATH,
+    VERSION_PATTERN,
+    activate_profile,
+    create_profile,
+    load_registry,
+)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -32,8 +42,10 @@ DATA_ROOT = ROOT / "data" / "gravity_calibration"
 WAYPOINTS_DIR = DATA_ROOT / "waypoints"
 RUNS_DIR = DATA_ROOT / "runs"
 BATCHES_DIR = DATA_ROOT / "batches"
+GRAVITY_PROFILES_PATH = DEFAULT_GRAVITY_PROFILES_PATH
 
 app = FastAPI(title="gravity-calibration")
+app.mount("/web", StaticFiles(directory=WEB_DIR), name="gravity-web")
 
 _http = requests.Session()
 _http.trust_env = False
@@ -127,11 +139,15 @@ def _list_points() -> list[dict[str, Any]]:
 def _list_runs(*, include_samples: bool = False) -> list[dict[str, Any]]:
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     runs: list[dict[str, Any]] = []
-    for path in RUNS_DIR.glob("*.json"):
+    for path in RUNS_DIR.rglob("*.json"):
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(value, dict):
                 continue
+            value["storage_version"] = (
+                path.parent.name if path.parent != RUNS_DIR else "legacy_flat"
+            )
+            value["storage_relative_path"] = str(path.relative_to(RUNS_DIR))
             if not include_samples:
                 value = {k: v for k, v in value.items() if k != "samples"}
             runs.append(value)
@@ -297,6 +313,12 @@ def gravity_status():
         reach_error = str(exc)
     points = _list_points()
     runs = _list_runs()
+    try:
+        gravity_profiles = load_registry(GRAVITY_PROFILES_PATH)
+        gravity_profiles_error = None
+    except ValueError as exc:
+        gravity_profiles = None
+        gravity_profiles_error = str(exc)
     completed_ids = {
         str(run.get("point_id"))
         for run in runs
@@ -313,6 +335,8 @@ def gravity_status():
         "operation": _operation_snapshot(),
         "plan": plan,
         "batch": batch,
+        "gravity_profiles": gravity_profiles,
+        "gravity_profiles_error": gravity_profiles_error,
         "points": points,
         "runs": runs[:30],
         "summary": {
@@ -322,6 +346,44 @@ def gravity_status():
             "failed_runs": sum(run.get("status") == "failed" for run in runs),
         },
     }
+
+
+@app.post("/api/gravity/profiles")
+def save_gravity_profile(body: dict[str, Any]):
+    try:
+        profile = create_profile(
+            version=str(body.get("version") or "").strip(),
+            label=str(body.get("label") or "").strip(),
+            description=str(body.get("description") or "").strip(),
+            parameters=body.get("parameters"),
+            path=GRAVITY_PROFILES_PATH,
+            activate=bool(body.get("activate")),
+            source="gravity_calibration",
+        )
+        registry = load_registry(GRAVITY_PROFILES_PATH)
+        return {
+            "ok": True,
+            "profile": profile,
+            "active_version": registry["active_version"],
+            "applies_on_next_18001_start": True,
+        }
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@app.post("/api/gravity/profiles/{version}/activate")
+def activate_gravity_profile(version: str):
+    try:
+        profile = activate_profile(version, GRAVITY_PROFILES_PATH)
+        return {
+            "ok": True,
+            "profile": profile,
+            "active_version": profile["version"],
+            "applies_on_next_18001_start": True,
+            "message": "已切换配置；重启18001后生效，当前手臂前馈未被在线修改",
+        }
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
 @app.post("/api/gravity/waypoints")
@@ -505,6 +567,8 @@ def plan_waypoint(point_id: str, body: dict[str, Any] | None = None):
             "id": uuid.uuid4().hex[:12],
             "point_id": point_id,
             "point_name": point["name"],
+            "robot": payload["robot"],
+            "chain_id": payload["chain_id"],
             "created_at": _now(),
             "duration_s": duration,
             "max_speed_rad_s": max_speed,
@@ -537,8 +601,21 @@ def plan_waypoint(point_id: str, body: dict[str, Any] | None = None):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
+def _run_version(run: dict[str, Any]) -> str:
+    profile = run.get("gravity_profile")
+    version = str(profile.get("version") or "") if isinstance(profile, dict) else ""
+    return version if VERSION_PATTERN.fullmatch(version) else "unversioned"
+
+
+def _run_path(run: dict[str, Any]) -> Path:
+    return RUNS_DIR / _run_version(run) / f"{run['id']}.json"
+
+
 def _save_run(run: dict[str, Any]) -> None:
-    _atomic_json(RUNS_DIR / f"{run['id']}.json", run)
+    version = _run_version(run)
+    run["storage_version"] = version
+    run["storage_relative_path"] = f"{version}/{run['id']}.json"
+    _atomic_json(_run_path(run), run)
 
 
 def _mark_point_completed(point_id: str, run_id: str, completed_at: str) -> None:
@@ -826,6 +903,9 @@ def execute_waypoint(point_id: str, body: dict[str, Any]):
             "batch_id": body.get("batch_id"),
             "started_at": _now(),
             "status": "running",
+            "gravity_profile": deepcopy(reach.get("gravity_profile") or {}),
+            "robot": plan.get("robot") or "h2",
+            "chain_id": plan.get("chain_id") or "right_arm",
             "target_named_joints": plan["waypoints"][-1],
             "settings": {
                 "duration_s": plan["duration_s"],
@@ -1165,13 +1245,149 @@ def run_detail(run_id: str):
         safe = _safe_id(run_id)
     except GravityServiceError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-    path = RUNS_DIR / f"{safe}.json"
-    if not path.is_file():
+    path = _find_run_path(safe)
+    if path is None:
         return JSONResponse({"ok": False, "error": "实验记录不存在"}, status_code=404)
     try:
         return {"ok": True, "run": json.loads(path.read_text(encoding="utf-8"))}
     except (OSError, json.JSONDecodeError) as exc:
         return JSONResponse({"ok": False, "error": f"实验记录损坏: {exc}"}, status_code=500)
+
+
+def _find_run_path(run_id: str) -> Path | None:
+    legacy = RUNS_DIR / f"{run_id}.json"
+    if legacy.is_file():
+        return legacy
+    matches = list(RUNS_DIR.glob(f"*/{run_id}.json"))
+    return matches[0] if matches else None
+
+
+def _load_run(run_id: str) -> dict[str, Any]:
+    path = _find_run_path(_safe_id(run_id))
+    if path is None:
+        raise GravityServiceError("实验记录不存在")
+    try:
+        run = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise GravityServiceError(f"实验记录损坏: {exc}") from exc
+    if not isinstance(run, dict):
+        raise GravityServiceError("实验记录格式错误")
+    return run
+
+
+def _pose_comparison(run: dict[str, Any], sample_index: int) -> dict[str, Any]:
+    sample_points = run.get("sample_points") or []
+    if not sample_points:
+        raise GravityServiceError("该实验没有分姿态采样数据")
+    selected = next(
+        (point for point in sample_points if int(point.get("index", -1)) == sample_index),
+        None,
+    )
+    if selected is None:
+        raise GravityServiceError(f"采样姿态 {sample_index} 不存在")
+    aggregate = selected.get("aggregate") or {}
+    command = (aggregate.get("command_rad") or {}).get("mean")
+    measured = (aggregate.get("measured_rad") or {}).get("mean")
+    samples = selected.get("samples") or []
+    arm = (samples[0].get("arm") or {}) if samples else {}
+    names = list(arm.get("joint_names") or [])
+    if not names:
+        names = list((selected.get("planned_named_joints") or {}).keys())
+    if not command or not measured or len(names) != len(command) or len(names) != len(measured):
+        raise GravityServiceError("该采样姿态缺少完整的命令/实测关节数据")
+
+    import app as app_module
+
+    robot_id = str(run.get("robot") or "h2")
+    chain_id = str(run.get("chain_id") or "right_arm")
+    if robot_id not in app_module.robots:
+        raise GravityServiceError(f"找不到机器人模型 {robot_id}")
+    model = app_module.robots[robot_id]
+    chain = model.chain_config(chain_id)
+    command_named = dict(zip(names, [float(value) for value in command]))
+    measured_named = dict(zip(names, [float(value) for value in measured]))
+    display_links = list(chain.display_links)
+    if not display_links:
+        display_links = [chain.base_link] + [
+            model.joints[name].child for name in model.joint_names(chain_id)
+        ]
+    command_fk = model.forward_kinematics(command_named, only_links=display_links)
+    measured_fk = model.forward_kinematics(measured_named, only_links=display_links)
+
+    def links(transforms: dict[str, Any]) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": name,
+                "xyz": [float(value) for value in transforms[name][:3, 3]],
+            }
+            for name in display_links
+            if name in transforms
+        ]
+
+    command_tcp = (aggregate.get("tcp_command_root_m") or {}).get("mean")
+    measured_tcp = (aggregate.get("tcp_measured_root_m") or {}).get("mean")
+    if not command_tcp:
+        command_tcp = model.tcp_pose(
+            command_named, chain_id, model.tcp_offset(chain_id)
+        ).xyz
+    if not measured_tcp:
+        measured_tcp = model.tcp_pose(
+            measured_named, chain_id, model.tcp_offset(chain_id)
+        ).xyz
+    command_tcp = [float(value) for value in command_tcp]
+    measured_tcp = [float(value) for value in measured_tcp]
+    tcp_delta_mm = [
+        (measured_value - command_value) * 1000.0
+        for command_value, measured_value in zip(command_tcp, measured_tcp)
+    ]
+    joint_error_deg = [
+        math.degrees(command_value - measured_value)
+        for command_value, measured_value in zip(command, measured)
+    ]
+    return {
+        "run_id": run["id"],
+        "point_name": run.get("point_name"),
+        "gravity_version": (run.get("gravity_profile") or {}).get("version"),
+        "robot": robot_id,
+        "chain_id": chain_id,
+        "sample_index": sample_index,
+        "sample_type": selected.get("type"),
+        "trajectory_fraction": selected.get("trajectory_fraction"),
+        "available_samples": [
+            {
+                "index": int(point.get("index", index + 1)),
+                "type": point.get("type"),
+                "trajectory_fraction": point.get("trajectory_fraction"),
+                "sample_count": point.get("sample_count"),
+            }
+            for index, point in enumerate(sample_points)
+        ],
+        "joint_names": names,
+        "joint_error_deg": joint_error_deg,
+        "theoretical": {
+            "named_joints": command_named,
+            "links": links(command_fk),
+            "tcp_root_m": command_tcp,
+        },
+        "measured": {
+            "named_joints": measured_named,
+            "links": links(measured_fk),
+            "tcp_root_m": measured_tcp,
+        },
+        "tcp_delta_mm": tcp_delta_mm,
+        "tcp_error_mm": float(np.linalg.norm(tcp_delta_mm)),
+    }
+
+
+@app.get("/api/gravity/runs/{run_id}/comparison")
+def run_comparison(run_id: str, sample_index: int = 1):
+    try:
+        return {
+            "ok": True,
+            "comparison": _pose_comparison(_load_run(run_id), int(sample_index)),
+        }
+    except (GravityServiceError, TypeError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
 def _lan_ip() -> str:

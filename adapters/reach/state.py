@@ -30,6 +30,7 @@ class ReachState:
         self.tool_reference_marker: str | None = None
         self.wrist_link: str | None = None
         self.calib_meta: dict[str, Any] = {}
+        self.gravity_profile: dict[str, Any] = {}
         self.handeye_ready = False
         self.camera_only = False
         self.robot_only = False
@@ -86,7 +87,8 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str,
               robot_only: bool = False,
               collision_checker=None, ik_solver=None, arm_factory=None,
               joints_reader=None, torso_reader=None, motors_reader=None,
-              tool_out_mm: float = 0.0) -> None:
+              tool_out_mm: float = 0.0,
+              gravity_profile: dict[str, Any] | None = None) -> None:
     """由 reach_server 调用。calib_path 是 handeye3d_result.json。
 
     camera_only=True 时不加载手眼标定，只开放相机流与相机系深度观测；
@@ -159,6 +161,7 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str,
     state.handeye_ready = not camera_only
     state.camera_only = camera_only
     state.robot_only = robot_only
+    state.gravity_profile = dict(gravity_profile or {})
     if camera_only:
         state.calib_meta = {
             "ready": False,

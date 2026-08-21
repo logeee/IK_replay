@@ -21,6 +21,7 @@ def reach_status():
         "camera": (state.camera.info() if state.camera is not None
                    else {"source": "disabled", "mode": "robot_only"}),
         "calib": state.calib_meta,
+        "gravity_profile": state.gravity_profile,
         "handeye_ready": state.handeye_ready,
         "camera_only": state.camera_only,
         "robot_only": state.robot_only,

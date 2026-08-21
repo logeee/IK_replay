@@ -50,6 +50,7 @@ DEFAULT_CALIB = (HAND_EYE_3D_ROOT / "handeye3d_data" / "biaoding"
                  / "handeye3d_result.json")
 DEFAULT_RGBD_CALIB = PROJECT_ROOT / "config" / "camera" / "orbbec_rgbd_calibration.json"
 DEFAULT_CAMERA_CONFIG_CACHE = PROJECT_ROOT / "config" / "camera" / "teleimager_config_cache.json"
+DEFAULT_GRAVITY_PROFILES = PROJECT_ROOT / "config" / "gravity_compensation.json"
 
 
 def _browser_urls(host: str, port: int) -> list[str]:
@@ -129,24 +130,77 @@ def main() -> int:
                         help="腕部三关节刚度（默认 50）。腕电机额定只有 10Nm，"
                              "跟肩同档会发抖")
     parser.add_argument("--arm-kd-wrist", type=float, default=2.0, help="腕部阻尼（默认 2.0）")
-    parser.add_argument("--arm-grav-ff", type=float, default=1.0,
-                        help="重力前馈系数（默认 1.0 = 完整补偿，与官方遥操一致）。"
+    parser.add_argument("--gravity-profiles", type=Path, default=DEFAULT_GRAVITY_PROFILES,
+                        help="重力补偿版本库 JSON")
+    parser.add_argument("--gravity-version", default=None,
+                        help="本次启动临时指定重力补偿版本；默认读取版本库 active_version")
+    parser.add_argument("--arm-grav-ff", type=float, default=None,
+                        help="临时覆盖版本中的重力前馈系数（1.0 = 完整补偿）。"
                              "首次上真机想保守可先给 0.5~0.7 看有没有上飘；给 0 关闭")
-    parser.add_argument("--arm-payload-kg", type=float, default=0.0,
-                        help="URDF 之外的额外手部负载（kg）。换装的因时灵巧手比 URDF 里的"
+    parser.add_argument("--arm-payload-kg", type=float, default=None,
+                        help="临时覆盖版本中的额外手部负载（kg）。换装的因时灵巧手比 URDF 里的"
                              "官方手重就填差值，会加到手掌质心上一起补")
     parser.add_argument("--arm-grav-in-float", action=argparse.BooleanOptionalAction,
-                        default=True,
-                        help="卸力拖动时也给重力前馈（按实测角实时算）：手臂近似失重、"
+                        default=None,
+                        help="临时覆盖版本中的卸力重力前馈开关：手臂近似失重、"
                              "推到哪停哪，录路点省力得多（默认开）。补过头会缓慢上飘，"
                              "用 --no-arm-grav-in-float 关闭")
     parser.add_argument("--tool-out-mm", type=float, default=15.0,
                         help="TCP 沿法兰盘法线（腕系 +x）向外的附加偏移，毫米。"
                              "当前默认在红蓝中点基础上向外 15 mm")
-    parser.add_argument("--arm-imu-gravity", action="store_true",
-                        help="用 IMU 实测姿态修正重力方向（躯干前倾/后仰时更准）。"
+    parser.add_argument("--arm-imu-gravity", action=argparse.BooleanOptionalAction,
+                        default=None,
+                        help="临时覆盖版本中的 IMU 重力方向修正开关（躯干前倾/后仰时更准）。"
                              "先看页面诊断里的 IMU 数值是否合理再开")
     args = parser.parse_args()
+
+    from core.gravity_profiles import active_profile, load_registry, validate_parameters
+
+    try:
+        gravity_registry = load_registry(args.gravity_profiles)
+        selected_gravity = active_profile(gravity_registry, args.gravity_version)
+    except ValueError as exc:
+        print(f"[reach] 重力补偿版本配置错误: {exc}")
+        return 1
+    gravity_parameters = selected_gravity["parameters"]
+    cli_overrides = {}
+    gravity_arg_names = {
+        "arm_grav_ff": "grav_alpha",
+        "arm_payload_kg": "payload_kg",
+        "arm_grav_in_float": "grav_in_float",
+        "arm_imu_gravity": "use_imu_gravity",
+    }
+    for argument, parameter in gravity_arg_names.items():
+        value = getattr(args, argument)
+        if value is None:
+            setattr(args, argument, gravity_parameters[parameter])
+        else:
+            cli_overrides[parameter] = value
+    try:
+        effective_gravity_parameters = validate_parameters(
+            {
+                parameter: getattr(args, argument)
+                for argument, parameter in gravity_arg_names.items()
+            }
+        )
+    except ValueError as exc:
+        print(f"[reach] 重力补偿CLI覆盖参数错误: {exc}")
+        return 1
+    for argument, parameter in gravity_arg_names.items():
+        setattr(args, argument, effective_gravity_parameters[parameter])
+    gravity_profile_meta = {
+        "version": selected_gravity["version"],
+        "label": selected_gravity["label"],
+        "configured_active_version": gravity_registry["active_version"],
+        "config_path": str(args.gravity_profiles.expanduser().resolve()),
+        "effective_parameters": effective_gravity_parameters,
+        "cli_overrides": cli_overrides,
+    }
+    print(
+        f"[reach] 重力补偿版本 {selected_gravity['version']}: "
+        f"{selected_gravity['label']}"
+        + (f"（CLI临时覆盖 {cli_overrides}）" if cli_overrides else "")
+    )
 
     if not args.camera_only and not args.calib.exists():
         print(f"[reach] 标定文件不存在: {args.calib}")
@@ -234,6 +288,7 @@ def main() -> int:
         arm_factory=arm_factory, joints_reader=joints_reader,
         torso_reader=torso_reader, motors_reader=motors_reader,
         tool_out_mm=args.tool_out_mm,
+        gravity_profile=gravity_profile_meta,
     )
     if args.camera_only:
         from fastapi.responses import JSONResponse

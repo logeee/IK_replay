@@ -23,6 +23,7 @@ class GravityCalibrationTests(unittest.TestCase):
             patch.object(gravity, "WAYPOINTS_DIR", root / "waypoints"),
             patch.object(gravity, "RUNS_DIR", root / "runs"),
             patch.object(gravity, "BATCHES_DIR", root / "batches"),
+            patch.object(gravity, "GRAVITY_PROFILES_PATH", root / "gravity.json"),
         ]
         for item in self.patches:
             item.start()
@@ -53,6 +54,120 @@ class GravityCalibrationTests(unittest.TestCase):
         self.assertIn("重力补偿标定实验台", html)
         self.assertIn("/api/gravity/execute/", html)
         self.assertIn("PORT 18002", html)
+        self.assertIn("理论 / 实测机械臂姿态对比", html)
+        self.assertIn("gravity-viewer.js", html)
+
+    def test_profile_api_saves_immutable_version_and_activates_it(self):
+        result = gravity.save_gravity_profile(
+            {
+                "version": "0.1.0",
+                "label": "第一次标定",
+                "description": "测试版本",
+                "activate": True,
+                "parameters": {
+                    "grav_alpha": 0.9,
+                    "payload_kg": 0.2,
+                    "grav_in_float": True,
+                    "use_imu_gravity": False,
+                },
+            }
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["active_version"], "0.1.0")
+        duplicate = gravity.save_gravity_profile(
+            {
+                "version": "0.1.0",
+                "label": "覆盖",
+                "parameters": {
+                    "grav_alpha": 1.0,
+                    "payload_kg": 0.0,
+                    "grav_in_float": True,
+                    "use_imu_gravity": False,
+                },
+            }
+        )
+        self.assertEqual(duplicate.status_code, 400)
+        rollback = gravity.activate_gravity_profile("0.0.0")
+        self.assertTrue(rollback["ok"])
+        self.assertTrue(rollback["applies_on_next_18001_start"])
+
+    def test_runs_are_partitioned_by_version_and_never_moved_on_rollback(self):
+        baseline_run = {
+            "id": "aaaaaaaaaaaa",
+            "status": "completed",
+            "started_at": "2026-08-21T09:45:00+08:00",
+            "gravity_profile": {"version": "0.0.0"},
+        }
+        calibrated_run = {
+            "id": "bbbbbbbbbbbb",
+            "status": "completed",
+            "started_at": "2026-08-21T09:46:00+08:00",
+            "gravity_profile": {"version": "0.1.0"},
+        }
+        gravity._save_run(baseline_run)
+        gravity._save_run(calibrated_run)
+        baseline_path = gravity.RUNS_DIR / "0.0.0" / "aaaaaaaaaaaa.json"
+        calibrated_path = gravity.RUNS_DIR / "0.1.0" / "bbbbbbbbbbbb.json"
+        self.assertTrue(baseline_path.is_file())
+        self.assertTrue(calibrated_path.is_file())
+
+        gravity.activate_gravity_profile("0.0.0")
+
+        self.assertTrue(baseline_path.is_file())
+        self.assertTrue(calibrated_path.is_file())
+        self.assertEqual(
+            {run["storage_version"] for run in gravity._list_runs()},
+            {"0.0.0", "0.1.0"},
+        )
+
+    def test_pose_comparison_returns_dual_fk_links_and_tcp_error(self):
+        names = [
+            "right_shoulder_pitch_joint",
+            "right_shoulder_roll_joint",
+            "right_shoulder_yaw_joint",
+            "right_elbow_joint",
+            "right_wrist_roll_joint",
+            "right_wrist_pitch_joint",
+            "right_wrist_yaw_joint",
+        ]
+        command = [0.2, -0.25, 0.0, 0.9, 0.0, -0.1, 0.0]
+        measured = [0.18, -0.24, 0.01, 0.87, 0.0, -0.09, 0.0]
+        run = {
+            "id": "cccccccccccc",
+            "point_name": "对比点",
+            "robot": "h2",
+            "chain_id": "right_arm",
+            "gravity_profile": {"version": "0.0.0"},
+            "sample_points": [
+                {
+                    "index": 1,
+                    "type": "final",
+                    "trajectory_fraction": 1.0,
+                    "sample_count": 10,
+                    "planned_named_joints": dict(zip(names, command)),
+                    "samples": [{"arm": {"joint_names": names}}],
+                    "aggregate": {
+                        "command_rad": {"mean": command},
+                        "measured_rad": {"mean": measured},
+                        "tcp_command_root_m": {"mean": [0.4, -0.2, 0.8]},
+                        "tcp_measured_root_m": {"mean": [0.39, -0.2, 0.78]},
+                    },
+                }
+            ],
+        }
+        gravity._save_run(run)
+
+        response = gravity.run_comparison(run["id"], sample_index=1)
+
+        self.assertTrue(response["ok"])
+        comparison = response["comparison"]
+        self.assertEqual(len(comparison["joint_error_deg"]), 7)
+        self.assertGreaterEqual(len(comparison["theoretical"]["links"]), 8)
+        for actual, expected in zip(
+            comparison["tcp_delta_mm"], [-10.0, 0.0, -20.0]
+        ):
+            self.assertAlmostEqual(actual, expected)
+        self.assertAlmostEqual(comparison["tcp_error_mm"], 22.3606798)
 
     def test_dashboard_inline_javascript_is_valid(self):
         node = shutil.which("node")
@@ -70,6 +185,18 @@ class GravityCalibrationTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_comparison_viewer_javascript_is_valid(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        result = subprocess.run(
+            [node, "--check", str(gravity.WEB_DIR / "gravity-viewer.js")],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_waypoint_storage_is_separate_and_records_measured_joints(self):
@@ -234,7 +361,7 @@ class GravityCalibrationTests(unittest.TestCase):
             )
 
         persisted = json.loads(
-            (gravity.RUNS_DIR / f"{run['id']}.json").read_text(encoding="utf-8")
+            gravity._run_path(run).read_text(encoding="utf-8")
         )
         updated = gravity._load_point(point["id"])
         self.assertEqual(persisted["status"], "completed")
@@ -291,7 +418,7 @@ class GravityCalibrationTests(unittest.TestCase):
             )
 
         persisted = json.loads(
-            (gravity.RUNS_DIR / f"{run['id']}.json").read_text(encoding="utf-8")
+            gravity._run_path(run).read_text(encoding="utf-8")
         )
         self.assertEqual(len(persisted["sample_points"]), 3)
         self.assertEqual(len(started_segments), 2)

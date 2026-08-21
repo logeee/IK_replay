@@ -183,6 +183,7 @@ def reach_diagnostics():
     return {
         "captured_at": datetime.now().isoformat(timespec="milliseconds"),
         "captured_monotonic": time.monotonic(),
+        "gravity_profile": state.gravity_profile,
         "arm": arm,
         "torso_now": now,
         "torso_at_pick": state.pick_torso,
