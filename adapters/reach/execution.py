@@ -174,6 +174,7 @@ def _execution_summary(record: dict[str, Any]) -> dict[str, Any]:
             "gravity_profile",
             "pick_context",
             "joint_names",
+            "trajectory_start_rad",
             "target_rad",
             "reach_error_max_deg",
             "follow_error_max_deg",
@@ -471,6 +472,11 @@ def _log_exec(kind: str, result: str, q_target, *, sag=None,
                 "use_imu_gravity": st.get("use_imu_gravity"),
             },
             "joint_names": state.joint_names,
+            "trajectory_start_rad": (
+                deepcopy(command_handoff.get("planned_start_rad"))
+                if isinstance(command_handoff, dict)
+                else None
+            ),
             "target_rad": target.tolist(),
             "cmd_rad": cmd.tolist(),
             "measured_rad": measured.tolist(),

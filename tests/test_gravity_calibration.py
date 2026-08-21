@@ -170,6 +170,43 @@ class GravityCalibrationTests(unittest.TestCase):
             "cdcdcdcdcdcd",
         )
 
+    def test_trajectory_start_is_matched_from_first_frame(self):
+        names = ["j1", "j2", "j3"]
+        gravity.WAYPOINTS_DIR.mkdir(parents=True)
+        (gravity.WAYPOINTS_DIR / "abababababab.json").write_text(
+            json.dumps(
+                {
+                    "id": "abababababab",
+                    "name": "0.46终点",
+                    "chain_id": "right_arm",
+                    "named_joints": {"j1": 0.1, "j2": -0.2, "j3": 0.3},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        matched = gravity._detect_trajectory_start(
+            {
+                "chain_id": "right_arm",
+                "joint_names": names,
+                "trajectory_start_rad": [0.11, -0.22, 0.31],
+            }
+        )
+        unmatched = gravity._detect_trajectory_start(
+            {
+                "chain_id": "right_arm",
+                "joint_names": names,
+                "trajectory_start_rad": [0.5, -0.2, 0.3],
+            }
+        )
+
+        self.assertTrue(matched["matched"])
+        self.assertEqual(matched["label"], "0.46终点")
+        self.assertEqual(matched["point_id"], "abababababab")
+        self.assertFalse(unmatched["matched"])
+        self.assertEqual(unmatched["label"], "未匹配起点")
+        self.assertEqual(unmatched["nearest_label"], "0.46终点")
+
     def test_capture_ik_validation_checks_pointcloud_execution_and_saves_samples(self):
         names = [
             "right_shoulder_pitch_joint",
@@ -181,6 +218,7 @@ class GravityCalibrationTests(unittest.TestCase):
             "right_wrist_yaw_joint",
         ]
         target = [0.2, -0.25, 0.0, 0.9, 0.0, -0.1, 0.0]
+        trajectory_start = [0.1, -0.15, 0.05, 0.7, 0.0, -0.05, 0.0]
         execution = {
             "id": "edededededed",
             "result": "done",
@@ -188,6 +226,7 @@ class GravityCalibrationTests(unittest.TestCase):
             "robot": "h2",
             "chain_id": "right_arm",
             "joint_names": names,
+            "trajectory_start_rad": trajectory_start,
             "target_rad": target,
             "gravity_profile": {"version": "0.1.0"},
             "pick_context": {
@@ -214,6 +253,18 @@ class GravityCalibrationTests(unittest.TestCase):
             for _ in range(5)
         ]
         aggregate = gravity._aggregate_samples(samples)
+        gravity.WAYPOINTS_DIR.mkdir(parents=True)
+        (gravity.WAYPOINTS_DIR / "acacacacacac.json").write_text(
+            json.dumps(
+                {
+                    "id": "acacacacacac",
+                    "name": "0.5以上",
+                    "chain_id": "right_arm",
+                    "named_joints": dict(zip(names, trajectory_start)),
+                }
+            ),
+            encoding="utf-8",
+        )
 
         def request(method, path, **kwargs):
             if path == "/api/reach/executions/edededededed":
@@ -239,7 +290,7 @@ class GravityCalibrationTests(unittest.TestCase):
             response = gravity.capture_ik_validation(
                 "edededededed",
                 {
-                    "start_label": "0.5以上",
+                    "start_label": "这个手动值应被忽略",
                     "sample_s": 2.0,
                     "sample_hz": 10.0,
                 },
@@ -248,6 +299,10 @@ class GravityCalibrationTests(unittest.TestCase):
         self.assertTrue(response["ok"])
         saved = gravity._load_ik_validation(response["validation"]["id"])
         self.assertEqual(saved["start_label"], "0.5以上")
+        self.assertTrue(saved["start_detection"]["matched"])
+        self.assertEqual(
+            saved["start_detection"]["source"], "trajectory_first_frame"
+        )
         self.assertEqual(saved["sample_count"], 5)
         self.assertAlmostEqual(saved["metrics"]["ik"]["norm_mm"], 1.0)
         self.assertGreater(saved["metrics"]["tracking"]["norm_mm"], 4.0)

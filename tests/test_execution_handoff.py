@@ -149,6 +149,9 @@ class ExecutionHandoffTests(unittest.TestCase):
                     [0.2, -0.1],
                     duration=4.0,
                     speed=0.2,
+                    command_handoff={
+                        "planned_start_rad": [0.05, -0.25],
+                    },
                 )
 
             response = execution.reach_executions(
@@ -161,6 +164,9 @@ class ExecutionHandoffTests(unittest.TestCase):
             self.assertEqual(record["gravity_profile"]["version"], "0.1.0")
             self.assertEqual(
                 record["pick_context"]["source_frame_id"], "frame-8"
+            )
+            self.assertEqual(
+                record["trajectory_start_rad"], [0.05, -0.25]
             )
             self.assertAlmostEqual(record["tcp"]["ik_mm"], 1.0)
             detail = execution.reach_execution(record["id"])

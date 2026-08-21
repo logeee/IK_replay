@@ -293,7 +293,7 @@
       <span id="ikSummary" class="hint">等待读取18001执行记录</span>
     </div>
     <div class="ik-controls">
-      <label class="wide">起点标签<input id="ikStartLabel" value="0.5以上" maxlength="80" /></label>
+      <label class="wide">起点识别<input value="根据轨迹第一帧自动匹配重力位点" readonly /></label>
       <label>补采时长<input id="ikSampleSeconds" type="number" min=".5" max="10" step=".5" value="2" /></label>
       <label>采样频率<input id="ikSampleHz" type="number" min="2" max="30" step="1" value="10" /></label>
       <label class="wide">备注<input id="ikNote" placeholder="例如：固定终点第3次" maxlength="300" /></label>
@@ -502,8 +502,8 @@ function renderIkValidation(){
   const candidates=ikData?.candidates||[],records=ikData?.records||[];
   $("ikSummary").textContent=ikData?.reach_error?`18001读取失败：${ikData.reach_error}`:`${candidates.length}次可选执行 · ${records.length}条已保存`;
   $("ikCandidateList").innerHTML=candidates.length?candidates.map(item=>{
-    const captured=item.captured_validation_id,when=item.ts?.replace("T"," ").slice(0,23)||"时间未知",pixel=Array.isArray(item.pixel)?`像素 (${item.pixel.join(", ")})`:"无像素";
-    return `<div class="ik-item"><div><div class="ik-title">${esc(item.segment||"主轨迹")} · 重力 ${esc(item.gravity_version||"未记录")}</div><div class="ik-meta">${esc(when)} · ${esc(pixel)} · 源帧 ${esc(item.source_frame_id||"未知")}</div></div><button data-ik-capture="${esc(item.id)}" ${captured?"disabled":""}>${captured?"已保存":"记录当前落点"}</button></div>`;
+    const captured=item.captured_validation_id,when=item.ts?.replace("T"," ").slice(0,23)||"时间未知",pixel=Array.isArray(item.pixel)?`像素 (${item.pixel.join(", ")})`:"无像素",detection=item.start_detection||{},difference=Number(detection.max_error_deg),startMeta=detection.matched?`自动起点 ${item.start_label}${Number.isFinite(difference)?`（最大关节差 ${difference.toFixed(2)}°）`:""}`:`起点未匹配${detection.nearest_label?`，最近为 ${detection.nearest_label}`:""}`;
+    return `<div class="ik-item"><div><div class="ik-title">${esc(startMeta)} · 重力 ${esc(item.gravity_version||"未记录")}</div><div class="ik-meta">${esc(when)} · ${esc(pixel)} · 源帧 ${esc(item.source_frame_id||"未知")}</div></div><button data-ik-capture="${esc(item.id)}" ${captured?"disabled":""}>${captured?"已保存":"记录当前落点"}</button></div>`;
   }).join(""):'<div class="empty">完成一次7005点云选点后的“主轨迹”，记录会自动出现在这里</div>';
   $("ikCandidateList").querySelectorAll("[data-ik-capture]").forEach(button=>button.addEventListener("click",()=>captureIkValidation(button.dataset.ikCapture)));
   $("ikRecordList").innerHTML=records.length?records.slice(0,20).map(record=>{
@@ -520,12 +520,12 @@ async function pollIkValidation(){
   finally{ikBusy=false;}
 }
 async function captureIkValidation(executionId){
-  const startLabel=$("ikStartLabel").value.trim()||"未标注起点";
-  if(!confirm(`记录从“${startLabel}”出发的这次点云IK落点？采样期间请保持手臂不动。`))return;
+  const candidate=(ikData?.candidates||[]).find(item=>item.id===executionId),detection=candidate?.start_detection||{},startLabel=candidate?.start_label||"未匹配起点",nearest=!detection.matched&&detection.nearest_label?`（最近位点：${detection.nearest_label}）`:"";
+  if(!confirm(`自动识别起点：“${startLabel}”${nearest}。记录这次点云IK落点？采样期间请保持手臂不动。`))return;
   ikBusy=true;
   try{
-    const result=await api(`/api/gravity/ik_validation/capture/${encodeURIComponent(executionId)}`,"POST",{start_label:startLabel,note:$("ikNote").value.trim(),sample_s:Number($("ikSampleSeconds").value),sample_hz:Number($("ikSampleHz").value)});
-    toast(`IK落点已保存：${result.validation.sample_count}帧`);
+    const result=await api(`/api/gravity/ik_validation/capture/${encodeURIComponent(executionId)}`,"POST",{note:$("ikNote").value.trim(),sample_s:Number($("ikSampleSeconds").value),sample_hz:Number($("ikSampleHz").value)});
+    toast(`IK落点已保存：${result.validation.start_label} · ${result.validation.sample_count}帧`);
     ikBusy=false;
     await pollIkValidation();
     openIkComparison(result.validation.id);

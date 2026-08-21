@@ -45,6 +45,7 @@ BATCHES_DIR = DATA_ROOT / "batches"
 IK_VALIDATIONS_DIR = DATA_ROOT / "ik_validation"
 REGULAR_WAYPOINTS_DIR = ROOT / "data" / "waypoints"
 GRAVITY_PROFILES_PATH = DEFAULT_GRAVITY_PROFILES_PATH
+IK_START_MATCH_MAX_ERROR_RAD = 0.15
 
 app = FastAPI(title="gravity-calibration")
 app.mount("/web", StaticFiles(directory=WEB_DIR), name="gravity-web")
@@ -557,11 +558,101 @@ def _sample_ik_execution(
     return samples, _aggregate_samples(samples)
 
 
+def _detect_trajectory_start(execution: dict[str, Any]) -> dict[str, Any]:
+    """Match the planned trajectory's first frame to a gravity waypoint."""
+    values = execution.get("trajectory_start_rad")
+    if values is None:
+        handoff = execution.get("command_handoff") or {}
+        values = (
+            handoff.get("planned_start_rad")
+            if isinstance(handoff, dict)
+            else None
+        )
+    names = list(execution.get("joint_names") or [])
+    try:
+        start = np.asarray(values, dtype=float).reshape(-1)
+    except (TypeError, ValueError):
+        start = np.asarray([], dtype=float)
+    if (
+        not names
+        or start.size != len(names)
+        or not np.all(np.isfinite(start))
+    ):
+        return {
+            "source": "trajectory_first_frame",
+            "matched": False,
+            "label": "未匹配起点",
+            "reason": "执行记录缺少有效的轨迹第一帧",
+            "threshold_rad": IK_START_MATCH_MAX_ERROR_RAD,
+        }
+
+    candidates: list[tuple[float, float, dict[str, Any]]] = []
+    for point in _list_points():
+        if (
+            point.get("chain_id")
+            and execution.get("chain_id")
+            and point.get("chain_id") != execution.get("chain_id")
+        ):
+            continue
+        named = point.get("named_joints")
+        if not isinstance(named, dict):
+            continue
+        try:
+            waypoint = np.asarray(
+                [float(named[name]) for name in names], dtype=float
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not np.all(np.isfinite(waypoint)):
+            continue
+        delta = start - waypoint
+        candidates.append(
+            (
+                float(np.max(np.abs(delta))),
+                float(np.sqrt(np.mean(np.square(delta)))),
+                point,
+            )
+        )
+
+    if not candidates:
+        return {
+            "source": "trajectory_first_frame",
+            "matched": False,
+            "label": "未匹配起点",
+            "reason": "重力位点库中没有可比较的同链位点",
+            "threshold_rad": IK_START_MATCH_MAX_ERROR_RAD,
+            "trajectory_start_rad": start.tolist(),
+        }
+
+    max_error, rms_error, nearest = min(
+        candidates, key=lambda item: (item[0], item[1])
+    )
+    matched = max_error <= IK_START_MATCH_MAX_ERROR_RAD
+    nearest_label = str(
+        nearest.get("name") or nearest.get("id") or "未命名位点"
+    )
+    return {
+        "source": "trajectory_first_frame",
+        "matched": matched,
+        "label": nearest_label if matched else "未匹配起点",
+        "point_id": nearest.get("id") if matched else None,
+        "nearest_label": nearest_label,
+        "nearest_point_id": nearest.get("id"),
+        "max_error_rad": max_error,
+        "max_error_deg": math.degrees(max_error),
+        "rms_error_rad": rms_error,
+        "rms_error_deg": math.degrees(rms_error),
+        "threshold_rad": IK_START_MATCH_MAX_ERROR_RAD,
+        "trajectory_start_rad": start.tolist(),
+    }
+
+
 def _ik_candidate_summary(
     execution: dict[str, Any],
     captured_by_execution: dict[str, str],
 ) -> dict[str, Any]:
     pick = execution.get("pick_context") or {}
+    start_detection = _detect_trajectory_start(execution)
     return {
         "id": execution.get("id"),
         "ts": execution.get("ts"),
@@ -576,6 +667,8 @@ def _ik_candidate_summary(
         "capture_id": pick.get("capture_id"),
         "pixel": pick.get("pixel"),
         "target_root_m": pick.get("p_root"),
+        "start_label": start_detection["label"],
+        "start_detection": start_detection,
         "captured_validation_id": captured_by_execution.get(
             str(execution.get("id"))
         ),
@@ -678,7 +771,8 @@ def capture_ik_validation(execution_id: str, body: dict | None = None):
             0.15,
             max(0.005, float(body.get("command_tolerance_rad", 0.05))),
         )
-        start_label = str(body.get("start_label") or "未标注起点").strip()[:80]
+        start_detection = _detect_trajectory_start(execution)
+        start_label = str(start_detection["label"])[:80]
         note = str(body.get("note") or "").strip()[:300]
         started_at = _now()
         samples, aggregate = _sample_ik_execution(
@@ -697,6 +791,7 @@ def capture_ik_validation(execution_id: str, body: dict | None = None):
             "started_at": started_at,
             "completed_at": _now(),
             "start_label": start_label,
+            "start_detection": start_detection,
             "note": note,
             "robot": execution.get("robot") or "h2",
             "chain_id": execution.get("chain_id") or "right_arm",
