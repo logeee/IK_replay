@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "id": "0a13159ca909",
+  "point_id": "863159ab3719",
+  "point_name": "起手点测试",
+  "plan_id": "6acbde13ad1d",
+  "batch_id": null,
+  "started_at": "2026-08-21T10:29:55.313",
+  "status": "failed",
+  "gravity_profile": {
+    "version": "0.0.0",
+    "label": "未标定前的重力补偿版本",
+    "configured_active_version": "0.0.0",
+    "config_path": "/home/robot/yx/project/IK_replay/config/gravity_compensation.json",
+    "effective_parameters": {
+      "grav_alpha": 1.0,
+      "payload_kg": 0.0,
+      "grav_in_float": true,
+      "use_imu_gravity": false
+    },
+    "cli_overrides": {}
+  },
+  "robot": "h2",
+  "chain_id": "right_arm",
+  "target_named_joints": {
+    "right_shoulder_pitch_joint": 0.26842960715293884,
+    "right_shoulder_roll_joint": -0.1819145530462265,
+    "right_shoulder_yaw_joint": -0.15846142172813416,
+    "right_elbow_joint": -0.16574783623218536,
+    "right_wrist_roll_joint": -0.3126744329929352,
+    "right_wrist_pitch_joint": -0.548637866973877,
+    "right_wrist_yaw_joint": -0.18310697376728058
+  },
+  "settings": {
+    "duration_s": 6.0,
+    "max_speed_rad_s": 0.2,
+    "settle_s": 3.0,
+    "sample_s": 2.0,
+    "sample_hz": 10.0,
+    "intermediate_stops": 3,
+    "sample_point_count": 4,
+    "planner": "linear"
+  },
+  "completed_at": "2026-08-21T10:30:00.940",
+  "error": "18001返回非JSON响应（HTTP 500）",
+  "storage_version": "0.0.0",
+  "storage_relative_path": "0.0.0/0a13159ca909.json"
+}

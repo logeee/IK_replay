@@ -44,6 +44,10 @@ const state = {
   metadata: null,
   robotGroup: null,
   jointNodes: new Map(),
+  linkGroups: new Map(),
+  toolGroup: null,
+  toolVisual: {},
+  chainId: "right_arm",
   meshBaseUrl: "/assets/",
   sceneOffset: new THREE.Vector3(),
   frames: [],
@@ -226,6 +230,7 @@ async function loadRobot(robotId) {
   }
   attachChildren(rootLink);
   state.robotGroup = root;
+  state.linkGroups = links;
   scene.add(root);
   await Promise.all(meshTasks);
 
@@ -236,6 +241,132 @@ async function loadRobot(robotId) {
   setRobotJoints(initial);
   updateGroundAndView();
   state.robotId = robotId;
+}
+
+function attachToolVisualization() {
+  state.toolGroup?.removeFromParent();
+  state.toolGroup = null;
+  const visual = state.toolVisual || {};
+  const tcpOffset = visual.tcp_offset;
+  if (!Array.isArray(tcpOffset) || tcpOffset.length !== 3) return;
+  const chain = state.metadata?.chains?.[state.chainId];
+  const wristLink = visual.wrist_link || chain?.end_link;
+  const wrist = state.linkGroups.get(wristLink);
+  if (!wrist) return;
+  const handLinkName = state.chainId === "left_arm" ? "left_hand_link" : "right_hand_link";
+  const hand = state.linkGroups.get(handLinkName);
+  const flange = new THREE.Vector3(0, 0, 0);
+  if (hand) {
+    wrist.updateWorldMatrix(true, false);
+    hand.updateWorldMatrix(true, false);
+    wrist.worldToLocal(hand.getWorldPosition(flange));
+  }
+  const group = new THREE.Group();
+  group.name = "gravity_plan_tool_markers";
+  const normal = new THREE.Vector3(1, 0, 0);
+
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(0.06, 36),
+    new THREE.MeshBasicMaterial({
+      color: 0x35d07f,
+      transparent: true,
+      opacity: 0.28,
+      side: THREE.DoubleSide,
+      depthTest: false,
+    }),
+  );
+  disc.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+  disc.position.copy(flange);
+  group.add(disc);
+
+  const markerColors = {
+    blue: 0x1687ff,
+    brown: 0x8b4513,
+    gold: 0xffd700,
+    gray: 0xb0b0b0,
+    green: 0x26c95c,
+    orange: 0xff8c00,
+    pink: 0xff69b4,
+    purple: 0x9b59ff,
+    red: 0xff3030,
+  };
+  const tcp = new THREE.Vector3(...tcpOffset.map(Number));
+  let referenceIsTcp = false;
+  for (const [markerId, xyz] of Object.entries(visual.markers || {})) {
+    if (!Array.isArray(xyz) || xyz.length !== 3) continue;
+    const point = new THREE.Vector3(...xyz.map(Number));
+    if (
+      markerId === visual.reference_marker
+      && point.distanceTo(tcp) < 1e-6
+    ) {
+      referenceIsTcp = true;
+    }
+    const dot = new THREE.Mesh(
+      new THREE.SphereGeometry(0.009, 18, 12),
+      new THREE.MeshBasicMaterial({
+        color: markerColors[markerId] ?? 0xffffff,
+        depthTest: false,
+      }),
+    );
+    dot.position.copy(point);
+    dot.renderOrder = 20;
+    group.add(dot);
+  }
+  if (!referenceIsTcp) {
+    const tcpDot = new THREE.Mesh(
+      new THREE.SphereGeometry(0.013, 20, 14),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false }),
+    );
+    tcpDot.position.copy(tcp);
+    tcpDot.renderOrder = 21;
+    group.add(tcpDot);
+  }
+
+  const foot = tcp.clone().sub(
+    normal.clone().multiplyScalar(tcp.clone().sub(flange).dot(normal)),
+  );
+  const axis = tcp.clone().sub(foot);
+  if (axis.length() < 1e-6) {
+    wrist.add(group);
+    state.toolGroup = group;
+    return;
+  }
+  const capsuleMaterial = new THREE.MeshStandardMaterial({
+    color: 0x171a1e,
+    transparent: true,
+    opacity: 0.62,
+    roughness: 0.62,
+  });
+  const radius = 0.04;
+  const shaft = new THREE.Mesh(
+    new THREE.CylinderGeometry(
+      radius,
+      radius,
+      Math.max(axis.length(), 1e-4),
+      20,
+      1,
+      true,
+    ),
+    capsuleMaterial,
+  );
+  shaft.position.copy(foot).lerp(tcp, 0.5);
+  shaft.quaternion.setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    axis.clone().normalize(),
+  );
+  const capA = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 18, 12),
+    capsuleMaterial,
+  );
+  capA.position.copy(foot);
+  const capB = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 18, 12),
+    capsuleMaterial,
+  );
+  capB.position.copy(tcp);
+  group.add(shaft, capA, capB);
+  wrist.add(group);
+  state.toolGroup = group;
 }
 
 function setRobotJoints(values) {
@@ -306,7 +437,10 @@ async function loadPlan(planId) {
       throw new Error(payload.error || `HTTP ${response.status}`);
     }
     const plan = payload.plan;
+    state.chainId = plan.chain_id || "right_arm";
+    state.toolVisual = plan.tool_visualization || {};
     await loadRobot(plan.robot);
+    attachToolVisualization();
     state.frames = plan.frames || [];
     state.sampleFractions = plan.sample_fractions || [];
     state.duration = Number(plan.duration_s || 4);

@@ -426,7 +426,7 @@ function renderSelected(){
   const p=selectedPoint(),plan=data.plan&&data.plan.point_id===selectedId?data.plan:null;
   $("selectedTitle").textContent=p?p.name:"尚未选择位点";$("selectedNote").textContent=p?(p.note||"无备注"):"位点准备和实验执行彼此独立。";
   $("planBtn").disabled=!p||phaseBusy()||!data.reach;$("executeBtn").disabled=!p||!plan||data.operation.phase!=="ready"||!data.reach?.armed||data.reach?.hand_move;
-  $("previewMeta").textContent=plan?`${plan.planner||"规划"} · ${plan.waypoint_count}帧 · 中途停顿${plan.intermediate_stops||0}次 · 共${(plan.intermediate_stops||0)+1}个采样姿态 · 碰撞检查${plan.collision?.status==="collision"?"未通过":"通过"}`:"规划成功后显示机器人回放";
+  $("previewMeta").textContent=plan?`${plan.planner||"规划"} · ${plan.waypoint_count}帧 · 中途停顿${plan.intermediate_stops||0}次 · 彩色标定点 / 白色TCP / 黑色碰撞胶囊 · 碰撞检查${plan.collision?.status==="collision"?"未通过":"通过"}`:"规划成功后显示机器人回放";
   if(plan&&plan.id!==lastPreviewPlanId){lastPreviewPlanId=plan.id;setTimeout(()=>window.dispatchEvent(new CustomEvent("gravity:preview-plan",{detail:{planId:plan.id}})),0);}
   if(!p){$("jointMini").innerHTML="";return;}const names=p.joint_names||Object.keys(p.named_joints||{});
   $("jointMini").innerHTML=names.map(n=>`<div><span>${esc(n.replace("right_",""))}</span><b>${deg(p.named_joints[n])}</b></div>`).join("");

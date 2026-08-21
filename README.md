@@ -77,7 +77,9 @@ the original waypoint, and skip a source file that has already been imported.
 Planning preview uses the same H2 URDF/STL assets as the 18001 viewer. After a
 collision-checked plan, 18002 loads the complete robot and replays every named
 joint frame with play/pause, scrubbing, sampling-frame labels, orbit, zoom, pan,
-and camera reset controls; the old TCP-only 2D preview is not used.
+and camera reset controls. The wrist-attached nine color calibration markers,
+white TCP point, green flange plane, and dark hand collision capsule are carried
+through every preview frame; the old TCP-only 2D preview is not used.
 
 ## Reach RGB-D source
 

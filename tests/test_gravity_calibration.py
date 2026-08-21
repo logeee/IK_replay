@@ -222,12 +222,25 @@ class GravityCalibrationTests(unittest.TestCase):
                 "collision": {"status": "free"},
                 "waypoints": [{"j1": 0.0}, {"j1": 0.2}, {"j1": 0.4}],
                 "preview": {"sample_fractions": [0.5, 1.0]},
+                "tool_visualization": {
+                    "tcp_offset": [0.3, 0.01, 0.04],
+                    "markers": {
+                        "red": [0.28, 0.0, 0.04],
+                        "blue": [0.28, 0.02, 0.04],
+                    },
+                    "wrist_link": "right_wrist_yaw_link",
+                },
             }
         response = gravity.gravity_plan_preview("dddddddddddd")
         self.assertTrue(response["ok"])
         self.assertEqual(response["plan"]["robot"], "h2")
         self.assertEqual(len(response["plan"]["frames"]), 3)
         self.assertEqual(response["plan"]["sample_fractions"], [0.5, 1.0])
+        self.assertIn("red", response["plan"]["tool_visualization"]["markers"])
+        self.assertEqual(
+            response["plan"]["tool_visualization"]["tcp_offset"],
+            [0.3, 0.01, 0.04],
+        )
 
     def test_robot_metadata_serves_urdf_for_full_preview(self):
         response = gravity.gravity_robot_metadata("h2")

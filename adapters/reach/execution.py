@@ -19,6 +19,19 @@ from .state import (_read_joints, _read_torso, _torso_drift, _torso_rotation,
 COMMAND_SNAPSHOT_MAX_AGE_S = 0.25
 
 
+def _json_safe_value(value: Any) -> Any:
+    """Convert controller diagnostics into values FastAPI can encode as JSON."""
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {key: _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(item) for item in value]
+    return value
+
+
 def _validated_command_snapshot(snapshot: dict, joint_count: int,
                                 *, now: float | None = None) -> tuple[np.ndarray, dict]:
     """Validate a controller snapshot and return its last published joint command."""
@@ -176,7 +189,7 @@ def reach_diagnostics():
             arm["tcp_cmd_root_m"] = _tcp_position(cmd.tolist())
             arm["tcp_measured_root_m"] = _tcp_position(measured.tolist())
         try:
-            arm["command_snapshot"] = ctl.command_snapshot()
+            arm["command_snapshot"] = _json_safe_value(ctl.command_snapshot())
         except Exception as exc:
             arm["command_snapshot_error"] = str(exc)
     now = _read_torso()

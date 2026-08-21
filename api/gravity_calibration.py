@@ -400,6 +400,7 @@ def gravity_plan_preview(plan_id: str):
             "collision": plan.get("collision"),
             "frames": plan["waypoints"],
             "sample_fractions": plan.get("preview", {}).get("sample_fractions", []),
+            "tool_visualization": plan.get("tool_visualization") or {},
         },
     }
 
@@ -751,6 +752,12 @@ def plan_waypoint(point_id: str, body: dict[str, Any] | None = None):
             "waypoint_count": len(waypoints),
             "collision": collision,
             "waypoints": waypoints,
+            "tool_visualization": {
+                "tcp_offset": reach.get("p_tool"),
+                "markers": reach.get("p_tool_wrist_m_by_marker") or {},
+                "reference_marker": reach.get("p_tool_reference_marker"),
+                "wrist_link": reach.get("wrist_link"),
+            },
             "preview": {
                 "tcp_path_root_m": tcp_path,
                 "start_joints": waypoints[0],
