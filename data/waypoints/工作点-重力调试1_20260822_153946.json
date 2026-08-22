@@ -1,0 +1,14 @@
+{
+  "name": "工作点-重力调试1",
+  "chain_id": "right_arm",
+  "named_joints": {
+    "right_shoulder_pitch_joint": -1.0730962753295898,
+    "right_shoulder_roll_joint": 0.016556207090616226,
+    "right_shoulder_yaw_joint": 0.18577347695827484,
+    "right_elbow_joint": 0.14255835115909576,
+    "right_wrist_roll_joint": 0.21520672738552094,
+    "right_wrist_pitch_joint": 0.27650004625320435,
+    "right_wrist_yaw_joint": -0.12529507279396057
+  },
+  "created_at": "2026-08-22 15:39:46"
+}

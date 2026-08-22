@@ -1,0 +1,14 @@
+{
+  "name": "工作点-5-0.53",
+  "chain_id": "right_arm",
+  "named_joints": {
+    "right_shoulder_pitch_joint": -0.9867331981658936,
+    "right_shoulder_roll_joint": 0.007052716799080372,
+    "right_shoulder_yaw_joint": 0.14359499514102936,
+    "right_elbow_joint": 0.20428310334682465,
+    "right_wrist_roll_joint": 0.21342706680297852,
+    "right_wrist_pitch_joint": 0.16738367080688477,
+    "right_wrist_yaw_joint": -0.08883906155824661
+  },
+  "created_at": "2026-08-22 15:59:51"
+}

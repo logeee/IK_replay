@@ -1,0 +1,14 @@
+{
+  "name": "工作点-3",
+  "chain_id": "right_arm",
+  "named_joints": {
+    "right_shoulder_pitch_joint": -0.9276579022407532,
+    "right_shoulder_roll_joint": -0.03615041449666023,
+    "right_shoulder_yaw_joint": 0.06946656107902527,
+    "right_elbow_joint": 0.17520937323570251,
+    "right_wrist_roll_joint": 0.21624936163425446,
+    "right_wrist_pitch_joint": 0.1444099098443985,
+    "right_wrist_yaw_joint": -0.12057328969240189
+  },
+  "created_at": "2026-08-22 15:53:30"
+}
