@@ -178,6 +178,7 @@ def _execution_summary(record: dict[str, Any]) -> dict[str, Any]:
             "target_rad",
             "reach_error_max_deg",
             "follow_error_max_deg",
+            "settle_trim",
             "tcp",
         )
     }
@@ -417,7 +418,7 @@ def _tcp_position(q) -> list[float] | None:
         return None
 
 
-def _log_exec(kind: str, result: str, q_target, *, sag=None,
+def _log_exec(kind: str, result: str, q_target, *, sag=None, settle_trim=None,
               duration=None, speed=None, pushing: bool = False, push_tau=None,
               trace=None, command_handoff=None,
               execution_context: dict | None = None) -> None:
@@ -486,6 +487,7 @@ def _log_exec(kind: str, result: str, q_target, *, sag=None,
             "tau_push_peak_nm": (None if push_tau is None
                                  else [round(float(v), 3) for v in np.asarray(push_tau)]),
             "settle_residual_rad": sag,
+            "settle_trim": deepcopy(settle_trim),
             "command_handoff": command_handoff,
         }
         if measured.size == target.size and measured.size:
@@ -598,6 +600,127 @@ def _start_torso_trace(ctl) -> tuple[list, threading.Event]:
     return samples, stop
 
 
+# --------------- 到位后落点修正（settle trim，实验特性） ---------------
+#
+# 重力前馈扛掉扰动大头后，落点仍剩几毫米的稳态残差（模型残差 + 摩擦）。
+# 这里在 settle 段用"参考偏置"闭环再压一层：把实测残差加到指令上，
+# 让 PD 多出一份力矩把关节顶到位。两种形态由启动参数选择：
+#   discrete   测残差→整步偏置→再测，最多几轮（好观察、好调试）
+#   continuous 低频小步积分（到位更平滑，不用等整轮）
+# 共同防护，缺一不可：
+#   死区      残差进入静摩擦死区后 PD 推不动，继续积分只会攒劲→突破→过冲
+#             →反向，形成极限环（裸外环积分当年的病根之一）
+#   偏置钳位  残差本来只有几毫米量级，钳紧防 windup，也保证指令不会
+#             明显偏离碰撞校验过的轨迹终点
+#   门控      只在 settle 段、指令已送达（desired≈cmd）后才评估残差，
+#             运动中的跟随滞后不参与积分
+#   每次执行从零开始，不把上一个构型学到的偏置带进下一个构型
+
+TRIM_DEADBAND_RAD = 0.003        # ~0.17°，肩关节折算指尖约 2mm
+TRIM_MAX_OFFSET_RAD = 0.03       # 单关节累计偏置上限
+TRIM_DISCRETE_MAX_ROUNDS = 3
+TRIM_CONTINUOUS_GAIN = 0.35
+TRIM_CONTINUOUS_PERIOD_S = 0.12  # ~8Hz
+TRIM_CONTINUOUS_TIMEOUT_S = 4.0
+
+
+def _trim_delivered(ctl) -> bool:
+    st = ctl.status()
+    return float(np.max(np.abs(np.asarray(st["desired_rad"])
+                               - np.asarray(st["cmd_rad"])))) < 1e-3
+
+
+def _trim_residual(ctl, target: np.ndarray) -> np.ndarray:
+    st = ctl.status()
+    measured = np.asarray(st["measured_rad"] or ctl.read_measured().tolist())
+    return target - measured
+
+
+def _run_settle_trim(ctl, target: np.ndarray) -> dict | None:
+    """按 state.settle_trim 在 settle 段执行落点修正，返回诊断记录（写日志用）。"""
+    mode = state.settle_trim
+    if mode not in ("discrete", "continuous"):
+        return None
+    state.exec_phase = "trim"
+    offset = np.zeros_like(target)
+    err = _trim_residual(ctl, target)
+    info: dict[str, Any] = {
+        "mode": mode,
+        "deadband_rad": TRIM_DEADBAND_RAD,
+        "max_offset_rad": TRIM_MAX_OFFSET_RAD,
+        "initial_residual_rad": [round(float(v), 5) for v in err],
+        "initial_residual_max_rad": round(float(np.max(np.abs(err))), 5),
+    }
+
+    if mode == "discrete":
+        rounds = 0
+        prev_max = float(np.max(np.abs(err)))
+        stopped = "max_rounds"
+        for _ in range(TRIM_DISCRETE_MAX_ROUNDS):
+            if state.exec_cancel.is_set():
+                stopped = "cancelled"
+                break
+            step = np.where(np.abs(err) > TRIM_DEADBAND_RAD, err, 0.0)
+            if not np.any(step):
+                stopped = "converged"
+                break
+            offset = np.clip(offset + step, -TRIM_MAX_OFFSET_RAD, TRIM_MAX_OFFSET_RAD)
+            ctl.set_target(target + offset)
+            rounds += 1
+            state.exec_message = f"落点修正中（离散第 {rounds} 轮）"
+            deadline = time.monotonic() + 2.0
+            while (time.monotonic() < deadline and not state.exec_cancel.is_set()
+                   and not _trim_delivered(ctl)):
+                time.sleep(0.05)
+            if not _trim_delivered(ctl):
+                stopped = "delivery_timeout"
+                break
+            time.sleep(0.4)     # 给电机贴上来再评估
+            err = _trim_residual(ctl, target)
+            cur_max = float(np.max(np.abs(err)))
+            if cur_max < TRIM_DEADBAND_RAD:
+                stopped = "converged"
+                break
+            if cur_max > prev_max * 0.8:
+                # 残差不再明显收缩：多半已顶进静摩擦死区，再积就是极限环
+                stopped = "no_improvement"
+                break
+            prev_max = cur_max
+        info["rounds"] = rounds
+    else:
+        steps = 0
+        stopped = "timeout"
+        deadline = time.monotonic() + TRIM_CONTINUOUS_TIMEOUT_S
+        state.exec_message = "落点修正中（连续积分）"
+        while time.monotonic() < deadline:
+            if state.exec_cancel.is_set():
+                stopped = "cancelled"
+                break
+            if _trim_delivered(ctl):
+                err = _trim_residual(ctl, target)
+                if float(np.max(np.abs(err))) < TRIM_DEADBAND_RAD:
+                    stopped = "converged"
+                    break
+                step = TRIM_CONTINUOUS_GAIN * np.where(
+                    np.abs(err) > TRIM_DEADBAND_RAD, err, 0.0)
+                offset = np.clip(offset + step,
+                                 -TRIM_MAX_OFFSET_RAD, TRIM_MAX_OFFSET_RAD)
+                ctl.set_target(target + offset)
+                steps += 1
+            time.sleep(TRIM_CONTINUOUS_PERIOD_S)
+        info["steps"] = steps
+
+    final_err = _trim_residual(ctl, target)
+    info.update(
+        stopped=stopped,
+        offset_rad=[round(float(v), 5) for v in offset],
+        offset_max_rad=round(float(np.max(np.abs(offset))), 5),
+        final_residual_rad=[round(float(v), 5) for v in final_err],
+        final_residual_max_rad=round(float(np.max(np.abs(final_err))), 5),
+    )
+    return info
+
+
 def _exec_loop(q_list: list[np.ndarray], duration: float,
                push_tau: np.ndarray | None = None, speed: float = 0.2,
                label: str = "reach", command_start_q: np.ndarray | None = None,
@@ -698,14 +821,15 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
             return
 
         sag = None
+        trim_info = None
         target = q_list[-1]
         if not state.exec_cancel.is_set():
             state.exec_phase = "settle"
             # 躯干漂移不再在这里主动补偿（曾有"重瞄"逻辑：到位后按躯干姿态
             # 变化重解 IK 再挪 2~3cm，观感是到位后突然跳一下）。现在漂移交给
             # 分段模式的「再次选点」用当前相机实测修正，这里只测量、写日志。
-            # 外环积分同样已移除：重力下垂由重力前馈扛。
-            # 这里只等指令送达、给电机 ~0.3s 贴上来，然后测一次落点残差写日志。
+            # 这里等指令送达、给电机 ~0.3s 贴上来，测一次落点残差写日志；
+            # 若启动时开了 --settle-trim-*，再跑一层落点修正闭环（见上方说明）。
             deadline = time.monotonic() + 3.0
             while time.monotonic() < deadline and not state.exec_cancel.is_set():
                 status = ctl.status()
@@ -719,15 +843,19 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
                 status = ctl.status()
                 measured = np.asarray(status["measured_rad"] or ctl.read_measured().tolist())
                 sag = float(np.max(np.abs(target - measured)))
+                trim_info = _run_settle_trim(ctl, target)
 
         ctl.disable_jog()
         state.exec_progress = 1.0
         sag_note = f"，落点残差 {sag:.3f} rad" if sag is not None else ""
+        if trim_info is not None:
+            sag_note += (f"，{trim_info['mode']} 修正后 "
+                         f"{trim_info['final_residual_max_rad']:.3f} rad")
         cancelled = state.exec_cancel.is_set()
         state.exec_message = ("已中止（保持当前位置）" if cancelled
                               else f"完成（刚性保持{sag_note}{_finish_torso_diag()}）")
         _log_exec(label, "cancelled" if cancelled else "done", target,
-                  sag=sag, **log)
+                  sag=sag, settle_trim=trim_info, **log)
     except Exception as exc:
         try:
             ctl.stop()

@@ -78,7 +78,8 @@ class ReachState:
         self.exec_progress = 0.0
         self.exec_message = "空闲"
         self.exec_running = False
-        self.exec_phase = "idle"           # traj/converge/settle/push_hold/release
+        self.exec_phase = "idle"           # traj/converge/settle/trim/push_hold/release
+        self.settle_trim = "off"           # off/discrete/continuous：到位后落点修正模式
         self.execution_history: deque[dict[str, Any]] = deque(maxlen=30)
         self.execution_history_lock = threading.Lock()
 
@@ -92,7 +93,8 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str,
               collision_checker=None, ik_solver=None, arm_factory=None,
               joints_reader=None, torso_reader=None, motors_reader=None,
               tool_out_mm: float = 0.0,
-              gravity_profile: dict[str, Any] | None = None) -> None:
+              gravity_profile: dict[str, Any] | None = None,
+              settle_trim: str = "off") -> None:
     """由 reach_server 调用。calib_path 是 handeye3d_result.json。
 
     camera_only=True 时不加载手眼标定，只开放相机流与相机系深度观测；
@@ -166,6 +168,9 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str,
     state.camera_only = camera_only
     state.robot_only = robot_only
     state.gravity_profile = dict(gravity_profile or {})
+    if settle_trim not in ("off", "discrete", "continuous"):
+        raise ValueError(f"settle_trim 只能是 off/discrete/continuous，收到 {settle_trim!r}")
+    state.settle_trim = settle_trim
     if camera_only:
         state.calib_meta = {
             "ready": False,

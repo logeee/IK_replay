@@ -152,7 +152,20 @@ def main() -> int:
                         default=None,
                         help="临时覆盖版本中的 IMU 重力方向修正开关（躯干前倾/后仰时更准）。"
                              "先看页面诊断里的 IMU 数值是否合理再开")
+    trim_group = parser.add_mutually_exclusive_group()
+    trim_group.add_argument("--settle-trim-discrete", action="store_true",
+                            help="到位 settle 后离散迭代修正落点：测静态残差→把残差整步"
+                                 "加到指令上→再测，最多 3 轮，残差不再收敛即停。"
+                                 "带死区（0.003 rad）与偏置钳位（±0.03 rad），"
+                                 "与重力前馈叠加使用，实验特性")
+    trim_group.add_argument("--settle-trim-continuous", action="store_true",
+                            help="到位 settle 后连续积分修正落点：约 8Hz 小步积分残差"
+                                 "（增益 0.35），最长 4s，进死区即停。"
+                                 "同样带死区与偏置钳位，与 --settle-trim-discrete 互斥")
     args = parser.parse_args()
+
+    settle_trim = ("discrete" if args.settle_trim_discrete
+                   else "continuous" if args.settle_trim_continuous else "off")
 
     from core.gravity_profiles import active_profile, load_registry, validate_parameters
 
@@ -289,7 +302,11 @@ def main() -> int:
         torso_reader=torso_reader, motors_reader=motors_reader,
         tool_out_mm=args.tool_out_mm,
         gravity_profile=gravity_profile_meta,
+        settle_trim=settle_trim,
     )
+    if settle_trim != "off":
+        print(f"[reach] 落点修正 = {settle_trim}"
+              f"（settle 段闭环，死区 0.003 rad，偏置钳位 ±0.03 rad）")
     if args.camera_only:
         from fastapi.responses import JSONResponse
 
