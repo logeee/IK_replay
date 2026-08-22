@@ -171,6 +171,12 @@
   .manual-bar input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--cyan); }
   .manual-bar input[type="number"] { width: 58px; }
   .manual-bar .hint { color: var(--muted); font-size: 11px; margin-left: auto; }
+  .manual-bar .offset-group {
+    display: flex; align-items: center; gap: 6px; font-size: 12px;
+    color: var(--muted); padding: 4px 10px; border-radius: 9px;
+    border: 1px dashed rgba(151, 180, 213, .3);
+  }
+  .manual-bar .offset-group input[type="number"] { width: 52px; }
   .prompt-panel {
     margin-top: 14px; padding: 18px 22px;
     border: 1px solid rgba(245, 189, 88, .55); background:
@@ -264,6 +270,12 @@
       <input id="manualStep" type="checkbox" checked />每步手动确认
     </label>
     <label>最大轮数 <input id="manualRetries" type="number" min="1" max="20" value="3" /></label>
+    <span class="offset-group" title="算法（粉点+模型偏移）算出目的点之后，再在墙面坐标系里叠加的人工修正量；不改变粉点→目的点的模型偏移">
+      目的点微调(cm)
+      <label>右+ <input id="offsetX" type="number" min="-5" max="5" step="0.1" value="0" /></label>
+      <label>入墙+ <input id="offsetY" type="number" min="-5" max="5" step="0.1" value="0" /></label>
+      <label>上+ <input id="offsetZ" type="number" min="-5" max="5" step="0.1" value="0" /></label>
+    </span>
     <button id="manualStart" class="primary">① 启动流程</button>
     <button id="manualEstop" class="danger">强制停止</button>
     <span id="manualHint" class="hint"></span>
@@ -310,6 +322,7 @@
         <div class="detail-row"><div class="detail-key">开始时间</div><div id="detailStart" class="detail-value">—</div></div>
         <div class="detail-row"><div class="detail-key">持续时间</div><div id="detailDuration" class="detail-value">—</div></div>
         <div class="detail-row"><div class="detail-key">最大轮次</div><div id="detailRetries" class="detail-value">—</div></div>
+        <div class="detail-row"><div class="detail-key">目的点微调</div><div id="detailOffset" class="detail-value">—</div></div>
         <div id="resultBox" class="result-box">
           <div id="resultTitle" class="result-title">尚无执行结果</div>
           <div id="resultMessage" class="result-message">服务正在等待新的API任务。</div>
@@ -333,13 +346,20 @@
 const $ = (id) => document.getElementById(id);
 const FLOW_STEPS = [
   { name: "接收API指令", desc: "校验指令并创建任务", tokens: ["指令:"] },
-  { name: "准备运行环境", desc: "启动相机与机器人服务", tokens: ["启动 reach_server", "reach_server 就绪", "复用站位检查", "外部启动"] },
-  { name: "场景判断", desc: "确认开关状态与方向", tokens: ["1️⃣", "2️⃣", "场景:"] },
+  { name: "准备运行环境", desc: "启动相机与机器人服务", tokens: ["启动 reach_server", "reach_server 就绪", "复用站位检查", "外部启动", "1️⃣"] },
+  { name: "场景判断", desc: "确认开关状态与方向", tokens: ["2️⃣", "场景:"] },
   { name: "抬手前对齐", desc: "柜面法向与腰部粗对齐", tokens: ["3️⃣", "腰部粗对齐"] },
   { name: "测距与起手", desc: "选择距离对应起手式", tokens: ["4️⃣", "5️⃣", "起手式:"] },
   { name: "抬手后对齐", desc: "三帧复测并加强纠偏", tokens: ["6️⃣", "抬手后复查"] },
   { name: "识别规划执行", desc: "目标取点、IK规划与拨动", tokens: ["点位:", "IK 执行", "规划"] },
   { name: "复核与收尾", desc: "确认结果、回落并释放", tokens: ["复核拨动", "拨动成功", "收尾", "释放"] },
+];
+
+// step_times 里的步骤名自带序号（api/flow.py 的 _step_begin），
+// 按序号前缀映射到上面的阶段卡——这是结构化进度，比扫日志关键词可靠。
+const STEP_STAGE = [
+  ["1️⃣", 1], ["2️⃣", 2], ["3️⃣", 3], ["4️⃣", 4], ["5️⃣", 4],
+  ["6️⃣", 5], ["7️⃣", 6], ["8️⃣", 6], ["9️⃣", 7], ["🔟", 7],
 ];
 
 let lastData = null;
@@ -349,11 +369,27 @@ let lastLogSignature = "";
 function renderWorkflow(data) {
   const logs = data.log || [];
   let reached = data.task_id ? 0 : -1;
-  FLOW_STEPS.forEach((step, index) => {
-    if (logs.some((line) => step.tokens.some((token) => line.includes(token)))) {
-      reached = Math.max(reached, index);
-    }
-  });
+  const doneSteps = (data.step_times || []).filter((e) => e.kind === "step");
+  if (doneSteps.length) {
+    // 有分步计时：阶段进度只信它；日志仅用于点亮前两个准备阶段
+    doneSteps.forEach((e) => STEP_STAGE.forEach(([prefix, stage]) => {
+      if (String(e.step).startsWith(prefix)) reached = Math.max(reached, stage);
+    }));
+    FLOW_STEPS.slice(0, 2).forEach((step, index) => {
+      if (logs.some((line) => step.tokens.some((token) => line.includes(token)))) {
+        reached = Math.max(reached, index);
+      }
+    });
+  } else {
+    // 没有分步计时（老后端）才退回日志关键词扫描；
+    // "⏸ 等待操作员确认"是对下一步的预告，不能算已执行到
+    const executed = logs.filter((line) => !line.includes("⏸ 等待操作员确认"));
+    FLOW_STEPS.forEach((step, index) => {
+      if (executed.some((line) => step.tokens.some((token) => line.includes(token)))) {
+        reached = Math.max(reached, index);
+      }
+    });
+  }
   if (data.state === "starting") reached = Math.max(reached, 1);
   const success = data.state === "done" && data.result && data.result.ok;
   const failed = data.state === "done" && data.result && !data.result.ok;
@@ -443,6 +479,11 @@ function renderDetails(data) {
   const duration = taskDuration(data);
   $("detailDuration").textContent = duration === null ? "—" : formatDuration(duration);
   $("detailRetries").textContent = data.retries ? `${data.retries}轮` : "—";
+  const offsetCm = data.target_offset_wall_cm || [];
+  $("detailOffset").textContent = !data.task_id ? "—"
+    : (offsetCm.some((value) => Number(value))
+      ? `右${offsetCm[0]}cm / 入墙${offsetCm[1]}cm / 上${offsetCm[2]}cm（墙面系）`
+      : "无");
   $("reachState").textContent = `REACH ${data.reach_alive ? "ONLINE" : "OFFLINE"}`;
   $("reachState").style.color = data.reach_alive ? "var(--green)" : "var(--muted)";
 
@@ -639,14 +680,23 @@ function syncLanguageOptions() {
 $("manualSite").addEventListener("change", syncLanguageOptions);
 syncLanguageOptions();
 
+function readOffsetCm(id) {
+  const value = Number($(id).value) || 0;
+  return Math.min(5, Math.max(-5, Math.round(value * 10) / 10));
+}
+
 $("manualStart").addEventListener("click", async () => {
   const site = $("manualSite").value;
   const language = $("manualLanguage").value;
   const retries = Math.min(20, Math.max(1, Number($("manualRetries").value) || 3));
   const manual = $("manualStep").checked;
+  const offset = { x: readOffsetCm("offsetX"), y: readOffsetCm("offsetY"), z: readOffsetCm("offsetZ") };
   const mode = manual ? "每个主要步骤执行前都需要在本页确认" : "全自动执行（无每步确认）";
-  if (!confirm(`确认启动拨闸流程？\n现场：${SITE_LABELS[site]}\n指令：${language}\n${mode}，最多 ${retries} 轮`)) return;
-  const data = await postJson("/task/flip", { language, retries, manual, site });
+  const offsetNote = (offset.x || offset.y || offset.z)
+    ? `\n目的点微调（墙面系）：右${offset.x}cm / 入墙${offset.y}cm / 上${offset.z}cm` : "";
+  if (!confirm(`确认启动拨闸流程？\n现场：${SITE_LABELS[site]}\n指令：${language}\n${mode}，最多 ${retries} 轮${offsetNote}`)) return;
+  const data = await postJson("/task/flip",
+    { language, retries, manual, site, target_offset_wall_cm: offset });
   setHint(data.ok ? `任务已创建 ${data.task_id}` : (data.error || "启动失败"));
   poll();
 });

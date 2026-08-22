@@ -31,8 +31,12 @@
     POST /task/flip    → body {"language": "<固定指令，必填>",
                                 "retries": 3,   # 可选，最大尝试轮数（VLA 后端忽略）
                                 "manual": false,  # 可选，手动确认模式（见下）
-                                "site": "lab"}  # 可选，现场：lab=实验室柜（默认）
+                                "site": "lab",  # 可选，现场：lab=实验室柜（默认）
                                                 # factory=工厂柜（两旋钮印刷相反）
+                                "target_offset_wall_cm": {"x":0,"y":0,"z":0}}
+                                # 可选，目的点人工微调（墙面系，cm，单轴限 ±5）：
+                                # x=沿墙向右 y=法向入墙 z=沿墙向上。叠加在 7005
+                                # 点云算法算出的目的点上，不动粉点→目的点的模型偏移
                           返回 {"ok": true, "task_id": "..."}；执行中再触发 → 409
 
 现场（site）：真机只验证过"从右向左拨"一套动作。实验室柜上它是
@@ -68,6 +72,7 @@ language 逐字固定（大小写/空格容错，多余的不认）：
 from __future__ import annotations
 
 import argparse
+import math
 import signal
 import subprocess
 import sys
@@ -87,6 +92,7 @@ from core.alignment_config import load_alignment_config
 from .client import ReachClient
 from .console_client import ConsoleClient
 from .flow import ErrorCode, FlowError, SwitchFlow
+from .pointcloud_client import PointcloudClient
 from .yolo_client import YoloClient
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -389,6 +395,13 @@ def _run_task(task: dict) -> None:
                                    f"本次任务不带人工兜底")
                 console = None
         yolo = None if _args.no_yolo else YoloClient(_args.yolo)
+        pointcloud = None
+        if not _args.no_pointcloud:
+            pointcloud = PointcloudClient(_args.pointcloud)
+            if not pointcloud.alive():
+                task["log"].append(f"⚠ 7005 点云服务不可达（{_args.pointcloud}），"
+                                   f"取点退回旧框偏移法")
+                pointcloud = None
         alignment = load_alignment_config()
         coarse = alignment["coarse"]
         fine = alignment["fine"]
@@ -411,7 +424,12 @@ def _run_task(task: dict) -> None:
                           fine_accept_max_deg=fine["accept_max_deg"],
                           fine_command_tol_deg=fine["command_tolerance_deg"],
                           max_flip_rounds=int(task.get("retries") or 3),
-                          site=task.get("site") or "lab")
+                          site=task.get("site") or "lab",
+                          pointcloud=pointcloud,
+                          target_offset_wall_m=tuple(
+                              v / 100.0 for v in
+                              (task.get("target_offset_wall_cm")
+                               or [0.0, 0.0, 0.0])))
         task["flow"] = flow
         if task.get("manual"):
             gate = _ManualGate(task)
@@ -741,6 +759,31 @@ def _parse_site(body: dict | None) -> str | None:
     return site if site in SITES else None
 
 
+# 目的点人工微调（墙面系）单轴上限：微调是给毫米级落点纠偏用的，
+# 超过这个量说明算法/标定有问题，该修根源而不是硬掰
+TARGET_OFFSET_LIMIT_CM = 5.0
+
+
+def _parse_target_offset(value: Any) -> tuple[float, float, float]:
+    """解析 {"x":右,"y":入墙,"z":上}（cm），缺省 0；越限抛 ValueError。"""
+    if value is None:
+        return (0.0, 0.0, 0.0)
+    if not isinstance(value, dict):
+        raise ValueError("target_offset_wall_cm 必须是 {x,y,z} 对象（单位 cm）")
+    out = []
+    for key in ("x", "y", "z"):
+        try:
+            v = float(value.get(key) or 0.0)
+        except (TypeError, ValueError):
+            raise ValueError(f"target_offset_wall_cm.{key} 必须是数字（cm）")
+        if not math.isfinite(v) or abs(v) > TARGET_OFFSET_LIMIT_CM:
+            raise ValueError(
+                f"target_offset_wall_cm.{key} 超范围：单轴限 "
+                f"±{TARGET_OFFSET_LIMIT_CM:g} cm（收到 {v}）")
+        out.append(v)
+    return tuple(out)
+
+
 def _unsupported_message(kind: str, site: str) -> str:
     pre, post = CHECK_KIND_STATES[kind]
     return (f"「{pre} → {post}」在{SITE_LABELS[site]}上对应向右拨——"
@@ -781,6 +824,10 @@ def task_submit(body: dict | None = None):
         return JSONResponse(
             {"ok": False, "error": "site 只能是 lab（实验室柜）或 factory（工厂柜，印刷相反）"},
             status_code=422)
+    try:
+        offset_cm = _parse_target_offset((body or {}).get("target_offset_wall_cm"))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
 
     with _lock:
         if _task is not None and _task["state"] != "done":
@@ -796,14 +843,18 @@ def task_submit(body: dict | None = None):
                 status_code=409)
         _estop.clear()     # 新任务开始，清掉上一次的强制停止标记
         now = datetime.now().isoformat(timespec="seconds")
+        offset_note = ("" if not any(offset_cm) else
+                       f"，目的点微调 右{offset_cm[0]:+g}/入墙{offset_cm[1]:+g}"
+                       f"/上{offset_cm[2]:+g} cm")
         _task = {"id": uuid.uuid4().hex[:10], "state": "starting",
                  "language": language, "kind": kind, "retries": retries,
                  "manual": manual, "site": site, "prompt": None, "gate": None,
+                 "target_offset_wall_cm": list(offset_cm),
                  "started_at": now, "finished_at": None,
                  "result": None, "flow": None,
                  "log": [f"指令: {language}（{kind}，现场 {SITE_LABELS[site]}，"
                          f"最多 {retries} 轮"
-                         f"{'，手动确认模式' if manual else ''}）"],
+                         f"{'，手动确认模式' if manual else ''}{offset_note}）"],
                  "reach_proc": None, "reach_external": False,
                  "stats_counted": False}
         _task_stats["accepted"] += 1
@@ -848,6 +899,8 @@ def task_status():
     return {**common, "state": t["state"], "task_id": t["id"],
             "language": t.get("language"), "retries": t.get("retries"),
             "site": t.get("site") or "lab",
+            "target_offset_wall_cm": t.get("target_offset_wall_cm")
+                                     or [0.0, 0.0, 0.0],
             "started_at": t["started_at"], "finished_at": t["finished_at"],
             "reach_alive": _reach_alive(0.5),
             "manual": bool(t.get("manual")), "prompt": prompt,
@@ -1067,6 +1120,10 @@ def main() -> None:
     parser.add_argument("--yolo", default="http://127.0.0.1:7004",
                         help="YOLO 推理服务地址")
     parser.add_argument("--no-yolo", action="store_true")
+    parser.add_argument("--pointcloud", default="http://127.0.0.1:7005",
+                        help="7005 语义点云服务地址（取点算法）")
+    parser.add_argument("--no-pointcloud", action="store_true",
+                        help="不用点云算法取点，退回 YOLO 框偏移法")
     _args = parser.parse_args()
     _args.reach_base = _args.reach_base.rstrip("/")
 

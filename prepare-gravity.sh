@@ -33,7 +33,7 @@ if [[ "${1:-}" == "stop" ]]; then
     exit 0
 fi
 
-if ss -ltn 2>/dev/null | rg -q ":$PORT "; then
+if ss -ltn 2>/dev/null | grep -q ":$PORT "; then
     echo "[重力标定] 端口 $PORT 已被监听，未重复启动"
     exit 0
 fi

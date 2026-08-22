@@ -16,8 +16,12 @@ POSE_UNAVAILABLE；重试轮插值回配套「X.XX-起手式新终点」路点�
   实验室柜（lab，默认）：就地 → 远方——识别「就地」= 要拨、「远方」= 无需拨；
   工厂柜（factory，两旋钮印刷相反）：远方 → 就地——识别「远方」= 要拨、
   「就地」= 无需拨。
-拨完识别 flip_to = 成功、flip_from = 失败重试；取点用 flip_from 框 +
-固定相对偏移（标注数据实测与距离/角度无关）。
+拨完识别 flip_to = 成功、flip_from = 失败重试。
+
+取点（默认走 7005 语义点云算法）：冻结同帧 RGB-D → 建墙面坐标系 →
+YOLO Mask 拟合面板矩形取中心（粉点）→ 0.2.0-s 模型偏移得到目的点 →
+（可选）叠加墙面系人工微调 → 交 18001 确认成 p_root。7005 未配置时
+退回旧方案：flip_from 框 + 固定相对像素偏移。
 哪个 language 能执行由调度层按 site 决定。
 只有压根没配 YOLO（--no-yolo 手动模式）才把视觉判断转 7002 人工确认台。
 
@@ -118,10 +122,18 @@ class SwitchFlow:
                  max_flip_rounds: int = 3,         # 拨动失败回到 5️⃣ 的最大轮数
                  align_timeout_s: float = 90.0,
                  exec_timeout_s: float = 120.0,
-                 site: str = "lab"):               # lab=实验室柜 / factory=工厂柜（印刷相反）
+                 site: str = "lab",                # lab=实验室柜 / factory=工厂柜（印刷相反）
+                 pointcloud: Any = None,           # 7005 点云找点客户端（None=退回旧框偏移法）
+                 # 目的点人工微调（墙面系，米）：算法算出目的点后再叠加，
+                 # 不动"粉点→目的点"的模型偏移。x=沿墙向右 y=法向入墙 z=沿墙向上
+                 target_offset_wall_m: tuple[float, float, float] = (0.0, 0.0, 0.0)):
         self.client = client or ReachClient()
         self.console = console
         self.yolo = yolo
+        self.pointcloud = pointcloud
+        self.target_offset_wall_m = tuple(
+            float(v) for v in target_offset_wall_m
+        )
         self.coarse_target_deg = coarse_target_deg
         self.coarse_accept_min_deg = (
             coarse_target_deg - coarse_tol_deg
@@ -257,9 +269,10 @@ class SwitchFlow:
         try:
             self._log("═══ 1️⃣ 一键开始 ═══")
             if self.site == "factory":
+                # 措辞别带阶段卡的关键词（如"拨动成功"），看板靠日志兜底推进度
                 self._log("现场=工厂柜（两旋钮印刷相反）：本次向左拨动作为"
                           "「远方 → 就地」——识别「远方」= 要拨、"
-                          "「就地」= 已在目标位/拨动成功")
+                          "「就地」= 目标状态")
             self._confirm("preflight",
                           "即将检查前置条件（reach 服务 / 真机能力 / 确认台），"
                           "若手臂未接管会自动接管")
@@ -355,7 +368,7 @@ class SwitchFlow:
                                   "即将取点（视觉识别拨动目标，不动机器人）")
                     self._step_begin(f"7️⃣ 取点（第{round_no}轮）")
                     points = self._detect_points_held()
-                    self._log(f"点位: {points}")
+                    self._log(f"点位: {self._points_brief(points)}")
 
                     self._log("IK 执行拨动")
                     self._confirm(
@@ -363,7 +376,8 @@ class SwitchFlow:
                         f"即将执行 IK 拨动：规划 → {self.reach_duration_s:g}s "
                         f"到位 → 沿柜面左移 {self.sidestep_cm:g}cm + 前馈推力 "
                         f"{self.push_force_n:g}N（真机动作，规划就绪后直接执行）",
-                        {"点位": str(points), "轮次": f"{round_no}/{self.max_flip_rounds}"},
+                        {"点位": self._points_brief(points),
+                         "轮次": f"{round_no}/{self.max_flip_rounds}"},
                     )
                     self._step_begin(f"8️⃣ IK 拨动（第{round_no}轮）")
                     self.flip_switch(points, round_no, distance_m)
@@ -673,14 +687,18 @@ class SwitchFlow:
             self._log(f"距柜面 {distance_m:.3f} m < {self.LIFT_MIN_DISTANCE_M} m，"
                       f"重试不上抬目标点（近距下垂小，抬了反而偏）")
         for i, pt in enumerate(points, 1):
-            u, v = int(pt["u"]), int(pt["v"])
-            tag = f"点位 {i}/{len(points)} ({u},{v})"
-
-            picked = self.client.pick(u, v,
-                                      approach_offset_m=self.approach_offset_m)
-            if not picked.get("ok"):
-                raise FlowError(ErrorCode.IK_FAILED,
-                                f"{tag} 取点失败: {picked.get('error')}")
+            if pt.get("p_root"):
+                # 点云算法路径：detect_points 已经过 18001 确认，直接用
+                picked = pt
+                tag = f"点位 {i}/{len(points)} (算法目的点)"
+            else:
+                u, v = int(pt["u"]), int(pt["v"])
+                tag = f"点位 {i}/{len(points)} ({u},{v})"
+                picked = self.client.pick(
+                    u, v, approach_offset_m=self.approach_offset_m)
+                if not picked.get("ok"):
+                    raise FlowError(ErrorCode.IK_FAILED,
+                                    f"{tag} 取点失败: {picked.get('error')}")
 
             target = [float(v) for v in picked["p_root"]]
             if lift > 0:
@@ -970,11 +988,23 @@ class SwitchFlow:
     DETECT_SETTLE_S = 2.0   # 到位/对齐后腰部还在自平衡，等它稳住再取点
 
     def detect_points(self) -> list[dict]:
-        """开关点位（像素坐标）：YOLO 拨前状态框（flip_from）+ 固定相对偏移。
+        """7️⃣ 开关取点，三条路径按优先级：
 
-        最多试 YOLO_ATTEMPTS 次；配了 YOLO 还是找不到框 → 报
-        YOLO_FAILED 退出（手臂由失败收尾受控回落），不转人工干等。
+        1. 7005 语义点云算法（默认）：冻结同帧 RGB-D → 墙面坐标系 →
+           面板矩形中心（粉点）→ 0.2.0-s 模型偏移 → 目的点 → 叠加墙面系
+           人工微调 → 18001 确认。返回含 p_root/plane 的完整目标，
+           flip_switch 直接执行，不再走像素 /pick。
+        2. 旧框偏移法（未配点云服务时）：YOLO 拨前状态框（flip_from）+
+           固定相对像素偏移，返回像素点。
+        3. 都没配 → 确认台人工点选。
+
+        最多试 YOLO_ATTEMPTS 次；配了服务还是找不到 → 报 YOLO_FAILED
+        退出（手臂由失败收尾受控回落），不转人工干等。
         """
+        if self.pointcloud is not None:
+            self._log(f"等 {self.DETECT_SETTLE_S:.0f}s 让躯干自平衡稳定后取点")
+            time.sleep(self.DETECT_SETTLE_S)
+            return self._detect_points_pointcloud()
         if self.yolo is not None:
             self._log(f"等 {self.DETECT_SETTLE_S:.0f}s 让躯干自平衡稳定后取点")
             time.sleep(self.DETECT_SETTLE_S)
@@ -1005,6 +1035,86 @@ class SwitchFlow:
         if not pts:
             raise FlowError(ErrorCode.YOLO_FAILED, "没有点位")
         return pts
+
+    @staticmethod
+    def _points_brief(points: list[dict]) -> str:
+        """点位的一行摘要（点云路径的完整结果太大，日志/确认台只放这个）。"""
+        parts = []
+        for pt in points:
+            p_root = pt.get("p_root")
+            if p_root and len(p_root) == 3:
+                parts.append(f"p_root[{p_root[0]:+.3f}, {p_root[1]:+.3f}, "
+                             f"{p_root[2]:+.3f}]m")
+            else:
+                parts.append(f"({pt.get('u')},{pt.get('v')})")
+        return "；".join(parts)
+
+    def _detect_points_pointcloud(self) -> list[dict]:
+        """7005 语义点云算法找点，与网页「算法找点1/3」同一条链路。"""
+        last_err = ""
+        for i in range(1, self.YOLO_ATTEMPTS + 1):
+            picked, last_err = self._pointcloud_pick_once(i)
+            if picked is not None:
+                return [picked]
+            self._log(f"点云找点第 {i}/{self.YOLO_ATTEMPTS} 次失败：{last_err}")
+            if i < self.YOLO_ATTEMPTS:
+                time.sleep(self.YOLO_RETRY_WAIT_S)
+        raise FlowError(
+            ErrorCode.YOLO_FAILED,
+            f"取点失败：点云算法连续 {self.YOLO_ATTEMPTS} 次没算出目的点"
+            f"（最后一次：{last_err}）——检查 7005 点云服务是否在跑、"
+            f"画面有无遮挡反光")
+
+    def _pointcloud_pick_once(self, attempt: int) -> tuple[dict | None, str]:
+        """拍帧 → 算法找点 → 人工微调 → 18001 确认。返回 (picked, 错误)。"""
+        cap = self.pointcloud.capture()
+        if not cap.get("ok"):
+            return None, f"拍帧失败: {cap.get('error')}"
+        tgt = self.pointcloud.auto_target(cap["capture_id"])
+        if not tgt.get("ok"):
+            return None, f"算法找点失败: {tgt.get('error')}"
+        name = str(tgt.get("matched_detection_name") or "")
+        pc = tgt.get("panel_center_wall_m") or [0.0, 0.0, 0.0]
+        tw = tgt.get("target_wall_m") or [0.0, 0.0, 0.0]
+        self._log(f"算法找点（第 {attempt} 次）：识别「{name}」→ "
+                  f"点{tgt.get('target_point_slot')}，粉点（面板中心）墙面系 "
+                  f"[{pc[0]:+.3f}, {pc[1]:+.3f}, {pc[2]:+.3f}] m，"
+                  f"模型偏移后目的点 [{tw[0]:+.3f}, {tw[1]:+.3f}, {tw[2]:+.3f}] m")
+        if name != self.flip_from:
+            self._log(f"⚠ 面板类别「{name}」与拨前状态「{self.flip_from}」"
+                      f"不一致，仍按算法结果执行")
+
+        # 人工微调：墙面系 (x右, y入墙, z上) → 相机系向量，叠加在算好的
+        # 目的点上；粉点→目的点的模型偏移保持原样。
+        target_cam = [float(v) for v in tgt["target_camera_m"]]
+        off = self.target_offset_wall_m
+        adj_cam = [0.0, 0.0, 0.0]
+        if any(abs(v) > 1e-9 for v in off):
+            axes = tgt.get("wall_axes_camera")
+            if not axes or len(axes) != 3:
+                return None, "算法结果缺墙面坐标轴，无法应用人工偏移"
+            adj_cam = [sum(off[k] * float(axes[k][i]) for k in range(3))
+                       for i in range(3)]
+            self._log(f"目的点人工微调（墙面系）：右 {off[0] * 100:+.1f} / "
+                      f"入墙 {off[1] * 100:+.1f} / 上 {off[2] * 100:+.1f} cm")
+
+        res = self.pointcloud.confirm(cap["capture_id"], {
+            "p_camera": [target_cam[i] + adj_cam[i] for i in range(3)],
+            "surface_reference_camera": target_cam,
+            "adjustment_camera_m": adj_cam,
+            "approach_offset_m": self.approach_offset_m,
+            "selection_source": tgt.get("selection_source") or "flow-auto",
+            "model_version": tgt.get("model_version"),
+            "target_point_slot": tgt.get("target_point_slot"),
+            "matched_detection_name": name or None,
+        })
+        if not res.get("ok"):
+            return None, f"18001 确认目标失败: {res.get('error')}"
+        p_root = res.get("p_root") or []
+        if len(p_root) == 3:
+            self._log(f"目的点已确认：p_root [{p_root[0]:+.3f}, "
+                      f"{p_root[1]:+.3f}, {p_root[2]:+.3f}] m")
+        return res, ""
 
     VERIFY_SETTLE_S = 1.5   # 复核仍看到拨前状态时，等这么久再复看一眼
 
