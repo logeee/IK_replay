@@ -80,6 +80,7 @@ class ReachState:
         self.exec_running = False
         self.exec_phase = "idle"           # traj/converge/settle/trim/push_hold/release
         self.settle_trim = "off"           # off/discrete/continuous：到位后落点修正模式
+        self.last_settle_trim: dict | None = None   # 最近一次执行的修正结果（含偏置）
         self.execution_history: deque[dict[str, Any]] = deque(maxlen=30)
         self.execution_history_lock = threading.Lock()
 

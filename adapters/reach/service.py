@@ -22,6 +22,7 @@ def reach_status():
                    else {"source": "disabled", "mode": "robot_only"}),
         "calib": state.calib_meta,
         "gravity_profile": state.gravity_profile,
+        "settle_trim": state.settle_trim,
         "handeye_ready": state.handeye_ready,
         "camera_only": state.camera_only,
         "robot_only": state.robot_only,

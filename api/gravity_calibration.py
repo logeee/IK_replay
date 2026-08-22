@@ -915,6 +915,11 @@ def _aggregate_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "feedforward_torque_nm": ("arm", "command_snapshot", "tau_ff_nm"),
         "tcp_command_root_m": ("arm", "tcp_cmd_root_m"),
         "tcp_measured_root_m": ("arm", "tcp_measured_root_m"),
+        # 18001 开启落点修正（settle trim）时才存在：持有的 cmd 已带修正偏置，
+        # cmd_planned = cmd - 偏置 才是规划终点，误差要对它算才公平
+        "trim_offset_rad": ("arm", "trim_offset_rad"),
+        "command_planned_rad": ("arm", "cmd_planned_rad"),
+        "tcp_planned_root_m": ("arm", "tcp_planned_root_m"),
     }
     result = {
         name: summary
@@ -929,6 +934,14 @@ def _aggregate_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
         ]
         result["command_minus_measured_deg"] = [
             math.degrees(c - m) for c, m in zip(command, measured)
+        ]
+    planned = result.get("command_planned_rad", {}).get("mean")
+    if measured and planned and len(measured) == len(planned):
+        result["planned_minus_measured_rad"] = [
+            float(c - m) for c, m in zip(planned, measured)
+        ]
+        result["planned_minus_measured_deg"] = [
+            math.degrees(c - m) for c, m in zip(planned, measured)
         ]
     return result
 
@@ -2095,6 +2108,9 @@ def execute_waypoint(point_id: str, body: dict[str, Any]):
             "started_at": _now(),
             "status": "running",
             "gravity_profile": deepcopy(reach.get("gravity_profile") or {}),
+            # 18001 启动参数决定的到位后落点修正模式（off/discrete/continuous）；
+            # 旧版 18001 不上报该字段，等价于 off
+            "settle_trim": str(reach.get("settle_trim") or "off"),
             "tool_visualization": _tool_visualization(reach),
             "robot": plan.get("robot") or "h2",
             "chain_id": plan.get("chain_id") or "right_arm",

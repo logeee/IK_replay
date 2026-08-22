@@ -214,6 +214,17 @@ def reach_diagnostics():
                 arm["estimated_pd_support_nm"] = (kp_vec * gap).tolist()
             arm["tcp_cmd_root_m"] = _tcp_position(cmd.tolist())
             arm["tcp_measured_root_m"] = _tcp_position(measured.tolist())
+            # 落点修正生效时，持有的 cmd = 规划终点 + 修正偏置。把偏置和
+            # 还原出的规划指令一并上报，否则采样方会把偏置误读成跟随误差。
+            trim = state.last_settle_trim
+            if trim:
+                offset = np.asarray(trim.get("offset_rad") or [], dtype=float)
+                if offset.size == cmd.size:
+                    planned = cmd - offset
+                    arm["settle_trim_mode"] = trim.get("mode")
+                    arm["trim_offset_rad"] = offset.tolist()
+                    arm["cmd_planned_rad"] = planned.tolist()
+                    arm["tcp_planned_root_m"] = _tcp_position(planned.tolist())
         try:
             arm["command_snapshot"] = _json_safe_value(ctl.command_snapshot())
         except Exception as exc:
@@ -734,6 +745,7 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
     try:
         if command_start_q is None:
             raise RuntimeError("缺少上一帧已发送关节命令，拒绝启动轨迹")
+        state.last_settle_trim = None   # 上一段的修正偏置不代表本段
         control_q_list = _build_control_waypoints(q_list, command_start_q)
         state.exec_phase = "traj"
         ctl.enable_jog()
@@ -844,6 +856,7 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
                 measured = np.asarray(status["measured_rad"] or ctl.read_measured().tolist())
                 sag = float(np.max(np.abs(target - measured)))
                 trim_info = _run_settle_trim(ctl, target)
+                state.last_settle_trim = trim_info
 
         ctl.disable_jog()
         state.exec_progress = 1.0
