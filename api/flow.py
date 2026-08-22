@@ -1,17 +1,24 @@
 """拨动开关全流程编排。
 
 已部署的步骤（测平面/测距、腰部对齐、pick→规划→执行）直接走 reach_server；
-起手式按距离自动选（序列名带门槛，如「0.44避障起手式」需 ≥0.44m，太近报
-POSE_UNAVAILABLE）；取点前的补位分三档：≥0.5m 起手式后加摆「0.5以上」、
-0.46~0.5m 摆完直接取点、0.44~0.46m 摆完补位到配套「终点」路点；收尾 =
+起手式按距离自动选：只认「X.XX-起手式新」，选档 = 实测距离-0.03m 向下取
+最近档（如 0.52m → 0.49 档），最低档 0.46 覆盖 0.46~0.49m，比最低档还近报
+POSE_UNAVAILABLE；重试轮插值回配套「X.XX-起手式新终点」路点；收尾 =
 插值到「起手点测试」路点后释放手臂——成功和失败（含重试耗尽）都走这个
 回落，避免手臂停在柜面前被权重渐出交还本体。
 场景判断和拨后复核走 7004 YOLO 服务（python -m api.yolo_server）：
 每处视觉判断连问 3 帧再下结论；配了 YOLO 却仍没结论时报 YOLO_FAILED
 退出（手臂受控回落），不转人工——无人值守的自动化不能卡在等人上。
-本 API 专做「就地 → 远方」——开始前识别「就地」= 要拨、「远方」= 无需拨；
-拨完识别「远方」= 成功、「就地」= 失败重试。
-点位识别 = 「就地」框 + 固定相对偏移（标注数据实测与距离/角度无关）。
+本 API 只做一套已验证的动作（从右向左拨）。YOLO 识别的是开关的真实印刷
+状态（工厂柜实测：印刷相反时也能正确读出「远方」）。
+
+现场（site）决定这套动作的起止状态（flip_from → flip_to）：
+  实验室柜（lab，默认）：就地 → 远方——识别「就地」= 要拨、「远方」= 无需拨；
+  工厂柜（factory，两旋钮印刷相反）：远方 → 就地——识别「远方」= 要拨、
+  「就地」= 无需拨。
+拨完识别 flip_to = 成功、flip_from = 失败重试；取点用 flip_from 框 +
+固定相对偏移（标注数据实测与距离/角度无关）。
+哪个 language 能执行由调度层按 site 决定。
 只有压根没配 YOLO（--no-yolo 手动模式）才把视觉判断转 7002 人工确认台。
 
 不给 console 时保持旧行为：人工顶不上的步骤抛 FlowError(NOT_IMPLEMENTED)。
@@ -53,7 +60,7 @@ class ErrorCode(IntEnum):
     EXEC_FAILED = 7        # 真机执行失败
     VERIFY_FAILED = 8      # 拨动复核不通过且重试耗尽
     ABORTED = 9            # 人工急停或外部中断
-    POSE_UNAVAILABLE = 10  # 距离不满足任何起手式的适用范围（如 <0.44m）
+    POSE_UNAVAILABLE = 10  # 距离不满足任何起手式的适用范围（如 <0.46m）
 
 
 class FlowError(Exception):
@@ -110,7 +117,8 @@ class SwitchFlow:
                  endpoint_speed_rad_s: float = 0.3,  # 插值回「终点」路点的关节限速
                  max_flip_rounds: int = 3,         # 拨动失败回到 5️⃣ 的最大轮数
                  align_timeout_s: float = 90.0,
-                 exec_timeout_s: float = 120.0):
+                 exec_timeout_s: float = 120.0,
+                 site: str = "lab"):               # lab=实验室柜 / factory=工厂柜（印刷相反）
         self.client = client or ReachClient()
         self.console = console
         self.yolo = yolo
@@ -152,6 +160,12 @@ class SwitchFlow:
         self.max_flip_rounds = max_flip_rounds
         self.align_timeout_s = align_timeout_s
         self.exec_timeout_s = exec_timeout_s
+        self.site = site
+        # 本柜这套"向左拨"动作的起止状态（YOLO 读的是真实印刷状态）：
+        # 实验室柜 就地→远方；工厂柜两旋钮印刷相反，同一动作是 远方→就地
+        self.flip_from, self.flip_to = (
+            ("远方", "就地") if site == "factory" else ("就地", "远方")
+        )
         self._current_pose: dict | None = None
         self._armed_by_flow = False   # 手臂是流程接管的（而非用户本来就接管着）
         self._arm_moved = False       # 已下发过手臂动作 → 失败时要先受控回落
@@ -159,6 +173,14 @@ class SwitchFlow:
         # 强制停止开关：外部（/emergency/stop）置位后，流程在最近的检查点退出。
         # 置位时手臂多半已被强停端点直接释放了，所以退出路径不再做受控回落。
         self.abort = threading.Event()
+        # 手动模式步骤闸门：设置后每个主要步骤执行前先调用它（阻塞等操作员
+        # 确认）。签名 gate(step_id, message, detail)；操作员选择中止时应抛
+        # FlowError(ABORTED)。None = 全自动，不出提示。
+        self.gate: Any = None
+        # 分步耗时统计（"step"=步骤执行，"confirm"=手动模式的确认等待）
+        self.step_times: list[dict[str, Any]] = []
+        self._step_name: str | None = None
+        self._step_started = 0.0
 
     def request_abort(self) -> None:
         self.abort.set()
@@ -167,6 +189,66 @@ class SwitchFlow:
         if self.abort.is_set():
             raise FlowError(ErrorCode.ABORTED, "收到强制停止")
 
+    # ------------------------------------------------------ 步骤计时与手动闸门
+
+    def _step_begin(self, name: str) -> None:
+        """开始一个计时步骤；上一步（若还开着）自动结算。"""
+        self._step_finish()
+        self._step_name = name
+        self._step_started = time.monotonic()
+
+    def _step_finish(self) -> None:
+        if self._step_name is None:
+            return
+        self.step_times.append({
+            "step": self._step_name,
+            "kind": "step",
+            "duration_s": round(time.monotonic() - self._step_started, 1),
+        })
+        self._step_name = None
+
+    def step_report(self) -> list[dict[str, Any]]:
+        """已结算的分步耗时 + 正在进行的步骤，供调度服务状态接口透出。"""
+        report = [dict(entry) for entry in self.step_times]
+        if self._step_name is not None:
+            report.append({
+                "step": self._step_name,
+                "kind": "step",
+                "running": True,
+                "duration_s": round(time.monotonic() - self._step_started, 1),
+            })
+        return report
+
+    def _log_step_summary(self) -> None:
+        entries = [e for e in self.step_times if e["kind"] == "step"]
+        if not entries:
+            return
+        text = "；".join(f"{e['step']} {e['duration_s']}s" for e in entries)
+        confirm_s = sum(
+            e["duration_s"] for e in self.step_times if e["kind"] == "confirm"
+        )
+        if confirm_s:
+            text += f"；确认等待合计 {round(confirm_s, 1)}s"
+        self._log(f"步骤耗时：{text}")
+
+    def _confirm(self, step_id: str, message: str,
+                 detail: dict[str, Any] | None = None) -> None:
+        """手动模式闸门：阻塞到操作员决定；等待时长单独计，不算进步骤耗时。"""
+        if self.gate is None:
+            return
+        self._step_finish()
+        t0 = time.monotonic()
+        self._log(f"⏸ 等待操作员确认：{message}")
+        try:
+            self.gate(step_id, message, dict(detail or {}))
+        finally:
+            self.step_times.append({
+                "step": f"确认等待 · {message}",
+                "kind": "confirm",
+                "duration_s": round(time.monotonic() - t0, 1),
+            })
+        self._log("▶ 操作员已确认，继续执行")
+
     # ------------------------------------------------------------------ 主流程
 
     def run(self) -> FlowResult:
@@ -174,9 +256,19 @@ class SwitchFlow:
         t0 = time.monotonic()
         try:
             self._log("═══ 1️⃣ 一键开始 ═══")
+            if self.site == "factory":
+                self._log("现场=工厂柜（两旋钮印刷相反）：本次向左拨动作为"
+                          "「远方 → 就地」——识别「远方」= 要拨、"
+                          "「就地」= 已在目标位/拨动成功")
+            self._confirm("preflight",
+                          "即将检查前置条件（reach 服务 / 真机能力 / 确认台），"
+                          "若手臂未接管会自动接管")
+            self._step_begin("1️⃣ 前置检查与接管")
             self._preflight()
 
             self._log("═══ 2️⃣ 场景判断（是否需要拨动、往哪个方向）═══")
+            self._confirm("scene", "即将进行场景判断（YOLO 纯视觉，不动机器人）")
+            self._step_begin("2️⃣ 场景判断")
             scene = self.detect_scene()
             if not scene.get("need_flip", True):
                 self._release_if_flow_armed()
@@ -192,9 +284,19 @@ class SwitchFlow:
                       f"{self.coarse_accept_min_deg:+.1f}°"
                       f"~{self.coarse_accept_max_deg:+.1f}°，"
                       f"已预补偿抬手后的回转 ═══")
+            self._confirm(
+                "coarse_align",
+                f"即将进行腰部粗对齐（可能真机原地转身），目标 "
+                f"{self.coarse_target_deg:+.1f}°、验收 "
+                f"{self.coarse_accept_min_deg:+.1f}°"
+                f"~{self.coarse_accept_max_deg:+.1f}°",
+            )
+            self._step_begin("3️⃣ 腰部粗对齐")
             self._coarse_align_with_retry()
 
             self._log("═══ 4️⃣ 测距离 ═══")
+            self._confirm("measure", "即将测量距柜面距离（纯测量，不动机器人）")
+            self._step_begin("4️⃣ 测距离")
             distance_m = self.measure_distance()
             self._log(f"距柜面 {distance_m:.3f} m")
 
@@ -204,52 +306,80 @@ class SwitchFlow:
                 self._log(f"═══ 5️⃣ 第 {round_no}/{self.max_flip_rounds} 轮 ═══")
                 try:
                     pose = self.choose_opening_pose(distance_m)
-                    self._current_pose = pose   # 拨完插值回它配套的「终点」路点
+                    self._current_pose = pose   # 重试轮插值回它配套的「终点」路点
                     self._log(f"起手式: {pose}")
-                    far = distance_m >= self.FAR_DISTANCE_M
-                    near = distance_m < self.NEAR_DISTANCE_M
+                    pose_detail = {
+                        "起手式": pose["name"],
+                        "距柜面": f"{distance_m:.3f} m",
+                        "轮次": f"{round_no}/{self.max_flip_rounds}",
+                    }
                     if round_no == 1:
+                        # 新起手式按距离逐档录制，摆完即到位，不再分远/近补位
+                        self._confirm(
+                            "opening_pose",
+                            f"即将回放起手式「{pose['name']}」"
+                            f"（距柜面 {distance_m:.3f} m，真机手臂大幅动作）",
+                            pose_detail,
+                        )
+                        self._step_begin(f"5️⃣ 起手式回放（第{round_no}轮）")
                         self.apply_opening_pose(pose)
-                        if far:
-                            self._log(f"距柜面 {distance_m:.3f} m ≥ "
-                                      f"{self.FAR_DISTANCE_M} m，起手式后加摆"
-                                      f"「{self.FAR_EXTRA_WAYPOINT}」")
-                            self._interp_to_waypoint(self.FAR_EXTRA_WAYPOINT,
-                                                     f"远距补位第{round_no}轮")
-                        elif near:
-                            self._log(f"距柜面 {distance_m:.3f} m < "
-                                      f"{self.NEAR_DISTANCE_M} m，起手式后补位到"
-                                      f"配套「终点」路点再取点")
-                            self._goto_endpoint(f"近距补位第{round_no}轮")
-                    elif far:
-                        # 远距离重试：起手位就是「0.5以上」，不必先绕回「终点」
-                        self._log(f"重试轮：直接插值回「{self.FAR_EXTRA_WAYPOINT}」"
-                                  f"作为起手位")
-                        self._interp_to_waypoint(self.FAR_EXTRA_WAYPOINT,
-                                                 f"重试第{round_no}轮")
                     else:
                         # 重试轮：上一轮结束时手臂已在「终点」高位附近，直接
                         # 插值回终点路点即可——回放整条起手式会让手下去再上来，
                         # 且起点漂移触发的重规划轨迹未经人工验证
                         self._log("重试轮：跳过起手式回放，插值回终点路点作为起手位")
+                        self._confirm(
+                            "goto_endpoint",
+                            f"重试第{round_no}轮：即将插值回终点路点"
+                            f"「{pose['name']}终点」作为起手位（真机手臂动作）",
+                            pose_detail,
+                        )
+                        self._step_begin(f"5️⃣ 回终点路点（第{round_no}轮）")
                         self._goto_endpoint(f"重试第{round_no}轮")
 
                     self._log(f"═══ 6️⃣ 腰部细对齐并保持：目标 "
                               f"{self.fine_target_deg:+.1f}°，验收 "
                               f"{self.fine_accept_min_deg:+.1f}°"
                               f"~{self.fine_accept_max_deg:+.1f}° ═══")
+                    self._confirm(
+                        "fine_align",
+                        f"即将进行腰部细对齐并保持（可能真机原地转身），目标 "
+                        f"{self.fine_target_deg:+.1f}°、验收 "
+                        f"{self.fine_accept_min_deg:+.1f}°"
+                        f"~{self.fine_accept_max_deg:+.1f}°",
+                    )
+                    self._step_begin(f"6️⃣ 腰部细对齐（第{round_no}轮）")
                     self._fine_align_with_retry()
 
+                    self._confirm("detect_points",
+                                  "即将取点（视觉识别拨动目标，不动机器人）")
+                    self._step_begin(f"7️⃣ 取点（第{round_no}轮）")
                     points = self._detect_points_held()
                     self._log(f"点位: {points}")
 
                     self._log("IK 执行拨动")
+                    self._confirm(
+                        "flip",
+                        f"即将执行 IK 拨动：规划 → {self.reach_duration_s:g}s "
+                        f"到位 → 沿柜面左移 {self.sidestep_cm:g}cm + 前馈推力 "
+                        f"{self.push_force_n:g}N（真机动作，规划就绪后直接执行）",
+                        {"点位": str(points), "轮次": f"{round_no}/{self.max_flip_rounds}"},
+                    )
+                    self._step_begin(f"8️⃣ IK 拨动（第{round_no}轮）")
                     self.flip_switch(points, round_no, distance_m)
 
                     self._log("复核拨动结果")
+                    self._confirm("verify", "即将复核拨动结果（视觉判断，不动机器人）")
+                    self._step_begin(f"9️⃣ 拨动复核（第{round_no}轮）")
                     if self.verify_flip():
                         self._log("拨动成功 ✔")
                         self._log("═══ 收尾：快速回落 ═══")
+                        self._confirm(
+                            "descend",
+                            f"拨动成功：即将快速回落到「{self.DESCEND_WAYPOINT}」"
+                            f"路点并释放手臂（真机动作）",
+                        )
+                        self._step_begin("🔟 收尾回落与释放")
                         self.descend_fast(pose)
                         return self._done(t0, "拨动成功", rounds=round_no,
                                           distance_m=distance_m)
@@ -267,15 +397,18 @@ class SwitchFlow:
             raise last_error or FlowError(ErrorCode.VERIFY_FAILED, "重试轮数耗尽")
 
         except ConsoleAbort:
+            self._step_finish()
             self._log("✘ 操作员在确认台中止了流程")
             try:
                 self.client.stop()
             except Exception:
                 pass
+            self._log_step_summary()
             return FlowResult(ok=False, code=ErrorCode.ABORTED,
                               message="确认台人工中止",
                               detail={"elapsed_s": round(time.monotonic() - t0, 1)})
         except FlowError as exc:
+            self._step_finish()
             self._log(f"✘ 流程中止：[{exc.code.name}] {exc.message}")
             if self.abort.is_set():
                 # 强制停止：手臂已由 /emergency/stop 急停并释放，这里绝不能
@@ -283,6 +416,7 @@ class SwitchFlow:
                 self._log("强制停止：不做回落，手臂控制权已交还本体")
             else:
                 self._descend_on_failure()
+            self._log_step_summary()
             return FlowResult(ok=False, code=exc.code, message=exc.message,
                               detail={"elapsed_s": round(time.monotonic() - t0, 1)})
 
@@ -625,14 +759,17 @@ class SwitchFlow:
         self._wait_exec(f"{tag} 拨动（左移+推力）")
 
     def _goto_endpoint(self, tag: str) -> None:
-        """拨完后关节插值回起手式配套的「终点」路点（如 0.46起手式 → 0.46终点）。"""
+        """关节插值回起手式配套的「终点」路点。
+
+        新起手式的终点路点名 = 序列名 + 「终点」：
+        「0.49-起手式新」 → 「0.49-起手式新终点」。
+        """
         pose = self._current_pose or {}
-        m = re.match(r"\s*(\d+(?:\.\d+)?)", str(pose.get("name") or ""))
-        if not m:
+        name = str(pose.get("name") or "").strip()
+        if not name:
             raise FlowError(ErrorCode.EXEC_FAILED,
-                            f"{tag} 起手式「{pose.get('name')}」没有距离前缀，"
-                            f"配不出终点路点名")
-        self._interp_to_waypoint(f"{m.group(1)}终点", tag)
+                            f"{tag} 没有当前起手式，配不出终点路点名")
+        self._interp_to_waypoint(f"{name}终点", tag)
 
     def _interp_to_waypoint(self, wp_name: str, tag: str,
                             only_if_beyond_rad: float = 0.0,
@@ -722,18 +859,21 @@ class SwitchFlow:
         return None
 
     def detect_scene(self) -> dict:
-        """2️⃣ 是否需要拨动。本 API 专做「就地 → 远方」：
+        """2️⃣ 是否需要拨动。按现场的起止状态判断：
 
-        YOLO 识别「就地」→ 需要拨（方向即验证过的从右向左）；
-        「远方」→ 已在目标位，无需拨动直接结束。
+        YOLO 识别 flip_from（实验室柜「就地」/工厂柜「远方」）→ 需要拨
+        （方向即验证过的从右向左）；flip_to → 已在目标位，无需拨动结束。
         配了 YOLO 但多次都没结论 → 报 YOLO_FAILED 退出（不转人工，否则
         无人值守的自动化会卡在等人上）。只有压根没配 YOLO 时才走确认台。
         """
         got = self._yolo_scene("2️⃣ 场景判断")
         if got is not None:
-            if got["scene"] == "远方":
+            if got["scene"] == self.flip_to:
+                self._log(f"「{got['scene']}」已是本柜目标状态")
                 return {"need_flip": False, "source": "yolo",
                         "conf": got["conf"]}
+            self._log(f"「{got['scene']}」是本柜拨前状态，需要拨动"
+                      f"（{self.flip_from} → {self.flip_to}）")
             return {"need_flip": True, "direction": "rtl", "source": "yolo",
                     "conf": got["conf"]}
         if self.yolo is not None:
@@ -751,30 +891,39 @@ class SwitchFlow:
                 "direction": "rtl" if "从右向左" in answer else "ltr",
                 "source": "console"}
 
+    # 只认新起手式序列：「0.49-起手式新」，前缀数字是该档的录制距离。
+    NEW_POSE_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)-起手式新\s*$")
+    # 选档 = 实测距离 - 0.03 m（手臂前伸量按比柜面近 3cm 的档位录制）。
+    POSE_MARGIN_M = 0.03
+
     def choose_opening_pose(self, distance_m: float) -> dict:
         """5️⃣ 按距离选起手式（已定规则，自动选，不问确认台）。
 
-        起手式 = 已存的动作序列，名字开头的数字是它的最小适用距离：
-        「0.44避障起手式」→ 距柜面 ≥ 0.44 m 才能用。多个够格时选门槛最大
-        （最贴近当前距离）的那个；一个都不够格 → POSE_UNAVAILABLE。
-        现有两档：0.44（0.44~0.46 m）和 0.46（≥0.46 m）。
+        只认「X.XX-起手式新」序列，选档 = 实测距离 - 0.03 m 向下取最近档：
+        0.52 m → 「0.49-起手式新」。距离在最低档~最低档+0.03 m 之间
+        （现为 0.46~0.49 m）统一用最低档「0.46-起手式新」；比最低档还近
+        → POSE_UNAVAILABLE。
         """
         seqs = (self.client.sequences().get("sequences") or [])
         poses: list[tuple[float, dict]] = []
         for s in seqs:
-            m = re.match(r"\s*(\d+(?:\.\d+)?)", str(s.get("name") or ""))
+            m = self.NEW_POSE_PATTERN.match(str(s.get("name") or ""))
             if m:
                 poses.append((float(m.group(1)), s))
         if not poses:
             raise FlowError(ErrorCode.POSE_UNAVAILABLE,
-                            "没有任何名字带距离门槛的起手式序列（如「0.46起手式」）")
-        usable = [(thr, s) for thr, s in poses if distance_m >= thr]
-        if not usable:
-            nearest = min(thr for thr, _ in poses)
+                            "没有任何新起手式序列（如「0.46-起手式新」）")
+        floor_thr = min(thr for thr, _ in poses)
+        if distance_m < floor_thr:
             raise FlowError(
                 ErrorCode.POSE_UNAVAILABLE,
-                f"距柜面 {distance_m:.3f} m，小于最近的起手式门槛 {nearest} m"
+                f"距柜面 {distance_m:.3f} m，小于最低起手式档位 {floor_thr} m"
                 f"——距离太近，无可用起手式")
+        # 1e-9 抵消浮点误差，保证 0.49 - 0.03 能命中 0.46 档
+        usable = [(thr, s) for thr, s in poses
+                  if thr <= distance_m - self.POSE_MARGIN_M + 1e-9]
+        if not usable:
+            usable = [(thr, s) for thr, s in poses if thr == floor_thr]
         thr, seq = max(usable, key=lambda p: p[0])
         return {"name": seq["name"], "file": seq["file"],
                 "manual": False, "min_distance_m": thr}
@@ -783,15 +932,6 @@ class SwitchFlow:
     # 重新规划（轨迹未经人工验证，还会覆盖文件里的录制），所以运行序列前
     # 先插值回录制起点，保证走"录播"路径。
     SEQ_START_WAYPOINT = "录制点位1"
-
-    # 起手式之后、取点之前的补位，按距柜面距离分三档：
-    #   ≥0.50 m：起手式摆完再插值到「0.5以上」（手臂前伸更多）；重试轮直接
-    #            回这个路点当起手位，不绕经「终点」
-    #   0.46~0.50 m：起手式摆完直接取点
-    #   0.44~0.46 m：起手式（「0.44避障起手式」）摆完再补位到配套的「0.44终点」
-    FAR_DISTANCE_M = 0.5
-    FAR_EXTRA_WAYPOINT = "0.5以上"
-    NEAR_DISTANCE_M = 0.46      # 小于此为近距档，起手式后补位到「终点」再取点
 
     def apply_opening_pose(self, pose: dict) -> None:
         """把手臂摆到起手式：先插值回录制起点，再原样回放录制轨迹。"""
@@ -819,18 +959,20 @@ class SwitchFlow:
                                 f"起手式回放失败: {res.get('error') or '仍在 preview'}")
         self._wait_exec(f"起手式「{pose['name']}」")
 
-    # 取点 = 「就地」框的固定相对偏移。40 个人工标注样本（d 0.44~0.73m、
-    # yaw -16~+15°）实测 au/av 与距离和角度都无关（残差 ±4px ≈ ±1.5mm）：
-    # 手柄凸出带来的视差被框宽的透视缩放自动补偿了。
+    # 取点 = 拨前状态框（flip_from）的固定相对偏移。40 个人工标注样本
+    # （d 0.44~0.73m、yaw -16~+15°）实测 au/av 与距离和角度都无关
+    # （残差 ±4px ≈ ±1.5mm）：手柄凸出带来的视差被框宽的透视缩放自动补偿了。
+    # 样本来自实验室柜「就地」框；工厂柜用「远方」框套同一偏移——框的几何
+    # 是同一个开关区域，首上工厂柜时建议手动模式核对一次取点落位。
     POINT_AU = 1.230   # u = x1 + au×框宽（>1 即框右缘外侧，手柄位置）
     POINT_AV = 0.543   # v = y1 + av×框高
 
     DETECT_SETTLE_S = 2.0   # 到位/对齐后腰部还在自平衡，等它稳住再取点
 
     def detect_points(self) -> list[dict]:
-        """开关点位（像素坐标）：YOLO「就地」框 + 固定相对偏移。
+        """开关点位（像素坐标）：YOLO 拨前状态框（flip_from）+ 固定相对偏移。
 
-        最多试 YOLO_ATTEMPTS 次；配了 YOLO 还是找不到「就地」框 → 报
+        最多试 YOLO_ATTEMPTS 次；配了 YOLO 还是找不到框 → 报
         YOLO_FAILED 退出（手臂由失败收尾受控回落），不转人工干等。
         """
         if self.yolo is not None:
@@ -839,50 +981,53 @@ class SwitchFlow:
             for i in range(1, self.YOLO_ATTEMPTS + 1):
                 res = self.yolo.infer()
                 boxes = ([b for b in res.get("boxes") or []
-                          if b.get("name") == "就地"] if res.get("ok") else [])
+                          if b.get("name") == self.flip_from]
+                         if res.get("ok") else [])
                 if boxes:
                     b = max(boxes, key=lambda x: x["conf"])
                     x1, y1, x2, y2 = b["xyxy"]
                     u = int(round(x1 + self.POINT_AU * (x2 - x1)))
                     v = int(round(y1 + self.POINT_AV * (y2 - y1)))
-                    self._log(f"YOLO 取点：「就地」框 conf {b['conf']}"
+                    self._log(f"YOLO 取点：「{self.flip_from}」框 conf {b['conf']}"
                               f"（共 {len(boxes)} 个，取最高，第 {i} 次尝试）"
                               f"→ ({u},{v})")
                     return [{"u": u, "v": v}]
                 self._log(f"取点第 {i}/{self.YOLO_ATTEMPTS} 次没结果"
-                          f"（{res.get('error') or '画面里没有「就地」框'}）")
+                          f"（{res.get('error') or f'画面里没有「{self.flip_from}」框'}）")
                 if i < self.YOLO_ATTEMPTS:
                     time.sleep(self.YOLO_RETRY_WAIT_S)
             raise FlowError(ErrorCode.YOLO_FAILED,
                             f"取点失败：YOLO 连续 {self.YOLO_ATTEMPTS} 次都没找到"
-                            f"「就地」框——检查开关是否在画面内、有无遮挡反光")
+                            f"「{self.flip_from}」框——检查开关是否在画面内、"
+                            f"有无遮挡反光")
         pts = self._need_console("YOLO 点位识别").points(
             "请在相机画面上点击要拨动的开关点位（可多个），点完提交")
         if not pts:
             raise FlowError(ErrorCode.YOLO_FAILED, "没有点位")
         return pts
 
-    VERIFY_SETTLE_S = 1.5   # 复核看到「就地」时，等这么久再复看一眼
+    VERIFY_SETTLE_S = 1.5   # 复核仍看到拨前状态时，等这么久再复看一眼
 
     def verify_flip(self) -> bool:
-        """复核：拨完立即问 YOLO，「远方」= 成功，「就地」= 失败重试。
+        """复核：拨完立即问 YOLO，flip_to = 成功，flip_from = 失败重试。
 
-        看到「就地」不立即判死：手可能正遮着开关、撤力回弹还没停，等一等
-        再复看一眼，两次都是「就地」才算失败（误判失败要白跑一整轮）。
+        看到拨前状态不立即判死：手可能正遮着开关、撤力回弹还没停，等一等
+        再复看一眼，两次都是拨前状态才算失败（误判失败要白跑一整轮）。
         完全看不到开关（多次都没结论）→ 报 YOLO_FAILED 退出，别把"看不清"
         当成"没拨动"去重试；只有压根没配 YOLO 时才走确认台。
         """
         got = self._yolo_scene("复核")
         if got is not None:
-            if got["scene"] == "远方":
+            if got["scene"] == self.flip_to:
                 return True
-            self._log(f"复核看到「就地」，等 {self.VERIFY_SETTLE_S}s "
+            self._log(f"复核仍是「{got['scene']}」，等 {self.VERIFY_SETTLE_S}s "
                       f"排除手臂未停稳/遮挡后再看一眼")
             time.sleep(self.VERIFY_SETTLE_S)
             again = self._yolo_scene("复核（二次）")
             if again is not None:
-                return again["scene"] == "远方"
-            self._log("复核二次没结论，按第一次的「就地」判为未拨动，走重试")
+                return again["scene"] == self.flip_to
+            self._log(f"复核二次没结论，按第一次的「{got['scene']}」"
+                      f"判为未拨动，走重试")
             return False
         if self.yolo is not None:
             raise FlowError(ErrorCode.YOLO_FAILED,
@@ -937,7 +1082,9 @@ class SwitchFlow:
     # ---------------------------------------------------------------- 工具
 
     def _done(self, t0: float, message: str, **detail: Any) -> FlowResult:
+        self._step_finish()
         self._log(f"✔ {message}")
+        self._log_step_summary()
         return FlowResult(ok=True, code=ErrorCode.OK, message=message,
                           detail={"elapsed_s": round(time.monotonic() - t0, 1),
                                   **detail})

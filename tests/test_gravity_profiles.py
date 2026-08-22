@@ -15,13 +15,18 @@ from core.gravity_profiles import (
 
 
 class GravityProfileTests(unittest.TestCase):
-    def test_repository_starts_at_requested_baseline(self):
+    def test_repository_keeps_baseline_and_valid_active_version(self):
+        """出厂基线 0.0.0 必须原样保留；激活版本随标定推进（如 0.1.0），
+        只要求指向注册表里真实存在的版本，不锁死具体值。"""
         registry = load_registry(DEFAULT_GRAVITY_PROFILES_PATH)
-        profile = active_profile(registry)
-        self.assertEqual(registry["active_version"], "0.0.0")
-        self.assertEqual(profile["label"], "未标定前的重力补偿版本")
+        by_version = {
+            profile["version"]: profile for profile in registry["versions"]
+        }
+        baseline = by_version.get("0.0.0")
+        self.assertIsNotNone(baseline, "出厂基线 0.0.0 不能被删除")
+        self.assertEqual(baseline["label"], "未标定前的重力补偿版本")
         self.assertEqual(
-            profile["parameters"],
+            baseline["parameters"],
             {
                 "grav_alpha": 1.0,
                 "payload_kg": 0.0,
@@ -29,6 +34,10 @@ class GravityProfileTests(unittest.TestCase):
                 "use_imu_gravity": False,
             },
         )
+        self.assertIn(registry["active_version"], by_version)
+        active = active_profile(registry)
+        self.assertEqual(active["version"], registry["active_version"])
+        validate_parameters(active["parameters"])
 
     def test_create_and_rollback_preserve_history(self):
         with tempfile.TemporaryDirectory() as directory:

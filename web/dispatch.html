@@ -150,6 +150,65 @@
   .log-no { color: #506a84; user-select: none; }
   .log-text { white-space: pre-wrap; overflow-wrap: anywhere; color: #bcd0e4; }
   .empty { height: 100%; display: grid; place-items: center; color: var(--muted); font: 12px/1.5 system-ui; }
+  button, select, input[type="number"] {
+    font: 600 12px/1 "Inter", "PingFang SC", system-ui, sans-serif;
+    color: var(--text); background: rgba(19, 39, 63, .9);
+    border: 1px solid rgba(151, 180, 213, .28); border-radius: 9px;
+    padding: 9px 14px; cursor: pointer; transition: .15s ease;
+  }
+  select, input[type="number"] { cursor: auto; }
+  button:hover:not(:disabled) { border-color: rgba(79, 209, 197, .55); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: linear-gradient(135deg, rgba(79,209,197,.24), rgba(90,167,255,.22)); border-color: rgba(79,209,197,.5); }
+  button.good { background: rgba(81,216,138,.16); border-color: rgba(81,216,138,.5); color: #b8f0ce; }
+  button.danger { background: rgba(255,113,113,.13); border-color: rgba(255,113,113,.45); color: #ffc4c4; }
+  .manual-bar {
+    margin-top: 14px; padding: 14px 20px; display: flex; align-items: center;
+    gap: 10px; flex-wrap: wrap;
+  }
+  .manual-bar .bar-title { font-weight: 750; font-size: 13px; margin-right: 4px; }
+  .manual-bar label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+  .manual-bar input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--cyan); }
+  .manual-bar input[type="number"] { width: 58px; }
+  .manual-bar .hint { color: var(--muted); font-size: 11px; margin-left: auto; }
+  .prompt-panel {
+    margin-top: 14px; padding: 18px 22px;
+    border: 1px solid rgba(245, 189, 88, .55); background:
+      linear-gradient(145deg, rgba(64, 49, 17, .55), rgba(24, 27, 20, .8));
+    box-shadow: 0 0 0 4px rgba(245, 189, 88, .07), var(--shadow);
+  }
+  .prompt-head { display: flex; align-items: center; gap: 10px; }
+  .prompt-badge {
+    color: #07111f; background: var(--amber); font-weight: 800; font-size: 11px;
+    padding: 4px 10px; border-radius: 999px; letter-spacing: .08em;
+    animation: promptPulse 1.6s ease-in-out infinite;
+  }
+  @keyframes promptPulse { 50% { box-shadow: 0 0 0 7px rgba(245,189,88,.12); } }
+  .prompt-head .since { color: var(--muted); font-size: 11px; }
+  .prompt-message { margin-top: 10px; font-size: 16px; font-weight: 700; line-height: 1.5; }
+  .prompt-detail { margin-top: 6px; color: #e6d4a8; font-size: 12px; display: flex; gap: 16px; flex-wrap: wrap; }
+  .prompt-detail b { color: #fff; font-weight: 650; }
+  .prompt-actions-log { margin-top: 9px; font-size: 11.5px; color: var(--muted); }
+  .prompt-actions-log .ok-act { color: var(--green); }
+  .prompt-actions-log .bad-act { color: var(--red); }
+  .prompt-buttons { margin-top: 14px; display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+  .prompt-buttons .spacer { width: 1px; height: 26px; background: rgba(151,180,213,.25); margin: 0 4px; }
+  .prompt-buttons .group-label { color: var(--muted); font-size: 11px; }
+  #promptWaypoint { max-width: 220px; }
+  .timings { margin-top: 14px; }
+  .timing-list { padding: 4px 20px 16px; }
+  .timing-row {
+    display: grid; grid-template-columns: minmax(0, 1fr) 90px; gap: 10px;
+    padding: 6px 0; border-bottom: 1px solid rgba(151,180,213,.09);
+    font-size: 12px; align-items: center;
+  }
+  .timing-row:last-child { border-bottom: 0; }
+  .timing-row .t-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .timing-row .t-val { text-align: right; font-variant-numeric: tabular-nums; font-weight: 650; }
+  .timing-row.confirm { color: var(--muted); }
+  .timing-row.confirm .t-val { color: var(--amber); font-weight: 500; }
+  .timing-row.running .t-name { color: var(--cyan); }
+  .timing-row.running .t-val { color: var(--cyan); }
   @media (max-width: 950px) {
     .content-grid { grid-template-columns: 1fr; }
     .stats { grid-template-columns: repeat(2, 1fr); }
@@ -194,6 +253,42 @@
     </div>
   </section>
 
+  <section class="panel manual-bar">
+    <span class="bar-title">手动触发</span>
+    <select id="manualSite" title="工厂柜两个旋钮的印刷与实验室柜相反：同一套向左拨动作的语义不同">
+      <option value="lab">实验室柜</option>
+      <option value="factory">工厂柜（印刷相反）</option>
+    </select>
+    <select id="manualLanguage"></select>
+    <label title="勾选后每个主要步骤执行前都会在下方等待确认">
+      <input id="manualStep" type="checkbox" checked />每步手动确认
+    </label>
+    <label>最大轮数 <input id="manualRetries" type="number" min="1" max="20" value="3" /></label>
+    <button id="manualStart" class="primary">① 启动流程</button>
+    <button id="manualEstop" class="danger">强制停止</button>
+    <span id="manualHint" class="hint"></span>
+  </section>
+
+  <section id="promptPanel" class="panel prompt-panel" hidden>
+    <div class="prompt-head">
+      <span class="prompt-badge">等待确认</span>
+      <span id="promptSince" class="since"></span>
+    </div>
+    <div id="promptMessage" class="prompt-message"></div>
+    <div id="promptDetail" class="prompt-detail"></div>
+    <div id="promptActionsLog" class="prompt-actions-log" hidden></div>
+    <div class="prompt-buttons">
+      <button id="promptProceed" class="good">✔ 执行该步</button>
+      <button id="promptAbort" class="danger">✘ 中止流程</button>
+      <span class="spacer"></span>
+      <span class="group-label">其他动作（可连续执行）：</span>
+      <select id="promptWaypoint"><option value="">选择位点…</option></select>
+      <button id="promptGoto">前往位点</button>
+      <button id="promptArm">接管手臂</button>
+      <button id="promptDisarm">释放手臂</button>
+    </div>
+  </section>
+
   <section class="stats">
     <div class="panel stat success"><div class="stat-label">成功调用</div><div id="successCount" class="stat-value">0</div><div class="stat-note">本次服务启动以来</div></div>
     <div class="panel stat"><div class="stat-label">已接收任务</div><div id="acceptedCount" class="stat-value">0</div><div class="stat-note">有效 /task/flip 请求</div></div>
@@ -211,6 +306,7 @@
       <div class="details">
         <div class="detail-row"><div class="detail-key">任务编号</div><div id="detailId" class="detail-value">—</div></div>
         <div class="detail-row"><div class="detail-key">调用指令</div><div id="detailLanguage" class="detail-value">—</div></div>
+        <div class="detail-row"><div class="detail-key">现场</div><div id="detailSite" class="detail-value">—</div></div>
         <div class="detail-row"><div class="detail-key">开始时间</div><div id="detailStart" class="detail-value">—</div></div>
         <div class="detail-row"><div class="detail-key">持续时间</div><div id="detailDuration" class="detail-value">—</div></div>
         <div class="detail-row"><div class="detail-key">最大轮次</div><div id="detailRetries" class="detail-value">—</div></div>
@@ -220,6 +316,11 @@
         </div>
       </div>
     </aside>
+  </section>
+
+  <section class="panel timings">
+    <div class="section-head"><h3>步骤耗时</h3><span id="timingSummary">尚无数据</span></div>
+    <div id="timingList" class="timing-list"><div class="empty" style="padding:18px 0;">任务开始后，这里按顺序统计每一步的耗时</div></div>
   </section>
 
   <section class="panel logs">
@@ -332,9 +433,12 @@ function renderStats(data) {
   $("startedAt").textContent = stats.started_at ? `启动于 ${stats.started_at.replace("T", " ")}` : "启动时间 —";
 }
 
+const SITE_LABELS = { lab: "实验室柜", factory: "工厂柜（印刷相反）" };
+
 function renderDetails(data) {
   $("detailId").textContent = data.task_id || "—";
   $("detailLanguage").textContent = data.language || "—";
+  $("detailSite").textContent = data.task_id ? (SITE_LABELS[data.site] || data.site || "—") : "—";
   $("detailStart").textContent = data.started_at ? data.started_at.replace("T", " ") : "—";
   const duration = taskDuration(data);
   $("detailDuration").textContent = duration === null ? "—" : formatDuration(duration);
@@ -379,6 +483,194 @@ function escapeHtml(value) {
   })[char]);
 }
 
+// ---------------------------------------------------------- 手动模式与耗时
+
+let promptShownId = "";
+let decisionBusy = false;
+let waypointsLoaded = false;
+let hintUntil = 0;
+
+function setHint(text) {
+  $("manualHint").textContent = text;
+  hintUntil = Date.now() + 5000;
+}
+
+async function postJson(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  let data = {};
+  try { data = await response.json(); } catch (error) { /* 非 JSON */ }
+  if (!data.ok && !data.error) data.error = `HTTP ${response.status}`;
+  return data;
+}
+
+async function loadWaypoints(force) {
+  if (waypointsLoaded && !force) return;
+  try {
+    const response = await fetch("/manual/waypoints", { cache: "no-store" });
+    const data = await response.json();
+    if (!data.ok) throw new Error(data.error || "位点列表读取失败");
+    const select = $("promptWaypoint");
+    const current = select.value;
+    select.innerHTML = '<option value="">选择位点…</option>'
+      + data.waypoints.map((name) =>
+          `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`
+        ).join("");
+    if (current) select.value = current;
+    waypointsLoaded = true;
+  } catch (error) { /* reach 未就绪时下一个提示再试 */ }
+}
+
+function setPromptButtonsDisabled(disabled) {
+  ["promptProceed", "promptAbort", "promptGoto", "promptArm", "promptDisarm"]
+    .forEach((id) => { $(id).disabled = disabled; });
+}
+
+async function sendDecision(action, extra) {
+  if (decisionBusy || !lastData || !lastData.prompt) return;
+  decisionBusy = true;
+  setPromptButtonsDisabled(true);
+  try {
+    const data = await postJson("/task/decision",
+      { prompt_id: lastData.prompt.id, action, ...(extra || {}) });
+    if (!data.ok) setHint(data.error || "决定提交失败");
+  } finally {
+    decisionBusy = false;
+  }
+  poll();
+}
+
+function renderPrompt(data) {
+  const panel = $("promptPanel");
+  const prompt = data.prompt;
+  if (!prompt) {
+    panel.hidden = true;
+    promptShownId = "";
+    return;
+  }
+  panel.hidden = false;
+  if (prompt.id !== promptShownId) {
+    promptShownId = prompt.id;
+    setPromptButtonsDisabled(false);
+    loadWaypoints(false);
+  }
+  $("promptSince").textContent =
+    `自 ${String(prompt.since || "").replace("T", " ")} 起等待操作员决定`;
+  $("promptMessage").textContent = prompt.message || "";
+  $("promptDetail").innerHTML = Object.entries(prompt.detail || {})
+    .map(([key, value]) =>
+      `<span>${escapeHtml(key)}：<b>${escapeHtml(value)}</b></span>`)
+    .join("");
+  const actions = prompt.actions_done || [];
+  const logBox = $("promptActionsLog");
+  logBox.hidden = !actions.length;
+  if (actions.length) {
+    logBox.innerHTML = "本步骤内已执行的其他动作：" + actions.map((entry) =>
+      `<span class="${entry.ok ? "ok-act" : "bad-act"}">[${escapeHtml(entry.at || "")}] `
+      + `${escapeHtml(entry.label)}${entry.ok ? " ✓" : ` ✘ ${escapeHtml(entry.error || "")}`}</span>`
+    ).join("　");
+  }
+}
+
+function formatSeconds(value) {
+  value = Math.max(0, Number(value) || 0);
+  if (value < 60) return `${value.toFixed(1)}s`;
+  return `${Math.floor(value / 60)}m${String(Math.floor(value % 60)).padStart(2, "0")}s`;
+}
+
+function renderTimings(data) {
+  const entries = data.step_times || [];
+  const list = $("timingList");
+  if (!entries.length) {
+    list.innerHTML = '<div class="empty" style="padding:18px 0;">任务开始后，这里按顺序统计每一步的耗时</div>';
+    $("timingSummary").textContent = "尚无数据";
+    return;
+  }
+  list.innerHTML = entries.map((entry) => {
+    const cls = entry.kind === "confirm" ? "confirm" : (entry.running ? "running" : "");
+    const name = entry.running ? `● ${entry.step}（进行中）` : entry.step;
+    return `<div class="timing-row ${cls}"><span class="t-name">${escapeHtml(name)}</span>`
+      + `<span class="t-val">${formatSeconds(entry.duration_s)}</span></div>`;
+  }).join("");
+  const sum = (kind) => entries
+    .filter((entry) => entry.kind === kind)
+    .reduce((total, entry) => total + (Number(entry.duration_s) || 0), 0);
+  const stepTotal = sum("step");
+  const confirmTotal = sum("confirm");
+  $("timingSummary").textContent = `步骤合计 ${formatSeconds(stepTotal)}`
+    + (confirmTotal ? ` · 确认等待合计 ${formatSeconds(confirmTotal)}` : "");
+}
+
+function renderManual(data) {
+  const busy = ["starting", "running"].includes(data.state)
+    || (data.check && data.check.state === "running");
+  $("manualStart").disabled = !!busy;
+  if (Date.now() < hintUntil) return;
+  if (busy) {
+    $("manualHint").textContent = data.manual
+      ? "手动确认任务执行中" : "任务执行中（全自动）";
+  } else {
+    $("manualHint").textContent = "";
+  }
+}
+
+// 每个现场只有"向左拨"这一套已验证动作；语义随印刷方向变
+const SITE_LANGUAGE_OPTIONS = {
+  lab: [
+    { value: "Change the switch from close to remote", label: "就地 → 远方（向左拨）" },
+    { value: "Change the switch from remote to close", label: "远方 → 就地（此柜不支持）", disabled: true },
+  ],
+  factory: [
+    { value: "Change the switch from remote to close", label: "远方 → 就地（向左拨）" },
+    { value: "Change the switch from close to remote", label: "就地 → 远方（此柜不支持）", disabled: true },
+  ],
+};
+
+function syncLanguageOptions() {
+  const options = SITE_LANGUAGE_OPTIONS[$("manualSite").value] || SITE_LANGUAGE_OPTIONS.lab;
+  $("manualLanguage").innerHTML = options.map((option) =>
+    `<option value="${escapeHtml(option.value)}"${option.disabled ? " disabled" : ""}>`
+    + `${escapeHtml(option.label)}</option>`
+  ).join("");
+}
+$("manualSite").addEventListener("change", syncLanguageOptions);
+syncLanguageOptions();
+
+$("manualStart").addEventListener("click", async () => {
+  const site = $("manualSite").value;
+  const language = $("manualLanguage").value;
+  const retries = Math.min(20, Math.max(1, Number($("manualRetries").value) || 3));
+  const manual = $("manualStep").checked;
+  const mode = manual ? "每个主要步骤执行前都需要在本页确认" : "全自动执行（无每步确认）";
+  if (!confirm(`确认启动拨闸流程？\n现场：${SITE_LABELS[site]}\n指令：${language}\n${mode}，最多 ${retries} 轮`)) return;
+  const data = await postJson("/task/flip", { language, retries, manual, site });
+  setHint(data.ok ? `任务已创建 ${data.task_id}` : (data.error || "启动失败"));
+  poll();
+});
+
+$("manualEstop").addEventListener("click", async () => {
+  const data = await postJson("/emergency/stop", { reason: "网页手动强制停止" });
+  setHint(data.ok ? "已强制停止：急停 + 释放手臂" : (data.error || "强制停止失败"));
+  poll();
+});
+
+$("promptProceed").addEventListener("click", () => sendDecision("proceed"));
+$("promptAbort").addEventListener("click", () => {
+  if (confirm("确认中止流程？手臂将受控回落到「起手点测试」并释放。")) {
+    sendDecision("abort");
+  }
+});
+$("promptGoto").addEventListener("click", () => {
+  const waypoint = $("promptWaypoint").value;
+  if (!waypoint) { setHint("请先在下拉框选择位点"); return; }
+  sendDecision("goto_waypoint", { waypoint });
+});
+$("promptArm").addEventListener("click", () => sendDecision("arm"));
+$("promptDisarm").addEventListener("click", () => sendDecision("disarm"));
+
 function render(data) {
   lastData = data;
   renderHero(data);
@@ -386,6 +678,9 @@ function render(data) {
   renderWorkflow(data);
   renderDetails(data);
   renderLogs(data);
+  renderPrompt(data);
+  renderTimings(data);
+  renderManual(data);
 }
 
 async function poll() {

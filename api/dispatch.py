@@ -29,20 +29,40 @@
                           /task/flip 复用；失败或无需拨动 → 立即关（外部手动
                           启动的 18001 除外，成败都不动）。
     POST /task/flip    → body {"language": "<固定指令，必填>",
-                                "retries": 3}   # 可选，最大尝试轮数（VLA 后端忽略）
+                                "retries": 3,   # 可选，最大尝试轮数（VLA 后端忽略）
+                                "manual": false,  # 可选，手动确认模式（见下）
+                                "site": "lab"}  # 可选，现场：lab=实验室柜（默认）
+                                                # factory=工厂柜（两旋钮印刷相反）
                           返回 {"ok": true, "task_id": "..."}；执行中再触发 → 409
+
+现场（site）：真机只验证过"从右向左拨"一套动作。实验室柜上它是
+    「就地→远方」（close to remote）；工厂柜印刷相反，同一动作是
+    「远方→就地」（remote to close）。与所选 site 不匹配的 language 会
+    立即以 NOT_IMPLEMENTED 结束（= 未验证的镜像动作），不启动硬件。
+    YOLO 识别的是开关的真实印刷状态，site 会传给流程决定"要拨/已到位"
+    的判定类别（工厂柜：「远方」=要拨、「就地」=成功）。/check/flip 同理。
     GET  /task/status  → 状态机 idle/starting/running/done + 流程日志尾部
                           + 最终结果（错误码见 api.flow.ErrorCode）
+                          + step_times 分步耗时 + prompt 当前等待确认的步骤
     POST /task/abort   → 急停正在执行的动作并强制结束任务（= /emergency/stop）
+
+手动确认模式（网页 http://<机器人IP>:17001/ 上可视化操作）：
+    /task/flip 带 "manual": true 后，流程在每个主要步骤（接管/场景判断/
+    对中/起手式/细对齐/取点/拨动/复核/收尾）执行前挂起，网页给出"我即将
+    做什么"的说明，操作员选择：
+      · 执行该步（proceed）· 中止流程（abort，走受控回落+释放）
+      · 其他动作：前往某已录位点 / 接管手臂 / 释放手臂——在流程线程上
+        串行执行，完成后回到同一确认提示，可连续选择多个其他动作
+    POST /task/decision → 提交上述决定；GET /manual/waypoints → 位点列表。
     POST /emergency/stop → 强制停止（任何状态下都可调，没任务在跑也能用）：
                           停转身 → 急停手臂轨迹 → 释放手臂（权重渐出，控制权
                           交还本体）→ 关掉自己拉起的 reach_server（放相机/DDS）。
                           用于"别的程序要接管、必须马上让我们松手"的场合。
 
 language 逐字固定（大小写/空格容错，多余的不认）：
-    "Change the switch from close to remote"   就地 → 远方（IK 已验证）
-    "Change the switch from remote to close"   远方 → 就地（暂未支持，
-        任务立即以 NOT_IMPLEMENTED 结束，不会启动任何硬件）
+    "Change the switch from close to remote"   就地 → 远方（实验室柜可执行）
+    "Change the switch from remote to close"   远方 → 就地（工厂柜可执行）
+    与 site 不匹配的方向立即以 NOT_IMPLEMENTED 结束，不会启动任何硬件。
 """
 
 from __future__ import annotations
@@ -66,7 +86,7 @@ from core.alignment_config import load_alignment_config
 
 from .client import ReachClient
 from .console_client import ConsoleClient
-from .flow import SwitchFlow
+from .flow import ErrorCode, FlowError, SwitchFlow
 from .yolo_client import YoloClient
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -221,6 +241,117 @@ def _shutdown_cleanup() -> None:
             print(f"[dispatch] 退出清理失败: {exc}")
 
 
+# ------------------------------------------------------------ 手动模式闸门
+
+
+class _ManualGate:
+    """手动模式的步骤闸门：流程线程在每个主要步骤前阻塞，等网页操作员决定。
+
+    决定通过 POST /task/decision 提交，三类：
+      · proceed        —— 执行该步，流程继续
+      · abort          —— 中止流程（走受控回落 + 释放）
+      · goto_waypoint / arm / disarm —— "其他动作"：在流程线程上执行
+        （保证机器人指令串行），完成后回到同一个确认提示，可连续选择
+    """
+
+    OTHER_ACTIONS = ("goto_waypoint", "arm", "disarm")
+
+    def __init__(self, task: dict):
+        self.task = task
+        self._event = threading.Event()
+        self._decision: dict | None = None
+
+    # ---- HTTP 线程：提交决定 ----
+
+    def submit(self, decision: dict) -> dict:
+        action = str(decision.get("action") or "")
+        if action not in ("proceed", "abort", *self.OTHER_ACTIONS):
+            return {"ok": False, "error": f"不支持的动作: {action!r}"}
+        with _lock:
+            prompt = self.task.get("prompt")
+            if not prompt:
+                return {"ok": False,
+                        "error": "当前没有等待确认的步骤（可能正在执行动作）"}
+            wanted = decision.get("prompt_id")
+            if wanted and wanted != prompt["id"]:
+                return {"ok": False, "error": "确认请求已过期（步骤已变更）"}
+            self._decision = dict(decision)
+        self._event.set()
+        return {"ok": True, "accepted": action}
+
+    # ---- 流程线程：阻塞等待并处理 ----
+
+    def __call__(self, step_id: str, message: str, detail: dict) -> None:
+        flow: SwitchFlow = self.task["flow"]
+        actions_done: list[dict] = []
+        while True:
+            prompt_id = uuid.uuid4().hex[:8]
+            with _lock:
+                self.task["prompt"] = {
+                    "id": prompt_id,
+                    "step_id": step_id,
+                    "message": message,
+                    "detail": detail,
+                    "since": datetime.now().isoformat(timespec="seconds"),
+                    "actions_done": list(actions_done),
+                }
+            self._event.clear()
+            while not self._event.wait(timeout=0.2):
+                if flow.abort.is_set():
+                    with _lock:
+                        self.task["prompt"] = None
+                    raise FlowError(ErrorCode.ABORTED, "等待确认时收到强制停止")
+            with _lock:
+                decision, self._decision = self._decision or {}, None
+                self.task["prompt"] = None   # 执行动作期间不接受新决定
+            action = decision.get("action")
+            if action == "proceed":
+                return
+            if action == "abort":
+                raise FlowError(ErrorCode.ABORTED,
+                                f"操作员在「{message}」前中止流程")
+            outcome = self._run_other(flow, action, decision)
+            outcome["at"] = datetime.now().strftime("%H:%M:%S")
+            actions_done.append(outcome)
+            # 回到循环：重新挂出同一步骤的确认提示（可连续选其他动作）
+
+    def _run_other(self, flow: SwitchFlow, action: str, decision: dict) -> dict:
+        """执行一个"其他动作"，返回 {"label", "ok", "error"?} 供提示面板展示。"""
+        label = {"goto_waypoint": "前往位点", "arm": "接管手臂",
+                 "disarm": "释放手臂"}.get(action, action)
+        try:
+            if action == "goto_waypoint":
+                name = str(decision.get("waypoint") or "").strip()
+                if not name:
+                    return {"label": label, "ok": False, "error": "缺少位点名"}
+                label = f"前往位点「{name}」"
+                flow._interp_to_waypoint(name, "手动动作")
+                return {"label": label, "ok": True}
+            if action == "arm":
+                res = ReachClient(_args.reach_base).arm()
+                ok = bool(res.get("ok"))
+                flow.log_lines.append(
+                    f"[{datetime.now():%H:%M:%S}] [manual] 接管手臂 → "
+                    f"{'成功' if ok else res.get('error')}")
+                return {"label": "接管手臂", "ok": ok,
+                        **({} if ok else {"error": str(res.get("error"))})}
+            if action == "disarm":
+                res = ReachClient(_args.reach_base).disarm()
+                ok = bool(res.get("ok"))
+                flow.log_lines.append(
+                    f"[{datetime.now():%H:%M:%S}] [manual] 释放手臂 → "
+                    f"{'成功' if ok else res.get('error')}")
+                return {"label": "释放手臂", "ok": ok,
+                        **({} if ok else {"error": str(res.get("error"))})}
+            return {"label": label, "ok": False, "error": "不支持的动作"}
+        except FlowError as exc:
+            if flow.abort.is_set():
+                raise
+            return {"label": label, "ok": False, "error": exc.message}
+        except Exception as exc:
+            return {"label": label, "ok": False, "error": str(exc)}
+
+
 # ------------------------------------------------------------------ 任务执行
 
 
@@ -279,8 +410,14 @@ def _run_task(task: dict) -> None:
                           fine_accept_min_deg=fine["accept_min_deg"],
                           fine_accept_max_deg=fine["accept_max_deg"],
                           fine_command_tol_deg=fine["command_tolerance_deg"],
-                          max_flip_rounds=int(task.get("retries") or 3))
+                          max_flip_rounds=int(task.get("retries") or 3),
+                          site=task.get("site") or "lab")
         task["flow"] = flow
+        if task.get("manual"):
+            gate = _ManualGate(task)
+            task["gate"] = gate
+            flow.gate = gate
+            task["log"].append("手动模式：每个主要步骤执行前都会在网页上等待确认")
         if _estop.is_set():
             # 强制停止卡在"拉起 reach"和"建流程"之间时，别让流程真的跑起来
             flow.request_abort()
@@ -437,9 +574,13 @@ def _run_checks(check: dict, kind: str) -> dict:
     ok_step(f"5 电机全部在限内，距离 {dist:.3f} m")
 
     # ---- 4️⃣ YOLO：已在目标状态则无需拨动；否则检查框横向居中 ----
+    # YOLO 识别的是真实印刷状态（工厂柜实测印刷相反也读得对），
+    # 直接按指令语义的前/后状态类别比对即可。
+    site = check.get("site") or "lab"
     pre_cls, post_cls = CHECK_KIND_STATES[kind]
     lo, hi = CHECK_BOX_BAND
     steps.append({"step": 4, "name": "YOLO 状态与居中", "band_ratio": [lo, hi],
+                  "site": site,
                   "expect_pre": pre_cls, "expect_post": post_cls})
     if _args.no_yolo:
         return fail("调度启动时带了 --no-yolo，无法做该项检查")
@@ -453,7 +594,8 @@ def _run_checks(check: dict, kind: str) -> dict:
     best = max(cands, key=lambda b: b["conf"])
     if best["name"] == post_cls:
         steps[-1].update({"scene": best["name"], "conf": best["conf"]})
-        ok_step(f"识别到「{post_cls}」——开关已在目标状态，无需拨动")
+        ok_step(f"识别到「{best['name']}」——开关已在目标状态「{post_cls}」，"
+                f"无需拨动")
         return {"passed": True, "need_flip": False, "failed_step": None,
                 "message": f"开关已在目标状态「{post_cls}」，无需调用 /task/flip"
                            f"（相机已释放）",
@@ -502,6 +644,11 @@ def check_flip(body: dict | None = None):
              "supported": ["Change the switch from close to remote",
                            "Change the switch from remote to close"]},
             status_code=422)
+    site = _parse_site(body)
+    if site is None:
+        return JSONResponse(
+            {"ok": False, "error": "site 只能是 lab（实验室柜）或 factory（工厂柜，印刷相反）"},
+            status_code=422)
     with _lock:
         if _task is not None and _task["state"] != "done":
             return JSONResponse(
@@ -512,11 +659,11 @@ def check_flip(body: dict | None = None):
             return JSONResponse(
                 {"ok": False, "error": "已有站位检查在执行"}, status_code=409)
         _estop.clear()     # 新的检查开始，清掉上一次的强制停止标记
-        _check = {"state": "running", "log": [], "steps": [],
+        _check = {"state": "running", "log": [], "steps": [], "site": site,
                   "reach_proc": None, "reach_log": None,
                   "started_at": datetime.now().isoformat(timespec="seconds")}
         check = _check
-        check["log"].append(f"指令: {language}（{kind}）")
+        check["log"].append(f"指令: {language}（{kind}，现场 {SITE_LABELS[site]}）")
         leftover = _check_reach_proc   # 上次检查通过留下的 reach，认领回来
         _check_reach_proc = None
     t0 = time.monotonic()
@@ -574,10 +721,33 @@ LANGUAGE_TASKS = {
     "change the switch from remote to close": "remote_to_close",
 }
 
+# 现场（site）：真机只验证过"从右向左拨"这一套动作。实验室柜上它把开关从
+# 「就地」拨到「远方」；工厂柜两个旋钮的印刷正好相反，同一套动作的语义是
+# 「远方 → 就地」。YOLO 识别的是真实印刷状态（工厂柜实测：印刷相反时也
+# 正确读出「远方」，置信度 0.9+），所以 site 决定：哪个 language 可执行 +
+# 流程里"要拨/已到位"的判定类别（SwitchFlow.flip_from/flip_to）。
+SITES = ("lab", "factory")
+SITE_LABELS = {"lab": "实验室柜", "factory": "工厂柜（印刷相反）"}
+SITE_SUPPORTED_KIND = {"lab": "close_to_remote", "factory": "remote_to_close"}
+
 
 def _parse_language(text: str) -> str | None:
     norm = " ".join(text.lower().replace(".", " ").split())
     return LANGUAGE_TASKS.get(norm)
+
+
+def _parse_site(body: dict | None) -> str | None:
+    site = str((body or {}).get("site") or "lab").strip().lower()
+    return site if site in SITES else None
+
+
+def _unsupported_message(kind: str, site: str) -> str:
+    pre, post = CHECK_KIND_STATES[kind]
+    return (f"「{pre} → {post}」在{SITE_LABELS[site]}上对应向右拨——"
+            f"镜像动作尚未真机验证，暂不支持；"
+            f"该柜支持的指令语义为"
+            f"「{CHECK_KIND_STATES[SITE_SUPPORTED_KIND[site]][0]} → "
+            f"{CHECK_KIND_STATES[SITE_SUPPORTED_KIND[site]][1]}」")
 
 
 @app.post("/task/flip")
@@ -605,6 +775,12 @@ def task_submit(body: dict | None = None):
     if not 1 <= retries <= 20:
         return JSONResponse({"ok": False, "error": "retries 取值范围 1~20"},
                             status_code=422)
+    manual = bool((body or {}).get("manual"))
+    site = _parse_site(body)
+    if site is None:
+        return JSONResponse(
+            {"ok": False, "error": "site 只能是 lab（实验室柜）或 factory（工厂柜，印刷相反）"},
+            status_code=422)
 
     with _lock:
         if _task is not None and _task["state"] != "done":
@@ -622,20 +798,23 @@ def task_submit(body: dict | None = None):
         now = datetime.now().isoformat(timespec="seconds")
         _task = {"id": uuid.uuid4().hex[:10], "state": "starting",
                  "language": language, "kind": kind, "retries": retries,
+                 "manual": manual, "site": site, "prompt": None, "gate": None,
                  "started_at": now, "finished_at": None,
                  "result": None, "flow": None,
-                 "log": [f"指令: {language}（{kind}，最多 {retries} 轮）"],
+                 "log": [f"指令: {language}（{kind}，现场 {SITE_LABELS[site]}，"
+                         f"最多 {retries} 轮"
+                         f"{'，手动确认模式' if manual else ''}）"],
                  "reach_proc": None, "reach_external": False,
                  "stats_counted": False}
         _task_stats["accepted"] += 1
-        if kind == "remote_to_close":
-            # 明知做不了就快速失败，不启动任何硬件——平台仍按统一的
-            # 轮询路径拿到结果，错误码 NOT_IMPLEMENTED
+        if kind != SITE_SUPPORTED_KIND[site]:
+            # 该柜做不了这个方向（= 未验证的镜像动作），快速失败不启动硬件
+            # ——平台仍按统一的轮询路径拿到结果，错误码 NOT_IMPLEMENTED
             _task["state"] = "done"
             _task["finished_at"] = now
             _task["result"] = {
                 "ok": False, "code": 1, "code_name": "NOT_IMPLEMENTED",
-                "message": "「远方 → 就地」暂未支持（镜像动作尚未真机验证）",
+                "message": _unsupported_message(kind, site),
                 "detail": {}}
             _count_finished_task_locked(_task)
             return {"ok": True, "task_id": _task["id"]}
@@ -653,6 +832,7 @@ def task_status():
             "started_at": _check.get("started_at"),
             "result": _check.get("result"),
         }
+        prompt = None if t is None else t.get("prompt")
     common = {
         "ok": True,
         "service": service,
@@ -661,14 +841,56 @@ def task_status():
     }
     if t is None:
         return {**common, "state": "idle", "task_id": None,
-                "reach_alive": _reach_alive(0.5), "log": [], "result": None}
+                "reach_alive": _reach_alive(0.5), "log": [], "result": None,
+                "manual": False, "prompt": None, "step_times": []}
     flow: SwitchFlow | None = t.get("flow")
     log = list(t["log"]) + (list(flow.log_lines) if flow is not None else [])
     return {**common, "state": t["state"], "task_id": t["id"],
             "language": t.get("language"), "retries": t.get("retries"),
+            "site": t.get("site") or "lab",
             "started_at": t["started_at"], "finished_at": t["finished_at"],
             "reach_alive": _reach_alive(0.5),
+            "manual": bool(t.get("manual")), "prompt": prompt,
+            "step_times": flow.step_report() if flow is not None else [],
             "result": t["result"], "log": log[-120:]}
+
+
+@app.post("/task/decision")
+def task_decision(body: dict | None = None):
+    """手动模式：对当前等待确认的步骤提交决定。
+
+    Body: {"prompt_id": "...",          # 可选，防过期误提交
+           "action": "proceed" | "abort" | "goto_waypoint" | "arm" | "disarm",
+           "waypoint": "位点名"}         # 仅 goto_waypoint 需要
+    """
+    with _lock:
+        t = _task
+        gate: _ManualGate | None = None if t is None else t.get("gate")
+    if t is None or t["state"] == "done":
+        return JSONResponse({"ok": False, "error": "没有正在执行的任务"},
+                            status_code=409)
+    if gate is None:
+        return JSONResponse({"ok": False, "error": "当前任务不是手动确认模式"},
+                            status_code=409)
+    result = gate.submit(body or {})
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=409)
+    return result
+
+
+@app.get("/manual/waypoints")
+def manual_waypoints():
+    """给手动模式"前往位点"下拉框用的已录路点列表（透传 18001）。"""
+    if not _reach_alive(1.5):
+        return JSONResponse(
+            {"ok": False, "error": "reach_server 未运行，无法读取位点列表"},
+            status_code=503)
+    try:
+        res = ReachClient(_args.reach_base).waypoints()
+        names = [str(w.get("name")) for w in (res.get("waypoints") or [])]
+        return {"ok": True, "waypoints": names}
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
 
 
 def _reach_base() -> str:
