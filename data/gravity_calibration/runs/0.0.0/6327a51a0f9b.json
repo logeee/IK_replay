@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "id": "6327a51a0f9b",
+  "point_id": "118a6d0656a0",
+  "point_name": "0.5以上",
+  "plan_id": "a2056ff45459",
+  "batch_id": null,
+  "started_at": "2026-08-21T15:14:56.994",
+  "status": "failed",
+  "gravity_profile": {
+    "version": "0.0.0",
+    "label": "未标定前的重力补偿版本",
+    "configured_active_version": "0.0.0",
+    "config_path": "/home/robot/yx/project/IK_replay/config/gravity_compensation.json",
+    "effective_parameters": {
+      "grav_alpha": 1.0,
+      "payload_kg": 0.0,
+      "grav_in_float": true,
+      "use_imu_gravity": false
+    },
+    "cli_overrides": {}
+  },
+  "tool_visualization": {
+    "tcp_offset": [
+      0.2843408089824386,
+      0.011390426376433277,
+      0.03624519596130037
+    ],
+    "markers": {
+      "blue": [
+        0.2844134365638582,
+        0.021761299091931943,
+        0.030270734285121396
+      ],
+      "brown": [
+        0.20443156040385713,
+        0.04749821244824653,
+        -0.010819808863837495
+      ],
+      "gold": [
+        0.20257552992349373,
+        -0.018112301157854897,
+        -0.018428593983262555
+      ],
+      "gray": [
+        0.20304819717369232,
+        -0.02048520260215193,
+        0.0014008924386018536
+      ],
+      "green": [
+        0.20565242507191656,
+        0.04811718225792446,
+        -0.029781836651724326
+      ],
+      "orange": [
+        0.20343693165307447,
+        -0.01933273894218665,
+        0.03900773987518483
+      ],
+      "pink": [
+        0.20453272896286007,
+        0.03779736646353912,
+        0.005350581500924753
+      ],
+      "purple": [
+        0.20362064899897545,
+        -0.021044074507419287,
+        0.0213305196905805
+      ],
+      "red": [
+        0.28426818140101895,
+        0.001019553660934612,
+        0.042219657637479334
+      ]
+    },
+    "reference_marker": null,
+    "wrist_link": "right_wrist_yaw_link"
+  },
+  "robot": "h2",
+  "chain_id": "right_arm",
+  "target_named_joints": {
+    "right_shoulder_pitch_joint": -1.0210773944854736,
+    "right_shoulder_roll_joint": 0.05535513535141945,
+    "right_shoulder_yaw_joint": -0.042549993842840195,
+    "right_elbow_joint": 0.5305536389350891,
+    "right_wrist_roll_joint": 0.04200470820069313,
+    "right_wrist_pitch_joint": -0.5351675748825073,
+    "right_wrist_yaw_joint": -0.0601847805082798
+  },
+  "settings": {
+    "duration_s": 6.0,
+    "max_speed_rad_s": 0.2,
+    "settle_s": 3.0,
+    "sample_s": 2.0,
+    "sample_hz": 10.0,
+    "intermediate_stops": 3,
+    "sample_point_count": 4,
+    "planner": "linear"
+  },
+  "completed_at": "2026-08-21T15:14:57.006",
+  "error": "实验已由操作员停止",
+  "storage_version": "0.0.0",
+  "storage_relative_path": "0.0.0/6327a51a0f9b.json"
+}

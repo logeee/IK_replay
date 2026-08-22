@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "c834a03a7150",
+  "name": "0.46-起手式新终点",
+  "note": "从普通位点导入：0.46-起手式新终点_20260822_031411.json",
+  "order": 6,
+  "chain_id": "right_arm",
+  "robot": "h2",
+  "joint_names": [
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint",
+    "right_wrist_roll_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint"
+  ],
+  "named_joints": {
+    "right_shoulder_pitch_joint": -0.6379943475958061,
+    "right_shoulder_roll_joint": -0.049381578490475975,
+    "right_shoulder_yaw_joint": 0.13015116808456673,
+    "right_elbow_joint": -0.2853328233039844,
+    "right_wrist_roll_joint": 0.20484870598737875,
+    "right_wrist_pitch_joint": 0.06253575161796103,
+    "right_wrist_yaw_joint": -0.12437331252825344
+  },
+  "created_at": "2026-08-22T14:46:43.069",
+  "updated_at": "2026-08-22T14:46:43.069",
+  "completed_runs": 0,
+  "last_completed_at": null,
+  "last_run_id": null,
+  "source": "regular_waypoint_import",
+  "source_waypoint_file": "0.46-起手式新终点_20260822_031411.json",
+  "source_waypoint_created_at": "2026-08-22 03:14:11",
+  "imported_at": "2026-08-22T14:46:43.069"
+}

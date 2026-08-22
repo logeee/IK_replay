@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "a25c4a820e30",
+  "name": "接管前点位",
+  "note": "从普通位点导入：接管前点位_20260821_145747.json",
+  "order": 5,
+  "chain_id": "right_arm",
+  "robot": "h2",
+  "joint_names": [
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint",
+    "right_wrist_roll_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint"
+  ],
+  "named_joints": {
+    "right_shoulder_pitch_joint": 0.1538497507572174,
+    "right_shoulder_roll_joint": -0.3122909367084503,
+    "right_shoulder_yaw_joint": 0.20979584753513336,
+    "right_elbow_joint": 1.2805863618850708,
+    "right_wrist_roll_joint": -0.021499700844287872,
+    "right_wrist_pitch_joint": 0.026269422844052315,
+    "right_wrist_yaw_joint": 0.011396998539566994
+  },
+  "created_at": "2026-08-21T14:58:07.578",
+  "updated_at": "2026-08-21T15:36:08.104",
+  "completed_runs": 5,
+  "last_completed_at": "2026-08-21T15:36:08.104",
+  "last_run_id": "bc0d286400dc",
+  "source": "regular_waypoint_import",
+  "source_waypoint_file": "接管前点位_20260821_145747.json",
+  "source_waypoint_created_at": "2026-08-21 14:57:47",
+  "imported_at": "2026-08-21T14:58:07.578"
+}
