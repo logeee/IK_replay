@@ -62,6 +62,8 @@ class GravityCalibrationTests(unittest.TestCase):
         self.assertIn("离线轨迹库与多轨迹叠加回放", html)
         self.assertIn("gravity-plan-viewer.js", html)
         self.assertIn("planShowCollisions", html)
+        self.assertIn("onlinePlanViewerFrame", html)
+        self.assertIn("gravity-plan-inline.html", html)
         self.assertIn("planPlaybackSpeed", html)
         self.assertIn("仅调整网页回放速度", html)
         self.assertIn("离线轨迹库", html)
@@ -81,6 +83,20 @@ class GravityCalibrationTests(unittest.TestCase):
             html.index("理论 / 实测完整机器人姿态对比"),
             html.index("离线轨迹库与多轨迹叠加回放"),
         )
+        inline = gravity.WEB_DIR.joinpath(
+            "gravity-plan-inline.html"
+        ).read_text(encoding="utf-8")
+        self.assertIn("planReplayBtn", inline)
+        self.assertIn("planFrameSlider", inline)
+        self.assertIn("gravity-plan-inline.js", inline)
+        # iframe 内的 viewer 依赖裸模块名 "three"，缺 importmap 会整体加载失败。
+        self.assertIn("importmap", inline)
+        self.assertIn("/web/vendor/three.module.js", inline)
+        inline_script = gravity.WEB_DIR.joinpath(
+            "gravity-plan-inline.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("gravity-plan-viewer.js", inline_script)
+        self.assertIn("/api/gravity/status", inline_script)
 
     def test_offline_sequence_preview_never_calls_reach_server(self):
         gravity.SEQUENCES_DIR.mkdir(parents=True)

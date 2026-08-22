@@ -998,6 +998,14 @@ async function loadPlan(planId, options = {}) {
 window.addEventListener("gravity:preview-plan", (event) => {
   loadPlan(event.detail.planId, event.detail);
 });
+window.addEventListener("message", (event) => {
+  if (
+    event.origin !== window.location.origin
+    || event.data?.type !== "gravity:preview-online-plan"
+  ) return;
+  const detail = event.data.detail || {};
+  loadPlan(detail.planId, detail);
+});
 window.addEventListener("gravity:preview-multiple", (event) => {
   loadMultiple(
     event.detail.items || [],
