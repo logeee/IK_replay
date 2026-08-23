@@ -1,0 +1,14 @@
+{
+  "name": "左-测试",
+  "chain_id": "right_arm",
+  "named_joints": {
+    "right_shoulder_pitch_joint": -1.0308351516723633,
+    "right_shoulder_roll_joint": -0.13705159723758698,
+    "right_shoulder_yaw_joint": 0.4287356734275818,
+    "right_elbow_joint": -0.11237607896327972,
+    "right_wrist_roll_joint": -1.2895206212997437,
+    "right_wrist_pitch_joint": 0.3834952116012573,
+    "right_wrist_yaw_joint": 0.21753765642642975
+  },
+  "created_at": "2026-08-23 10:22:19"
+}

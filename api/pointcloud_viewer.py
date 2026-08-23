@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
+import shutil
 import threading
 import time
 import uuid
@@ -393,6 +395,198 @@ def _capture_by_id(capture_id: str) -> Capture | None:
     return capture_value
 
 
+# --------------- 选点记录：每次 confirm 存档，便于事后复查 ---------------
+# 每条记录一个目录：snapshot.jpg（标注截图）+ cloud.ply（旋钮附近彩色点云，
+# 内嵌粉点/算法目标/最终目的点三种颜色标记）+ meta.json（全部数值）。
+# 网页画廊: GET /picks
+PICK_HISTORY_DIR = ROOT / "data" / "pick_history"
+PICK_HISTORY_KEEP = 500          # 最多保留条数，超出删最旧
+PICK_CROP_RADIUS_M = 0.20        # 以算法目标为中心裁剪这么大一球的点云
+PICK_RECORD_FILES = ("snapshot.jpg", "cloud.ply", "meta.json")
+_RECORD_NAME_RE = re.compile(r"^[0-9]{8}_[0-9]{6}_[0-9a-f]{8}$")
+
+
+def _project_pixel(
+    intrinsics: tuple[float, float, float, float],
+    p_camera: np.ndarray,
+) -> tuple[int, int] | None:
+    fx, fy, cx, cy = intrinsics
+    if p_camera[2] <= 1e-6:
+        return None
+    return (int(round(fx * p_camera[0] / p_camera[2] + cx)),
+            int(round(fy * p_camera[1] / p_camera[2] + cy)))
+
+
+def _marker_points(
+    center: np.ndarray,
+    rgb: tuple[int, int, int],
+    count: int = 300,
+    radius_m: float = 0.004,
+) -> tuple[np.ndarray, np.ndarray]:
+    """以 center 为球心撒一小团纯色点，在点云查看器里当立体标记。"""
+    rng = np.random.default_rng(0)
+    directions = rng.normal(size=(count, 3))
+    directions /= np.linalg.norm(directions, axis=1)[:, None]
+    offsets = directions * radius_m * rng.random((count, 1)) ** (1.0 / 3.0)
+    positions = (np.asarray(center, dtype=np.float64)[None, :] + offsets)
+    colors = np.tile(np.asarray(rgb, dtype=np.uint8), (count, 1))
+    return positions.astype(np.float32), colors
+
+
+def _write_ply(path: Path, positions: np.ndarray, rgb: np.ndarray) -> None:
+    data = np.empty(
+        positions.shape[0],
+        dtype=[("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
+               ("red", "u1"), ("green", "u1"), ("blue", "u1")],
+    )
+    data["x"], data["y"], data["z"] = positions.T.astype(np.float32)
+    data["red"], data["green"], data["blue"] = rgb.T.astype(np.uint8)
+    header = (
+        "ply\nformat binary_little_endian 1.0\n"
+        f"element vertex {positions.shape[0]}\n"
+        "property float x\nproperty float y\nproperty float z\n"
+        "property uchar red\nproperty uchar green\nproperty uchar blue\n"
+        "end_header\n"
+    )
+    with open(path, "wb") as fh:
+        fh.write(header.encode("ascii"))
+        data.tofile(fh)
+
+
+def _save_pick_record(
+    capture_value: Capture,
+    reference: np.ndarray,
+    p_camera: np.ndarray,
+    adjustment: np.ndarray,
+    request_body: dict[str, Any],
+    result: dict[str, Any],
+) -> str | None:
+    """存一条选点记录，返回记录名（失败返回 None，不影响主流程）。"""
+    try:
+        name = (f"{time.strftime('%Y%m%d_%H%M%S')}_"
+                f"{capture_value.capture_id[:8]}")
+        record_dir = PICK_HISTORY_DIR / name
+        record_dir.mkdir(parents=True, exist_ok=True)
+
+        auto = capture_value.auto_target or {}
+        panel_center = (auto.get("panel_center_camera_m")
+                        if auto.get("ok") else None)
+
+        # ---- 旋钮附近彩色点云 + 三色立体标记 ----
+        positions = np.asarray(capture_value.cloud.positions,
+                               dtype=np.float32)
+        colors = np.asarray(capture_value.cloud.rgb, dtype=np.uint8)
+        keep = (np.linalg.norm(
+            positions - np.asarray(reference, dtype=np.float32)[None, :],
+            axis=1) <= PICK_CROP_RADIUS_M)
+        parts_p = [positions[keep]]
+        parts_c = [colors[keep]]
+        markers = (
+            (panel_center, (255, 0, 255)),   # 粉点（面板中心）：品红
+            (reference, (0, 255, 0)),        # 算法/基准目标点：绿
+            (p_camera, (255, 0, 0)),         # 微调后的最终目的点：红
+        )
+        for center, rgb in markers:
+            if center is None:
+                continue
+            mp, mc = _marker_points(np.asarray(center, dtype=np.float64), rgb)
+            parts_p.append(mp)
+            parts_c.append(mc)
+        _write_ply(record_dir / "cloud.ply",
+                   np.vstack(parts_p), np.vstack(parts_c))
+
+        # ---- 标注截图（BGR 画图）----
+        image = capture_value.bgr.copy()
+        adj_mm = [float(v) * 1000.0 for v in adjustment]
+        # 流程带来的墙面系微调（右/入墙/上，mm）——比相机系分量直观
+        wall_mm = request_body.get("adjustment_wall_mm")
+        if not (isinstance(wall_mm, dict)
+                and all(k in wall_mm for k in ("x", "y", "z"))):
+            wall_mm = None
+        for center, bgr, label in (
+            (panel_center, (255, 0, 255), "panel"),
+            (reference, (0, 255, 0), "target"),
+            (p_camera, (0, 0, 255), "final"),
+        ):
+            if center is None:
+                continue
+            px = _project_pixel(capture_value.intrinsics,
+                                np.asarray(center, dtype=np.float64))
+            if px is None:
+                continue
+            cv2.drawMarker(image, px, bgr, cv2.MARKER_CROSS, 26, 2)
+            cv2.circle(image, px, 10, bgr, 2)
+            cv2.putText(image, label, (px[0] + 14, px[1] - 12),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, bgr, 2)
+        p_root = result.get("p_root") or []
+        lines = [
+            # cv2 写不了中文：R=右 U=上 I=入墙（墙面系）
+            (f"adj wall(mm) R{wall_mm['x']:+g} U{wall_mm['z']:+g} "
+             f"I{wall_mm['y']:+g}" if wall_mm else
+             f"adj cam(mm) x{adj_mm[0]:+.1f} y{adj_mm[1]:+.1f} "
+             f"z{adj_mm[2]:+.1f}"),
+            (f"p_root [{p_root[0]:+.3f} {p_root[1]:+.3f} {p_root[2]:+.3f}]m"
+             if len(p_root) == 3 else "p_root -"),
+            f"{result.get('selection_source') or 'manual'}"
+            + (f" {auto.get('matched_detection_name')}"
+               f"-slot{auto.get('target_point_slot')}" if auto.get("ok") else ""),
+        ]
+        for i, text in enumerate(lines):
+            cv2.putText(image, text, (12, 28 + 26 * i),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 0, 0), 4)
+            cv2.putText(image, text, (12, 28 + 26 * i),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.62, (80, 255, 255), 2)
+        cv2.imwrite(str(record_dir / "snapshot.jpg"), image,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+
+        # ---- 全量数值 ----
+        meta = {
+            "saved_at": datetime_now_iso(),
+            "capture_id": capture_value.capture_id,
+            "selection_source": request_body.get("selection_source"),
+            "model_version": request_body.get("model_version"),
+            "target_point_slot": request_body.get("target_point_slot"),
+            "matched_detection_name":
+                request_body.get("matched_detection_name"),
+            "panel_center_camera_m": panel_center,
+            "reference_camera_m": [float(v) for v in reference],
+            "adjustment_camera_m": [float(v) for v in adjustment],
+            "adjustment_mm": adj_mm,
+            "adjustment_wall_mm": ({k: float(wall_mm[k])
+                                    for k in ("x", "y", "z")}
+                                   if wall_mm else None),
+            "final_p_camera_m": [float(v) for v in p_camera],
+            "approach_offset_m": request_body.get("approach_offset_m"),
+            "confirm_result": {k: result.get(k) for k in
+                               ("p_root", "p_root_surface", "p_torso",
+                                "offset_mode", "depth_mm")},
+            "auto_target": {k: auto.get(k) for k in
+                            ("target_wall_m", "panel_center_wall_m",
+                             "offset_wall_m", "wall_axes_camera",
+                             "panel_fit_quality")} if auto.get("ok") else None,
+            "yolo_boxes": capture_value.boxes,
+            "crop_radius_m": PICK_CROP_RADIUS_M,
+        }
+        (record_dir / "meta.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        # ---- 只留最近 PICK_HISTORY_KEEP 条 ----
+        records = sorted(
+            p for p in PICK_HISTORY_DIR.iterdir()
+            if p.is_dir() and _RECORD_NAME_RE.match(p.name)
+        )
+        for old in records[:-PICK_HISTORY_KEEP]:
+            shutil.rmtree(old, ignore_errors=True)
+        return name
+    except Exception as exc:
+        print(f"[pointcloud] 选点记录保存失败（不影响下发）: {exc}")
+        return None
+
+
+def datetime_now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S")
+
+
 @app.post("/api/pointcloud/auto-target/{capture_id}")
 def auto_target(capture_id: str):
     """Use the frozen RGB-D frame to predict point 1 or point 3 in memory."""
@@ -645,6 +839,12 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
     result["capture_age_s"] = round(
         time.monotonic() - capture_value.created_monotonic, 3
     )
+    record = _save_pick_record(
+        capture_value, reference, p_camera, adjustment, request_body, result
+    )
+    if record:
+        result["record"] = record
+        result["record_url"] = f"/picks#{record}"
     with _capture_lock:
         if _latest is capture_value:
             capture_value.metadata["confirmed_selection"] = {
@@ -659,6 +859,94 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
                 "result": result,
             }
     return result
+
+
+def _list_pick_records(limit: int = 100) -> list[dict[str, Any]]:
+    if not PICK_HISTORY_DIR.is_dir():
+        return []
+    names = sorted(
+        (p.name for p in PICK_HISTORY_DIR.iterdir()
+         if p.is_dir() and _RECORD_NAME_RE.match(p.name)),
+        reverse=True,
+    )[:limit]
+    records = []
+    for name in names:
+        meta: dict[str, Any] = {}
+        meta_path = PICK_HISTORY_DIR / name / "meta.json"
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        records.append({"name": name, "meta": meta})
+    return records
+
+
+@app.get("/api/pointcloud/picks")
+def picks_list(limit: int = 100):
+    return {"ok": True, "records": _list_pick_records(max(1, min(500, limit)))}
+
+
+@app.get("/api/pointcloud/picks/{name}/{filename}")
+def picks_file(name: str, filename: str):
+    if not _RECORD_NAME_RE.match(name) or filename not in PICK_RECORD_FILES:
+        return JSONResponse({"ok": False, "error": "非法记录名或文件名"},
+                            status_code=400)
+    path = PICK_HISTORY_DIR / name / filename
+    if not path.is_file():
+        return JSONResponse({"ok": False, "error": "记录不存在"},
+                            status_code=404)
+    return FileResponse(path)
+
+
+@app.get("/picks")
+def picks_page():
+    """选点记录画廊：标注截图 + 点云/数值下载链接，最新在前。"""
+    rows = []
+    for record in _list_pick_records():
+        name, meta = record["name"], record["meta"]
+        base = f"/api/pointcloud/picks/{name}"
+        adj = meta.get("adjustment_mm") or [0, 0, 0]
+        wall = meta.get("adjustment_wall_mm")
+        if isinstance(wall, dict) and all(k in wall for k in ("x", "y", "z")):
+            # 流程下发的记录带墙面系原始值：按人填的「右/上/入墙」显示
+            adj_text = (f"微调·墙面系(mm) 右{wall['x']:+g} / "
+                        f"上{wall['z']:+g} / 入墙{wall['y']:+g}")
+        else:
+            adj_text = (f"微调·相机系(mm) [{adj[0]:+.1f}, {adj[1]:+.1f}, "
+                        f"{adj[2]:+.1f}]")
+        p_root = (meta.get("confirm_result") or {}).get("p_root") or []
+        summary = " · ".join(filter(None, [
+            str(meta.get("saved_at") or name),
+            str(meta.get("selection_source") or ""),
+            (f"{meta.get('matched_detection_name')}·点"
+             f"{meta.get('target_point_slot')}"
+             if meta.get("target_point_slot") else ""),
+            adj_text,
+            (f"p_root [{p_root[0]:+.3f}, {p_root[1]:+.3f}, "
+             f"{p_root[2]:+.3f}] m" if len(p_root) == 3 else ""),
+        ]))
+        rows.append(
+            f'<figure id="{name}"><a href="{base}/snapshot.jpg" target="_blank">'
+            f'<img src="{base}/snapshot.jpg" loading="lazy" /></a>'
+            f"<figcaption>{summary}<br/>"
+            f'<a href="{base}/cloud.ply">cloud.ply（旋钮附近彩色点云，'
+            f"品红=粉点 绿=算法目标 红=最终目的点）</a> · "
+            f'<a href="{base}/meta.json" target="_blank">meta.json</a>'
+            f"</figcaption></figure>"
+        )
+    body = "\n".join(rows) or "<p>还没有选点记录：每次确认下发后自动保存。</p>"
+    html = (
+        "<!doctype html><html lang='zh'><head><meta charset='utf-8'/>"
+        "<title>选点记录</title><style>"
+        "body{background:#0c1220;color:#dce7f5;font:14px/1.6 sans-serif;"
+        "margin:24px}h1{font-size:18px}figure{margin:0 0 26px;padding:14px;"
+        "background:#131f33;border-radius:12px}img{max-width:100%;"
+        "border-radius:8px}figcaption{margin-top:8px;color:#9fb4cc}"
+        "a{color:#6fd3c7}</style></head><body>"
+        f"<h1>选点记录（最新在前，最多保留 {PICK_HISTORY_KEEP} 条）</h1>"
+        f"{body}</body></html>"
+    )
+    return Response(html, media_type="text/html; charset=utf-8")
 
 
 def _lan_ip() -> str:

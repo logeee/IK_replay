@@ -120,6 +120,12 @@ class SwitchFlow:
                  lift_m: float = 0.02,             # 规划中段抬高 2cm（防刮底）
                  endpoint_speed_rad_s: float = 0.3,  # 插值回「终点」路点的关节限速
                  max_flip_rounds: int = 3,         # 拨动失败回到 5️⃣ 的最大轮数
+                 # ---- 目标点上抬（抵消重力下垂，17001 可配，单位米）----
+                 # 实测指尖落点比指令位低 20~31 mm（logs/reach 里
+                 # tcp.planned_root vs actual_root），打不中多半是打低了。
+                 lift_base_m: float = 0.01,        # 首轮上抬
+                 lift_step_m: float = 0.01,        # 每重试一轮再多抬
+                 lift_max_m: float = 0.03,         # 封顶：再高就不是下垂能解释的
                  align_timeout_s: float = 90.0,
                  exec_timeout_s: float = 120.0,
                  site: str = "lab",                # lab=实验室柜 / factory=工厂柜（印刷相反）
@@ -170,6 +176,9 @@ class SwitchFlow:
         self.lift_m = lift_m
         self.endpoint_speed_rad_s = endpoint_speed_rad_s
         self.max_flip_rounds = max_flip_rounds
+        self.lift_base_m = max(0.0, float(lift_base_m))
+        self.lift_step_m = max(0.0, float(lift_step_m))
+        self.lift_max_m = max(0.0, float(lift_max_m))
         self.align_timeout_s = align_timeout_s
         self.exec_timeout_s = exec_timeout_s
         self.site = site
@@ -380,7 +389,7 @@ class SwitchFlow:
                          "轮次": f"{round_no}/{self.max_flip_rounds}"},
                     )
                     self._step_begin(f"8️⃣ IK 拨动（第{round_no}轮）")
-                    self.flip_switch(points, round_no, distance_m)
+                    self.flip_switch(points, round_no)
 
                     self._log("复核拨动结果")
                     self._confirm("verify", "即将复核拨动结果（视觉判断，不动机器人）")
@@ -650,19 +659,7 @@ class SwitchFlow:
     SIDESTEP_TILT_DEG = 2.0
     SIDESTEP_PUSH_SPEED = 0.06   # 带推力时快拨（m/s）：借冲量越过定位卡点
 
-    # 把目标点上抬：实测指尖落点比指令位低 20~31 mm（重力下垂，见 logs/reach
-    # 里 tcp.planned_root vs actual_root），所以打不中多半是打低了。
-    #   · 距柜面 <0.5 m 完全不抬：手臂没伸那么远，下垂本来就小，打不中另有
-    #     原因，一轮轮往上加只会越加越偏
-    #   · ≥0.5 m 手臂伸得远、力矩大，第一轮就先垫 1 cm，每重试一轮再加 1 cm
-    # 相加封顶 3 cm——再高就不是下垂能解释的了，继续加只会从开关上方擦过去。
-    LIFT_MIN_DISTANCE_M = 0.50
-    BASE_LIFT_M = 0.01
-    RETRY_LIFT_M = 0.01
-    RETRY_LIFT_MAX_M = 0.03
-
-    def flip_switch(self, points: list[dict], round_no: int = 1,
-                    distance_m: float | None = None) -> None:
+    def flip_switch(self, points: list[dict], round_no: int = 1) -> None:
         """IK 执行拨动：
 
           取点（接近偏移 0）→ 左侧规划（中段抬高 2cm）→
@@ -671,21 +668,15 @@ class SwitchFlow:
         拨完就地停住直接交给复核（拨动本身不要求到点精度，不再先插值回
         「终点」路点）：成功 → 收尾直接回「起手点测试」；失败 → 重试轮
         先插值回终点路点当起手位。规划就绪后直接真机执行，不经确认台。
-        目标点会按距离和轮次上抬（见 RETRY_LIFT_M / FAR_LIFT_M 的注释）。
+        目标点按轮次上抬（抵消重力下垂）：首轮 lift_base_m，每重试一轮
+        加 lift_step_m，封顶 lift_max_m——不再按距柜面远近区分，三个量
+        都可在 17001 配置。
         """
-        near = distance_m is not None and distance_m < self.LIFT_MIN_DISTANCE_M
-        if near:
-            lift, why = 0.0, ""
-        else:
-            lift = min(self.BASE_LIFT_M + (round_no - 1) * self.RETRY_LIFT_M,
-                       self.RETRY_LIFT_MAX_M)
-            why = ("" if distance_m is None else
-                   f"距柜面 {distance_m:.3f} m ≥ {self.LIFT_MIN_DISTANCE_M} m")
-            if round_no > 1:
-                why = (why + "，" if why else "") + f"第 {round_no} 轮重试"
-        if near and round_no > 1:
-            self._log(f"距柜面 {distance_m:.3f} m < {self.LIFT_MIN_DISTANCE_M} m，"
-                      f"重试不上抬目标点（近距下垂小，抬了反而偏）")
+        lift = min(self.lift_base_m + (round_no - 1) * self.lift_step_m,
+                   self.lift_max_m)
+        why = (f"首轮 {self.lift_base_m * 1000:g}"
+               f" + 每轮 {self.lift_step_m * 1000:g}×{round_no - 1}"
+               f"，封顶 {self.lift_max_m * 1000:g} mm")
         for i, pt in enumerate(points, 1):
             if pt.get("p_root"):
                 # 点云算法路径：detect_points 已经过 18001 确认，直接用
@@ -703,7 +694,7 @@ class SwitchFlow:
             target = [float(v) for v in picked["p_root"]]
             if lift > 0:
                 target[2] += lift
-                self._log(f"{tag} {why}，目标点上抬 {lift * 100:.0f} cm"
+                self._log(f"{tag} 目标点上抬 {lift * 1000:g} mm（{why}）"
                           f"（z {picked['p_root'][2]:.3f} → {target[2]:.3f} m）")
 
             joints = self.client.joints()
@@ -1095,13 +1086,17 @@ class SwitchFlow:
                 return None, "算法结果缺墙面坐标轴，无法应用人工偏移"
             adj_cam = [sum(off[k] * float(axes[k][i]) for k in range(3))
                        for i in range(3)]
-            self._log(f"目的点人工微调（墙面系）：右 {off[0] * 100:+.1f} / "
-                      f"入墙 {off[1] * 100:+.1f} / 上 {off[2] * 100:+.1f} cm")
+            self._log(f"目的点人工微调（墙面系）：右 {off[0] * 1000:+.1f} / "
+                      f"上 {off[2] * 1000:+.1f} / 入墙 {off[1] * 1000:+.1f} mm")
 
         res = self.pointcloud.confirm(cap["capture_id"], {
             "p_camera": [target_cam[i] + adj_cam[i] for i in range(3)],
             "surface_reference_camera": target_cam,
             "adjustment_camera_m": adj_cam,
+            # 墙面系原始微调量（mm），供 7005 选点记录按人看得懂的轴显示
+            "adjustment_wall_mm": {"x": off[0] * 1000.0,
+                                   "y": off[1] * 1000.0,
+                                   "z": off[2] * 1000.0},
             "approach_offset_m": self.approach_offset_m,
             "selection_source": tgt.get("selection_source") or "flow-auto",
             "model_version": tgt.get("model_version"),
@@ -1114,6 +1109,9 @@ class SwitchFlow:
         if len(p_root) == 3:
             self._log(f"目的点已确认：p_root [{p_root[0]:+.3f}, "
                       f"{p_root[1]:+.3f}, {p_root[2]:+.3f}] m")
+        if res.get("record"):
+            self._log(f"选点记录已存档：{res['record']}"
+                      f"（7005 页面 /picks 可回看截图与点云）")
         return res, ""
 
     VERIFY_SETTLE_S = 1.5   # 复核仍看到拨前状态时，等这么久再复看一眼

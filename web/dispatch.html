@@ -150,33 +150,80 @@
   .log-no { color: #506a84; user-select: none; }
   .log-text { white-space: pre-wrap; overflow-wrap: anywhere; color: #bcd0e4; }
   .empty { height: 100%; display: grid; place-items: center; color: var(--muted); font: 12px/1.5 system-ui; }
-  button, select, input[type="number"] {
+  button, select, input[type="number"], input[type="text"] {
     font: 600 12px/1 "Inter", "PingFang SC", system-ui, sans-serif;
     color: var(--text); background: rgba(19, 39, 63, .9);
     border: 1px solid rgba(151, 180, 213, .28); border-radius: 9px;
     padding: 9px 14px; cursor: pointer; transition: .15s ease;
   }
-  select, input[type="number"] { cursor: auto; }
+  select, input[type="number"], input[type="text"] { cursor: auto; }
+  /* 数字框：收窄左右内边距、居中，负号+两位数（如 -50）也能完整显示 */
+  input[type="number"] { padding: 9px 6px; text-align: center; }
   button:hover:not(:disabled) { border-color: rgba(79, 209, 197, .55); }
   button:disabled { opacity: .45; cursor: not-allowed; }
   button.primary { background: linear-gradient(135deg, rgba(79,209,197,.24), rgba(90,167,255,.22)); border-color: rgba(79,209,197,.5); }
   button.good { background: rgba(81,216,138,.16); border-color: rgba(81,216,138,.5); color: #b8f0ce; }
   button.danger { background: rgba(255,113,113,.13); border-color: rgba(255,113,113,.45); color: #ffc4c4; }
   .manual-bar {
-    margin-top: 14px; padding: 14px 20px; display: flex; align-items: center;
-    gap: 10px; flex-wrap: wrap;
+    margin-top: 14px; padding: 14px 20px; display: flex;
+    flex-direction: column; align-items: stretch;
   }
   .manual-bar .bar-title { font-weight: 750; font-size: 13px; margin-right: 4px; }
   .manual-bar label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
   .manual-bar input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--cyan); }
-  .manual-bar input[type="number"] { width: 58px; }
+  .manual-bar input[type="number"] { width: 64px; }
   .manual-bar .hint { color: var(--muted); font-size: 11px; margin-left: auto; }
   .manual-bar .offset-group {
     display: flex; align-items: center; gap: 6px; font-size: 12px;
     color: var(--muted); padding: 4px 10px; border-radius: 9px;
     border: 1px dashed rgba(151, 180, 213, .3);
   }
-  .manual-bar .offset-group input[type="number"] { width: 52px; }
+  .manual-bar .offset-group input[type="number"] { width: 64px; }
+  .bar-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .bar-row + .bar-row { margin-top: 10px; }
+  .bar-row .spacer { flex: 1; }
+  .config-bar {
+    margin-top: 14px; padding: 12px 20px; display: flex; align-items: center;
+    gap: 12px; flex-wrap: wrap;
+  }
+  .config-bar .bar-title { font-weight: 750; font-size: 13px; }
+  .config-bar .config-summary { color: var(--muted); font-size: 12px; }
+  .config-bar .spacer { flex: 1; }
+  .modal {
+    position: fixed; inset: 0; z-index: 60; display: flex;
+    align-items: center; justify-content: center;
+    background: rgba(4, 9, 18, .72); backdrop-filter: blur(3px);
+  }
+  .modal[hidden] { display: none; }
+  .modal-card {
+    width: min(560px, calc(100vw - 48px)); max-height: 84vh; overflow: auto;
+    background: linear-gradient(160deg, #14213a, #0e1830);
+    border: 1px solid rgba(151, 180, 213, .35); border-radius: 14px;
+    padding: 22px 26px; box-shadow: 0 18px 60px rgba(0, 0, 0, .55);
+  }
+  .modal-card h3 { margin: 0 0 8px; font-size: 16px; }
+  .modal-note { color: var(--muted); font-size: 12px; margin: 6px 0 12px; line-height: 1.6; }
+  .modal-field { display: flex; align-items: center; gap: 10px; margin: 10px 0; font-size: 13px; flex-wrap: wrap; }
+  .modal-field select { flex: 1; }
+  .modal-field label { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; }
+  .modal-field input[type="number"] { width: 64px; }
+  .modal-buttons { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+  .modal-buttons .hint { color: var(--muted); font-size: 12px; }
+  .preset-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin: 8px 0 14px; }
+  .preset-table th, .preset-table td {
+    text-align: left; padding: 6px 8px;
+    border-bottom: 1px solid rgba(151, 180, 213, .16);
+  }
+  .preset-table th { color: var(--muted); font-weight: 600; }
+  .preset-table td.muted { color: var(--muted); }
+  .preset-table button { padding: 3px 10px; font-size: 12px; border-radius: 7px; }
+  .preset-editor {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 10px 12px; border: 1px dashed rgba(151, 180, 213, .3); border-radius: 10px;
+  }
+  .preset-editor label { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; }
+  .preset-editor input[type="number"] { width: 64px; }
+  .preset-editor input[type="text"] { width: 190px; }
   .prompt-panel {
     margin-top: 14px; padding: 18px 22px;
     border: 1px solid rgba(245, 189, 88, .55); background:
@@ -259,26 +306,49 @@
     </div>
   </section>
 
+  <section class="panel config-bar" title="外部平台只带 language 调 /task/flip、/check/flip 时自动套用这里的默认值；下面手动触发栏是显式参数的单次测试，两者互不干扰。持久化在 config/dispatch_defaults.json">
+    <span class="bar-title">外部调用默认配置</span>
+    <span id="configSummary" class="config-summary">加载中…</span>
+    <span class="spacer"></span>
+    <button id="editDefaults">修改默认…</button>
+    <button id="managePresets">管理偏移配置…</button>
+  </section>
+
   <section class="panel manual-bar">
-    <span class="bar-title">手动触发</span>
-    <select id="manualSite" title="工厂柜两个旋钮的印刷与实验室柜相反：同一套向左拨动作的语义不同">
-      <option value="lab">实验室柜</option>
-      <option value="factory">工厂柜（印刷相反）</option>
-    </select>
-    <select id="manualLanguage"></select>
-    <label title="勾选后每个主要步骤执行前都会在下方等待确认">
-      <input id="manualStep" type="checkbox" checked />每步手动确认
-    </label>
-    <label>最大轮数 <input id="manualRetries" type="number" min="1" max="20" value="3" /></label>
-    <span class="offset-group" title="算法（粉点+模型偏移）算出目的点之后，再在墙面坐标系里叠加的人工修正量；不改变粉点→目的点的模型偏移">
-      目的点微调(cm)
-      <label>右+ <input id="offsetX" type="number" min="-5" max="5" step="0.1" value="0" /></label>
-      <label>入墙+ <input id="offsetY" type="number" min="-5" max="5" step="0.1" value="0" /></label>
-      <label>上+ <input id="offsetZ" type="number" min="-5" max="5" step="0.1" value="0" /></label>
-    </span>
-    <button id="manualStart" class="primary">① 启动流程</button>
-    <button id="manualEstop" class="danger">强制停止</button>
-    <span id="manualHint" class="hint"></span>
+    <div class="bar-row">
+      <span class="bar-title">手动触发</span>
+      <select id="manualSite" title="工厂柜两个旋钮的印刷与实验室柜相反：同一套向左拨动作的语义不同">
+        <option value="lab">实验室柜</option>
+        <option value="factory">工厂柜（印刷相反）</option>
+      </select>
+      <select id="manualLanguage"></select>
+      <label title="勾选后每个主要步骤执行前都会在下方等待确认">
+        <input id="manualStep" type="checkbox" checked />每步手动确认
+      </label>
+      <label>最大轮数 <input id="manualRetries" type="number" min="1" max="20" value="3" /></label>
+      <span class="spacer"></span>
+      <button id="manualStart" class="primary">① 启动流程</button>
+      <button id="manualArmStop" class="danger" title="等同 18001 页面的「急停」：手臂轨迹立即冻结、刚性保持当前位置；不释放手臂、不结束流程，处理完可继续">🖐 机械臂急停</button>
+      <button id="manualEstop" class="danger" title="全套收场：停转身 → 急停手臂 → 释放手臂（控制权交还本体）→ 关掉自己拉起的 reach_server">强制停止</button>
+    </div>
+    <div class="bar-row">
+      <select id="manualPreset" title="选择已保存的偏移配置，快速填入右侧微调值；仅填入本次输入框，与外部调用默认配置无关">
+        <option value="">偏移配置…</option>
+      </select>
+      <span class="offset-group" title="算法（粉点+模型偏移）算出目的点之后，再在墙面坐标系里叠加的人工修正量；不改变粉点→目的点的模型偏移。方向对应 7005 页面的微调键：右=D 上=W 入墙=E">
+        目的点微调(mm)
+        <label>右+ <input id="offsetX" type="number" min="-50" max="50" step="1" value="0" /></label>
+        <label>上+ <input id="offsetZ" type="number" min="-50" max="50" step="1" value="0" /></label>
+        <label>入墙+ <input id="offsetY" type="number" min="-50" max="50" step="1" value="0" /></label>
+      </span>
+      <span class="offset-group" title="抵消手臂重力下垂：IK 拨动的目标点整体抬高。首轮抬「首轮」值，每重试一轮再加「每轮+」，合计不超过「封顶」。不按距柜面远近区分。页面打开时按外部调用默认配置预填">
+        拨点上抬(mm)
+        <label>首轮 <input id="liftBase" type="number" min="0" max="50" step="1" value="10" /></label>
+        <label>每轮+ <input id="liftStep" type="number" min="0" max="50" step="1" value="10" /></label>
+        <label>封顶 <input id="liftMax" type="number" min="0" max="50" step="1" value="30" /></label>
+      </span>
+      <span id="manualHint" class="hint"></span>
+    </div>
   </section>
 
   <section id="promptPanel" class="panel prompt-panel" hidden>
@@ -341,6 +411,58 @@
     <div id="logList" class="log-list"><div class="empty">任务开始后，流程事件将在这里按顺序出现</div></div>
   </section>
 </main>
+
+<div id="defaultsModal" class="modal" hidden>
+  <div class="modal-card">
+    <h3>修改外部调用默认配置</h3>
+    <p class="modal-note">外部平台只带 language 调 /task/flip、/check/flip 时套用这里的默认值；
+      手动触发栏始终按填写的显式参数执行，不受影响。</p>
+    <label class="modal-field">默认现场
+      <select id="defaultSite">
+        <option value="factory">工厂柜（印刷相反，远方 → 就地）</option>
+        <option value="lab">实验室柜（就地 → 远方）</option>
+      </select>
+    </label>
+    <label class="modal-field">默认偏移配置
+      <select id="defaultPreset"><option value="">无</option></select>
+    </label>
+    <div id="defaultPresetPreview" class="modal-note"></div>
+    <div class="modal-field" title="抵消手臂重力下垂：IK 拨动目标点整体抬高。首轮抬「首轮」值，每重试一轮再加「每轮+」，合计不超过「封顶」（各 0~50 mm）">
+      默认拨点上抬(mm)
+      <label>首轮 <input id="defaultLiftBase" type="number" min="0" max="50" step="1" value="10" /></label>
+      <label>每轮+ <input id="defaultLiftStep" type="number" min="0" max="50" step="1" value="10" /></label>
+      <label>封顶 <input id="defaultLiftMax" type="number" min="0" max="50" step="1" value="30" /></label>
+    </div>
+    <div class="modal-buttons">
+      <button id="saveDefaults" class="primary">保存默认</button>
+      <button id="closeDefaults">取消</button>
+      <span id="defaultsModalHint" class="hint"></span>
+    </div>
+  </div>
+</div>
+
+<div id="presetsModal" class="modal" hidden>
+  <div class="modal-card">
+    <h3>偏移配置管理</h3>
+    <p class="modal-note">命名的目的点微调量（墙面坐标系，mm，单轴限 ±50）。
+      算法算出目的点后叠加，不改变粉点 → 目的点的模型偏移。</p>
+    <table class="preset-table">
+      <thead><tr><th>配置名</th><th>右+</th><th>上+</th><th>入墙+</th><th></th></tr></thead>
+      <tbody id="presetTableBody"><tr><td colspan="5" class="muted">尚无配置</td></tr></tbody>
+    </table>
+    <div class="preset-editor">
+      <input id="presetName" type="text" maxlength="40" placeholder="配置名，如 右手偏移配置-1" />
+      <label>右+ <input id="presetX" type="number" min="-50" max="50" step="1" value="0" /></label>
+      <label>上+ <input id="presetZ" type="number" min="-50" max="50" step="1" value="0" /></label>
+      <label>入墙+ <input id="presetY" type="number" min="-50" max="50" step="1" value="0" /></label>
+      <button id="savePreset" class="primary">保存（同名覆盖）</button>
+    </div>
+    <div class="modal-buttons">
+      <button id="closePresets">关闭</button>
+      <span id="presetsModalHint" class="hint"></span>
+    </div>
+  </div>
+</div>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -479,11 +601,15 @@ function renderDetails(data) {
   const duration = taskDuration(data);
   $("detailDuration").textContent = duration === null ? "—" : formatDuration(duration);
   $("detailRetries").textContent = data.retries ? `${data.retries}轮` : "—";
-  const offsetCm = data.target_offset_wall_cm || [];
+  const offsetMm = data.target_offset_wall_mm || [];
+  const offsetSource = data.offset_source ? `，${data.offset_source}` : "";
+  const liftPart = data.lift_mm
+    ? `；上抬 ${liftText(data.lift_mm)}${data.lift_source ? `（${data.lift_source}）` : ""}`
+    : "";
   $("detailOffset").textContent = !data.task_id ? "—"
-    : (offsetCm.some((value) => Number(value))
-      ? `右${offsetCm[0]}cm / 入墙${offsetCm[1]}cm / 上${offsetCm[2]}cm（墙面系）`
-      : "无");
+    : (offsetMm.some((value) => Number(value))
+      ? `右${offsetMm[0]}mm / 上${offsetMm[2]}mm / 入墙${offsetMm[1]}mm（墙面系${offsetSource}）`
+      : "无") + liftPart;
   $("reachState").textContent = `REACH ${data.reach_alive ? "ONLINE" : "OFFLINE"}`;
   $("reachState").style.color = data.reach_alive ? "var(--green)" : "var(--muted)";
 
@@ -680,24 +806,225 @@ function syncLanguageOptions() {
 $("manualSite").addEventListener("change", syncLanguageOptions);
 syncLanguageOptions();
 
-function readOffsetCm(id) {
+function readOffsetMm(id) {
   const value = Number($(id).value) || 0;
-  return Math.min(5, Math.max(-5, Math.round(value * 10) / 10));
+  return Math.min(50, Math.max(-50, Math.round(value * 10) / 10));
 }
+
+function readLiftMm(id) {
+  const value = Number($(id).value) || 0;
+  return Math.min(50, Math.max(0, Math.round(value * 10) / 10));
+}
+
+function liftText(lift) {
+  return `首轮${lift.base} / 每轮+${lift.step} / 封顶${lift.max} mm`;
+}
+
+// ---- 外部调用默认配置：顶部摘要栏 + 两个弹窗（与手动栏的显式参数互不干扰）----
+let offsetPresets = [];
+let defaultsLoadedOnce = false;
+let currentDefaults = { site: "factory", offset_preset: "",
+                        lift_mm: { base: 10, step: 10, max: 30 } };
+
+function presetByName(name) {
+  return offsetPresets.find((preset) => preset.name === name) || null;
+}
+
+function offsetText(off) {
+  return `右${off.x} / 上${off.z} / 入墙${off.y} mm`;
+}
+
+function fillPresetSelect(select, emptyLabel, selected) {
+  const wanted = selected !== undefined ? selected : select.value;
+  select.innerHTML = [`<option value="">${escapeHtml(emptyLabel)}</option>`]
+    .concat(offsetPresets.map((preset) =>
+      `<option value="${escapeHtml(preset.name)}">${escapeHtml(preset.name)}</option>`))
+    .join("");
+  select.value = wanted;
+  if (select.value !== wanted) select.value = "";
+}
+
+function renderConfigSummary() {
+  const preset = presetByName(currentDefaults.offset_preset);
+  $("configSummary").textContent =
+    `默认现场：${SITE_LABELS[currentDefaults.site] || currentDefaults.site}`
+    + ` ｜ 默认偏移：${preset ? `「${preset.name}」（${offsetText(preset.offset_mm)}）` : "无"}`
+    + ` ｜ 拨点上抬：${liftText(currentDefaults.lift_mm)}`
+    + ` ｜ 已存偏移配置 ${offsetPresets.length} 条`;
+}
+
+function renderPresetTable() {
+  const body = $("presetTableBody");
+  if (!offsetPresets.length) {
+    body.innerHTML = '<tr><td colspan="5" class="muted">尚无配置，在下方新建</td></tr>';
+    return;
+  }
+  body.innerHTML = offsetPresets.map((preset) => {
+    const isDefault = preset.name === currentDefaults.offset_preset;
+    return `<tr><td>${escapeHtml(preset.name)}${isDefault ? " ★默认" : ""}</td>`
+      + `<td>${preset.offset_mm.x}</td><td>${preset.offset_mm.z}</td><td>${preset.offset_mm.y}</td>`
+      + `<td><button data-edit="${escapeHtml(preset.name)}">编辑</button> `
+      + `<button data-del="${escapeHtml(preset.name)}" class="danger">删除</button></td></tr>`;
+  }).join("");
+}
+
+function renderDefaultPresetPreview() {
+  const preset = presetByName($("defaultPreset").value);
+  $("defaultPresetPreview").textContent = preset
+    ? `该配置微调量：${offsetText(preset.offset_mm)}`
+    : "不套偏移（外部调用按算法原始目的点执行）";
+}
+
+async function loadDefaultsConfig() {
+  try {
+    const response = await fetch("/config/defaults");
+    const data = await response.json();
+    if (!data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    offsetPresets = data.offset_presets || [];
+    const wasFirstLoad = !defaultsLoadedOnce;
+    currentDefaults = {
+      site: (data.defaults || {}).site || "factory",
+      offset_preset: (data.defaults || {}).offset_preset || "",
+      lift_mm: (data.defaults || {}).lift_mm || { base: 10, step: 10, max: 30 },
+    };
+    if (wasFirstLoad) {
+      // 手动栏的上抬输入首次按保存的默认值预填，之后不覆盖手填值
+      $("liftBase").value = currentDefaults.lift_mm.base;
+      $("liftStep").value = currentDefaults.lift_mm.step;
+      $("liftMax").value = currentDefaults.lift_mm.max;
+      defaultsLoadedOnce = true;
+    }
+    renderConfigSummary();
+    fillPresetSelect($("manualPreset"), "偏移配置…");
+    fillPresetSelect($("defaultPreset"), "无", currentDefaults.offset_preset);
+    renderDefaultPresetPreview();
+    renderPresetTable();
+  } catch (error) {
+    $("configSummary").textContent = `默认配置读取失败：${error.message || error}`;
+  }
+}
+
+function openModal(id) { $(id).hidden = false; }
+function closeModal(id) { $(id).hidden = true; }
+["defaultsModal", "presetsModal"].forEach((id) => {
+  $(id).addEventListener("click", (event) => {
+    if (event.target === $(id)) closeModal(id);
+  });
+});
+
+$("manualPreset").addEventListener("change", () => {
+  const preset = presetByName($("manualPreset").value);
+  if (!preset) return;
+  $("offsetX").value = preset.offset_mm.x;
+  $("offsetY").value = preset.offset_mm.y;
+  $("offsetZ").value = preset.offset_mm.z;
+  setHint(`已填入偏移配置「${preset.name}」（仅本次，不改默认）`);
+});
+
+// ---- 弹窗一：修改默认 ----
+$("editDefaults").addEventListener("click", () => {
+  $("defaultSite").value = currentDefaults.site;
+  fillPresetSelect($("defaultPreset"), "无", currentDefaults.offset_preset);
+  renderDefaultPresetPreview();
+  $("defaultLiftBase").value = currentDefaults.lift_mm.base;
+  $("defaultLiftStep").value = currentDefaults.lift_mm.step;
+  $("defaultLiftMax").value = currentDefaults.lift_mm.max;
+  $("defaultsModalHint").textContent = "";
+  openModal("defaultsModal");
+});
+$("closeDefaults").addEventListener("click", () => closeModal("defaultsModal"));
+$("defaultPreset").addEventListener("change", renderDefaultPresetPreview);
+
+$("saveDefaults").addEventListener("click", async () => {
+  const data = await postJson("/config/defaults", {
+    site: $("defaultSite").value,
+    offset_preset: $("defaultPreset").value,
+    lift_mm: {
+      base: readLiftMm("defaultLiftBase"),
+      step: readLiftMm("defaultLiftStep"),
+      max: readLiftMm("defaultLiftMax"),
+    },
+  });
+  if (!data.ok) {
+    $("defaultsModalHint").textContent = data.error || "保存失败";
+    return;
+  }
+  await loadDefaultsConfig();
+  closeModal("defaultsModal");
+});
+
+// ---- 弹窗二：偏移配置管理 ----
+$("managePresets").addEventListener("click", () => {
+  renderPresetTable();
+  $("presetsModalHint").textContent = "";
+  openModal("presetsModal");
+});
+$("closePresets").addEventListener("click", () => closeModal("presetsModal"));
+
+$("presetTableBody").addEventListener("click", async (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  const editName = target.dataset.edit;
+  const delName = target.dataset.del;
+  if (editName) {
+    const preset = presetByName(editName);
+    if (!preset) return;
+    $("presetName").value = preset.name;
+    $("presetX").value = preset.offset_mm.x;
+    $("presetY").value = preset.offset_mm.y;
+    $("presetZ").value = preset.offset_mm.z;
+    $("presetsModalHint").textContent = `已载入「${preset.name}」，改完点保存（同名覆盖）`;
+  } else if (delName) {
+    if (!confirm(`确认删除偏移配置「${delName}」？`)) return;
+    const data = await postJson("/config/offset-presets/delete", { name: delName });
+    $("presetsModalHint").textContent = data.ok
+      ? `配置「${delName}」已删除` : (data.error || "删除失败");
+    if (data.ok) await loadDefaultsConfig();
+  }
+});
+
+$("savePreset").addEventListener("click", async () => {
+  const name = $("presetName").value.trim();
+  if (!name) {
+    $("presetsModalHint").textContent = "请先填配置名（如 右手偏移配置-1）";
+    return;
+  }
+  const data = await postJson("/config/offset-presets", {
+    name,
+    offset_mm: {
+      x: readOffsetMm("presetX"),
+      y: readOffsetMm("presetY"),
+      z: readOffsetMm("presetZ"),
+    },
+  });
+  $("presetsModalHint").textContent = data.ok
+    ? `配置「${name}」已保存` : (data.error || "保存失败");
+  if (data.ok) await loadDefaultsConfig();
+});
+
+loadDefaultsConfig();
 
 $("manualStart").addEventListener("click", async () => {
   const site = $("manualSite").value;
   const language = $("manualLanguage").value;
   const retries = Math.min(20, Math.max(1, Number($("manualRetries").value) || 3));
   const manual = $("manualStep").checked;
-  const offset = { x: readOffsetCm("offsetX"), y: readOffsetCm("offsetY"), z: readOffsetCm("offsetZ") };
+  const offset = { x: readOffsetMm("offsetX"), y: readOffsetMm("offsetY"), z: readOffsetMm("offsetZ") };
+  const lift = { base: readLiftMm("liftBase"), step: readLiftMm("liftStep"), max: readLiftMm("liftMax") };
   const mode = manual ? "每个主要步骤执行前都需要在本页确认" : "全自动执行（无每步确认）";
   const offsetNote = (offset.x || offset.y || offset.z)
-    ? `\n目的点微调（墙面系）：右${offset.x}cm / 入墙${offset.y}cm / 上${offset.z}cm` : "";
-  if (!confirm(`确认启动拨闸流程？\n现场：${SITE_LABELS[site]}\n指令：${language}\n${mode}，最多 ${retries} 轮${offsetNote}`)) return;
+    ? `\n目的点微调（墙面系）：右${offset.x}mm / 上${offset.z}mm / 入墙${offset.y}mm` : "";
+  if (!confirm(`确认启动拨闸流程？\n现场：${SITE_LABELS[site]}\n指令：${language}\n${mode}，最多 ${retries} 轮${offsetNote}\n拨点上抬：${liftText(lift)}`)) return;
   const data = await postJson("/task/flip",
-    { language, retries, manual, site, target_offset_wall_cm: offset });
+    { language, retries, manual, site, target_offset_wall_mm: offset, lift_mm: lift });
   setHint(data.ok ? `任务已创建 ${data.task_id}` : (data.error || "启动失败"));
+  poll();
+});
+
+$("manualArmStop").addEventListener("click", async () => {
+  const data = await postJson("/arm/stop", {});
+  setHint(data.ok ? (data.message || "已急停：手臂保持当前位置")
+                  : (data.error || "机械臂急停失败"));
   poll();
 });
 

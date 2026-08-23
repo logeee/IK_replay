@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import cv2
@@ -314,12 +316,18 @@ class PointCloudBackendTest(unittest.TestCase):
         pointcloud_viewer._model_name = "fake.pt"
         pointcloud_viewer._names = {2: "target"}
         pointcloud_viewer._latest = None
+        # 选点记录写到临时目录，别污染真实的 data/pick_history
+        self._pick_dir = tempfile.TemporaryDirectory()
+        self.old_pick_history = pointcloud_viewer.PICK_HISTORY_DIR
+        pointcloud_viewer.PICK_HISTORY_DIR = Path(self._pick_dir.name)
 
     def tearDown(self):
         pointcloud_viewer._model = self.old_model
         pointcloud_viewer._model_name = self.old_model_name
         pointcloud_viewer._names = self.old_names
         pointcloud_viewer._latest = self.old_latest
+        pointcloud_viewer.PICK_HISTORY_DIR = self.old_pick_history
+        self._pick_dir.cleanup()
 
     def test_capture_builds_downloadable_binary_from_one_snapshot(self):
         bgr = np.full((2, 2, 3), [10, 20, 30], dtype=np.uint8)

@@ -33,10 +33,18 @@
                                 "manual": false,  # 可选，手动确认模式（见下）
                                 "site": "lab",  # 可选，现场：lab=实验室柜（默认）
                                                 # factory=工厂柜（两旋钮印刷相反）
-                                "target_offset_wall_cm": {"x":0,"y":0,"z":0}}
-                                # 可选，目的点人工微调（墙面系，cm，单轴限 ±5）：
+                                "target_offset_wall_mm": {"x":0,"y":0,"z":0},
+                                # 可选，目的点人工微调（墙面系，mm，单轴限 ±50）：
                                 # x=沿墙向右 y=法向入墙 z=沿墙向上。叠加在 7005
                                 # 点云算法算出的目的点上，不动粉点→目的点的模型偏移
+                                "lift_mm": {"base":10,"step":10,"max":30}}
+                                # 可选，拨点上抬（抵消重力下垂，mm，各项 0~50）：
+                                # 首轮抬 base，每重试一轮加 step，合计封顶 max。
+                                # 不按距柜面远近区分
+                          site / target_offset_wall_mm / lift_mm 不带时自动套「外部调用
+                          默认配置」（GET/POST /config/defaults 读改存，命名偏移
+                          配置由 POST /config/offset-presets[/delete] 管理，
+                          持久化在 config/dispatch_defaults.json）
                           返回 {"ok": true, "task_id": "..."}；执行中再触发 → 409
 
 现场（site）：真机只验证过"从右向左拨"一套动作。实验室柜上它是
@@ -58,6 +66,8 @@
       · 其他动作：前往某已录位点 / 接管手臂 / 释放手臂——在流程线程上
         串行执行，完成后回到同一确认提示，可连续选择多个其他动作
     POST /task/decision → 提交上述决定；GET /manual/waypoints → 位点列表。
+    POST /arm/stop      → 机械臂急停（= 18001 页面的「急停」）：只冻结手臂
+                          轨迹、刚性保持当前位置，不释放手臂、不结束任务。
     POST /emergency/stop → 强制停止（任何状态下都可调，没任务在跑也能用）：
                           停转身 → 急停手臂轨迹 → 释放手臂（权重渐出，控制权
                           交还本体）→ 关掉自己拉起的 reach_server（放相机/DDS）。
@@ -87,7 +97,18 @@ import requests
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 
+from copy import deepcopy
+
 from core.alignment_config import load_alignment_config
+from core.dispatch_defaults import (
+    DEFAULT_DISPATCH_DEFAULTS,
+    DEFAULT_LIFT_MM,
+    find_offset_preset,
+    load_dispatch_defaults,
+    save_dispatch_defaults,
+    validate_lift_mm,
+    validate_offset_mm,
+)
 
 from .client import ReachClient
 from .console_client import ConsoleClient
@@ -426,9 +447,15 @@ def _run_task(task: dict) -> None:
                           max_flip_rounds=int(task.get("retries") or 3),
                           site=task.get("site") or "lab",
                           pointcloud=pointcloud,
+                          lift_base_m=(task.get("lift_mm")
+                                       or DEFAULT_LIFT_MM)["base"] / 1000.0,
+                          lift_step_m=(task.get("lift_mm")
+                                       or DEFAULT_LIFT_MM)["step"] / 1000.0,
+                          lift_max_m=(task.get("lift_mm")
+                                      or DEFAULT_LIFT_MM)["max"] / 1000.0,
                           target_offset_wall_m=tuple(
-                              v / 100.0 for v in
-                              (task.get("target_offset_wall_cm")
+                              v / 1000.0 for v in
+                              (task.get("target_offset_wall_mm")
                                or [0.0, 0.0, 0.0])))
         task["flow"] = flow
         if task.get("manual"):
@@ -662,7 +689,7 @@ def check_flip(body: dict | None = None):
              "supported": ["Change the switch from close to remote",
                            "Change the switch from remote to close"]},
             status_code=422)
-    site = _parse_site(body)
+    site, _site_source = _resolve_site(body, _current_defaults())
     if site is None:
         return JSONResponse(
             {"ok": False, "error": "site 只能是 lab（实验室柜）或 factory（工厂柜，印刷相反）"},
@@ -754,32 +781,71 @@ def _parse_language(text: str) -> str | None:
     return LANGUAGE_TASKS.get(norm)
 
 
-def _parse_site(body: dict | None) -> str | None:
-    site = str((body or {}).get("site") or "lab").strip().lower()
-    return site if site in SITES else None
+def _current_defaults() -> dict:
+    """读外部调用默认配置；文件损坏时按出厂默认走，别拦任务。"""
+    try:
+        return load_dispatch_defaults()
+    except ValueError as exc:
+        print(f"[dispatch] 默认配置读取失败，按出厂默认: {exc}")
+        return deepcopy(DEFAULT_DISPATCH_DEFAULTS)
+
+
+def _resolve_site(body: dict | None, defaults: dict) -> tuple[str | None, str]:
+    """现场判定：请求显式给了 site 用请求的，否则用默认配置。"""
+    raw = str((body or {}).get("site") or "").strip().lower()
+    if not raw:
+        return defaults["defaults"]["site"], "默认配置"
+    return (raw if raw in SITES else None), "请求指定"
+
+
+def _resolve_lift(body: dict | None, defaults: dict) -> tuple[dict, str]:
+    """拨点上抬判定：请求显式给了 lift_mm 用请求的，否则用默认配置。
+
+    {"base":首轮,"step":每轮递增,"max":封顶}（mm）。不再按距柜面远近区分。
+    """
+    raw = (body or {}).get("lift_mm")
+    if raw is not None:
+        return validate_lift_mm(raw), "请求指定"
+    saved = defaults["defaults"].get("lift_mm") or DEFAULT_LIFT_MM
+    return dict(saved), "默认配置"
+
+
+def _resolve_offset(
+    body: dict | None, defaults: dict
+) -> tuple[tuple[float, float, float], str]:
+    """目的点微调判定：请求显式给了用请求的，否则套默认偏移配置。"""
+    raw = (body or {}).get("target_offset_wall_mm")
+    if raw is not None:
+        return _parse_target_offset(raw), "请求指定"
+    name = defaults["defaults"].get("offset_preset") or ""
+    preset = find_offset_preset(defaults, name) if name else None
+    if preset is None:
+        return (0.0, 0.0, 0.0), "无（默认配置未选偏移）"
+    off = preset["offset_mm"]
+    return (off["x"], off["y"], off["z"]), f"默认偏移配置「{name}」"
 
 
 # 目的点人工微调（墙面系）单轴上限：微调是给毫米级落点纠偏用的，
 # 超过这个量说明算法/标定有问题，该修根源而不是硬掰
-TARGET_OFFSET_LIMIT_CM = 5.0
+TARGET_OFFSET_LIMIT_MM = 50.0
 
 
 def _parse_target_offset(value: Any) -> tuple[float, float, float]:
-    """解析 {"x":右,"y":入墙,"z":上}（cm），缺省 0；越限抛 ValueError。"""
+    """解析 {"x":右,"y":入墙,"z":上}（mm），缺省 0；越限抛 ValueError。"""
     if value is None:
         return (0.0, 0.0, 0.0)
     if not isinstance(value, dict):
-        raise ValueError("target_offset_wall_cm 必须是 {x,y,z} 对象（单位 cm）")
+        raise ValueError("target_offset_wall_mm 必须是 {x,y,z} 对象（单位 mm）")
     out = []
     for key in ("x", "y", "z"):
         try:
             v = float(value.get(key) or 0.0)
         except (TypeError, ValueError):
-            raise ValueError(f"target_offset_wall_cm.{key} 必须是数字（cm）")
-        if not math.isfinite(v) or abs(v) > TARGET_OFFSET_LIMIT_CM:
+            raise ValueError(f"target_offset_wall_mm.{key} 必须是数字（mm）")
+        if not math.isfinite(v) or abs(v) > TARGET_OFFSET_LIMIT_MM:
             raise ValueError(
-                f"target_offset_wall_cm.{key} 超范围：单轴限 "
-                f"±{TARGET_OFFSET_LIMIT_CM:g} cm（收到 {v}）")
+                f"target_offset_wall_mm.{key} 超范围：单轴限 "
+                f"±{TARGET_OFFSET_LIMIT_MM:g} mm（收到 {v}）")
         out.append(v)
     return tuple(out)
 
@@ -819,13 +885,15 @@ def task_submit(body: dict | None = None):
         return JSONResponse({"ok": False, "error": "retries 取值范围 1~20"},
                             status_code=422)
     manual = bool((body or {}).get("manual"))
-    site = _parse_site(body)
+    defaults = _current_defaults()
+    site, site_source = _resolve_site(body, defaults)
     if site is None:
         return JSONResponse(
             {"ok": False, "error": "site 只能是 lab（实验室柜）或 factory（工厂柜，印刷相反）"},
             status_code=422)
     try:
-        offset_cm = _parse_target_offset((body or {}).get("target_offset_wall_cm"))
+        offset_mm, offset_source = _resolve_offset(body, defaults)
+        lift_mm, lift_source = _resolve_lift(body, defaults)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
 
@@ -843,18 +911,24 @@ def task_submit(body: dict | None = None):
                 status_code=409)
         _estop.clear()     # 新任务开始，清掉上一次的强制停止标记
         now = datetime.now().isoformat(timespec="seconds")
-        offset_note = ("" if not any(offset_cm) else
-                       f"，目的点微调 右{offset_cm[0]:+g}/入墙{offset_cm[1]:+g}"
-                       f"/上{offset_cm[2]:+g} cm")
+        offset_note = (f"，目的点微调 右{offset_mm[0]:+g}/上{offset_mm[2]:+g}"
+                       f"/入墙{offset_mm[1]:+g} mm（{offset_source}）"
+                       if any(offset_mm) else "")
+        lift_note = (f"，拨点上抬 首轮{lift_mm['base']:g}"
+                     f"/每轮+{lift_mm['step']:g}"
+                     f"/封顶{lift_mm['max']:g} mm（{lift_source}）")
         _task = {"id": uuid.uuid4().hex[:10], "state": "starting",
                  "language": language, "kind": kind, "retries": retries,
                  "manual": manual, "site": site, "prompt": None, "gate": None,
-                 "target_offset_wall_cm": list(offset_cm),
+                 "target_offset_wall_mm": list(offset_mm),
+                 "offset_source": offset_source,
+                 "lift_mm": dict(lift_mm), "lift_source": lift_source,
                  "started_at": now, "finished_at": None,
                  "result": None, "flow": None,
-                 "log": [f"指令: {language}（{kind}，现场 {SITE_LABELS[site]}，"
-                         f"最多 {retries} 轮"
-                         f"{'，手动确认模式' if manual else ''}{offset_note}）"],
+                 "log": [f"指令: {language}（{kind}，现场 {SITE_LABELS[site]}"
+                         f"·{site_source}，最多 {retries} 轮"
+                         f"{'，手动确认模式' if manual else ''}"
+                         f"{offset_note}{lift_note}）"],
                  "reach_proc": None, "reach_external": False,
                  "stats_counted": False}
         _task_stats["accepted"] += 1
@@ -899,8 +973,11 @@ def task_status():
     return {**common, "state": t["state"], "task_id": t["id"],
             "language": t.get("language"), "retries": t.get("retries"),
             "site": t.get("site") or "lab",
-            "target_offset_wall_cm": t.get("target_offset_wall_cm")
+            "target_offset_wall_mm": t.get("target_offset_wall_mm")
                                      or [0.0, 0.0, 0.0],
+            "offset_source": t.get("offset_source") or "",
+            "lift_mm": t.get("lift_mm") or dict(DEFAULT_LIFT_MM),
+            "lift_source": t.get("lift_source") or "",
             "started_at": t["started_at"], "finished_at": t["finished_at"],
             "reach_alive": _reach_alive(0.5),
             "manual": bool(t.get("manual")), "prompt": prompt,
@@ -944,6 +1021,85 @@ def manual_waypoints():
         return {"ok": True, "waypoints": names}
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+
+
+# ---------------------- 外部调用默认配置（读 / 改 / 存） ----------------------
+# 与网页手动单次测试互不干扰：手动栏总是显式带 site/偏移下发；
+# 外部平台只带 language 时才套这里的默认值。持久化在
+# config/dispatch_defaults.json。
+
+
+@app.get("/config/defaults")
+def config_defaults_get():
+    """默认现场 + 默认偏移配置 + 全部命名偏移配置。"""
+    return {"ok": True, **_current_defaults(),
+            "site_labels": SITE_LABELS,
+            "offset_limit_mm": TARGET_OFFSET_LIMIT_MM}
+
+
+@app.post("/config/defaults")
+def config_defaults_set(body: dict | None = None):
+    """改默认值。Body: {"site": "lab|factory", "offset_preset": "配置名或空串"}"""
+    body = body or {}
+    cfg = _current_defaults()
+    if "site" in body:
+        cfg["defaults"]["site"] = body.get("site")
+    if "offset_preset" in body:
+        cfg["defaults"]["offset_preset"] = str(
+            body.get("offset_preset") or "").strip()
+    if "lift_mm" in body:
+        cfg["defaults"]["lift_mm"] = body.get("lift_mm")
+    try:
+        saved = save_dispatch_defaults(cfg)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+    return {"ok": True, **saved}
+
+
+@app.post("/config/offset-presets")
+def config_preset_upsert(body: dict | None = None):
+    """新建/覆盖命名偏移配置。Body: {"name": "右手偏移配置-1",
+    "offset_mm": {"x":右,"y":入墙,"z":上}}（mm，单轴限 ±50）"""
+    body = body or {}
+    name = str(body.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"ok": False, "error": "配置名不能为空"},
+                            status_code=422)
+    try:
+        offset = validate_offset_mm(body.get("offset_mm"))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+    cfg = _current_defaults()
+    cfg["offset_presets"] = (
+        [p for p in cfg["offset_presets"] if p["name"] != name]
+        + [{"name": name, "offset_mm": offset}])
+    try:
+        saved = save_dispatch_defaults(cfg)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+    return {"ok": True, **saved}
+
+
+@app.post("/config/offset-presets/delete")
+def config_preset_delete(body: dict | None = None):
+    """删除命名偏移配置；若它正是默认偏移配置，默认自动改回「无」。"""
+    name = str((body or {}).get("name") or "").strip()
+    if not name:
+        return JSONResponse({"ok": False, "error": "配置名不能为空"},
+                            status_code=422)
+    cfg = _current_defaults()
+    remaining = [p for p in cfg["offset_presets"] if p["name"] != name]
+    if len(remaining) == len(cfg["offset_presets"]):
+        return JSONResponse({"ok": False, "error": f"没有配置「{name}」"},
+                            status_code=404)
+    cfg["offset_presets"] = remaining
+    if cfg["defaults"].get("offset_preset") == name:
+        cfg["defaults"]["offset_preset"] = ""
+    try:
+        saved = save_dispatch_defaults(cfg)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+    return {"ok": True, **saved}
 
 
 def _reach_base() -> str:
@@ -1030,6 +1186,36 @@ def _emergency_stop(reason: str) -> dict:
             "task_state": task["state"] if task else "idle"}
 
 
+@app.post("/arm/stop")
+def arm_stop():
+    """机械臂急停（等同 18001 页面的「急停」按钮）：只冻结手臂轨迹。
+
+    手臂刚性保持在当前指令位，不下坠；不释放手臂、不停基座对中、
+    不关 reach_server、不结束任务。与 /emergency/stop 的区别：急停后
+    手臂仍被我们接管，处理完可继续操作；正在跑的流程会在当前动作处
+    按执行失败的既有路径收尾（可能进入重试或报错）。
+    """
+    if not _reach_alive(1.5):
+        return JSONResponse(
+            {"ok": False,
+             "error": "reach_server 未在运行，手臂本来就不受我们控制"},
+            status_code=409)
+    try:
+        r = _http.post(f"{_reach_base()}/api/reach/stop", json={},
+                       timeout=5.0)
+        data = r.json() if r.content else {}
+    except (requests.RequestException, ValueError) as exc:
+        return JSONResponse(
+            {"ok": False, "error": f"急停请求失败: {exc}"}, status_code=502)
+    with _lock:
+        task = _task
+    if task is not None and task["state"] != "done":
+        task["log"].append("🖐 网页触发机械臂急停：轨迹已冻结（手臂未释放）")
+    return {"ok": True,
+            "message": "已急停：手臂刚性保持当前位置（未释放，流程未结束）",
+            "reach": data}
+
+
 @app.post("/emergency/stop")
 def emergency_stop(body: dict | None = None):
     """强制停止（任何状态下都可调，无任务时也能用）：急停 + 释放手臂控制权。
@@ -1066,6 +1252,7 @@ def service_info():
                       "start": 'POST /task/flip  body={"language": "..."}',
                       "status": "GET /task/status",
                       "abort": "POST /task/abort",
+                      "arm_stop": "POST /arm/stop（只急停手臂轨迹，不释放）",
                       "estop": "POST /emergency/stop（任何状态：急停+释放手臂）"},
             "languages": ["Change the switch from close to remote",
                           "Change the switch from remote to close"]}
