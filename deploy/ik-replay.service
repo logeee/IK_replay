@@ -1,0 +1,34 @@
+
+# IK_replay 拨闸服务组开机自启 unit
+#
+# 安装（复制到 systemd 目录并启用，见 deploy/README-自启动.md）：
+#   sudo cp deploy/ik-replay.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ik-replay.service
+#
+# 之后 ./prepare.sh / ./prepare.sh stop 仍可手动使用，两者互不冲突
+# （prepare.sh 对已监听的端口会自动跳过）。
+
+[Unit]
+Description=IK_replay 拨闸服务组（调度17001 / YOLO7004 / 点云7005 / 确认台7002）
+# 等网络就绪再启动，否则脚本末尾探活和取本机 IP 可能失败
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# prepare.sh 用 nohup 拉起各服务后自己退出：oneshot + RemainAfterExit
+# 让 systemd 把"脚本跑完"当作服务已启动，且子进程留在本 unit 的 cgroup
+# 里，stop 时先走 prepare.sh stop 优雅关停，残留的再由 systemd 收掉。
+Type=oneshot
+RemainAfterExit=yes
+User=robot
+Group=robot
+WorkingDirectory=/home/robot/yx/project/IK_replay
+ExecStart=/home/robot/yx/project/IK_replay/prepare.sh
+ExecStop=/home/robot/yx/project/IK_replay/prepare.sh stop
+# 启动含 4s 自检等待；停止时调度要等它拉起的 reach_server 优雅退出（最长 25s）
+TimeoutStartSec=120
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
