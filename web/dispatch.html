@@ -96,7 +96,12 @@
   .stat-note { color: var(--muted); font-size: 11px; margin-top: 1px; }
   .stat.success .stat-value { color: var(--green); }
   .stat.failed .stat-value { color: var(--red); }
-  .content-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(320px, .75fr); gap: 14px; margin-top: 14px; }
+  .content-grid {
+    display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(320px, .75fr);
+    gap: 14px; margin-top: 14px; align-items: start;
+  }
+  .main-stack { display: grid; gap: 14px; align-content: start; }
+  .side-stack { display: grid; gap: 14px; align-content: start; }
   .section-head { padding: 18px 21px 11px; display: flex; align-items: center; }
   .section-head h3 { margin: 0; font-size: 14px; }
   .section-head span { margin-left: auto; color: var(--muted); font-size: 11px; }
@@ -249,6 +254,7 @@
   .prompt-buttons .group-label { color: var(--muted); font-size: 11px; }
   #promptWaypoint { max-width: 220px; }
   .timings { margin-top: 14px; }
+  .main-stack .timings { margin-top: 0; }
   .timing-list { padding: 4px 20px 16px; }
   .timing-row {
     display: grid; grid-template-columns: minmax(0, 1fr) 90px; gap: 10px;
@@ -262,8 +268,38 @@
   .timing-row.confirm .t-val { color: var(--amber); font-weight: 500; }
   .timing-row.running .t-name { color: var(--cyan); }
   .timing-row.running .t-val { color: var(--cyan); }
+  .camera-panel { overflow: hidden; }
+  .camera-head { padding: 14px 16px 11px; display: flex; align-items: center; gap: 10px; }
+  .camera-head h3 { margin: 0; font-size: 14px; }
+  .camera-status { margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .camera-controls {
+    display: flex; align-items: center; gap: 8px; padding: 0 16px 12px;
+    border-bottom: 1px solid rgba(151, 180, 213, .1);
+  }
+  .camera-controls select { min-width: 0; flex: 1; }
+  .camera-controls button { padding: 8px 10px; white-space: nowrap; }
+  .camera-view {
+    position: relative; aspect-ratio: 16 / 9; margin: 0 16px 12px;
+    border-radius: 12px; overflow: hidden; background: rgba(5, 16, 29, .55);
+    border: 1px solid rgba(151, 180, 213, .12);
+  }
+  .camera-view iframe, .camera-view img {
+    position: absolute; inset: 0; width: 100%; height: 100%; border: 0;
+    display: block; background: #050b14; object-fit: contain;
+  }
+  .camera-view [hidden] { display: none !important; }
+  .camera-placeholder {
+    position: absolute; inset: 0; display: grid; place-items: center; padding: 14px;
+    text-align: center; color: var(--muted); font-size: 12px; line-height: 1.6;
+  }
+  .camera-note {
+    padding: 0 16px 14px; color: var(--muted); font-size: 11px;
+    display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  }
   @media (max-width: 950px) {
     .content-grid { grid-template-columns: 1fr; }
+    .main-stack { order: 2; }
+    .side-stack { order: 1; }
     .stats { grid-template-columns: repeat(2, 1fr); }
     .hero-meta { display: none; }
   }
@@ -379,31 +415,59 @@
   </section>
 
   <section class="content-grid">
-    <div class="panel">
+    <div class="main-stack">
+      <section class="panel">
       <div class="section-head"><h3>实时执行流程</h3><span id="progressText">等待任务</span></div>
       <div id="workflow" class="workflow"></div>
+      </section>
+      <section class="panel timings">
+        <div class="section-head"><h3>步骤耗时</h3><span id="timingSummary">尚无数据</span></div>
+        <div id="timingList" class="timing-list"><div class="empty" style="padding:18px 0;">任务开始后，这里按顺序统计每一步的耗时</div></div>
+      </section>
     </div>
-    <aside class="panel">
-      <div class="section-head"><h3>当前 / 最近任务</h3><span id="reachState">REACH —</span></div>
-      <div class="details">
-        <div class="detail-row"><div class="detail-key">任务编号</div><div id="detailId" class="detail-value">—</div></div>
-        <div class="detail-row"><div class="detail-key">调用指令</div><div id="detailLanguage" class="detail-value">—</div></div>
-        <div class="detail-row"><div class="detail-key">现场</div><div id="detailSite" class="detail-value">—</div></div>
-        <div class="detail-row"><div class="detail-key">开始时间</div><div id="detailStart" class="detail-value">—</div></div>
-        <div class="detail-row"><div class="detail-key">持续时间</div><div id="detailDuration" class="detail-value">—</div></div>
-        <div class="detail-row"><div class="detail-key">最大轮次</div><div id="detailRetries" class="detail-value">—</div></div>
-        <div class="detail-row"><div class="detail-key">目的点微调</div><div id="detailOffset" class="detail-value">—</div></div>
-        <div id="resultBox" class="result-box">
-          <div id="resultTitle" class="result-title">尚无执行结果</div>
-          <div id="resultMessage" class="result-message">服务正在等待新的API任务。</div>
+    <aside class="side-stack">
+      <section class="panel camera-panel">
+        <div class="camera-head">
+          <h3>相机预览</h3>
+          <span id="cameraStatus" class="camera-status">standby</span>
         </div>
-      </div>
+        <div class="camera-controls">
+          <select id="cameraSource" aria-label="相机预览源">
+            <option value="reach">任务画面 18001</option>
+            <option value="head">头部相机 60001</option>
+            <option value="torso">躯干相机 60002</option>
+            <option value="left">左腕相机 60003</option>
+            <option value="right">右腕相机 60004</option>
+          </select>
+          <button id="cameraOpen" type="button">新窗口</button>
+        </div>
+        <div class="camera-view">
+          <iframe id="cameraFrame" title="WebRTC 相机预览" hidden loading="eager" referrerpolicy="no-referrer" allow="autoplay; fullscreen; camera; microphone"></iframe>
+          <img id="cameraImage" alt="任务相机画面" hidden />
+          <div id="cameraPlaceholder" class="camera-placeholder">默认显示任务画面 18001；未执行任务时会显示离线，不会主动启动服务。</div>
+        </div>
+        <div class="camera-note">
+          <span id="cameraNote">页面隐藏时会断开预览，降低资源占用。</span>
+          <span id="cameraReachHint">REACH —</span>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="section-head"><h3>当前 / 最近任务</h3><span id="reachState">REACH —</span></div>
+        <div class="details">
+          <div class="detail-row"><div class="detail-key">任务编号</div><div id="detailId" class="detail-value">—</div></div>
+          <div class="detail-row"><div class="detail-key">调用指令</div><div id="detailLanguage" class="detail-value">—</div></div>
+          <div class="detail-row"><div class="detail-key">现场</div><div id="detailSite" class="detail-value">—</div></div>
+          <div class="detail-row"><div class="detail-key">开始时间</div><div id="detailStart" class="detail-value">—</div></div>
+          <div class="detail-row"><div class="detail-key">持续时间</div><div id="detailDuration" class="detail-value">—</div></div>
+          <div class="detail-row"><div class="detail-key">最大轮次</div><div id="detailRetries" class="detail-value">—</div></div>
+          <div class="detail-row"><div class="detail-key">目的点微调</div><div id="detailOffset" class="detail-value">—</div></div>
+          <div id="resultBox" class="result-box">
+            <div id="resultTitle" class="result-title">尚无执行结果</div>
+            <div id="resultMessage" class="result-message">服务正在等待新的API任务。</div>
+          </div>
+        </div>
+      </section>
     </aside>
-  </section>
-
-  <section class="panel timings">
-    <div class="section-head"><h3>步骤耗时</h3><span id="timingSummary">尚无数据</span></div>
-    <div id="timingList" class="timing-list"><div class="empty" style="padding:18px 0;">任务开始后，这里按顺序统计每一步的耗时</div></div>
   </section>
 
   <section class="panel logs">
@@ -487,6 +551,100 @@ const STEP_STAGE = [
 let lastData = null;
 let pollBusy = false;
 let lastLogSignature = "";
+const DEFAULT_CAMERA_MODE = "reach";
+let storedCameraMode = localStorage.getItem("dispatch.cameraMode");
+let cameraMode = storedCameraMode || DEFAULT_CAMERA_MODE;
+if (storedCameraMode === "head" && localStorage.getItem("dispatch.cameraDefault") !== DEFAULT_CAMERA_MODE) {
+  cameraMode = DEFAULT_CAMERA_MODE;
+}
+localStorage.setItem("dispatch.cameraDefault", DEFAULT_CAMERA_MODE);
+localStorage.setItem("dispatch.cameraMode", cameraMode);
+let cameraActiveKey = "";
+
+const CAMERA_SOURCES = {
+  head: { label: "头部相机", kind: "iframe", port: 60001 },
+  torso: { label: "躯干相机", kind: "iframe", port: 60002 },
+  left: { label: "左腕相机", kind: "iframe", port: 60003 },
+  right: { label: "右腕相机", kind: "iframe", port: 60004 },
+  reach: { label: "任务画面", kind: "img", port: 18001 },
+};
+
+function cameraUrl(mode) {
+  const source = CAMERA_SOURCES[mode] || CAMERA_SOURCES.head;
+  const host = window.location.hostname || "192.168.7.99";
+  if (source.kind === "iframe") {
+    return `https://${host}:${source.port}/?autostart=1&embed=1`;
+  }
+  return `http://${host}:${source.port}/api/reach/stream`;
+}
+
+function disconnectCameraPreview(message) {
+  const frame = $("cameraFrame");
+  const image = $("cameraImage");
+  const placeholder = $("cameraPlaceholder");
+  frame.hidden = true;
+  image.hidden = true;
+  frame.removeAttribute("src");
+  image.removeAttribute("src");
+  placeholder.hidden = false;
+  placeholder.textContent = message || "预览已暂停";
+  cameraActiveKey = "";
+}
+
+function renderCamera(data) {
+  const select = $("cameraSource");
+  const frame = $("cameraFrame");
+  const image = $("cameraImage");
+  const placeholder = $("cameraPlaceholder");
+  const status = $("cameraStatus");
+  const note = $("cameraNote");
+  const reachHint = $("cameraReachHint");
+  const source = CAMERA_SOURCES[cameraMode] || CAMERA_SOURCES.head;
+  const reachAlive = Boolean(data.reach_alive);
+
+  if (select.value !== cameraMode) select.value = cameraMode;
+  reachHint.textContent = `REACH ${reachAlive ? "ONLINE" : "OFFLINE"}`;
+  reachHint.style.color = reachAlive ? "var(--green)" : "var(--muted)";
+
+  if (document.hidden) {
+    disconnectCameraPreview("页面隐藏，预览已暂停");
+    status.textContent = "paused";
+    note.textContent = "回到页面后会按当前选择恢复预览。";
+    return;
+  }
+
+  if (cameraMode === "reach" && !reachAlive) {
+    disconnectCameraPreview("18001 当前未运行；任务开始后可再切到任务画面。");
+    status.textContent = "18001 offline";
+    note.textContent = "未运行任务时不会主动拉起 18001，避免占用相机/机器人链路。";
+    return;
+  }
+
+  const url = cameraUrl(cameraMode);
+  const key = `${cameraMode}:${url}:${reachAlive}`;
+  status.textContent = source.label;
+  note.textContent = cameraMode === "reach"
+    ? "任务画面来自 18001 /api/reach/stream，仅在用户选择时加载。"
+    : "常驻 WebRTC 预览，不经过 17001 后端，不触发采集或推理。";
+  if (reachAlive && cameraMode !== "reach") {
+    note.textContent += " 任务运行中，可手动切到 18001。";
+  }
+  if (key === cameraActiveKey) return;
+  cameraActiveKey = key;
+  placeholder.hidden = true;
+
+  if (source.kind === "iframe") {
+    image.hidden = true;
+    image.removeAttribute("src");
+    frame.hidden = false;
+    frame.src = url;
+  } else {
+    frame.hidden = true;
+    frame.removeAttribute("src");
+    image.hidden = false;
+    image.src = `${url}?t=${Date.now()}`;
+  }
+}
 
 function renderWorkflow(data) {
   const logs = data.log || [];
@@ -1054,6 +1212,7 @@ function render(data) {
   renderStats(data);
   renderWorkflow(data);
   renderDetails(data);
+  renderCamera(data);
   renderLogs(data);
   renderPrompt(data);
   renderTimings(data);
@@ -1095,7 +1254,32 @@ tick();
 poll();
 setInterval(tick, 1000);
 setInterval(() => { if (!document.hidden) poll(); }, 800);
-document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+$("cameraSource").value = cameraMode;
+$("cameraSource").addEventListener("change", () => {
+  cameraMode = $("cameraSource").value;
+  localStorage.setItem("dispatch.cameraMode", cameraMode);
+  disconnectCameraPreview("正在切换预览源…");
+  renderCamera(lastData || {});
+});
+$("cameraOpen").addEventListener("click", () => {
+  if (cameraMode === "reach" && !(lastData && lastData.reach_alive)) {
+    setHint("18001 当前未运行，无法打开任务画面");
+    return;
+  }
+  window.open(cameraUrl(cameraMode), "_blank", "noopener,noreferrer");
+});
+$("cameraImage").addEventListener("error", () => {
+  disconnectCameraPreview("任务画面加载失败；请确认 18001 正在运行。");
+  $("cameraStatus").textContent = "load failed";
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    disconnectCameraPreview("页面隐藏，预览已暂停");
+  } else {
+    poll();
+    renderCamera(lastData || {});
+  }
+});
 </script>
 </body>
 </html>

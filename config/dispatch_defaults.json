@@ -2,15 +2,20 @@
   "schema_version": 1,
   "defaults": {
     "site": "factory",
-    "offset_preset": "右到左配置-1"
+    "offset_preset": "右到左配置-1",
+    "lift_mm": {
+      "base": 0.0,
+      "step": 10.0,
+      "max": 30.0
+    }
   },
   "offset_presets": [
     {
       "name": "右到左配置-1",
       "offset_mm": {
         "x": 7.0,
-        "y": 2.0,
-        "z": -5.5
+        "y": -2.0,
+        "z": 0.0
       }
     }
   ]
