@@ -1,0 +1,21 @@
+{
+  "name": "0.57-左-终点",
+  "chain_id": "right_arm",
+  "named_joints": {
+    "right_shoulder_pitch_joint": -1.2048033741338755,
+    "right_shoulder_roll_joint": -0.21827730488326563,
+    "right_shoulder_yaw_joint": 0.4966289432391982,
+    "right_elbow_joint": 0.27941802289859513,
+    "right_wrist_roll_joint": -1.026246832225912,
+    "right_wrist_pitch_joint": 0.339086883715077,
+    "right_wrist_yaw_joint": -0.07893724949216734
+  },
+  "created_at": "2026-08-26 14:41:47",
+  "generated_from": "0.50-左-起手式_20260826_134700.json",
+  "forward_offset_m": 0.06999999999999995,
+  "offset_root_m": [
+    0.06999999999999995,
+    0.0,
+    0.0
+  ]
+}
