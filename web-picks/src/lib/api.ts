@@ -59,7 +59,48 @@ export interface PickRecord {
   meta: PickMeta;
 }
 
+/** 18001 执行记录摘要（reach JSONL，经 picks_server 解析） */
+export interface ExecSummary {
+  id: string;
+  ts?: string;
+  segment?: string;
+  result?: string;
+  capture_id?: string | null;
+  selection_source?: string | null;
+  target_point_slot?: number | null;
+  matched_detection_name?: string | null;
+  duration_s?: number | null;
+  tcp_mm: {
+    ik_mm?: number | null;
+    track_mm?: number | null;
+    total_mm?: number | null;
+    total_vs_drifted_mm?: number | null;
+  };
+  torso_rotation_deg?: number | null;
+  target_shift_mm?: number | null;
+  waist_delta_deg?: number[] | null;
+  imu_rpy_delta_deg?: number[] | null;
+  trace_len: number;
+}
+
+/** 执行期间 5Hz 躯干采样 */
+export interface TraceSample {
+  t: number;
+  phase?: string;
+  waist_deg?: number[];
+  imu_rpy_deg?: number[];
+  follow_sp_deg?: number;
+  follow_max_deg?: number;
+}
+
+export interface ExecRecord {
+  id: string;
+  torso_trace?: TraceSample[] | null;
+  [key: string]: unknown;
+}
+
 let cache: PickRecord[] | null = null;
+let execCache: ExecSummary[] | null = null;
 
 export async function fetchRecords(force = false): Promise<PickRecord[]> {
   if (cache && !force) return cache;
@@ -69,6 +110,33 @@ export async function fetchRecords(force = false): Promise<PickRecord[]> {
   if (!data.ok) throw new Error(data.error || "接口返回失败");
   cache = data.records as PickRecord[];
   return cache;
+}
+
+export async function fetchExecutions(force = false): Promise<ExecSummary[]> {
+  if (execCache && !force) return execCache;
+  const resp = await fetch(`${API_BASE}/api/executions`);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const data = await resp.json();
+  if (!data.ok) throw new Error(data.error || "接口返回失败");
+  execCache = data.records as ExecSummary[];
+  return execCache;
+}
+
+export async function fetchExecutionDetail(id: string): Promise<ExecRecord> {
+  const resp = await fetch(`${API_BASE}/api/executions/${id}`);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const data = await resp.json();
+  if (!data.ok) throw new Error(data.error || "接口返回失败");
+  return data.record as ExecRecord;
+}
+
+/** 执行结果分类，用于角标配色 */
+export function execResultKind(
+  result?: string,
+): "done" | "cancelled" | "error" {
+  if (result === "done") return "done";
+  if (result === "cancelled") return "cancelled";
+  return "error";
 }
 
 export function fileUrl(name: string, filename: string): string {

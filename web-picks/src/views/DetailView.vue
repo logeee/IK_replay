@@ -3,14 +3,20 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import {
   adjustmentMagnitude,
+  execResultKind,
+  fetchExecutionDetail,
+  fetchExecutions,
   fetchRecords,
   fileUrl,
   formatBytes,
   formatTime,
   formatVec,
   wallAdjustment,
+  type ExecSummary,
   type PickRecord,
+  type TraceSample,
 } from "../lib/api";
+import ExecTimeline from "../components/ExecTimeline.vue";
 import PlyViewer from "../components/PlyViewer.vue";
 import SnapshotViewer from "../components/SnapshotViewer.vue";
 
@@ -40,6 +46,7 @@ onMounted(async () => {
       prev: all[idx + 1]?.name ?? null,
       next: all[idx - 1]?.name ?? null,
     };
+    loadExecutions(all[idx].meta.capture_id);
   } catch (e) {
     error.value = String(e);
   } finally {
@@ -54,6 +61,50 @@ const adjMag = computed(() =>
 );
 
 const wallAdj = computed(() => wallAdjustment(meta.value));
+
+// ---- 该次选点对应的执行记录（按 capture_id 关联 18001 的 JSONL）----
+const executions = ref<ExecSummary[]>([]);
+const traces = ref<Record<string, TraceSample[]>>({});
+const traceLoading = ref<string | null>(null);
+
+async function loadExecutions(captureId?: string) {
+  if (!captureId) return;
+  try {
+    const all = await fetchExecutions();
+    executions.value = all.filter((e) => e.capture_id === captureId);
+  } catch {
+    /* 执行日志目录可能不存在，静默留空 */
+  }
+}
+
+async function toggleTrace(exec: ExecSummary) {
+  if (traces.value[exec.id]) {
+    const next = { ...traces.value };
+    delete next[exec.id];
+    traces.value = next;
+    return;
+  }
+  traceLoading.value = exec.id;
+  try {
+    const record = await fetchExecutionDetail(exec.id);
+    traces.value = {
+      ...traces.value,
+      [exec.id]: (record.torso_trace ?? []) as TraceSample[],
+    };
+  } finally {
+    traceLoading.value = null;
+  }
+}
+
+function resultLabel(result?: string): string {
+  if (result === "done") return "完成";
+  if (result === "cancelled") return "已中止";
+  return result || "异常";
+}
+
+function fmtMm(v?: number | null): string {
+  return v != null ? `${v.toFixed(1)}` : "-";
+}
 </script>
 
 <template>
@@ -204,6 +255,71 @@ const wallAdj = computed(() => wallAdjustment(meta.value));
       </div>
     </div>
 
+    <div v-if="executions.length" class="exec-section">
+      <h2 class="section-title">执行记录（基坐标系漂移与误差归因）</h2>
+      <div v-for="e in executions" :key="e.id" class="card exec-card">
+        <div class="exec-head">
+          <span class="badge" :class="`exec-${execResultKind(e.result)}`">
+            {{ resultLabel(e.result) }}
+          </span>
+          <span class="mono seg">{{ e.segment }}</span>
+          <span class="mono time">{{ e.ts?.replace("T", " ").slice(0, 19) }}</span>
+          <div class="spacer" />
+          <button
+            v-if="e.trace_len"
+            class="chip"
+            :disabled="traceLoading === e.id"
+            @click="toggleTrace(e)"
+          >
+            {{
+              traceLoading === e.id
+                ? "加载中…"
+                : traces[e.id]
+                  ? "收起时间线"
+                  : `漂移时间线（${e.trace_len} 采样）`
+            }}
+          </button>
+        </div>
+        <div class="metrics">
+          <div class="metric">
+            <div class="num">{{ fmtMm(e.tcp_mm.ik_mm) }}</div>
+            <div class="label">IK 残差 mm</div>
+          </div>
+          <div class="metric">
+            <div class="num">{{ fmtMm(e.tcp_mm.track_mm) }}</div>
+            <div class="label">关节跟踪 mm</div>
+          </div>
+          <div class="metric">
+            <div class="num">{{ fmtMm(e.tcp_mm.total_mm) }}</div>
+            <div class="label">总误差 mm</div>
+          </div>
+          <div class="metric">
+            <div class="num">{{ fmtMm(e.tcp_mm.total_vs_drifted_mm) }}</div>
+            <div class="label">对漂移后目标 mm</div>
+          </div>
+          <div class="metric">
+            <div class="num">
+              {{ e.torso_rotation_deg != null ? e.torso_rotation_deg.toFixed(2) : "-" }}
+            </div>
+            <div class="label">躯干旋转 °</div>
+          </div>
+          <div class="metric">
+            <div class="num warn">{{ fmtMm(e.target_shift_mm) }}</div>
+            <div class="label">目标漂移 mm</div>
+          </div>
+        </div>
+        <div v-if="e.waist_delta_deg || e.imu_rpy_delta_deg" class="drift-detail mono">
+          <span v-if="e.waist_delta_deg">
+            腰关节变化 [{{ e.waist_delta_deg.map((v) => v.toFixed(2)).join(", ") }}]°
+          </span>
+          <span v-if="e.imu_rpy_delta_deg">
+            IMU 变化 [{{ e.imu_rpy_delta_deg.map((v) => v.toFixed(2)).join(", ") }}]°
+          </span>
+        </div>
+        <ExecTimeline v-if="traces[e.id]?.length" :trace="traces[e.id]" />
+      </div>
+    </div>
+
     <div class="raw">
       <button class="chip" @click="showRawJson = !showRawJson">
         {{ showRawJson ? "收起" : "查看" }}完整 meta.json
@@ -319,6 +435,90 @@ const wallAdj = computed(() => wallAdjustment(meta.value));
 .highlight {
   color: var(--amber);
   font-weight: 700;
+}
+
+.exec-section {
+  margin-bottom: 20px;
+}
+
+.exec-card {
+  padding: 14px 18px 16px;
+  margin-bottom: 12px;
+}
+
+.exec-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.exec-head .seg {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.exec-head .time {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.exec-head .spacer {
+  flex: 1;
+}
+
+.badge.exec-done {
+  background: rgba(90, 212, 111, 0.15);
+  color: var(--green);
+}
+
+.badge.exec-cancelled {
+  background: rgba(143, 163, 192, 0.15);
+  color: var(--text-dim);
+}
+
+.badge.exec-error {
+  background: rgba(255, 93, 93, 0.15);
+  color: var(--red);
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.metric {
+  background: var(--bg-soft);
+  border-radius: 10px;
+  padding: 10px 12px;
+  text-align: center;
+}
+
+.metric .num {
+  font-size: 19px;
+  font-weight: 800;
+  color: var(--accent);
+}
+
+.metric .num.warn {
+  color: var(--amber);
+}
+
+.metric .label {
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.drift-detail {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-bottom: 6px;
 }
 
 .raw {
