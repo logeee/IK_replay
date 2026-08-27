@@ -53,6 +53,8 @@ _box_padding_ratio = 0.1
 _model_lock = threading.Lock()
 _capture_lock = threading.Lock()
 _auto_target_lock = threading.Lock()
+_capture_progress_lock = threading.Lock()
+_capture_progress: dict[str, dict[str, Any]] = {}
 
 
 @dataclass
@@ -74,6 +76,48 @@ class Capture:
 
 
 _latest: Capture | None = None
+
+
+def _set_capture_progress(
+    operation_id: str | None,
+    step: int,
+    message: str,
+    *,
+    done: bool = False,
+    error: bool = False,
+) -> None:
+    if operation_id is None:
+        return
+    with _capture_progress_lock:
+        _capture_progress[operation_id] = {
+            "ok": not error,
+            "available": True,
+            "operation_id": operation_id,
+            "step": step,
+            "total_steps": 7,
+            "message": message,
+            "done": done,
+            "error": error,
+            "updated_monotonic": time.monotonic(),
+        }
+        if len(_capture_progress) > 32:
+            oldest = min(
+                _capture_progress,
+                key=lambda key: _capture_progress[key]["updated_monotonic"],
+            )
+            if oldest != operation_id:
+                _capture_progress.pop(oldest, None)
+
+
+@app.get("/api/pointcloud/capture-progress/{operation_id}")
+def capture_progress(operation_id: str):
+    with _capture_progress_lock:
+        progress = _capture_progress.get(operation_id)
+        return (
+            {"ok": True, "available": False, "operation_id": operation_id}
+            if progress is None
+            else dict(progress)
+        )
 
 
 def _fetch_rgbd_snapshot(timeout_s: float = 15.0) -> dict[str, Any]:
@@ -234,7 +278,12 @@ def status():
 def capture(body: dict | None = None):
     global _latest
     body = body or {}
+    operation_id = body.get("operation_id")
     try:
+        if operation_id is not None:
+            operation_id = str(operation_id)
+            if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", operation_id):
+                raise ValueError("operation_id 格式非法")
         stride = int(body.get("stride", 4))
         z_min_m = float(body.get("z_min_m", 0.15))
         z_max_m = float(body.get("z_max_m", 3.0))
@@ -245,25 +294,66 @@ def capture(body: dict | None = None):
         return JSONResponse({"ok": False, "error": f"参数非法: {exc}"}, status_code=400)
 
     started = time.perf_counter()
+    timings: dict[str, float] = {}
+    _set_capture_progress(operation_id, 1, "1/7 获取并对齐同帧 RGB-D…")
+    stage_started = time.perf_counter()
     try:
         snapshot = _fetch_rgbd_snapshot()
     except Exception as exc:
+        _set_capture_progress(
+            operation_id, 1, f"1/7 RGB-D 获取失败：{exc}", done=True, error=True
+        )
         return JSONResponse(
             {"ok": False, "error": f"无法从 reach_server 获取同帧 RGB-D: {exc}"},
             status_code=502,
         )
+    timings["rgbd"] = round((time.perf_counter() - stage_started) * 1000.0, 1)
+    _set_capture_progress(
+        operation_id,
+        2,
+        f"2/7 RGB-D 已就绪（{timings['rgbd']:.1f} ms），解码彩色图像…",
+    )
+    stage_started = time.perf_counter()
     bgr = cv2.imdecode(
         np.frombuffer(snapshot["jpeg"], dtype=np.uint8),
         cv2.IMREAD_COLOR,
     )
     if bgr is None:
+        _set_capture_progress(
+            operation_id, 2, "2/7 JPEG 解码失败", done=True, error=True
+        )
         return JSONResponse({"ok": False, "error": "JPEG 解码失败"}, status_code=502)
+    timings["jpeg_decode"] = round(
+        (time.perf_counter() - stage_started) * 1000.0, 1
+    )
     distortion = np.asarray(
         snapshot.get("distortion", []),
         dtype=np.float64,
     ).reshape(-1)
+    _set_capture_progress(
+        operation_id,
+        3,
+        f"3/7 彩色图像已解码（{timings['jpeg_decode']:.1f} ms），运行 YOLO…",
+    )
+    stage_started = time.perf_counter()
     try:
         boxes = _infer(bgr, conf)
+    except Exception as exc:
+        _set_capture_progress(
+            operation_id, 3, f"3/7 YOLO 失败：{exc}", done=True, error=True
+        )
+        return JSONResponse(
+            {"ok": False, "error": f"YOLO 推理失败: {exc}"},
+            status_code=500,
+        )
+    timings["yolo"] = round((time.perf_counter() - stage_started) * 1000.0, 1)
+    _set_capture_progress(
+        operation_id,
+        4,
+        f"4/7 YOLO 完成（{timings['yolo']:.1f} ms，{len(boxes)} 个目标），生成三维点云…",
+    )
+    stage_started = time.perf_counter()
+    try:
         cloud = build_pointcloud(
             snapshot["depth_mm"],
             bgr,
@@ -276,12 +366,34 @@ def capture(body: dict | None = None):
             box_padding_ratio=_box_padding_ratio,
             distortion=distortion,
         )
-        binary = encode_pointcloud(cloud)
     except Exception as exc:
+        _set_capture_progress(
+            operation_id, 4, f"4/7 点云生成失败：{exc}", done=True, error=True
+        )
         return JSONResponse(
             {"ok": False, "error": f"点云生成失败: {exc}"},
             status_code=500,
         )
+    timings["pointcloud"] = round(
+        (time.perf_counter() - stage_started) * 1000.0, 1
+    )
+    _set_capture_progress(
+        operation_id,
+        5,
+        f"5/7 已生成 {cloud.count:,} 点（{timings['pointcloud']:.1f} ms），编码点云数据…",
+    )
+    stage_started = time.perf_counter()
+    try:
+        binary = encode_pointcloud(cloud)
+    except Exception as exc:
+        _set_capture_progress(
+            operation_id, 5, f"5/7 点云编码失败：{exc}", done=True, error=True
+        )
+        return JSONResponse(
+            {"ok": False, "error": f"点云编码失败: {exc}"},
+            status_code=500,
+        )
+    timings["encode"] = round((time.perf_counter() - stage_started) * 1000.0, 1)
 
     capture_id = uuid.uuid4().hex
     class_counts = {
@@ -319,6 +431,7 @@ def capture(body: dict | None = None):
         "source": snapshot["metadata"],
         "T_cam2root": snapshot["T_cam2root"],
         "capture_ms": round((time.perf_counter() - started) * 1000.0, 1),
+        "timings_ms": timings,
         "binary_protocol": {
             "magic": "PCV1",
             "version": 1,
@@ -341,6 +454,12 @@ def capture(body: dict | None = None):
             cloud=cloud,
             boxes=boxes,
         )
+    _set_capture_progress(
+        operation_id,
+        5,
+        f"5/7 后端完成（总计 {metadata['capture_ms']:.1f} ms），等待浏览器下载…",
+        done=True,
+    )
     return metadata
 
 

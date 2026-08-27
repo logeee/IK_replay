@@ -316,6 +316,7 @@ class PointCloudBackendTest(unittest.TestCase):
         pointcloud_viewer._model_name = "fake.pt"
         pointcloud_viewer._names = {2: "target"}
         pointcloud_viewer._latest = None
+        pointcloud_viewer._capture_progress.clear()
         # 选点记录写到临时目录，别污染真实的 data/pick_history
         self._pick_dir = tempfile.TemporaryDirectory()
         self.old_pick_history = pointcloud_viewer.PICK_HISTORY_DIR
@@ -326,6 +327,7 @@ class PointCloudBackendTest(unittest.TestCase):
         pointcloud_viewer._model_name = self.old_model_name
         pointcloud_viewer._names = self.old_names
         pointcloud_viewer._latest = self.old_latest
+        pointcloud_viewer._capture_progress.clear()
         pointcloud_viewer.PICK_HISTORY_DIR = self.old_pick_history
         self._pick_dir.cleanup()
 
@@ -350,9 +352,14 @@ class PointCloudBackendTest(unittest.TestCase):
                 "z_min_m": 0.15,
                 "z_max_m": 3.0,
                 "conf": 0.25,
+                "operation_id": "capture_test_1",
             })
 
         self.assertTrue(metadata["ok"])
+        self.assertEqual(
+            set(metadata["timings_ms"]),
+            {"rgbd", "jpeg_decode", "yolo", "pointcloud", "encode"},
+        )
         self.assertEqual(metadata["point_count"], 4)
         self.assertEqual(metadata["source"]["frame_id"], "frame-7")
         self.assertEqual(metadata["boxes"][0]["name"], "target")
@@ -366,6 +373,11 @@ class PointCloudBackendTest(unittest.TestCase):
         np.testing.assert_array_equal(cloud.class_ids, np.full(4, 2))
         restored = pointcloud_viewer.capture_metadata(metadata["capture_id"])
         self.assertEqual(restored["capture_id"], metadata["capture_id"])
+        progress = pointcloud_viewer.capture_progress("capture_test_1")
+        self.assertTrue(progress["done"])
+        self.assertFalse(progress["error"])
+        self.assertEqual(progress["step"], 5)
+        self.assertIn("后端完成", progress["message"])
 
     def test_inference_exports_instance_mask_polygon(self):
         class FakeMasks:
@@ -580,7 +592,7 @@ class ReachPointCloudConfirmationTest(unittest.TestCase):
         attributes = [
             "enabled", "T_cam2root", "T_cam2torso", "collision_checker",
             "plane", "pick_target_torso", "pick_target_root", "pick_pixel",
-            "pick_torso", "pick_context", "torso_diag",
+            "pick_torso", "pick_context", "pick_revision", "torso_diag",
         ]
         saved = {name: getattr(state, name) for name in attributes}
         try:
@@ -592,6 +604,7 @@ class ReachPointCloudConfirmationTest(unittest.TestCase):
             state.T_cam2root = transform
             state.T_cam2torso = transform
             state.collision_checker = None
+            state.pick_revision = 7
             with mock.patch.object(perception, "_read_torso", return_value=None):
                 result = perception.confirm_pointcloud_pick({
                     "p_camera_surface": [0.1, 0.2, 1.0],
@@ -612,6 +625,7 @@ class ReachPointCloudConfirmationTest(unittest.TestCase):
                     },
                 })
             self.assertTrue(result["ok"])
+            self.assertEqual(result["revision"], 8)
             np.testing.assert_allclose(result["p_root"], [0.99, 0.1, 0.2])
             self.assertEqual(result["selection_mode"], "frozen_rgbd_pointcloud")
             self.assertEqual(result["pixel"], [320, 240])
@@ -629,6 +643,12 @@ class ReachPointCloudConfirmationTest(unittest.TestCase):
             self.assertEqual(state.pick_context["matched_detection_name"], "就地")
             self.assertEqual(result["target_point_slot"], 3)
             np.testing.assert_allclose(state.pick_target_root, result["p_root"])
+            latest = perception.latest_pick()
+            self.assertTrue(latest["available"])
+            self.assertEqual(latest["revision"], 8)
+            self.assertEqual(latest["selection_source"], "target-finder/0.2.0-s")
+            np.testing.assert_allclose(latest["p_root"], result["p_root"])
+            np.testing.assert_allclose(latest["p_torso"], result["p_torso"])
         finally:
             for name, value in saved.items():
                 setattr(state, name, value)

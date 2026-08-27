@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import math
 import time
 
@@ -9,6 +10,12 @@ import numpy as np
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .state import _read_joints, _read_torso, router, state
+
+
+def _publish_pick_revision() -> int:
+    with state.pick_revision_lock:
+        state.pick_revision += 1
+        return state.pick_revision
 
 
 @router.get("/stream")
@@ -29,6 +36,35 @@ def reach_stream():
 
 
 # --------------- 取点 ---------------
+
+
+@router.get("/latest_pick")
+def latest_pick():
+    """Return the latest accepted target so separate browser machines can sync."""
+    with state.pick_revision_lock:
+        revision = state.pick_revision
+    context = deepcopy(state.pick_context)
+    p_root = deepcopy(state.pick_target_root)
+    p_torso = deepcopy(state.pick_target_torso)
+    if context is None or p_root is None or p_torso is None:
+        return {"ok": True, "available": False, "revision": revision}
+    p_camera = context.get("p_camera_surface")
+    return {
+        "ok": True,
+        "available": True,
+        "revision": revision,
+        **context,
+        "p_camera": p_camera,
+        "depth_mm": (
+            float(p_camera[2]) * 1000.0
+            if isinstance(p_camera, list) and len(p_camera) == 3
+            else None
+        ),
+        "p_torso": p_torso,
+        "p_root": p_root,
+        "plane": deepcopy(state.plane),
+        "offset_mode": "plane_normal" if state.plane is not None else "camera_ray",
+    }
 
 
 @router.post("/pick")
@@ -98,9 +134,11 @@ def reach_pick(body: dict):
         "p_root": list(state.pick_target_root),
         "captured_at_monotonic": time.monotonic(),
     }
+    revision = _publish_pick_revision()
 
     return {
         "ok": True,
+        "revision": revision,
         "pixel": [u, v],
         "depth_mm": result["depth_mm"],
         "p_camera": p_cam.tolist(),
@@ -207,9 +245,11 @@ def confirm_pointcloud_pick(body: dict):
         "plane": plane,
         "captured_at_monotonic": time.monotonic(),
     }
+    revision = _publish_pick_revision()
 
     return {
         "ok": True,
+        "revision": revision,
         "selection_mode": "frozen_rgbd_pointcloud",
         "selection_source": body.get("selection_source", "manual"),
         "model_version": body.get("model_version"),

@@ -131,6 +131,9 @@ const reach = {
   sideCache: null,  // 分段暂停时预取的横移规划 {stepCm, joints, seg}
   sidesteps: [],    // 落盘的横移录制（免 IK 回放）
   libraryMode: null, // 分类选择弹窗当前在选 waypoint 还是 sequence
+  pickRevision: 0,  // 18001 最近选点版本，供不同电脑上的浏览器同步
+  pickSyncTimer: null,
+  pickSyncApplying: false,
 };
 
 async function initReach() {
@@ -313,18 +316,7 @@ async function initReach() {
     } catch {
       return;
     }
-    const pick = event.data.pick;
-    if (!pick?.ok || !Array.isArray(pick.p_root) || pick.p_root.length !== 3) {
-      reachMsg("点云选点窗口返回的数据无效", "error");
-      return;
-    }
-    reach.lastPick = pick;
-    reach.plane = pick.plane || null;
-    visualizeSurfacePlane(pick);
-    d.replan.disabled = false;
-    d.planLeft.disabled = false;
-    reachMsg("已接收点云目标，开始 IK 预演…");
-    await planReachLeft();
+    await acceptPointcloudPick(event.data.pick, "点云窗口");
   });
   d.fsClose.addEventListener("click", () => cancelReachFullscreen());
   d.fsVideo.addEventListener("click", (ev) => onReachFullscreenClick(ev));
@@ -342,6 +334,69 @@ async function initReach() {
   reachMsg(`标定: ${status.calib?.solved_at || "?"} · RMS ${rms ? rms.toFixed(2) : "?"} mm · ` +
     `TCP=p_tool [${(status.p_tool || []).map((v) => v.toFixed(3)).join(", ")}] m` +
     (markerCount ? ` · 手部关键点 ${markerCount} 个` : ""));
+  startReachPickSync();
+}
+
+async function acceptPointcloudPick(pick, sourceLabel) {
+  if (!pick?.ok || !Array.isArray(pick.p_root) || pick.p_root.length !== 3) {
+    reachMsg("点云选点返回的数据无效", "error");
+    return;
+  }
+  if (reach.pickSyncApplying) return;
+  reach.pickSyncApplying = true;
+  if (Number.isFinite(Number(pick.revision))) {
+    reach.pickRevision = Math.max(reach.pickRevision, Number(pick.revision));
+  }
+  try {
+    reach.lastPick = pick;
+    reach.plane = pick.plane || null;
+    visualizeSurfacePlane(pick);
+    reach.dom.replan.disabled = false;
+    reach.dom.planLeft.disabled = false;
+    reachMsg(`已接收${sourceLabel}目标，开始 IK 预演…`);
+    await planReachLeft();
+  } finally {
+    reach.pickSyncApplying = false;
+  }
+}
+
+function scheduleReachPickSync(delayMs = 1000) {
+  window.clearTimeout(reach.pickSyncTimer);
+  reach.pickSyncTimer = window.setTimeout(pollReachPick, delayMs);
+}
+
+async function startReachPickSync() {
+  try {
+    const latest = await fetchJson("/api/reach/latest_pick");
+    reach.pickRevision = Number(latest.revision || 0);
+  } catch (error) {
+    console.warn(`初始化跨浏览器选点同步失败: ${error.message}`);
+  }
+  scheduleReachPickSync();
+}
+
+async function pollReachPick() {
+  if (reach.pickSyncApplying || reach.picking) {
+    scheduleReachPickSync();
+    return;
+  }
+  try {
+    const latest = await fetchJson("/api/reach/latest_pick");
+    const revision = Number(latest.revision || 0);
+    if (revision > reach.pickRevision) {
+      reach.pickRevision = revision;
+      const isManualPointcloud = latest.available
+        && latest.selection_mode === "frozen_rgbd_pointcloud"
+        && latest.selection_source !== "flow-auto";
+      if (isManualPointcloud) {
+        await acceptPointcloudPick(latest, "远程点云");
+      }
+    }
+  } catch (error) {
+    console.warn(`跨浏览器选点同步失败: ${error.message}`);
+  } finally {
+    scheduleReachPickSync(document.hidden ? 3000 : 1000);
+  }
 }
 
 async function syncReachJointsOnStartup() {

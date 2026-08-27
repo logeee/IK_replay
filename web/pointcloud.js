@@ -440,6 +440,17 @@ function drawSnapshotBoxes() {
 }
 
 function renderCaptureInfo(meta) {
+  const timing = meta.timings_ms || {};
+  const timingText = [
+    ["RGB-D", timing.rgbd],
+    ["JPEG", timing.jpeg_decode],
+    ["YOLO", timing.yolo],
+    ["点云", timing.pointcloud],
+    ["编码", timing.encode],
+  ]
+    .filter(([, value]) => Number.isFinite(Number(value)))
+    .map(([name, value]) => `${name} ${Number(value).toFixed(1)} ms`)
+    .join(" · ");
   $("captureInfo").classList.remove("muted");
   $("captureInfo").innerHTML = [
     `点数: ${meta.point_count.toLocaleString()}`,
@@ -449,9 +460,10 @@ function renderCaptureInfo(meta) {
     `范围: ${meta.z_min_m.toFixed(2)}–${meta.z_max_m.toFixed(2)} m`,
     `畸变补偿: ${meta.distortion_compensated ? "已启用" : "无需/无参数"}`,
     `耗时: ${meta.capture_ms.toFixed(1)} ms`,
+    timingText ? `分步: ${timingText}` : null,
     `源帧: ${meta.source?.frame_id ?? "?"}`,
     `模型: ${meta.model}`,
-  ].join("<br>");
+  ].filter(Boolean).join("<br>");
 }
 
 function restoredSelection(meta, stored) {
@@ -489,12 +501,22 @@ function restoredSelection(meta, stored) {
   };
 }
 
-async function loadCapture(meta, { restore = false } = {}) {
+async function loadCapture(meta, { restore = false, reportProgress = false } = {}) {
+  const downloadStarted = performance.now();
+  if (reportProgress) {
+    setStatus(`6/7 下载 ${(meta.point_count * 24 / 1024 / 1024).toFixed(1)} MB 点云数据…`);
+  }
   const binaryResponse = await fetch(meta.data_url, { cache: "no-store" });
   if (!binaryResponse.ok) {
     throw new Error(`点云下载失败 HTTP ${binaryResponse.status}`);
   }
-  const decoded = decodeBinary(await binaryResponse.arrayBuffer());
+  const binary = await binaryResponse.arrayBuffer();
+  const downloadMs = performance.now() - downloadStarted;
+  if (reportProgress) {
+    setStatus(`7/7 下载完成（${downloadMs.toFixed(1)} ms），解析并载入 WebGL…`);
+  }
+  const installStarted = performance.now();
+  const decoded = decodeBinary(binary);
   const stored = restore ? savedState() : {};
   const preserveView = stored.captureId === meta.capture_id
     && Array.isArray(stored.cameraPosition)
@@ -530,14 +552,54 @@ async function loadCapture(meta, { restore = false } = {}) {
     setViewMode(stored.viewMode);
   }
   updateAutoTargetButton();
+  return {
+    download_ms: downloadMs,
+    install_ms: performance.now() - installStarted,
+  };
+}
+
+function captureOperationId() {
+  if (typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `capture_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function watchCaptureProgress(operationId) {
+  let stopped = false;
+  let timer = null;
+  const poll = async () => {
+    if (stopped) return;
+    try {
+      const response = await fetch(
+        `/api/pointcloud/capture-progress/${encodeURIComponent(operationId)}`,
+        { cache: "no-store" },
+      );
+      const progress = await response.json();
+      if (progress.available) {
+        setStatus(progress.message, progress.error ? "error" : "");
+        if (progress.done) return;
+      }
+    } catch (_) {
+      // The capture request remains authoritative; progress is best effort.
+    }
+    timer = window.setTimeout(poll, 120);
+  };
+  poll();
+  return () => {
+    stopped = true;
+    window.clearTimeout(timer);
+  };
 }
 
 async function capture() {
   const button = $("captureBtn");
+  const operationId = captureOperationId();
+  const stopProgress = watchCaptureProgress(operationId);
   capturePending = true;
   button.disabled = true;
   $("autoTarget").disabled = true;
-  setStatus("正在获取同帧 RGB-D 并运行 YOLO…");
+  setStatus("1/7 获取并对齐同帧 RGB-D…");
   try {
     const response = await fetch("/api/pointcloud/capture", {
       method: "POST",
@@ -547,20 +609,29 @@ async function capture() {
         z_min_m: Number($("zMin").value),
         z_max_m: Number($("zMax").value),
         conf: Number($("conf").value),
+        operation_id: operationId,
       }),
     });
     const meta = await response.json();
     if (!response.ok || !meta.ok) throw new Error(meta.error || `HTTP ${response.status}`);
+    stopProgress();
     try {
       localStorage.removeItem(STORAGE_KEY);
     } catch (_) {
       // Persistence is optional; a successful capture must remain usable.
     }
-    await loadCapture(meta);
-    setStatus(`捕获成功：${meta.point_count.toLocaleString()} 点`, "ok");
+    const browserTiming = await loadCapture(meta, { reportProgress: true });
+    setStatus(
+      `捕获成功：${meta.point_count.toLocaleString()} 点`
+      + ` · 后端 ${meta.capture_ms.toFixed(1)} ms`
+      + ` · 下载 ${browserTiming.download_ms.toFixed(1)} ms`
+      + ` · 载入 ${browserTiming.install_ms.toFixed(1)} ms`,
+      "ok",
+    );
   } catch (error) {
     setStatus(error.message || String(error), "error");
   } finally {
+    stopProgress();
     capturePending = false;
     button.disabled = false;
     updateAutoTargetButton();

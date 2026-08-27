@@ -54,6 +54,8 @@ class ReachState:
         self.pick_target_root: list[float] | None = None
         self.pick_pixel: list[int] | None = None
         self.pick_context: dict[str, Any] | None = None
+        self.pick_revision = 0                     # 每次取点递增，供跨浏览器同步
+        self.pick_revision_lock = threading.Lock()
         self.torso_diag: dict | None = None        # 最近一次执行的躯干漂移诊断
         self.log_dir: Path | None = None           # 每段执行落一行 JSONL
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
