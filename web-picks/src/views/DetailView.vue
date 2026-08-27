@@ -8,6 +8,7 @@ import {
   formatBytes,
   formatTime,
   formatVec,
+  wallAdjustment,
   type PickRecord,
 } from "../lib/api";
 import PlyViewer from "../components/PlyViewer.vue";
@@ -52,7 +53,7 @@ const adjMag = computed(() =>
   record.value ? adjustmentMagnitude(record.value.meta) : null,
 );
 
-const wallAdj = computed(() => meta.value.adjustment_wall_mm ?? null);
+const wallAdj = computed(() => wallAdjustment(meta.value));
 </script>
 
 <template>
@@ -134,7 +135,7 @@ const wallAdj = computed(() => meta.value.adjustment_wall_mm ?? null);
           <dt>相机系 (mm)</dt>
           <dd class="mono">{{ formatVec(meta.adjustment_mm, 1) }}</dd>
           <template v-if="wallAdj">
-            <dt>墙面系 (mm)</dt>
+            <dt>墙面系 (mm){{ wallAdj.derived ? "（换算）" : "" }}</dt>
             <dd class="mono">
               右 {{ wallAdj.x.toFixed(1) }} / 上 {{ wallAdj.z.toFixed(1) }} / 入墙
               {{ wallAdj.y.toFixed(1) }}

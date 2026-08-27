@@ -925,12 +925,24 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
             target_point_slot = int(target_point_slot)
             if target_point_slot not in {1, 3}:
                 raise ValueError("target_point_slot 仅支持 1 或 3")
+        # 墙面系原始微调量（右x/入墙y/上z，mm）：flow 和网页都可能带，
+        # 存档后比相机系分量直观
+        adjustment_wall_mm = body.get("adjustment_wall_mm")
+        if adjustment_wall_mm is not None:
+            if not (isinstance(adjustment_wall_mm, dict)
+                    and all(k in adjustment_wall_mm for k in ("x", "y", "z"))):
+                raise ValueError("adjustment_wall_mm 需为含 x/y/z 的对象")
+            adjustment_wall_mm = {k: float(adjustment_wall_mm[k])
+                                  for k in ("x", "y", "z")}
+            if not all(np.isfinite(v) for v in adjustment_wall_mm.values()):
+                raise ValueError("adjustment_wall_mm 包含非有限数值")
         request_body.update(
             {
                 "selection_source": selection_source,
                 "model_version": model_version,
                 "target_point_slot": target_point_slot,
                 "matched_detection_name": matched_detection_name,
+                "adjustment_wall_mm": adjustment_wall_mm,
             }
         )
     except (KeyError, TypeError, ValueError) as exc:

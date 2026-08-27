@@ -82,6 +82,42 @@ export function adjustmentMagnitude(meta: PickMeta): number | null {
   return Math.hypot(adj[0], adj[1], adj[2]);
 }
 
+export interface WallAdjustment {
+  /** 右（mm） */
+  x: number;
+  /** 入墙（mm） */
+  y: number;
+  /** 上（mm） */
+  z: number;
+  /** true 表示由相机系微调量投影换算而来，false 表示流程下发的原始值 */
+  derived: boolean;
+}
+
+/**
+ * 墙面系微调分量（右/入墙/上，mm）。
+ * 优先用记录里的原始 adjustment_wall_mm；缺失时把相机系微调向量
+ * 投影到 wall_axes_camera 三根正交单位轴上，换算是无损的。
+ */
+export function wallAdjustment(meta: PickMeta): WallAdjustment | null {
+  const raw = meta.adjustment_wall_mm;
+  if (raw && ["x", "y", "z"].every((k) => k in raw)) {
+    return { x: raw.x, y: raw.y, z: raw.z, derived: false };
+  }
+  const adj = meta.adjustment_camera_m;
+  const axes = meta.auto_target?.wall_axes_camera;
+  if (
+    !adj ||
+    adj.length !== 3 ||
+    !axes ||
+    axes.length !== 3 ||
+    axes.some((a) => !Array.isArray(a) || a.length !== 3)
+  )
+    return null;
+  const dot = (a: number[]) =>
+    (a[0] * adj[0] + a[1] * adj[1] + a[2] * adj[2]) * 1000;
+  return { x: dot(axes[0]), y: dot(axes[1]), z: dot(axes[2]), derived: true };
+}
+
 export function formatTime(saved_at?: string): string {
   if (!saved_at) return "-";
   return saved_at.replace("T", " ");

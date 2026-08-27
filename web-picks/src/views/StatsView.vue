@@ -4,6 +4,7 @@ import * as echarts from "echarts";
 import {
   adjustmentMagnitude,
   fetchRecords,
+  wallAdjustment,
   type PickRecord,
 } from "../lib/api";
 
@@ -18,6 +19,7 @@ const kpi = ref({
 });
 
 const adjChart = ref<HTMLDivElement>();
+const wallAdjChart = ref<HTMLDivElement>();
 const fitChart = ref<HTMLDivElement>();
 const confChart = ref<HTMLDivElement>();
 const wallChart = ref<HTMLDivElement>();
@@ -97,6 +99,48 @@ function buildCharts(records: PickRecord[]) {
       data: asc.map((r) =>
         rs.includes(r) ? adjustmentMagnitude(r.meta)?.toFixed(1) ?? null : null,
       ),
+    })),
+  });
+
+  // ---- 1b. 墙面系微调分量：分方向看系统性偏差，指导模型偏移修正 ----
+  const wallSeries = [
+    { key: "x" as const, name: "右", color: "#ff5d5d" },
+    { key: "z" as const, name: "上", color: "#5a8bff" },
+    { key: "y" as const, name: "入墙", color: "#56d9c5" },
+  ];
+  makeChart(wallAdjChart.value!, {
+    ...BASE_OPTS,
+    grid: { ...BASE_OPTS.grid, right: 110 },
+    title: {
+      text: "墙面系微调分量趋势（mm，均值线偏离 0 说明该方向有系统性偏差）",
+      left: 0,
+      textStyle: { color: "#e7eef9", fontSize: 14 },
+    },
+    legend: { textStyle: { color: "#8fa3c0" }, top: 4, right: 0 },
+    xAxis: { type: "category", data: times, ...axisStyle() },
+    yAxis: { type: "value", name: "mm", ...axisStyle() },
+    series: wallSeries.map(({ key, name, color }) => ({
+      name,
+      type: "line",
+      connectNulls: true,
+      symbolSize: 6,
+      lineStyle: { width: 2 },
+      itemStyle: { color },
+      data: asc.map((r) => {
+        const w = wallAdjustment(r.meta);
+        return w ? w[key].toFixed(1) : null;
+      }),
+      markLine: {
+        silent: true,
+        symbol: "none",
+        lineStyle: { color, type: "dashed", opacity: 0.55 },
+        label: {
+          color,
+          fontSize: 11,
+          formatter: (p: any) => `${name}均值 ${Number(p.value).toFixed(1)}`,
+        },
+        data: [{ type: "average" }],
+      },
     })),
   });
 
@@ -268,6 +312,7 @@ onBeforeUnmount(() => {
 
     <div class="charts">
       <div ref="adjChart" class="card chart wide" />
+      <div ref="wallAdjChart" class="card chart wide" />
       <div ref="fitChart" class="card chart wide" />
       <div ref="confChart" class="card chart" />
       <div ref="wallChart" class="card chart" />

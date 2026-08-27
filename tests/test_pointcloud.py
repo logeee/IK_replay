@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -450,6 +451,7 @@ class PointCloudBackendTest(unittest.TestCase):
                     "surface_reference_camera": picked["p_camera"],
                     "pixel": picked["pixel"],
                     "adjustment_camera_m": [0.001, 0.0, 0.0],
+                    "adjustment_wall_mm": {"x": 1.0, "y": 0.0, "z": 0.0},
                     "approach_offset_m": 0.0,
                     "selection_source": "target-finder/0.2.0-s",
                     "model_version": "0.2.0-s",
@@ -463,6 +465,9 @@ class PointCloudBackendTest(unittest.TestCase):
         self.assertEqual(sent["capture_id"], metadata["capture_id"])
         self.assertEqual(sent["pixel"], [1, 1])
         self.assertEqual(sent["adjustment_camera_m"], [0.001, 0.0, 0.0])
+        self.assertEqual(
+            sent["adjustment_wall_mm"], {"x": 1.0, "y": 0.0, "z": 0.0}
+        )
         self.assertEqual(sent["selection_source"], "target-finder/0.2.0-s")
         self.assertEqual(sent["model_version"], "0.2.0-s")
         self.assertEqual(sent["target_point_slot"], 1)
@@ -471,6 +476,16 @@ class PointCloudBackendTest(unittest.TestCase):
         self.assertEqual(
             restored["confirmed_selection"]["result"]["p_root"],
             [0.005, 0.005, 1.0],
+        )
+        # 墙面系原始微调量要一路存进选点记录的 meta.json
+        record_name = confirmed.get("record")
+        self.assertTrue(record_name)
+        record_meta = json.loads(
+            (pointcloud_viewer.PICK_HISTORY_DIR / record_name / "meta.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            record_meta["adjustment_wall_mm"], {"x": 1.0, "y": 0.0, "z": 0.0}
         )
 
     def test_auto_target_uses_frozen_capture_and_caches_result(self):

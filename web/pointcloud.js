@@ -774,7 +774,10 @@ async function autoTarget() {
       -1,
       result.matched_detection_name,
       {
-        baseCamera: result.panel_center_camera_m,
+        // 基准点必须是模型推出的目的点（与 flow 链路一致），确认时作为
+        // surface_reference_camera 用于表面拟合和存档的“算法目标”；
+        // 旋钮中心另存于 panelCenterCamera，仅用于显示
+        baseCamera: result.target_camera_m,
         modelVersion: result.model_version,
         targetPointSlot: result.target_point_slot,
         matchedDetectionName: result.matched_detection_name,
@@ -970,6 +973,23 @@ async function confirmTarget() {
   const button = $("confirmTarget");
   button.disabled = true;
   setStatus("正在用冻结深度拟合表面，并提交给 18001…");
+  // 墙面系微调分量（右x/入墙y/上z，mm）：把累计的相机系微调向量投影到
+  // 三根正交墙面轴上还原原始输入，随确认一并存档
+  const wallAxes = Array.isArray(selection.wallAxesCamera)
+    && selection.wallAxesCamera.length === 3
+    && selection.wallAxesCamera.every(
+      (axis) => Array.isArray(axis) && axis.length === 3
+        && axis.every((value) => Number.isFinite(Number(value))),
+    ) ? selection.wallAxesCamera : null;
+  const adjustmentWallMm = wallAxes
+    ? Object.fromEntries(["x", "y", "z"].map((key, i) => [
+      key,
+      selection.adjustment.reduce(
+        (sum, component, j) => sum + component * Number(wallAxes[i][j]),
+        0,
+      ) * 1000,
+    ]))
+    : null;
   try {
     const response = await fetch(
       `/api/pointcloud/confirm/${captureMeta.capture_id}`,
@@ -981,6 +1001,7 @@ async function confirmTarget() {
           surface_reference_camera: selection.baseCamera,
           pixel: selection.pixel,
           adjustment_camera_m: selection.adjustment,
+          adjustment_wall_mm: adjustmentWallMm,
           approach_offset_m: Number($("approachOffset").value || 0),
           selection_source: selection.source || null,
           model_version: selection.modelVersion || null,
