@@ -130,6 +130,7 @@ const reach = {
   finePick: false,  // 弹窗「再次选点」置位：下一次取点直达（跳过经由路点），执行时消费
   sideCache: null,  // 分段暂停时预取的横移规划 {stepCm, joints, seg}
   sidesteps: [],    // 落盘的横移录制（免 IK 回放）
+  libraryMode: null, // 分类选择弹窗当前在选 waypoint 还是 sequence
 };
 
 async function initReach() {
@@ -169,8 +170,10 @@ async function initReach() {
     viaList: document.getElementById("reachViaList"),
     endSel: document.getElementById("reachEndSel"),
     gotoSel: document.getElementById("reachGotoSel"),
+    gotoPick: document.getElementById("reachGotoPickBtn"),
     gotoBtn: document.getElementById("reachGotoBtn"),
     seqSel: document.getElementById("reachSeqSel"),
+    seqPick: document.getElementById("reachSeqPickBtn"),
     seqRun: document.getElementById("reachSeqRunBtn"),
     seqSave: document.getElementById("reachSeqSaveBtn"),
     seqDel: document.getElementById("reachSeqDelBtn"),
@@ -196,6 +199,14 @@ async function initReach() {
     fsVideo: document.getElementById("reachFsVideo"),
     fsMark: document.getElementById("reachFsMark"),
     fsClose: document.getElementById("reachFsCloseBtn"),
+    libraryModal: document.getElementById("reachLibraryModal"),
+    libraryTitle: document.getElementById("reachLibraryTitle"),
+    libraryGroup: document.getElementById("reachLibraryGroup"),
+    libraryItem: document.getElementById("reachLibraryItem"),
+    libraryHint: document.getElementById("reachLibraryHint"),
+    libraryConfirm: document.getElementById("reachLibraryConfirmBtn"),
+    libraryCancel: document.getElementById("reachLibraryCancelBtn"),
+    libraryClose: document.getElementById("reachLibraryCloseBtn"),
   };
   const d = reach.dom;
   d.panel.classList.remove("hidden");
@@ -235,6 +246,21 @@ async function initReach() {
   d.record.addEventListener("click", () => recordWaypoint());
   d.delWp.addEventListener("click", () => deleteWaypoint());
   d.addVia.addEventListener("click", () => addViaWaypoint());
+  d.gotoPick.addEventListener("click", () => openReachLibrary("waypoint"));
+  d.seqPick.addEventListener("click", () => openReachLibrary("sequence"));
+  d.libraryGroup.addEventListener("change", () => populateReachLibraryItems());
+  d.libraryItem.addEventListener("change", () => updateReachLibraryHint());
+  d.libraryConfirm.addEventListener("click", () => confirmReachLibrarySelection());
+  d.libraryCancel.addEventListener("click", () => closeReachLibrary());
+  d.libraryClose.addEventListener("click", () => closeReachLibrary());
+  d.libraryModal.addEventListener("click", (event) => {
+    if (event.target === d.libraryModal) closeReachLibrary();
+  });
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !d.libraryModal.classList.contains("hidden")) {
+      closeReachLibrary();
+    }
+  });
   // 路点当终点：不从图像取点，从当前姿态直接去选中路点（关节插值，无 IK）
   d.gotoBtn.addEventListener("click", async () => {
     const wp = waypointByFile(d.gotoSel.value);
@@ -1177,6 +1203,144 @@ async function moveToWaypoint(wp, options = {}) {
   }
 }
 
+// ---- 路点终点 / 动作序列分类选择弹窗 ----
+
+function reachLibraryItems() {
+  return reach.libraryMode === "waypoint"
+    ? (reach.waypoints || [])
+    : (reach.sequences || []);
+}
+
+function reachLibraryDistance(item) {
+  const text = String(item?.name || item?.file || "").trim();
+  const match = text.match(/^(\d+(?:\.\d+)?)/);
+  return match ? Number(match[1]) : null;
+}
+
+function reachLibraryGroupOf(item) {
+  const text = `${item?.name || ""} ${item?.file || ""}`;
+  if (text.includes("左")) return "left";
+  if (text.includes("右")) return "right";
+  // 早期右侧数据没有写“右”，名称是“0.50-起手式新/终点”等。
+  if (reachLibraryDistance(item) !== null && /(起手式|终点|避障)/.test(text)) {
+    return "right";
+  }
+  return "other";
+}
+
+function compareReachLibraryItems(a, b) {
+  const da = reachLibraryDistance(a);
+  const db = reachLibraryDistance(b);
+  if (da !== null && db !== null && da !== db) return da - db;
+  if (da !== null && db === null) return -1;
+  if (da === null && db !== null) return 1;
+  return String(a.name || a.file).localeCompare(
+    String(b.name || b.file), "zh-CN", { numeric: true },
+  );
+}
+
+function reachLibrarySelection() {
+  const file = reach.libraryMode === "waypoint"
+    ? reach.dom.gotoSel.value
+    : reach.dom.seqSel.value;
+  return reachLibraryItems().find((item) => item.file === file) || null;
+}
+
+function openReachLibrary(mode) {
+  reach.libraryMode = mode;
+  const d = reach.dom;
+  d.libraryTitle.textContent = mode === "waypoint"
+    ? "选择路点终点"
+    : "选择动作序列";
+
+  const items = reachLibraryItems();
+  const counts = { left: 0, right: 0, other: 0 };
+  for (const item of items) counts[reachLibraryGroupOf(item)] += 1;
+  const labels = { left: "左", right: "右", other: "其他" };
+  for (const option of d.libraryGroup.options) {
+    option.textContent = `${labels[option.value]}（${counts[option.value]}）`;
+    option.disabled = counts[option.value] === 0;
+  }
+
+  const selected = reachLibrarySelection();
+  const preferred = selected ? reachLibraryGroupOf(selected) : "left";
+  const firstAvailable = ["left", "right", "other"].find((key) => counts[key] > 0);
+  d.libraryGroup.value = counts[preferred] > 0 ? preferred : (firstAvailable || "other");
+  populateReachLibraryItems(selected?.file || "");
+  d.libraryModal.classList.remove("hidden");
+  d.libraryGroup.focus();
+}
+
+function populateReachLibraryItems(preferredFile = "") {
+  const d = reach.dom;
+  const items = reachLibraryItems()
+    .filter((item) => reachLibraryGroupOf(item) === d.libraryGroup.value)
+    .sort(compareReachLibraryItems);
+  d.libraryItem.innerHTML = "";
+  for (const item of items) {
+    const option = document.createElement("option");
+    const distance = reachLibraryDistance(item);
+    const suffix = reach.libraryMode === "sequence"
+      ? ` · ${(item.waypoints || []).length}段`
+      : "";
+    option.value = item.file;
+    option.textContent = `${distance === null ? "未标距离" : `${distance.toFixed(2)} m`} · ${item.name}${suffix}`;
+    d.libraryItem.append(option);
+  }
+  if (preferredFile && items.some((item) => item.file === preferredFile)) {
+    d.libraryItem.value = preferredFile;
+  }
+  d.libraryConfirm.disabled = items.length === 0;
+  updateReachLibraryHint();
+}
+
+function updateReachLibraryHint() {
+  const d = reach.dom;
+  const item = reachLibraryItems().find(
+    (candidate) => candidate.file === d.libraryItem.value,
+  );
+  if (!item) {
+    d.libraryHint.textContent = "这个分类下暂时没有可选项目。";
+    return;
+  }
+  const position = [...d.libraryItem.options].findIndex(
+    (option) => option.value === item.file,
+  ) + 1;
+  d.libraryHint.textContent = `已按距离从近到远排序 · 第 ${position}/${d.libraryItem.options.length} 项 · ${item.file}`;
+}
+
+function confirmReachLibrarySelection() {
+  const d = reach.dom;
+  const file = d.libraryItem.value;
+  if (!file) return;
+  const target = reach.libraryMode === "waypoint" ? d.gotoSel : d.seqSel;
+  target.value = file;
+  target.dispatchEvent(new Event("change"));
+  updateReachLibraryTriggerLabels();
+  closeReachLibrary();
+}
+
+function closeReachLibrary() {
+  reach.dom.libraryModal.classList.add("hidden");
+  reach.libraryMode = null;
+}
+
+function updateReachLibraryTriggerLabels() {
+  if (!reach.dom) return;
+  const waypoint = waypointByFile(reach.dom.gotoSel.value);
+  const sequence = sequenceByFile(reach.dom.seqSel.value);
+  reach.dom.gotoPick.textContent = waypoint
+    ? `终点：${waypoint.name}`
+    : "选择路点终点…";
+  reach.dom.gotoPick.title = waypoint?.file || "按左 / 右 / 其他分类选择路点终点";
+  reach.dom.gotoPick.disabled = !(reach.waypoints || []).length;
+  reach.dom.seqPick.textContent = sequence
+    ? `序列：${sequence.name}`
+    : "选择动作序列…";
+  reach.dom.seqPick.title = sequence?.file || "按左 / 右 / 其他分类选择动作序列";
+  reach.dom.seqPick.disabled = !(reach.sequences || []).length;
+}
+
 // ---- 动作序列：一组路点按序回放（纯关节插值，无 IK），存盘后一键调用 ----
 
 async function refreshSequences() {
@@ -1196,11 +1360,13 @@ async function refreshSequences() {
     sel.value = prev;
   }
   updateSequenceUi();
+  updateReachLibraryTriggerLabels();
 }
 
 function updateSequenceUi() {
   if (!reach.dom?.seqRun || !reach.dom?.seqSel) return;
   const seq = sequenceByFile(reach.dom.seqSel.value);
+  updateReachLibraryTriggerLabels();
   reach.dom.seqDel.disabled = !seq;
   if (!seq) {
     reach.dom.seqRun.disabled = true;
@@ -1250,6 +1416,7 @@ async function saveSequence() {
     });
     await refreshSequences();
     reach.dom.seqSel.value = reach.sequences[0]?.file || "";
+    updateSequenceUi();
     reachMsg(`序列「${name.trim()}」已保存（${wps.length} 段）`, "success");
   } catch (error) {
     reachMsg(`保存序列失败: ${error.message}`, "error");
@@ -1603,6 +1770,7 @@ async function refreshWaypoints() {
   fill(reach.dom.endSel, "（不收回）");
   fill(reach.dom.gotoSel, "（路点终点）");
   reach.dom.delWp.disabled = !reach.waypoints.length;
+  updateReachLibraryTriggerLabels();
   // 路点文件可能被删除，清掉队列里的失效项
   reach.viaList = (reach.viaList || []).filter((f) => reach.waypoints.some((w) => w.file === f));
   renderViaList();

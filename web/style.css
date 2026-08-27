@@ -572,6 +572,14 @@ button:disabled {
   gap: 6px;
 }
 
+#reachGotoPickBtn,
+#reachSeqPickBtn {
+  min-width: 0;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+}
+
 .reach-video-btns button {
   padding: 4px 12px;
   border: 1px solid #c9d5df;
@@ -605,6 +613,124 @@ button:disabled {
   border-radius: 7px;
   overflow: hidden;
   background: #0c1014;
+}
+
+/* 路点终点 / 动作序列分组选择弹窗 */
+.reach-library-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(8, 12, 16, 0.72);
+  backdrop-filter: blur(2px);
+}
+
+.reach-library-modal.hidden {
+  display: none;
+}
+
+.reach-library-card {
+  width: min(520px, 100%);
+  padding: 16px;
+  border: 1px solid #aebdca;
+  border-radius: 12px;
+  background: #f7fafc;
+  box-shadow: 0 18px 55px rgba(0, 0, 0, 0.32);
+  color: #213142;
+}
+
+.reach-library-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  font-size: 17px;
+}
+
+.reach-library-header button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid #c9d5df;
+  border-radius: 7px;
+  background: #fff;
+  color: #4a5a6b;
+  cursor: pointer;
+  font-size: 20px;
+}
+
+.reach-library-fields {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.reach-library-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.reach-library-fields span {
+  color: #526579;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.reach-library-fields select {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #b9c7d3;
+  border-radius: 7px;
+  background: #fff;
+  color: #172636;
+  font-size: 14px;
+}
+
+.reach-library-hint {
+  min-height: 18px;
+  margin-top: 10px;
+  color: #607387;
+  font-size: 12px;
+}
+
+.reach-library-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.reach-library-actions button {
+  min-width: 90px;
+  padding: 7px 13px;
+  border: 1px solid #b9c7d3;
+  border-radius: 7px;
+  background: #fff;
+  color: #26394b;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.reach-library-actions button.primary {
+  border-color: #2d78ad;
+  background: #2d78ad;
+  color: #fff;
+}
+
+.reach-library-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@media (max-width: 620px) {
+  .reach-library-fields {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* 全屏选点覆盖层 */

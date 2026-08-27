@@ -51,10 +51,12 @@
                      title="柜面法向 / 垂直指标实时观测 + 腰 yaw 点动">垂直度调试 ↗</a>
                 </div>
                 <div class="reach-goto-actions">
-                  <select id="reachGotoSel" class="reach-waypoint-sel"
-                          title="不从图像取点，把录制路点直接当终点">
+                  <select id="reachGotoSel" hidden
+                          title="当前选中的路点终点">
                     <option value="">（路点终点）</option>
                   </select>
+                  <button id="reachGotoPickBtn" type="button"
+                          title="按左 / 右 / 其他分类，并按距离选择路点终点">选择路点终点…</button>
                   <button id="reachGotoBtn" type="button"
                           title="从当前姿态直接运动到选中路点（关节插值，无 IK）">▶ 前往</button>
                 </div>
@@ -107,9 +109,11 @@
               <div class="reach-control-group reach-sequence-group">
                 <div class="reach-sequence-main">
                   <span>动作序列</span>
-                  <select id="reachSeqSel" class="reach-waypoint-sel">
+                  <select id="reachSeqSel" hidden>
                     <option value="">（未选择）</option>
                   </select>
+                  <button id="reachSeqPickBtn" type="button"
+                          title="按左 / 右 / 其他分类，并按距离选择动作序列">选择动作序列…</button>
                   <button id="reachSeqRunBtn" type="button" disabled
                           title="选择序列并接管手臂后可用">先接管</button>
                 </div>
@@ -168,6 +172,35 @@
           </div>
         </div>
 
+        <div id="reachLibraryModal" class="reach-library-modal hidden"
+             role="dialog" aria-modal="true" aria-labelledby="reachLibraryTitle">
+          <div class="reach-library-card">
+            <div class="reach-library-header">
+              <strong id="reachLibraryTitle">选择项目</strong>
+              <button id="reachLibraryCloseBtn" type="button" aria-label="关闭">×</button>
+            </div>
+            <div class="reach-library-fields">
+              <label>
+                <span>动作方向</span>
+                <select id="reachLibraryGroup">
+                  <option value="left">左</option>
+                  <option value="right">右</option>
+                  <option value="other">其他</option>
+                </select>
+              </label>
+              <label>
+                <span>距离 / 名称</span>
+                <select id="reachLibraryItem"></select>
+              </label>
+            </div>
+            <div id="reachLibraryHint" class="reach-library-hint"></div>
+            <div class="reach-library-actions">
+              <button id="reachLibraryCancelBtn" type="button">取消</button>
+              <button id="reachLibraryConfirmBtn" type="button" class="primary">确定选择</button>
+            </div>
+          </div>
+        </div>
+
         <div id="reachFsOverlay" class="reach-fs-overlay hidden">
           <div class="reach-fs-bar">
             <span>全屏选点：在画面中点击目标，确认后自动退出全屏（Esc 取消）</span>
@@ -191,6 +224,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=84"></script>
+    <script type="module" src="/web/main.js?v=85"></script>
   </body>
 </html>
