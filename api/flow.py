@@ -37,6 +37,8 @@ YOLO Mask 拟合面板矩形取中心（粉点）→ 0.2.0-s 模型偏移得到�
 
 from __future__ import annotations
 
+import base64
+import json
 import math
 import re
 import threading
@@ -44,6 +46,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from enum import IntEnum
+from pathlib import Path
 from typing import Any
 
 from .client import ReachClient
@@ -190,6 +193,10 @@ class SwitchFlow:
         self._current_pose: dict | None = None
         self._armed_by_flow = False   # 手臂是流程接管的（而非用户本来就接管着）
         self._arm_moved = False       # 已下发过手臂动作 → 失败时要先受控回落
+        # 拨动证据：横移前/复核时各存一帧头部相机图 + YOLO 判定，
+        # 落到本轮选点记录目录（data/pick_history/<record>/flip_*）
+        self._last_pick_record: str | None = None
+        self._last_flip_round: int | None = None
         self.log_lines: deque[str] = deque(maxlen=300)   # 供调度服务透出进度
         # 强制停止开关：外部（/emergency/stop）置位后，流程在最近的检查点退出。
         # 置位时手臂多半已被强停端点直接释放了，所以退出路径不再做受控回落。
@@ -722,6 +729,10 @@ class SwitchFlow:
                                 f"{tag} 到位执行被拒: {res.get('error')}")
             self._wait_exec(f"{tag} 到位")
 
+            # 横移（拨动本体）之前存一帧证据：此刻开关还是拨前状态
+            self._last_pick_record = picked.get("record")
+            self._last_flip_round = round_no
+            self._flip_evidence_before()
             self._sidestep_flick(picked, tag)
 
     def _sidestep_flick(self, picked: dict, tag: str) -> None:
@@ -847,20 +858,23 @@ class SwitchFlow:
     YOLO_ATTEMPTS = 3
     YOLO_RETRY_WAIT_S = 0.6   # 两次之间等一下，等新的一帧
 
-    def _yolo_scene(self, tag: str) -> dict | None:
+    def _yolo_scene(self, tag: str, include_image: bool = False) -> dict | None:
         """问 YOLO 服务当前是就地还是远方，最多问 YOLO_ATTEMPTS 次。
 
         返回 {"scene": "就地"|"远方", "conf": ...}；没配 YOLO、服务不可达
-        或每次都没识别到 → 返回 None。
+        或每次都没识别到 → 返回 None。include_image=True 时返回里带
+        jpeg_b64（判定帧）和 boxes，供拨动证据存档。
         """
         if self.yolo is None:
             return None
         for i in range(1, self.YOLO_ATTEMPTS + 1):
-            res = self.yolo.scene()
+            res = self.yolo.scene(include_image=include_image)
             if res.get("ok") and res.get("scene") in ("就地", "远方"):
                 self._log(f"{tag}：YOLO 识别为「{res['scene']}」"
                           f"（置信度 {res.get('conf')}，第 {i} 次尝试）")
-                return {"scene": res["scene"], "conf": res.get("conf")}
+                return {"scene": res["scene"], "conf": res.get("conf"),
+                        "boxes": res.get("boxes"),
+                        "jpeg_b64": res.get("jpeg_b64")}
             self._log(f"{tag}：第 {i}/{self.YOLO_ATTEMPTS} 次没结论"
                       f"（{res.get('error') or '画面里没识别到就地/远方'}）")
             if i < self.YOLO_ATTEMPTS:
@@ -1114,6 +1128,61 @@ class SwitchFlow:
                       f"（7005 页面 /picks 可回看截图与点云）")
         return res, ""
 
+    # ---- 拨动证据：横移前 / 复核时各一帧头部相机图 + YOLO 判定 ----
+    # 存进本轮选点记录目录（data/pick_history/<record>/），与截图、点云
+    # 同处一包，7005 /picks 和 web-picks 可回看。存档失败只记日志，
+    # 绝不影响主流程。
+    _PICK_HISTORY_DIR = (Path(__file__).resolve().parent.parent
+                         / "data" / "pick_history")
+
+    def _flip_evidence_before(self) -> None:
+        """横移前抓一帧：此刻开关应仍是拨前状态（手臂可能遮挡，识别可空）。"""
+        if self.yolo is None or not self._last_pick_record:
+            return
+        res = self.yolo.scene(include_image=True)
+        if res.get("ok"):
+            self._save_flip_evidence("before", res)
+        else:
+            self._log(f"⚠ 拨动前证据抓帧失败（不影响流程）: {res.get('error')}")
+
+    def _save_flip_evidence(self, stage: str, res: dict,
+                            success: bool | None = None) -> None:
+        record = self._last_pick_record
+        if not record or not res:
+            return
+        try:
+            record_dir = self._PICK_HISTORY_DIR / record
+            if not record_dir.is_dir():
+                return
+            jpeg_b64 = res.get("jpeg_b64")
+            if jpeg_b64:
+                (record_dir / f"flip_{stage}.jpg").write_bytes(
+                    base64.b64decode(jpeg_b64))
+            result_path = record_dir / "flip_result.json"
+            data: dict[str, Any] = {}
+            if result_path.is_file():
+                data = json.loads(result_path.read_text(encoding="utf-8"))
+            entry: dict[str, Any] = {
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "scene": res.get("scene"),
+                "conf": res.get("conf"),
+                "boxes": res.get("boxes"),
+                "has_image": bool(jpeg_b64),
+            }
+            if success is not None:
+                entry["success"] = bool(success)
+            data[stage] = entry
+            data.update({"flip_from": self.flip_from,
+                         "flip_to": self.flip_to,
+                         "round": self._last_flip_round})
+            result_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+            self._log(f"拨动{'前' if stage == 'before' else '后'}证据已存："
+                      f"{record}/flip_{stage}.jpg")
+        except Exception as exc:
+            self._log(f"⚠ 拨动证据存档失败（不影响流程）: {exc}")
+
     VERIFY_SETTLE_S = 1.5   # 复核仍看到拨前状态时，等这么久再复看一眼
 
     def verify_flip(self) -> bool:
@@ -1123,19 +1192,24 @@ class SwitchFlow:
         再复看一眼，两次都是拨前状态才算失败（误判失败要白跑一整轮）。
         完全看不到开关（多次都没结论）→ 报 YOLO_FAILED 退出，别把"看不清"
         当成"没拨动"去重试；只有压根没配 YOLO 时才走确认台。
+        判定用的那帧图和结论随手存进选点记录目录（flip_after.jpg）。
         """
-        got = self._yolo_scene("复核")
+        got = self._yolo_scene("复核", include_image=True)
         if got is not None:
             if got["scene"] == self.flip_to:
+                self._save_flip_evidence("after", got, success=True)
                 return True
             self._log(f"复核仍是「{got['scene']}」，等 {self.VERIFY_SETTLE_S}s "
                       f"排除手臂未停稳/遮挡后再看一眼")
             time.sleep(self.VERIFY_SETTLE_S)
-            again = self._yolo_scene("复核（二次）")
+            again = self._yolo_scene("复核（二次）", include_image=True)
             if again is not None:
-                return again["scene"] == self.flip_to
+                success = again["scene"] == self.flip_to
+                self._save_flip_evidence("after", again, success=success)
+                return success
             self._log(f"复核二次没结论，按第一次的「{got['scene']}」"
                       f"判为未拨动，走重试")
+            self._save_flip_evidence("after", got, success=False)
             return False
         if self.yolo is not None:
             raise FlowError(ErrorCode.YOLO_FAILED,

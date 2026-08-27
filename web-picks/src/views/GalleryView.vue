@@ -202,6 +202,13 @@ function adjClass(mm: number | null): string {
               槽位 {{ r.meta.target_point_slot }}
             </span>
             <span
+              v-if="r.flip?.after?.success != null"
+              class="badge"
+              :class="r.flip!.after!.success ? 'exec-done' : 'exec-error'"
+            >
+              {{ r.flip!.after!.success ? "拨动✓" : "拨动✗" }}
+            </span>
+            <span
               v-if="execInfo(r)"
               class="badge exec"
               :class="`exec-${execInfo(r)!.kind}`"

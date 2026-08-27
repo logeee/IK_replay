@@ -53,10 +53,29 @@ export interface PickMeta {
   crop_radius_m?: number;
 }
 
+/** 拨动前/后单帧证据（flow 写入 flip_result.json） */
+export interface FlipStage {
+  ts?: string;
+  scene?: string | null;
+  conf?: number | null;
+  boxes?: YoloBox[] | null;
+  has_image?: boolean;
+  success?: boolean;
+}
+
+export interface FlipResult {
+  before?: FlipStage;
+  after?: FlipStage;
+  flip_from?: string;
+  flip_to?: string;
+  round?: number | null;
+}
+
 export interface PickRecord {
   name: string;
   cloud_bytes: number;
   meta: PickMeta;
+  flip?: FlipResult | null;
 }
 
 /** 18001 执行记录摘要（reach JSONL，经 picks_server 解析） */

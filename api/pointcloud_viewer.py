@@ -521,7 +521,10 @@ def _capture_by_id(capture_id: str) -> Capture | None:
 PICK_HISTORY_DIR = ROOT / "data" / "pick_history"
 PICK_HISTORY_KEEP = 500          # 最多保留条数，超出删最旧
 PICK_CROP_RADIUS_M = 0.20        # 以算法目标为中心裁剪这么大一球的点云
-PICK_RECORD_FILES = ("snapshot.jpg", "cloud.ply", "meta.json")
+# flip_* 三个文件由流程（api/flow.py）在拨动前后追加：头部相机判定帧
+# 与 YOLO 复核结论
+PICK_RECORD_FILES = ("snapshot.jpg", "cloud.ply", "meta.json",
+                     "flip_before.jpg", "flip_after.jpg", "flip_result.json")
 _RECORD_NAME_RE = re.compile(r"^[0-9]{8}_[0-9]{6}_[0-9a-f]{8}$")
 
 

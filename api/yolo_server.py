@@ -93,7 +93,7 @@ def _infer_jpeg(jpeg: bytes, conf: float | None = None) -> list[dict]:
     return boxes
 
 
-def _grab_and_infer(conf: float | None = None) -> dict:
+def _grab_and_infer(conf: float | None = None, keep_jpeg: bool = False) -> dict:
     try:
         jpeg = _grab_jpeg()
     except Exception as exc:
@@ -102,7 +102,10 @@ def _grab_and_infer(conf: float | None = None) -> dict:
         boxes = _infer_jpeg(jpeg, conf)
     except Exception as exc:
         return {"ok": False, "error": f"推理失败: {exc}"}
-    return {"ok": True, "boxes": boxes}
+    out: dict = {"ok": True, "boxes": boxes}
+    if keep_jpeg:
+        out["jpeg"] = jpeg
+    return out
 
 
 @app.get("/api/yolo/status")
@@ -121,21 +124,27 @@ def infer(body: dict | None = None):
 
 
 @app.get("/api/yolo/scene")
-def scene(conf: float | None = None):
+def scene(conf: float | None = None, include_image: bool = False):
     """就地/远方归类：取两类框里置信度最高的那个定调。
 
     返回 {"ok": true, "scene": "就地"|"远方"|null, "conf": ..., "boxes": [...]}
     scene=null 表示画面里没识别到这两类（调用方转人工或报错）。
+    include_image=true 时返回体多一个 jpeg_b64——就是本次判定用的那帧
+    JPEG（base64），流程存拨动前后证据用，保证"存的图=判的图"。
     """
-    res = _grab_and_infer(conf)
+    res = _grab_and_infer(conf, keep_jpeg=include_image)
     if not res["ok"]:
         return JSONResponse(res, status_code=502)
     candidates = [b for b in res["boxes"] if b["name"] in SCENE_CLASSES]
     best = max(candidates, key=lambda b: b["conf"], default=None)
-    return {"ok": True,
-            "scene": best["name"] if best else None,
-            "conf": best["conf"] if best else None,
-            "boxes": res["boxes"]}
+    out = {"ok": True,
+           "scene": best["name"] if best else None,
+           "conf": best["conf"] if best else None,
+           "boxes": res["boxes"]}
+    if include_image and res.get("jpeg") is not None:
+        import base64
+        out["jpeg_b64"] = base64.b64encode(res["jpeg"]).decode("ascii")
+    return out
 
 
 def _lan_ip() -> str:

@@ -28,12 +28,16 @@ ROOT = Path(__file__).resolve().parent.parent
 PICK_HISTORY_DIR = ROOT / "data" / "pick_history"
 REACH_LOG_DIR = ROOT / "logs" / "reach"
 DIST_DIR = ROOT / "web-picks" / "dist"
-RECORD_FILES = ("snapshot.jpg", "cloud.ply", "meta.json")
+RECORD_FILES = ("snapshot.jpg", "cloud.ply", "meta.json",
+                "flip_before.jpg", "flip_after.jpg", "flip_result.json")
 _RECORD_NAME_RE = re.compile(r"^[0-9]{8}_[0-9]{6}_[0-9a-f]{8}$")
 _MEDIA_TYPES = {
     "snapshot.jpg": "image/jpeg",
     "cloud.ply": "application/octet-stream",
     "meta.json": "application/json",
+    "flip_before.jpg": "image/jpeg",
+    "flip_after.jpg": "image/jpeg",
+    "flip_result.json": "application/json",
 }
 
 app = FastAPI(title="pick-history-viewer")
@@ -68,7 +72,16 @@ def _list_records(limit: int) -> list[dict[str, Any]]:
             cloud_bytes = (PICK_HISTORY_DIR / name / "cloud.ply").stat().st_size
         except OSError:
             cloud_bytes = 0
-        records.append({"name": name, "cloud_bytes": cloud_bytes, "meta": meta})
+        # 拨动前后证据（流程写入，手动选点的记录没有）
+        flip: dict[str, Any] | None = None
+        flip_path = PICK_HISTORY_DIR / name / "flip_result.json"
+        if flip_path.is_file():
+            try:
+                flip = json.loads(flip_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        records.append({"name": name, "cloud_bytes": cloud_bytes,
+                        "meta": meta, "flip": flip})
     return records
 
 

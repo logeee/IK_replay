@@ -255,6 +255,37 @@ function fmtMm(v?: number | null): string {
       </div>
     </div>
 
+    <div v-if="record.flip" class="exec-section">
+      <h2 class="section-title">
+        拨动前后对比（{{ record.flip.flip_from }} → {{ record.flip.flip_to
+        }}<template v-if="record.flip.round">，第 {{ record.flip.round }} 轮</template>）
+        <span
+          v-if="record.flip.after?.success != null"
+          class="badge"
+          :class="record.flip.after.success ? 'exec-done' : 'exec-error'"
+        >
+          {{ record.flip.after.success ? "拨动成功" : "拨动未成功" }}
+        </span>
+      </h2>
+      <div class="flip-grid">
+        <figure v-for="stage in (['before', 'after'] as const)" :key="stage">
+          <template v-if="record.flip[stage]?.has_image">
+            <a :href="fileUrl(name, `flip_${stage}.jpg`)" target="_blank">
+              <img :src="fileUrl(name, `flip_${stage}.jpg`)" loading="lazy" />
+            </a>
+          </template>
+          <div v-else class="flip-missing">无图像</div>
+          <figcaption>
+            {{ stage === "before" ? "横移前" : "复核帧" }} ·
+            YOLO：{{ record.flip[stage]?.scene ?? "无结论"
+            }}<template v-if="record.flip[stage]?.conf != null">
+              （conf {{ record.flip[stage]!.conf!.toFixed(2) }}）</template>
+            <span class="mono flip-ts">{{ record.flip[stage]?.ts }}</span>
+          </figcaption>
+        </figure>
+      </div>
+    </div>
+
     <div v-if="executions.length" class="exec-section">
       <h2 class="section-title">执行记录（基坐标系漂移与误差归因）</h2>
       <div v-for="e in executions" :key="e.id" class="card exec-card">
@@ -439,6 +470,55 @@ function fmtMm(v?: number | null): string {
 
 .exec-section {
   margin-bottom: 20px;
+}
+
+.section-title .badge {
+  margin-left: 8px;
+}
+
+.flip-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 900px) {
+  .flip-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.flip-grid figure {
+  margin: 0;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.flip-grid img {
+  width: 100%;
+  display: block;
+}
+
+.flip-missing {
+  aspect-ratio: 16 / 9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  background: var(--bg-soft);
+}
+
+.flip-grid figcaption {
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.flip-ts {
+  margin-left: 10px;
+  font-size: 12px;
 }
 
 .exec-card {

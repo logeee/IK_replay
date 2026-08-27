@@ -15,10 +15,18 @@ class YoloClient:
         self._session = requests.Session()
         self._session.trust_env = False   # 本机服务，不走系统代理
 
-    def scene(self) -> dict:
-        """{"ok": True, "scene": "就地"|"远方"|None, "conf": ..., "boxes": [...]}"""
+    def scene(self, include_image: bool = False) -> dict:
+        """{"ok": True, "scene": "就地"|"远方"|None, "conf": ..., "boxes": [...]}
+
+        include_image=True 时返回体多 jpeg_b64（判定帧，base64 JPEG），
+        供流程存拨动前后证据。
+        """
         try:
-            r = self._session.get(f"{self.base}/api/yolo/scene", timeout=30.0)
+            r = self._session.get(
+                f"{self.base}/api/yolo/scene",
+                params={"include_image": "true"} if include_image else None,
+                timeout=30.0,
+            )
             return r.json()
         except requests.RequestException as exc:
             return {"ok": False, "error": f"YOLO 服务不可达: {exc}"}
