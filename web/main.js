@@ -135,6 +135,7 @@ const reach = {
   pickSyncTimer: null,
   pickSyncApplying: false,
 };
+const START_TEST_WAYPOINT_NAME = "起手点测试";
 
 async function initReach() {
   let status = null;
@@ -175,6 +176,7 @@ async function initReach() {
     gotoSel: document.getElementById("reachGotoSel"),
     gotoPick: document.getElementById("reachGotoPickBtn"),
     gotoBtn: document.getElementById("reachGotoBtn"),
+    startTest: document.getElementById("reachStartTestBtn"),
     seqSel: document.getElementById("reachSeqSel"),
     seqPick: document.getElementById("reachSeqPickBtn"),
     seqRun: document.getElementById("reachSeqRunBtn"),
@@ -250,6 +252,7 @@ async function initReach() {
   d.delWp.addEventListener("click", () => deleteWaypoint());
   d.addVia.addEventListener("click", () => addViaWaypoint());
   d.gotoPick.addEventListener("click", () => openReachLibrary("waypoint"));
+  d.startTest.addEventListener("click", () => gotoStartTestWaypoint());
   d.seqPick.addEventListener("click", () => openReachLibrary("sequence"));
   d.libraryGroup.addEventListener("change", () => populateReachLibraryItems());
   d.libraryItem.addEventListener("change", () => updateReachLibraryHint());
@@ -1223,6 +1226,42 @@ async function returnToWaypoint(wp) {
   return moveToWaypoint(wp, { verb: `收回到「${wp.name}」`, label: `收回:${wp.name}` });
 }
 
+function startTestWaypoint() {
+  return (reach.waypoints || []).find(
+    (waypoint) => String(waypoint.name || "").trim() === START_TEST_WAYPOINT_NAME,
+  ) || null;
+}
+
+function ordinaryWaypoints() {
+  return (reach.waypoints || []).filter(
+    (waypoint) => String(waypoint.name || "").trim() !== START_TEST_WAYPOINT_NAME,
+  );
+}
+
+async function gotoStartTestWaypoint() {
+  const wp = startTestWaypoint();
+  if (!wp) {
+    reachMsg(`没有找到固定路点「${START_TEST_WAYPOINT_NAME}」`, "error");
+    return;
+  }
+  if (reach.status.armed
+      && !window.confirm(
+        `确认真机运动到路点「${START_TEST_WAYPOINT_NAME}」？\n` +
+        "（从当前姿态关节插值直达）",
+      )) {
+    return;
+  }
+  reach.dom.startTest.disabled = true;
+  try {
+    await moveToWaypoint(wp, {
+      verb: `到达「${START_TEST_WAYPOINT_NAME}」`,
+      label: `前往:${START_TEST_WAYPOINT_NAME}`,
+    });
+  } finally {
+    reach.dom.startTest.disabled = !startTestWaypoint();
+  }
+}
+
 // 前往路点：读真机实测关节 → 关节空间直线插值到路点（全程无 IK）→ 碰撞
 // 预检 → 执行。收回段和动作序列的每一段都走这里。返回是否成功到位。
 async function moveToWaypoint(wp, options = {}) {
@@ -1301,7 +1340,7 @@ async function moveToWaypoint(wp, options = {}) {
 
 function reachLibraryItems() {
   return reach.libraryMode === "waypoint"
-    ? (reach.waypoints || [])
+    ? ordinaryWaypoints()
     : (reach.sequences || []);
 }
 
@@ -1427,7 +1466,7 @@ function updateReachLibraryTriggerLabels() {
     ? `终点：${waypoint.name}`
     : "选择路点终点…";
   reach.dom.gotoPick.title = waypoint?.file || "按左 / 右 / 其他分类选择路点终点";
-  reach.dom.gotoPick.disabled = !(reach.waypoints || []).length;
+  reach.dom.gotoPick.disabled = !ordinaryWaypoints().length;
   reach.dom.seqPick.textContent = sequence
     ? `序列：${sequence.name}`
     : "选择动作序列…";
@@ -1851,9 +1890,10 @@ async function refreshWaypoints() {
     return;
   }
   reach.waypoints = data.waypoints || [];
+  const regularWaypoints = ordinaryWaypoints();
   const fill = (sel, placeholder) => {
     const prev = sel.value;
-    sel.innerHTML = `<option value="">${placeholder}</option>` + reach.waypoints
+    sel.innerHTML = `<option value="">${placeholder}</option>` + regularWaypoints
       .map((w) => `<option value="${w.file}">${w.name} · ${w.created_at || w.file}</option>`)
       .join("");
     if ([...sel.options].some((o) => o.value === prev)) {
@@ -1863,10 +1903,13 @@ async function refreshWaypoints() {
   fill(reach.dom.waypointSel, "（直达）");
   fill(reach.dom.endSel, "（不收回）");
   fill(reach.dom.gotoSel, "（路点终点）");
-  reach.dom.delWp.disabled = !reach.waypoints.length;
+  reach.dom.delWp.disabled = !regularWaypoints.length;
+  reach.dom.startTest.disabled = !startTestWaypoint();
   updateReachLibraryTriggerLabels();
   // 路点文件可能被删除，清掉队列里的失效项
-  reach.viaList = (reach.viaList || []).filter((f) => reach.waypoints.some((w) => w.file === f));
+  reach.viaList = (reach.viaList || []).filter(
+    (file) => regularWaypoints.some((waypoint) => waypoint.file === file),
+  );
   renderViaList();
 }
 

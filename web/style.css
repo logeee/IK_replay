@@ -572,6 +572,11 @@ button:disabled {
   gap: 6px;
 }
 
+.reach-start-test-btn {
+  width: 100%;
+  font-weight: 600;
+}
+
 #reachGotoPickBtn,
 #reachSeqPickBtn {
   min-width: 0;
