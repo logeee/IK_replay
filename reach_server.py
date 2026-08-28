@@ -114,6 +114,23 @@ def main() -> int:
                         help="teleimager 只读配置的本地缓存")
     parser.add_argument("--camera-stale-after", type=float, default=2.0,
                         help="超过该秒数未收到 RGB-D 帧即视为过期")
+    parser.add_argument(
+        "--wrist-camera",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="从 teleimager ZMQ 订阅右腕 JPEG，仅供横移拨动前留档",
+    )
+    parser.add_argument(
+        "--wrist-camera-port",
+        type=int,
+        default=None,
+        help="腕部 JPEG ZMQ 端口；默认通过 teleimager 配置请求获取",
+    )
+    parser.add_argument(
+        "--yolo-base",
+        default="http://127.0.0.1:7004",
+        help="18001 手动横移执行后的 YOLO 复核服务地址",
+    )
 
     parser.add_argument("--no-robot", action="store_true",
                         help="不连 DDS（纯模拟联调，页面上无法接管手臂）")
@@ -233,6 +250,7 @@ def main() -> int:
     robot_model = app_module.robots[args.robot]
 
     camera = None
+    wrist_camera = None
     if not args.robot_only:
         if args.camera_source == "zmq":
             from camera_sources import ZmqRGBDCamera
@@ -255,6 +273,24 @@ def main() -> int:
         print(f"[reach] camera = {args.camera_source}: {camera.info()}")
 
     arm = "right" if args.chain == "right_arm" else "left"
+    if not args.robot_only and args.camera_source == "zmq" and args.wrist_camera:
+        from camera_sources import ZmqJpegCamera
+
+        try:
+            wrist_camera = ZmqJpegCamera(
+                host=args.camera_host,
+                camera_name="right_wrist_camera",
+                request_port=args.camera_request_port,
+                stream_port=args.wrist_camera_port,
+                config_cache_path=args.camera_config_cache,
+                stale_after_s=args.camera_stale_after,
+            )
+            wrist_camera.start()
+            print(f"[reach] wrist camera = zmq: {wrist_camera.info()}")
+        except Exception as exc:
+            wrist_camera = None
+            print(f"[reach] ⚠ 腕部相机不可用，继续启动（核验将只保存头部图）: {exc}")
+
     joints_reader = None
     torso_reader = None
     motors_reader = None
@@ -291,7 +327,8 @@ def main() -> int:
                 return ctl
 
     reach.configure(
-        camera=camera, robot_model=robot_model, robot_id=args.robot,
+        camera=camera, wrist_camera=wrist_camera,
+        robot_model=robot_model, robot_id=args.robot,
         chain_id=args.chain,
         calib_path=None if args.camera_only else args.calib,
         camera_only=args.camera_only,
@@ -301,6 +338,7 @@ def main() -> int:
         arm_factory=arm_factory, joints_reader=joints_reader,
         torso_reader=torso_reader, motors_reader=motors_reader,
         tool_out_mm=args.tool_out_mm,
+        yolo_base=args.yolo_base,
         gravity_profile=gravity_profile_meta,
         settle_trim=settle_trim,
     )
@@ -313,6 +351,7 @@ def main() -> int:
         allowed_preview_paths = {
             "/api/reach/status",
             "/api/reach/stream",
+            "/api/reach/wrist_snapshot",
             "/api/reach/perpendicular",
             "/api/reach/alignment_config",
             "/api/reach/rgbd_snapshot",
@@ -351,6 +390,8 @@ def main() -> int:
             reach.state.controller.shutdown()
         if camera is not None:
             camera.stop()
+        if wrist_camera is not None:
+            wrist_camera.stop()
     return 0
 
 

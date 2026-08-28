@@ -71,6 +71,21 @@ def _grab_jpeg(timeout_s: float = 5.0) -> bytes:
         r.close()
 
 
+def _grab_wrist_jpeg(timeout_s: float = 3.0) -> bytes:
+    """Fetch the latest wrist JPEG relayed from teleimager ZMQ by reach_server."""
+    r = _http.get(
+        f"{_reach_base}/api/reach/wrist_snapshot",
+        timeout=(2.0, timeout_s),
+    )
+    try:
+        r.raise_for_status()
+        if not r.content.startswith(b"\xff\xd8"):
+            raise RuntimeError("腕部相机响应不是 JPEG")
+        return bytes(r.content)
+    finally:
+        r.close()
+
+
 def _infer_jpeg(jpeg: bytes, conf: float | None = None) -> list[dict]:
     import numpy as np
 
@@ -124,13 +139,17 @@ def infer(body: dict | None = None):
 
 
 @app.get("/api/yolo/scene")
-def scene(conf: float | None = None, include_image: bool = False):
+def scene(
+    conf: float | None = None,
+    include_image: bool = False,
+    include_wrist: bool = False,
+):
     """就地/远方归类：取两类框里置信度最高的那个定调。
 
     返回 {"ok": true, "scene": "就地"|"远方"|null, "conf": ..., "boxes": [...]}
     scene=null 表示画面里没识别到这两类（调用方转人工或报错）。
-    include_image=true 时返回体多一个 jpeg_b64——就是本次判定用的那帧
-    JPEG（base64），流程存拨动前后证据用，保证"存的图=判的图"。
+    include_image=true 时返回体多一个 jpeg_b64——就是本次判定用的头部帧。
+    include_wrist=true 时再取一帧右腕 JPEG，只用于横移拨动前留档。
     """
     res = _grab_and_infer(conf, keep_jpeg=include_image)
     if not res["ok"]:
@@ -144,6 +163,13 @@ def scene(conf: float | None = None, include_image: bool = False):
     if include_image and res.get("jpeg") is not None:
         import base64
         out["jpeg_b64"] = base64.b64encode(res["jpeg"]).decode("ascii")
+        if include_wrist:
+            try:
+                wrist_jpeg = _grab_wrist_jpeg()
+                out["wrist_jpeg_b64"] = base64.b64encode(wrist_jpeg).decode("ascii")
+            except Exception as exc:
+                # 右腕图只做拨动前证据，缺失不能改变头部 YOLO 的控制结论。
+                out["wrist_error"] = str(exc)
     return out
 
 

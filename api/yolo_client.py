@@ -15,16 +15,25 @@ class YoloClient:
         self._session = requests.Session()
         self._session.trust_env = False   # 本机服务，不走系统代理
 
-    def scene(self, include_image: bool = False) -> dict:
+    def scene(
+        self,
+        include_image: bool = False,
+        include_wrist: bool = False,
+    ) -> dict:
         """{"ok": True, "scene": "就地"|"远方"|None, "conf": ..., "boxes": [...]}
 
-        include_image=True 时返回体多 jpeg_b64（判定帧，base64 JPEG），
-        供流程存拨动前后证据。
+        include_image=True 时返回体多 jpeg_b64（头部判定帧）；
+        include_wrist=True 时再附带右腕核验帧，仅供横移拨动前留档。
         """
         try:
+            params = {}
+            if include_image:
+                params["include_image"] = "true"
+            if include_wrist:
+                params["include_wrist"] = "true"
             r = self._session.get(
                 f"{self.base}/api/yolo/scene",
-                params={"include_image": "true"} if include_image else None,
+                params=params or None,
                 timeout=30.0,
             )
             return r.json()

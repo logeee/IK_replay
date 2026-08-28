@@ -7,7 +7,9 @@ import math
 import time
 
 import numpy as np
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+
+from api.flip_evidence import valid_record_name
 
 from .state import _read_joints, _read_torso, router, state
 
@@ -33,6 +35,28 @@ def reach_stream():
 
     return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame",
                              headers={"Cache-Control": "no-cache"})
+
+
+@router.get("/wrist_snapshot")
+def wrist_snapshot():
+    """Return the latest right-wrist JPEG from the read-only ZMQ stream."""
+    if state.wrist_camera is None:
+        return JSONResponse(
+            {"ok": False, "error": "腕部相机未配置或启动失败"},
+            status_code=409,
+        )
+    data = state.wrist_camera.get_jpeg()
+    if data is None:
+        info = state.wrist_camera.info()
+        return JSONResponse(
+            {"ok": False, "error": info.get("error") or "尚未收到新鲜腕部相机帧"},
+            status_code=502,
+        )
+    return Response(
+        data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 # --------------- 取点 ---------------
@@ -65,6 +89,29 @@ def latest_pick():
         "plane": deepcopy(state.plane),
         "offset_mode": "plane_normal" if state.plane is not None else "camera_ray",
     }
+
+
+@router.post("/attach_pick_record")
+def attach_pick_record(body: dict):
+    """Attach the 7005 archive name after pointcloud confirmation saved it."""
+    record = str(body.get("record") or "")
+    capture_id = str(body.get("capture_id") or "")
+    if not valid_record_name(record) or not capture_id:
+        return JSONResponse(
+            {"ok": False, "error": "record 或 capture_id 非法"},
+            status_code=400,
+        )
+    with state.pick_revision_lock:
+        context = state.pick_context
+        if not context or str(context.get("capture_id") or "") != capture_id:
+            return JSONResponse(
+                {"ok": False, "error": "该选点已不是 18001 当前目标"},
+                status_code=409,
+            )
+        context["record"] = record
+        state.pick_revision += 1
+        revision = state.pick_revision
+    return {"ok": True, "record": record, "revision": revision}
 
 
 @router.post("/pick")

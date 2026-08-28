@@ -37,8 +37,6 @@ YOLO Mask 拟合面板矩形取中心（粉点）→ 0.2.0-s 模型偏移得到�
 
 from __future__ import annotations
 
-import base64
-import json
 import math
 import re
 import threading
@@ -46,11 +44,11 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from enum import IntEnum
-from pathlib import Path
 from typing import Any
 
 from .client import ReachClient
 from .console_client import ConsoleAbort, ConsoleClient
+from .flip_evidence import PICK_HISTORY_DIR, save_flip_evidence
 from .yolo_client import YoloClient
 
 
@@ -874,7 +872,9 @@ class SwitchFlow:
                           f"（置信度 {res.get('conf')}，第 {i} 次尝试）")
                 return {"scene": res["scene"], "conf": res.get("conf"),
                         "boxes": res.get("boxes"),
-                        "jpeg_b64": res.get("jpeg_b64")}
+                        "jpeg_b64": res.get("jpeg_b64"),
+                        "wrist_jpeg_b64": res.get("wrist_jpeg_b64"),
+                        "wrist_error": res.get("wrist_error")}
             self._log(f"{tag}：第 {i}/{self.YOLO_ATTEMPTS} 次没结论"
                       f"（{res.get('error') or '画面里没识别到就地/远方'}）")
             if i < self.YOLO_ATTEMPTS:
@@ -1128,18 +1128,17 @@ class SwitchFlow:
                       f"（7005 页面 /picks 可回看截图与点云）")
         return res, ""
 
-    # ---- 拨动证据：横移前 / 复核时各一帧头部相机图 + YOLO 判定 ----
+    # ---- 拨动证据：头部拍横移前/复核，右腕只拍横移前 ----
     # 存进本轮选点记录目录（data/pick_history/<record>/），与截图、点云
     # 同处一包，7005 /picks 和 web-picks 可回看。存档失败只记日志，
     # 绝不影响主流程。
-    _PICK_HISTORY_DIR = (Path(__file__).resolve().parent.parent
-                         / "data" / "pick_history")
+    _PICK_HISTORY_DIR = PICK_HISTORY_DIR
 
     def _flip_evidence_before(self) -> None:
         """横移前抓一帧：此刻开关应仍是拨前状态（手臂可能遮挡，识别可空）。"""
         if self.yolo is None or not self._last_pick_record:
             return
-        res = self.yolo.scene(include_image=True)
+        res = self.yolo.scene(include_image=True, include_wrist=True)
         if res.get("ok"):
             self._save_flip_evidence("before", res)
         else:
@@ -1151,35 +1150,22 @@ class SwitchFlow:
         if not record or not res:
             return
         try:
-            record_dir = self._PICK_HISTORY_DIR / record
-            if not record_dir.is_dir():
-                return
-            jpeg_b64 = res.get("jpeg_b64")
-            if jpeg_b64:
-                (record_dir / f"flip_{stage}.jpg").write_bytes(
-                    base64.b64decode(jpeg_b64))
-            result_path = record_dir / "flip_result.json"
-            data: dict[str, Any] = {}
-            if result_path.is_file():
-                data = json.loads(result_path.read_text(encoding="utf-8"))
-            entry: dict[str, Any] = {
-                "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "scene": res.get("scene"),
-                "conf": res.get("conf"),
-                "boxes": res.get("boxes"),
-                "has_image": bool(jpeg_b64),
-            }
-            if success is not None:
-                entry["success"] = bool(success)
-            data[stage] = entry
-            data.update({"flip_from": self.flip_from,
-                         "flip_to": self.flip_to,
-                         "round": self._last_flip_round})
-            result_path.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2),
-                encoding="utf-8")
+            saved = save_flip_evidence(
+                record,
+                stage,
+                res,
+                flip_from=self.flip_from,
+                flip_to=self.flip_to,
+                success=success,
+                round_no=self._last_flip_round,
+                history_dir=self._PICK_HISTORY_DIR,
+            )
+            suffix = ""
+            if stage == "before":
+                suffix = (" + flip_before_wrist.jpg"
+                          if saved["wrist_saved"] else "（腕部图不可用）")
             self._log(f"拨动{'前' if stage == 'before' else '后'}证据已存："
-                      f"{record}/flip_{stage}.jpg")
+                      f"{record}/flip_{stage}.jpg{suffix}")
         except Exception as exc:
             self._log(f"⚠ 拨动证据存档失败（不影响流程）: {exc}")
 

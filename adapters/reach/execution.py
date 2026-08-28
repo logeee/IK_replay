@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 from fastapi.responses import JSONResponse
 
+from .flip_verification import capture_manual_before, verify_manual_after
 from .state import (_read_joints, _read_torso, _torso_drift, _torso_rotation,
                     router, state)
 
@@ -306,7 +307,8 @@ def reach_execute(body: dict):
 
     Body: {"waypoints": [named_joints, ...], "duration": float,
            "max_speed_rad_s": float?, "label": str?,
-           "push": {"direction_root": [x,y,z], "force_n": float}?}
+           "push": {"direction_root": [x,y,z], "force_n": float}?,
+           "flip_evidence": {"record": str, "flip_from": str?}?}
 
     label（可选）：段名，只用于 logs/reach 里区分主轨迹/横移/收回。
 
@@ -316,6 +318,9 @@ def reach_execute(body: dict):
     push（可选）：执行期间在 TCP 上沿指定方向叠加前馈力（τ=JᵀF）。
     纯位置控制的侧向刚度很低（~300 N/m），贴着旋钮也使不上力；
     有了前馈力矩，接触后能持续出力把旋钮拨过去。
+
+    flip_evidence 仅由 18001 手动横移传入：启动横移前拍头部+右腕，
+    横移完成后用头部 YOLO 复核并把 success 写回同一条 7005 记录。
     """
     if state.controller is None:
         return JSONResponse(
@@ -345,6 +350,12 @@ def reach_execute(body: dict):
         if force > 1e-3:
             J = _position_jacobian(dict(zip(state.joint_names, q_list[0])))
             push_tau = J.T @ (direction * force)
+    flip_spec = body.get("flip_evidence")
+    if flip_spec is not None and not isinstance(flip_spec, dict):
+        return JSONResponse(
+            {"ok": False, "error": "flip_evidence 必须是对象"},
+            status_code=400,
+        )
 
     with state.exec_lock:
         if state.exec_running:
@@ -396,6 +407,22 @@ def reach_execute(body: dict):
             "pick_pixel": deepcopy(state.pick_pixel),
             "pick_torso": deepcopy(state.pick_torso),
         }
+        flip_before = None
+        flip_context = None
+        if flip_spec is not None:
+            try:
+                flip_before = capture_manual_before(flip_spec)
+            except Exception as exc:
+                flip_before = {"ok": False, "error": str(exc)}
+            state.last_flip_verification = {
+                "stage": "before",
+                **flip_before,
+            }
+            if all(flip_before.get(key) for key in ("record", "flip_from", "flip_to")):
+                flip_context = {
+                    key: flip_before[key]
+                    for key in ("record", "flip_from", "flip_to")
+                }
 
         state.exec_cancel.clear()
         state.exec_running = True
@@ -411,10 +438,11 @@ def reach_execute(body: dict):
                 "command_start_q": command_start,
                 "command_handoff": command_handoff,
                 "execution_context": execution_context,
+                "flip_evidence": flip_context,
             },
             daemon=True)
         state.exec_thread.start()
-    return {"ok": True, **_exec_status()}
+    return {"ok": True, "flip_evidence": flip_before, **_exec_status()}
 
 
 def _tcp_position(q) -> list[float] | None:
@@ -736,12 +764,14 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
                push_tau: np.ndarray | None = None, speed: float = 0.2,
                label: str = "reach", command_start_q: np.ndarray | None = None,
                command_handoff: dict | None = None,
-               execution_context: dict | None = None) -> None:
+               execution_context: dict | None = None,
+               flip_evidence: dict | None = None) -> None:
     ctl = state.controller
     trace, trace_stop = _start_torso_trace(ctl)
     log = dict(duration=duration, speed=speed, pushing=push_tau is not None,
                push_tau=push_tau, trace=trace, command_handoff=command_handoff,
                execution_context=execution_context)
+    completed = False
     try:
         if command_start_q is None:
             raise RuntimeError("缺少上一帧已发送关节命令，拒绝启动轨迹")
@@ -830,6 +860,7 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
             state.exec_message = ("已中止（保持当前位置）" if cancelled
                                   else f"完成（推力段结束，已撤力保持{_finish_torso_diag()}）")
             _log_exec(label, "cancelled" if cancelled else "done", q_list[-1], **log)
+            completed = not cancelled
             return
 
         sag = None
@@ -869,6 +900,7 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
                               else f"完成（刚性保持{sag_note}{_finish_torso_diag()}）")
         _log_exec(label, "cancelled" if cancelled else "done", target,
                   sag=sag, settle_trim=trim_info, **log)
+        completed = not cancelled
     except Exception as exc:
         try:
             ctl.stop()
@@ -878,6 +910,24 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
         _log_exec(label, f"error: {exc}", q_list[-1], **log)
     finally:
         trace_stop.set()
+        if completed and flip_evidence is not None:
+            try:
+                verification = verify_manual_after(flip_evidence)
+            except Exception as exc:
+                verification = {"ok": False, "error": str(exc)}
+            state.last_flip_verification = {
+                "stage": "after",
+                **verification,
+            }
+            if verification.get("ok"):
+                state.exec_message += (
+                    "；YOLO复核"
+                    + ("成功" if verification.get("success") else "未成功")
+                )
+            else:
+                state.exec_message += (
+                    f"；YOLO复核失败: {verification.get('error') or '未知错误'}"
+                )
         state.exec_phase = "idle"
         state.exec_running = False
 

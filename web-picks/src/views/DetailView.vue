@@ -268,21 +268,67 @@ function fmtMm(v?: number | null): string {
         </span>
       </h2>
       <div class="flip-grid">
-        <figure v-for="stage in (['before', 'after'] as const)" :key="stage">
-          <template v-if="record.flip[stage]?.has_image">
-            <a :href="fileUrl(name, `flip_${stage}.jpg`)" target="_blank">
-              <img :src="fileUrl(name, `flip_${stage}.jpg`)" loading="lazy" />
-            </a>
-          </template>
-          <div v-else class="flip-missing">无图像</div>
-          <figcaption>
-            {{ stage === "before" ? "横移前" : "复核帧" }} ·
+        <section
+          v-for="stage in (['before', 'after'] as const)"
+          :key="stage"
+          class="flip-stage"
+        >
+          <h3>{{ stage === "before" ? "横移前" : "复核帧" }}</h3>
+          <div class="flip-result">
             YOLO：{{ record.flip[stage]?.scene ?? "无结论"
             }}<template v-if="record.flip[stage]?.conf != null">
               （conf {{ record.flip[stage]!.conf!.toFixed(2) }}）</template>
             <span class="mono flip-ts">{{ record.flip[stage]?.ts }}</span>
-          </figcaption>
-        </figure>
+          </div>
+          <div class="flip-camera-grid" :class="{ 'head-only': stage === 'after' }">
+            <figure
+              v-for="camera in (stage === 'before'
+                ? (['head', 'wrist'] as const)
+                : (['head'] as const))"
+              :key="camera"
+            >
+              <template
+                v-if="
+                  camera === 'head'
+                    ? record.flip[stage]?.has_image
+                    : record.flip[stage]?.has_wrist_image
+                "
+              >
+                <a
+                  :href="
+                    fileUrl(
+                      name,
+                      camera === 'head'
+                        ? `flip_${stage}.jpg`
+                        : `flip_${stage}_wrist.jpg`,
+                    )
+                  "
+                  target="_blank"
+                >
+                  <img
+                    :src="
+                      fileUrl(
+                        name,
+                        camera === 'head'
+                          ? `flip_${stage}.jpg`
+                          : `flip_${stage}_wrist.jpg`,
+                      )
+                    "
+                    loading="lazy"
+                  />
+                </a>
+              </template>
+              <div v-else class="flip-missing">
+                {{
+                  camera === "wrist" && record.flip[stage]?.wrist_error
+                    ? "腕部相机不可用"
+                    : "无图像"
+                }}
+              </div>
+              <figcaption>{{ camera === "head" ? "头部相机" : "右腕相机" }}</figcaption>
+            </figure>
+          </div>
+        </section>
       </div>
     </div>
 
@@ -482,21 +528,48 @@ function fmtMm(v?: number | null): string {
   gap: 16px;
 }
 
+.flip-stage {
+  padding: 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.flip-stage h3 {
+  margin: 0 0 4px;
+}
+
+.flip-result {
+  margin-bottom: 10px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.flip-camera-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.flip-camera-grid.head-only {
+  grid-template-columns: 1fr;
+}
+
 @media (max-width: 900px) {
   .flip-grid {
     grid-template-columns: 1fr;
   }
 }
 
-.flip-grid figure {
+.flip-camera-grid figure {
   margin: 0;
-  background: var(--card);
+  background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
 }
 
-.flip-grid img {
+.flip-camera-grid img {
   width: 100%;
   display: block;
 }
@@ -510,7 +583,7 @@ function fmtMm(v?: number | null): string {
   background: var(--bg-soft);
 }
 
-.flip-grid figcaption {
+.flip-camera-grid figcaption {
   padding: 10px 14px;
   font-size: 13px;
   color: var(--text-dim);

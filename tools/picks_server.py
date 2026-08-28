@@ -29,7 +29,8 @@ PICK_HISTORY_DIR = ROOT / "data" / "pick_history"
 REACH_LOG_DIR = ROOT / "logs" / "reach"
 DIST_DIR = ROOT / "web-picks" / "dist"
 RECORD_FILES = ("snapshot.jpg", "cloud.ply", "meta.json",
-                "flip_before.jpg", "flip_after.jpg", "flip_result.json")
+                "flip_before.jpg", "flip_after.jpg",
+                "flip_before_wrist.jpg", "flip_result.json")
 _RECORD_NAME_RE = re.compile(r"^[0-9]{8}_[0-9]{6}_[0-9a-f]{8}$")
 _MEDIA_TYPES = {
     "snapshot.jpg": "image/jpeg",
@@ -37,6 +38,7 @@ _MEDIA_TYPES = {
     "meta.json": "application/json",
     "flip_before.jpg": "image/jpeg",
     "flip_after.jpg": "image/jpeg",
+    "flip_before_wrist.jpg": "image/jpeg",
     "flip_result.json": "application/json",
 }
 

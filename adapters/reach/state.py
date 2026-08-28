@@ -22,6 +22,9 @@ class ReachState:
     def __init__(self):
         self.enabled = False
         self.camera = None                 # hand_eye_3D 的 CameraBase
+        self.wrist_camera = None           # teleimager 右腕 JPEG，只用于拨动前核验
+        self.yolo_base = "http://127.0.0.1:7004"
+        self.last_flip_verification: dict[str, Any] | None = None
         self.robot_id = "h2"
         self.chain_id = "right_arm"
         self.T_cam2root: np.ndarray | None = None   # URDF 根 <- 彩色相机
@@ -90,12 +93,13 @@ class ReachState:
 state = ReachState()
 
 
-def configure(*, camera, robot_model, robot_id: str, chain_id: str,
+def configure(*, camera, wrist_camera=None, robot_model, robot_id: str, chain_id: str,
               calib_path: Path | None, camera_only: bool = False,
               robot_only: bool = False,
               collision_checker=None, ik_solver=None, arm_factory=None,
               joints_reader=None, torso_reader=None, motors_reader=None,
               tool_out_mm: float = 0.0,
+              yolo_base: str = "http://127.0.0.1:7004",
               gravity_profile: dict[str, Any] | None = None,
               settle_trim: str = "off") -> None:
     """由 reach_server 调用。calib_path 是 handeye3d_result.json。
@@ -159,6 +163,8 @@ def configure(*, camera, robot_model, robot_id: str, chain_id: str,
         wrist_link = calib.get("wrist_link", chain_id.replace("_arm", "_wrist_yaw_link"))
 
     state.camera = camera
+    state.wrist_camera = wrist_camera
+    state.yolo_base = yolo_base.rstrip("/")
     state.robot_id = robot_id
     state.chain_id = chain_id
     state.T_cam2torso = T_cam2torso

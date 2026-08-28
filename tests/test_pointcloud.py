@@ -460,7 +460,7 @@ class PointCloudBackendTest(unittest.TestCase):
                 },
             )
         self.assertTrue(confirmed["ok"])
-        sent = post.call_args.kwargs["json"]
+        sent = post.call_args_list[0].kwargs["json"]
         self.assertEqual(sent["source_frame_id"], "frozen-9")
         self.assertEqual(sent["capture_id"], metadata["capture_id"])
         self.assertEqual(sent["pixel"], [1, 1])
@@ -472,6 +472,9 @@ class PointCloudBackendTest(unittest.TestCase):
         self.assertEqual(sent["model_version"], "0.2.0-s")
         self.assertEqual(sent["target_point_slot"], 1)
         self.assertEqual(sent["matched_detection_name"], "远方")
+        attached = post.call_args_list[1].kwargs["json"]
+        self.assertEqual(attached["capture_id"], metadata["capture_id"])
+        self.assertEqual(attached["record"], confirmed["record"])
         restored = pointcloud_viewer.capture_metadata(metadata["capture_id"])
         self.assertEqual(
             restored["confirmed_selection"]["result"]["p_root"],

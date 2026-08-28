@@ -1114,8 +1114,20 @@ async function sidestepReach(stepCm, options = {}) {
       return;
     }
   }
+  const pointcloudPick = reach.lastPick?.selection_mode === "frozen_rgbd_pointcloud";
+  let flipEvidence = null;
+  if (pointcloudPick) {
+    if (!reach.lastPick?.record) {
+      reachMsg("7005 选点记录名尚未同步，无法关联拨动核验证据，请重新确认选点", "error");
+      return;
+    }
+    flipEvidence = {
+      record: reach.lastPick.record,
+      flip_from: reach.lastPick.matched_detection_name || null,
+    };
+  }
   try {
-    await fetchJson("/api/reach/execute", {
+    const started = await fetchJson("/api/reach/execute", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1133,9 +1145,19 @@ async function sidestepReach(stepCm, options = {}) {
             force_n: pushN,
           },
         } : {}),
+        ...(flipEvidence ? { flip_evidence: flipEvidence } : {}),
       }),
     });
-    reachMsg(`${dirName}移${seg.replayed ? "（回放录制轨迹）" : ""}执行中…`, "success");
+    const before = started.flip_evidence;
+    const evidenceNote = before?.ok
+      ? "；拨动前头部+右腕已存档"
+      : before
+        ? `；拨动前证据失败：${before.error || "未知错误"}`
+        : "";
+    reachMsg(
+      `${dirName}移${seg.replayed ? "（回放录制轨迹）" : ""}执行中${evidenceNote}…`,
+      before && !before.ok ? "error" : "success",
+    );
     await pollReachExec();
   } catch (error) {
     reachMsg(`${dirName}移执行失败: ${error.message}`, "error");

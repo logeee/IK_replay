@@ -60,6 +60,8 @@ export interface FlipStage {
   conf?: number | null;
   boxes?: YoloBox[] | null;
   has_image?: boolean;
+  has_wrist_image?: boolean;
+  wrist_error?: string;
   success?: boolean;
 }
 

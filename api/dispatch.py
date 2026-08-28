@@ -195,6 +195,7 @@ def _spawn_reach(task: dict) -> None:
         "--network-interface", _args.network_interface,
         "--calib", _args.calib,
         "--tool-out-mm", str(_args.tool_out_mm),
+        "--yolo-base", _args.yolo,
     ]
     if _args.camera_port is not None:
         cmd.extend(["--camera-port", str(_args.camera_port)])

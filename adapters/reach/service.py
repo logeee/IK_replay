@@ -20,6 +20,12 @@ def reach_status():
         "chain_id": state.chain_id,
         "camera": (state.camera.info() if state.camera is not None
                    else {"source": "disabled", "mode": "robot_only"}),
+        "wrist_camera": (
+            state.wrist_camera.info()
+            if state.wrist_camera is not None
+            else {"source": "disabled"}
+        ),
+        "last_flip_verification": state.last_flip_verification,
         "calib": state.calib_meta,
         "gravity_profile": state.gravity_profile,
         "settle_trim": state.settle_trim,

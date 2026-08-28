@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 
 from camera_sources.alignment import RGBDCalibration, SoftwareDepthAligner
+from camera_sources.zmq_jpeg import ZmqJpegCamera
 from camera_sources.zmq_rgbd import ZmqRGBDCamera, decode_rgbd_parts
 
 
@@ -272,8 +273,10 @@ class ProductionSafetyTest(unittest.TestCase):
         self.assertFalse(blocked)
         import camera_sources
         import camera_sources.alignment
+        import camera_sources.zmq_jpeg
         import camera_sources.zmq_rgbd
         self.assertFalse(any("orbbec" in name.lower() for name in sys.modules))
+        self.assertIs(camera_sources.ZmqJpegCamera, ZmqJpegCamera)
         self.assertIs(camera_sources.ZmqRGBDCamera, ZmqRGBDCamera)
 
     def test_exporter_help_does_not_need_sdk(self):
@@ -327,6 +330,50 @@ class CompareToolTest(unittest.TestCase):
 
 
 class MockTeleimagerTest(unittest.TestCase):
+    def test_consumes_wrist_jpeg_stream(self):
+        try:
+            import zmq
+        except ImportError:
+            self.skipTest("pyzmq not installed")
+
+        bgr = np.full((3, 4, 3), 120, dtype=np.uint8)
+        ok, encoded = cv2.imencode(".jpg", bgr)
+        self.assertTrue(ok)
+        jpeg = encoded.tobytes()
+
+        context = zmq.Context()
+        publisher = context.socket(zmq.PUB)
+        publisher.setsockopt(zmq.LINGER, 0)
+        port = publisher.bind_to_random_port("tcp://127.0.0.1")
+        stop = threading.Event()
+
+        def publish():
+            while not stop.is_set():
+                publisher.send(jpeg)
+                time.sleep(0.05)
+
+        worker = threading.Thread(target=publish, daemon=True)
+        worker.start()
+        camera = ZmqJpegCamera(
+            host="127.0.0.1",
+            camera_name="right_wrist_camera",
+            request_port=1,
+            stream_port=port,
+            stale_after_s=1.0,
+            startup_timeout_s=3.0,
+        )
+        try:
+            camera.start()
+            self.assertEqual(camera.get_jpeg(), jpeg)
+            self.assertEqual(camera.info()["camera_name"], "right_wrist_camera")
+            self.assertIsNone(camera.info()["error"])
+        finally:
+            camera.stop()
+            stop.set()
+            worker.join(timeout=1.0)
+            publisher.close()
+            context.term()
+
     def test_consumes_multipart_without_opening_a_camera(self):
         try:
             import zmq

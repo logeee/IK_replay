@@ -6,6 +6,12 @@ explicitly for debugging.
 """
 
 from .alignment import RGBDCalibration, SoftwareDepthAligner
+from .zmq_jpeg import ZmqJpegCamera
 from .zmq_rgbd import ZmqRGBDCamera
 
-__all__ = ["RGBDCalibration", "SoftwareDepthAligner", "ZmqRGBDCamera"]
+__all__ = [
+    "RGBDCalibration",
+    "SoftwareDepthAligner",
+    "ZmqJpegCamera",
+    "ZmqRGBDCamera",
+]

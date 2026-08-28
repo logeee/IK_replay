@@ -521,10 +521,11 @@ def _capture_by_id(capture_id: str) -> Capture | None:
 PICK_HISTORY_DIR = ROOT / "data" / "pick_history"
 PICK_HISTORY_KEEP = 500          # 最多保留条数，超出删最旧
 PICK_CROP_RADIUS_M = 0.20        # 以算法目标为中心裁剪这么大一球的点云
-# flip_* 三个文件由流程（api/flow.py）在拨动前后追加：头部相机判定帧
-# 与 YOLO 复核结论
+# flip_* 文件由流程（api/flow.py）在拨动前后追加：头部判定帧、
+# 腕部核验帧与 YOLO 复核结论
 PICK_RECORD_FILES = ("snapshot.jpg", "cloud.ply", "meta.json",
-                     "flip_before.jpg", "flip_after.jpg", "flip_result.json")
+                     "flip_before.jpg", "flip_after.jpg",
+                     "flip_before_wrist.jpg", "flip_result.json")
 _RECORD_NAME_RE = re.compile(r"^[0-9]{8}_[0-9]{6}_[0-9a-f]{8}$")
 
 
@@ -979,6 +980,18 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
     if record:
         result["record"] = record
         result["record_url"] = f"/picks#{record}"
+        # 18001 先确认三维目标，7005 随后才生成记录名；回写后，手动横移
+        # 才能把拨动前后证据追加到同一条 pick_history 记录。
+        try:
+            attached = _http.post(
+                f"{_reach_base}/api/reach/attach_pick_record",
+                json={"capture_id": capture_id, "record": record},
+                timeout=(2.0, 5.0),
+            ).json()
+            if attached.get("ok") and attached.get("revision") is not None:
+                result["revision"] = attached["revision"]
+        except (requests.RequestException, ValueError):
+            pass
     with _capture_lock:
         if _latest is capture_value:
             capture_value.metadata["confirmed_selection"] = {
