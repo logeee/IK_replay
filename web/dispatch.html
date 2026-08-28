@@ -353,7 +353,7 @@
   <section class="panel manual-bar">
     <div class="bar-row">
       <span class="bar-title">手动触发</span>
-      <select id="manualSite" title="工厂柜两个旋钮的印刷与实验室柜相反：同一套向左拨动作的语义不同">
+      <select id="manualSite" title="工厂柜支持远方→就地向左拨，以及就地→远方向右拨">
         <option value="lab">实验室柜</option>
         <option value="factory">工厂柜（印刷相反）</option>
       </select>
@@ -483,12 +483,15 @@
       手动触发栏始终按填写的显式参数执行，不受影响。</p>
     <label class="modal-field">默认现场
       <select id="defaultSite">
-        <option value="factory">工厂柜（印刷相反，远方 → 就地）</option>
+        <option value="factory">工厂柜（印刷相反，支持双向）</option>
         <option value="lab">实验室柜（就地 → 远方）</option>
       </select>
     </label>
-    <label class="modal-field">默认偏移配置
-      <select id="defaultPreset"><option value="">无</option></select>
+    <label class="modal-field">远方 → 就地默认偏移（向左拨）
+      <select id="defaultPresetRemoteToClose"><option value="">无</option></select>
+    </label>
+    <label class="modal-field">就地 → 远方默认偏移（向右拨）
+      <select id="defaultPresetCloseToRemote"><option value="">无</option></select>
     </label>
     <div id="defaultPresetPreview" class="modal-note"></div>
     <div class="modal-field" title="抵消手臂重力下垂：IK 拨动目标点整体抬高。首轮抬「首轮」值，每重试一轮再加「每轮+」，合计不超过「封顶」（各 0~50 mm）">
@@ -942,7 +945,7 @@ function renderManual(data) {
   }
 }
 
-// 每个现场只有"向左拨"这一套已验证动作；语义随印刷方向变
+// 工厂柜双向开放；实验室柜反向动作尚未现场验收。
 const SITE_LANGUAGE_OPTIONS = {
   lab: [
     { value: "Change the switch from close to remote", label: "就地 → 远方（向左拨）" },
@@ -950,7 +953,7 @@ const SITE_LANGUAGE_OPTIONS = {
   ],
   factory: [
     { value: "Change the switch from remote to close", label: "远方 → 就地（向左拨）" },
-    { value: "Change the switch from close to remote", label: "就地 → 远方（此柜不支持）", disabled: true },
+    { value: "Change the switch from close to remote", label: "就地 → 远方（向右拨）" },
   ],
 };
 
@@ -981,8 +984,11 @@ function liftText(lift) {
 // ---- 外部调用默认配置：顶部摘要栏 + 两个弹窗（与手动栏的显式参数互不干扰）----
 let offsetPresets = [];
 let defaultsLoadedOnce = false;
-let currentDefaults = { site: "factory", offset_preset: "",
-                        lift_mm: { base: 10, step: 10, max: 30 } };
+let currentDefaults = {
+  site: "factory",
+  offset_preset_by_kind: { close_to_remote: "", remote_to_close: "" },
+  lift_mm: { base: 10, step: 10, max: 30 },
+};
 
 function presetByName(name) {
   return offsetPresets.find((preset) => preset.name === name) || null;
@@ -1003,10 +1009,13 @@ function fillPresetSelect(select, emptyLabel, selected) {
 }
 
 function renderConfigSummary() {
-  const preset = presetByName(currentDefaults.offset_preset);
+  const byKind = currentDefaults.offset_preset_by_kind || {};
+  const rtlPreset = presetByName(byKind.remote_to_close);
+  const ltrPreset = presetByName(byKind.close_to_remote);
   $("configSummary").textContent =
     `默认现场：${SITE_LABELS[currentDefaults.site] || currentDefaults.site}`
-    + ` ｜ 默认偏移：${preset ? `「${preset.name}」（${offsetText(preset.offset_mm)}）` : "无"}`
+    + ` ｜ 远→就偏移：${rtlPreset ? `「${rtlPreset.name}」` : "无"}`
+    + ` ｜ 就→远偏移：${ltrPreset ? `「${ltrPreset.name}」` : "无"}`
     + ` ｜ 拨点上抬：${liftText(currentDefaults.lift_mm)}`
     + ` ｜ 已存偏移配置 ${offsetPresets.length} 条`;
 }
@@ -1018,8 +1027,12 @@ function renderPresetTable() {
     return;
   }
   body.innerHTML = offsetPresets.map((preset) => {
-    const isDefault = preset.name === currentDefaults.offset_preset;
-    return `<tr><td>${escapeHtml(preset.name)}${isDefault ? " ★默认" : ""}</td>`
+    const byKind = currentDefaults.offset_preset_by_kind || {};
+    const tags = [
+      preset.name === byKind.remote_to_close ? "远→就默认" : "",
+      preset.name === byKind.close_to_remote ? "就→远默认" : "",
+    ].filter(Boolean);
+    return `<tr><td>${escapeHtml(preset.name)}${tags.length ? ` ★${tags.join("、")}` : ""}</td>`
       + `<td>${preset.offset_mm.x}</td><td>${preset.offset_mm.z}</td><td>${preset.offset_mm.y}</td>`
       + `<td><button data-edit="${escapeHtml(preset.name)}">编辑</button> `
       + `<button data-del="${escapeHtml(preset.name)}" class="danger">删除</button></td></tr>`;
@@ -1027,10 +1040,11 @@ function renderPresetTable() {
 }
 
 function renderDefaultPresetPreview() {
-  const preset = presetByName($("defaultPreset").value);
-  $("defaultPresetPreview").textContent = preset
-    ? `该配置微调量：${offsetText(preset.offset_mm)}`
-    : "不套偏移（外部调用按算法原始目的点执行）";
+  const rtlPreset = presetByName($("defaultPresetRemoteToClose").value);
+  const ltrPreset = presetByName($("defaultPresetCloseToRemote").value);
+  $("defaultPresetPreview").textContent =
+    `远→就：${rtlPreset ? offsetText(rtlPreset.offset_mm) : "不套偏移"}`
+    + ` ｜ 就→远：${ltrPreset ? offsetText(ltrPreset.offset_mm) : "不套偏移"}`;
 }
 
 async function loadDefaultsConfig() {
@@ -1042,7 +1056,8 @@ async function loadDefaultsConfig() {
     const wasFirstLoad = !defaultsLoadedOnce;
     currentDefaults = {
       site: (data.defaults || {}).site || "factory",
-      offset_preset: (data.defaults || {}).offset_preset || "",
+      offset_preset_by_kind: (data.defaults || {}).offset_preset_by_kind
+        || { close_to_remote: "", remote_to_close: "" },
       lift_mm: (data.defaults || {}).lift_mm || { base: 10, step: 10, max: 30 },
     };
     if (wasFirstLoad) {
@@ -1054,7 +1069,16 @@ async function loadDefaultsConfig() {
     }
     renderConfigSummary();
     fillPresetSelect($("manualPreset"), "偏移配置…");
-    fillPresetSelect($("defaultPreset"), "无", currentDefaults.offset_preset);
+    fillPresetSelect(
+      $("defaultPresetRemoteToClose"),
+      "无",
+      currentDefaults.offset_preset_by_kind.remote_to_close,
+    );
+    fillPresetSelect(
+      $("defaultPresetCloseToRemote"),
+      "无",
+      currentDefaults.offset_preset_by_kind.close_to_remote,
+    );
     renderDefaultPresetPreview();
     renderPresetTable();
   } catch (error) {
@@ -1082,7 +1106,16 @@ $("manualPreset").addEventListener("change", () => {
 // ---- 弹窗一：修改默认 ----
 $("editDefaults").addEventListener("click", () => {
   $("defaultSite").value = currentDefaults.site;
-  fillPresetSelect($("defaultPreset"), "无", currentDefaults.offset_preset);
+  fillPresetSelect(
+    $("defaultPresetRemoteToClose"),
+    "无",
+    currentDefaults.offset_preset_by_kind.remote_to_close,
+  );
+  fillPresetSelect(
+    $("defaultPresetCloseToRemote"),
+    "无",
+    currentDefaults.offset_preset_by_kind.close_to_remote,
+  );
   renderDefaultPresetPreview();
   $("defaultLiftBase").value = currentDefaults.lift_mm.base;
   $("defaultLiftStep").value = currentDefaults.lift_mm.step;
@@ -1091,12 +1124,16 @@ $("editDefaults").addEventListener("click", () => {
   openModal("defaultsModal");
 });
 $("closeDefaults").addEventListener("click", () => closeModal("defaultsModal"));
-$("defaultPreset").addEventListener("change", renderDefaultPresetPreview);
+$("defaultPresetRemoteToClose").addEventListener("change", renderDefaultPresetPreview);
+$("defaultPresetCloseToRemote").addEventListener("change", renderDefaultPresetPreview);
 
 $("saveDefaults").addEventListener("click", async () => {
   const data = await postJson("/config/defaults", {
     site: $("defaultSite").value,
-    offset_preset: $("defaultPreset").value,
+    offset_preset_by_kind: {
+      remote_to_close: $("defaultPresetRemoteToClose").value,
+      close_to_remote: $("defaultPresetCloseToRemote").value,
+    },
     lift_mm: {
       base: readLiftMm("defaultLiftBase"),
       step: readLiftMm("defaultLiftStep"),

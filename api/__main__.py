@@ -29,6 +29,13 @@ def main() -> int:
                         help="YOLO 推理服务地址（python -m api.yolo_server 启动）")
     parser.add_argument("--no-yolo", action="store_true",
                         help="不用 YOLO：场景判断和复核全走确认台人工")
+    parser.add_argument("--site", choices=["lab", "factory"], default="lab",
+                        help="柜体现场（影响同一语义对应的左右拨动方向）")
+    parser.add_argument(
+        "--kind",
+        choices=["close_to_remote", "remote_to_close"],
+        help="目标任务；不传时沿用该现场原有的向左拨任务",
+    )
     parser.add_argument("--coarse-target", type=float,
                         help="覆盖 JSON 中的3️⃣粗对齐目标角（°）")
     parser.add_argument("--coarse-tol", type=float,
@@ -44,7 +51,7 @@ def main() -> int:
     parser.add_argument("--duration", type=float, default=6.0,
                         help="IK 主段（到位）时长（s）")
     parser.add_argument("--sidestep-cm", type=float, default=10.0,
-                        help="到位后沿柜面左移距离（cm，负=右移）")
+                        help="到位后沿柜面横移距离绝对值（cm，方向由site+kind决定）")
     parser.add_argument("--push-n", type=float, default=10.0,
                         help="横移时的前馈推力（N）")
     parser.add_argument("--lift-cm", type=float, default=2.0,
@@ -86,6 +93,8 @@ def main() -> int:
                       fine_accept_max_deg=fine_max,
                       fine_command_tol_deg=fine_cmd_tol,
                       align_mode=args.align_mode,
+                      site=args.site,
+                      flip_kind=args.kind,
                       approach_offset_m=args.approach_offset,
                       reach_duration_s=args.duration,
                       sidestep_cm=args.sidestep_cm,

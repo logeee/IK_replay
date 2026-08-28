@@ -31,12 +31,17 @@ LIFT_LIMIT_MM = 50.0       # 拨点上抬各项上限（首轮/每轮递增/封�
 
 # 拨点上抬（抵消重力下垂）出厂值：首轮 10 mm，每重试一轮 +10 mm，封顶 30 mm
 DEFAULT_LIFT_MM: dict[str, float] = {"base": 10.0, "step": 10.0, "max": 30.0}
+FLIP_KINDS = ("close_to_remote", "remote_to_close")
 
 DEFAULT_DISPATCH_DEFAULTS: dict[str, Any] = {
-    "schema_version": 1,
+    "schema_version": 2,
     "defaults": {
-        "site": "factory",       # 外部调用默认按工厂柜（远方→就地）
-        "offset_preset": "",     # "" = 不套偏移配置
+        "site": "factory",
+        # 两个任务方向独立标定；"" = 不套偏移配置。
+        "offset_preset_by_kind": {
+            "close_to_remote": "",
+            "remote_to_close": "",
+        },
         "lift_mm": dict(DEFAULT_LIFT_MM),
     },
     "offset_presets": [],
@@ -98,8 +103,9 @@ def validate_offset_mm(value: Any, name: str = "offset_mm") -> dict[str, float]:
 def validate_dispatch_defaults(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("默认配置必须是 JSON object")
-    if int(payload.get("schema_version", -1)) != 1:
-        raise ValueError("默认配置 schema_version 必须为 1")
+    version = int(payload.get("schema_version", -1))
+    if version not in (1, 2):
+        raise ValueError("默认配置 schema_version 必须为 1 或 2")
 
     raw_presets = payload.get("offset_presets")
     if raw_presets is None:
@@ -134,15 +140,31 @@ def validate_dispatch_defaults(payload: Any) -> dict[str, Any]:
     site = str(raw_defaults.get("site") or "").strip().lower()
     if site not in SITES:
         raise ValueError("defaults.site 只能是 lab 或 factory")
-    preset_name = str(raw_defaults.get("offset_preset") or "").strip()
-    if preset_name and preset_name not in seen:
-        raise ValueError(f"defaults.offset_preset 指向不存在的配置「{preset_name}」")
+    # v1 只有一个 offset_preset；迁移时先让两个方向都沿用它，避免旧配置失效。
+    legacy_preset = str(raw_defaults.get("offset_preset") or "").strip()
+    raw_by_kind = raw_defaults.get("offset_preset_by_kind")
+    if raw_by_kind is None:
+        raw_by_kind = {kind: legacy_preset for kind in FLIP_KINDS}
+    if not isinstance(raw_by_kind, dict):
+        raise ValueError("defaults.offset_preset_by_kind 必须是对象")
+    preset_by_kind: dict[str, str] = {}
+    for kind in FLIP_KINDS:
+        preset_name = str(raw_by_kind.get(kind) or "").strip()
+        if preset_name and preset_name not in seen:
+            raise ValueError(
+                f"defaults.offset_preset_by_kind.{kind} "
+                f"指向不存在的配置「{preset_name}」"
+            )
+        preset_by_kind[kind] = preset_name
     lift_mm = validate_lift_mm(raw_defaults.get("lift_mm"), "defaults.lift_mm")
 
     return {
-        "schema_version": 1,
-        "defaults": {"site": site, "offset_preset": preset_name,
-                     "lift_mm": lift_mm},
+        "schema_version": 2,
+        "defaults": {
+            "site": site,
+            "offset_preset_by_kind": preset_by_kind,
+            "lift_mm": lift_mm,
+        },
         "offset_presets": presets,
     }
 

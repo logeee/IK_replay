@@ -42,17 +42,15 @@
                                 # 首轮抬 base，每重试一轮加 step，合计封顶 max。
                                 # 不按距柜面远近区分
                           site / target_offset_wall_mm / lift_mm 不带时自动套「外部调用
-                          默认配置」（GET/POST /config/defaults 读改存，命名偏移
-                          配置由 POST /config/offset-presets[/delete] 管理，
-                          持久化在 config/dispatch_defaults.json）
+                          默认配置」（两个任务方向可分别选择命名偏移配置；
+                          GET/POST /config/defaults 读改存，配置由
+                          POST /config/offset-presets[/delete] 管理）
                           返回 {"ok": true, "task_id": "..."}；执行中再触发 → 409
 
-现场（site）：真机只验证过"从右向左拨"一套动作。实验室柜上它是
-    「就地→远方」（close to remote）；工厂柜印刷相反，同一动作是
-    「远方→就地」（remote to close）。与所选 site 不匹配的 language 会
-    立即以 NOT_IMPLEMENTED 结束（= 未验证的镜像动作），不启动硬件。
-    YOLO 识别的是开关的真实印刷状态，site 会传给流程决定"要拨/已到位"
-    的判定类别（工厂柜：「远方」=要拨、「就地」=成功）。/check/flip 同理。
+现场（site）：工厂柜支持双向——「远方→就地」向左拨，
+    「就地→远方」向右拨；两边使用相同位移、推力、下倾、重试和收尾逻辑。
+    实验室柜当前只开放「就地→远方」。YOLO 识别真实印刷状态，language
+    决定"要拨/已到位"类别，site + language 决定物理左右方向。
     GET  /task/status  → 状态机 idle/starting/running/done + 流程日志尾部
                           + 最终结果（错误码见 api.flow.ErrorCode）
                           + step_times 分步耗时 + prompt 当前等待确认的步骤
@@ -74,9 +72,8 @@
                           用于"别的程序要接管、必须马上让我们松手"的场合。
 
 language 逐字固定（大小写/空格容错，多余的不认）：
-    "Change the switch from close to remote"   就地 → 远方（实验室柜可执行）
+    "Change the switch from close to remote"   就地 → 远方（工厂/实验室柜）
     "Change the switch from remote to close"   远方 → 就地（工厂柜可执行）
-    与 site 不匹配的方向立即以 NOT_IMPLEMENTED 结束，不会启动任何硬件。
 """
 
 from __future__ import annotations
@@ -112,7 +109,13 @@ from core.dispatch_defaults import (
 
 from .client import ReachClient
 from .console_client import ConsoleClient
-from .flow import ErrorCode, FlowError, SwitchFlow
+from .flow import (
+    FLIP_KIND_STATES,
+    ErrorCode,
+    FlowError,
+    SwitchFlow,
+    resolve_flip_intent,
+)
 from .pointcloud_client import PointcloudClient
 from .yolo_client import YoloClient
 
@@ -447,6 +450,7 @@ def _run_task(task: dict) -> None:
                           fine_command_tol_deg=fine["command_tolerance_deg"],
                           max_flip_rounds=int(task.get("retries") or 3),
                           site=task.get("site") or "lab",
+                          flip_kind=task.get("kind"),
                           pointcloud=pointcloud,
                           lift_base_m=(task.get("lift_mm")
                                        or DEFAULT_LIFT_MM)["base"] / 1000.0,
@@ -506,8 +510,7 @@ CHECK_MOTOR_LIMITS_DEG = {               # 第 3 步：允许区间 (下限, 上
 CHECK_BOX_BAND = (0.20, 0.80)            # 第 4 步：框中心须在画宽的中间 60%
 CHECK_SCENE_CLASSES = ("就地", "远方")
 # language → (拨前状态, 目标状态)：第 4 步识别到目标状态 = 无需拨动
-CHECK_KIND_STATES = {"close_to_remote": ("就地", "远方"),
-                     "remote_to_close": ("远方", "就地")}
+CHECK_KIND_STATES = FLIP_KIND_STATES
 
 
 def _run_checks(check: dict, kind: str) -> dict:
@@ -623,11 +626,13 @@ def _run_checks(check: dict, kind: str) -> dict:
     # YOLO 识别的是真实印刷状态（工厂柜实测印刷相反也读得对），
     # 直接按指令语义的前/后状态类别比对即可。
     site = check.get("site") or "lab"
-    pre_cls, post_cls = CHECK_KIND_STATES[kind]
+    intent = resolve_flip_intent(site, kind)
+    pre_cls, post_cls = intent["flip_from"], intent["flip_to"]
     lo, hi = CHECK_BOX_BAND
     steps.append({"step": 4, "name": "YOLO 状态与居中", "band_ratio": [lo, hi],
                   "site": site,
-                  "expect_pre": pre_cls, "expect_post": post_cls})
+                  "expect_pre": pre_cls, "expect_post": post_cls,
+                  "direction": intent["direction"]})
     if _args.no_yolo:
         return fail("调度启动时带了 --no-yolo，无法做该项检查")
     scene = YoloClient(_args.yolo).scene()
@@ -695,6 +700,12 @@ def check_flip(body: dict | None = None):
         return JSONResponse(
             {"ok": False, "error": "site 只能是 lab（实验室柜）或 factory（工厂柜，印刷相反）"},
             status_code=422)
+    intent = resolve_flip_intent(site, kind)
+    if not _kind_supported(site, kind):
+        return JSONResponse(
+            {"ok": False, "error": _unsupported_message(kind, site)},
+            status_code=422,
+        )
     with _lock:
         if _task is not None and _task["state"] != "done":
             return JSONResponse(
@@ -709,7 +720,11 @@ def check_flip(body: dict | None = None):
                   "reach_proc": None, "reach_log": None,
                   "started_at": datetime.now().isoformat(timespec="seconds")}
         check = _check
-        check["log"].append(f"指令: {language}（{kind}，现场 {SITE_LABELS[site]}）")
+        check["log"].append(
+            f"指令: {language}（{kind}，{intent['flip_from']}→{intent['flip_to']}，"
+            f"{'向左拨' if intent['direction'] == 'rtl' else '向右拨'}，"
+            f"现场 {SITE_LABELS[site]}）"
+        )
         leftover = _check_reach_proc   # 上次检查通过留下的 reach，认领回来
         _check_reach_proc = None
     t0 = time.monotonic()
@@ -767,14 +782,18 @@ LANGUAGE_TASKS = {
     "change the switch from remote to close": "remote_to_close",
 }
 
-# 现场（site）：真机只验证过"从右向左拨"这一套动作。实验室柜上它把开关从
-# 「就地」拨到「远方」；工厂柜两个旋钮的印刷正好相反，同一套动作的语义是
-# 「远方 → 就地」。YOLO 识别的是真实印刷状态（工厂柜实测：印刷相反时也
-# 正确读出「远方」，置信度 0.9+），所以 site 决定：哪个 language 可执行 +
-# 流程里"要拨/已到位"的判定类别（SwitchFlow.flip_from/flip_to）。
+# 现场（site）决定同一物理方向对应的印刷语义。工厂柜已开放双向：
+# 远方→就地向左拨，反向任务就地→远方向右拨。实验室柜的镜像动作仍未验收。
 SITES = ("lab", "factory")
 SITE_LABELS = {"lab": "实验室柜", "factory": "工厂柜（印刷相反）"}
-SITE_SUPPORTED_KIND = {"lab": "close_to_remote", "factory": "remote_to_close"}
+SITE_SUPPORTED_KINDS = {
+    "lab": frozenset({"close_to_remote"}),
+    "factory": frozenset({"close_to_remote", "remote_to_close"}),
+}
+
+
+def _kind_supported(site: str, kind: str) -> bool:
+    return kind in SITE_SUPPORTED_KINDS.get(site, ())
 
 
 def _parse_language(text: str) -> str | None:
@@ -812,18 +831,23 @@ def _resolve_lift(body: dict | None, defaults: dict) -> tuple[dict, str]:
 
 
 def _resolve_offset(
-    body: dict | None, defaults: dict
+    body: dict | None, defaults: dict, kind: str
 ) -> tuple[tuple[float, float, float], str]:
     """目的点微调判定：请求显式给了用请求的，否则套默认偏移配置。"""
     raw = (body or {}).get("target_offset_wall_mm")
     if raw is not None:
         return _parse_target_offset(raw), "请求指定"
-    name = defaults["defaults"].get("offset_preset") or ""
+    by_kind = defaults["defaults"].get("offset_preset_by_kind") or {}
+    name = by_kind.get(kind) or ""
     preset = find_offset_preset(defaults, name) if name else None
     if preset is None:
         return (0.0, 0.0, 0.0), "无（默认配置未选偏移）"
     off = preset["offset_mm"]
-    return (off["x"], off["y"], off["z"]), f"默认偏移配置「{name}」"
+    pre, post = CHECK_KIND_STATES[kind]
+    return (
+        (off["x"], off["y"], off["z"]),
+        f"「{pre}→{post}」默认偏移配置「{name}」",
+    )
 
 
 # 目的点人工微调（墙面系）单轴上限：微调是给毫米级落点纠偏用的，
@@ -853,11 +877,12 @@ def _parse_target_offset(value: Any) -> tuple[float, float, float]:
 
 def _unsupported_message(kind: str, site: str) -> str:
     pre, post = CHECK_KIND_STATES[kind]
-    return (f"「{pre} → {post}」在{SITE_LABELS[site]}上对应向右拨——"
-            f"镜像动作尚未真机验证，暂不支持；"
-            f"该柜支持的指令语义为"
-            f"「{CHECK_KIND_STATES[SITE_SUPPORTED_KIND[site]][0]} → "
-            f"{CHECK_KIND_STATES[SITE_SUPPORTED_KIND[site]][1]}」")
+    supported = "、".join(
+        f"「{CHECK_KIND_STATES[item][0]} → {CHECK_KIND_STATES[item][1]}」"
+        for item in SITE_SUPPORTED_KINDS[site]
+    )
+    return (f"「{pre} → {post}」在{SITE_LABELS[site]}上的镜像动作"
+            f"尚未真机验证；该柜当前支持 {supported}")
 
 
 @app.post("/task/flip")
@@ -892,8 +917,9 @@ def task_submit(body: dict | None = None):
         return JSONResponse(
             {"ok": False, "error": "site 只能是 lab（实验室柜）或 factory（工厂柜，印刷相反）"},
             status_code=422)
+    intent = resolve_flip_intent(site, kind)
     try:
-        offset_mm, offset_source = _resolve_offset(body, defaults)
+        offset_mm, offset_source = _resolve_offset(body, defaults, kind)
         lift_mm, lift_source = _resolve_lift(body, defaults)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
@@ -920,20 +946,26 @@ def task_submit(body: dict | None = None):
                      f"/封顶{lift_mm['max']:g} mm（{lift_source}）")
         _task = {"id": uuid.uuid4().hex[:10], "state": "starting",
                  "language": language, "kind": kind, "retries": retries,
-                 "manual": manual, "site": site, "prompt": None, "gate": None,
+                 "manual": manual, "site": site,
+                 "direction": intent["direction"],
+                 "flip_from": intent["flip_from"], "flip_to": intent["flip_to"],
+                 "prompt": None, "gate": None,
                  "target_offset_wall_mm": list(offset_mm),
                  "offset_source": offset_source,
                  "lift_mm": dict(lift_mm), "lift_source": lift_source,
                  "started_at": now, "finished_at": None,
                  "result": None, "flow": None,
-                 "log": [f"指令: {language}（{kind}，现场 {SITE_LABELS[site]}"
+                 "log": [f"指令: {language}（{kind}，"
+                         f"{intent['flip_from']}→{intent['flip_to']}，"
+                         f"{'向左拨' if intent['direction'] == 'rtl' else '向右拨'}，"
+                         f"现场 {SITE_LABELS[site]}"
                          f"·{site_source}，最多 {retries} 轮"
                          f"{'，手动确认模式' if manual else ''}"
                          f"{offset_note}{lift_note}）"],
                  "reach_proc": None, "reach_external": False,
                  "stats_counted": False}
         _task_stats["accepted"] += 1
-        if kind != SITE_SUPPORTED_KIND[site]:
+        if not _kind_supported(site, kind):
             # 该柜做不了这个方向（= 未验证的镜像动作），快速失败不启动硬件
             # ——平台仍按统一的轮询路径拿到结果，错误码 NOT_IMPLEMENTED
             _task["state"] = "done"
@@ -974,6 +1006,8 @@ def task_status():
     return {**common, "state": t["state"], "task_id": t["id"],
             "language": t.get("language"), "retries": t.get("retries"),
             "site": t.get("site") or "lab",
+            "kind": t.get("kind"), "direction": t.get("direction"),
+            "flip_from": t.get("flip_from"), "flip_to": t.get("flip_to"),
             "target_offset_wall_mm": t.get("target_offset_wall_mm")
                                      or [0.0, 0.0, 0.0],
             "offset_source": t.get("offset_source") or "",
@@ -1040,14 +1074,20 @@ def config_defaults_get():
 
 @app.post("/config/defaults")
 def config_defaults_set(body: dict | None = None):
-    """改默认值。Body: {"site": "lab|factory", "offset_preset": "配置名或空串"}"""
+    """改默认值；两个任务方向可分别选择命名偏移配置。"""
     body = body or {}
     cfg = _current_defaults()
     if "site" in body:
         cfg["defaults"]["site"] = body.get("site")
-    if "offset_preset" in body:
-        cfg["defaults"]["offset_preset"] = str(
-            body.get("offset_preset") or "").strip()
+    if "offset_preset_by_kind" in body:
+        cfg["defaults"]["offset_preset_by_kind"] = (
+            body.get("offset_preset_by_kind")
+        )
+    elif "offset_preset" in body:
+        legacy = str(body.get("offset_preset") or "").strip()
+        cfg["defaults"]["offset_preset_by_kind"] = {
+            kind: legacy for kind in CHECK_KIND_STATES
+        }
     if "lift_mm" in body:
         cfg["defaults"]["lift_mm"] = body.get("lift_mm")
     try:
@@ -1083,7 +1123,7 @@ def config_preset_upsert(body: dict | None = None):
 
 @app.post("/config/offset-presets/delete")
 def config_preset_delete(body: dict | None = None):
-    """删除命名偏移配置；若它正是默认偏移配置，默认自动改回「无」。"""
+    """删除命名偏移配置；引用它的各方向默认值自动改回「无」。"""
     name = str((body or {}).get("name") or "").strip()
     if not name:
         return JSONResponse({"ok": False, "error": "配置名不能为空"},
@@ -1094,8 +1134,11 @@ def config_preset_delete(body: dict | None = None):
         return JSONResponse({"ok": False, "error": f"没有配置「{name}」"},
                             status_code=404)
     cfg["offset_presets"] = remaining
-    if cfg["defaults"].get("offset_preset") == name:
-        cfg["defaults"]["offset_preset"] = ""
+    by_kind = cfg["defaults"].get("offset_preset_by_kind") or {}
+    cfg["defaults"]["offset_preset_by_kind"] = {
+        kind: "" if preset == name else preset
+        for kind, preset in by_kind.items()
+    }
     try:
         saved = save_dispatch_defaults(cfg)
     except ValueError as exc:

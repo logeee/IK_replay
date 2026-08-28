@@ -3,7 +3,7 @@
 不依赖任何前端调试页面，按既定流程执行：
 
   1️⃣ 一键开始
-  2️⃣ YOLO 场景判断（7004 服务）：「就地」= 要拨、「远方」= 无需拨直接结束
+  2️⃣ YOLO 场景判断（7004 服务）：按任务 kind 判断拨前/目标状态
       （每处视觉判断连问 3 帧；配了 YOLO 仍没结论 → YOLO_FAILED 退出，
         手臂受控回落，不转人工——自动化不能卡在等人上）
   3️⃣ 腰部粗对齐：默认目标 -7°、验收 -8.5°~0°（抬手前，允许真机转身）
@@ -18,12 +18,12 @@
         服务端限幅：抬手时只往 - 方向纠，yaw 低于目标时只等不纠——正向纠偏和
         身体自己的回转同向，会越纠越远；抬手纠偏第一杆直接使用 20°/s 加强档，
         仍不动才判运控未响应）
-      → YOLO 识别点位：「就地」框 + 固定相对偏移
+      → YOLO/点云识别任务的拨前状态并生成目标点
         （目标点上抬补重力下垂：<0.5m 不抬，≥0.5m 首轮垫 1cm、每重试一轮
           再 +1cm，总封顶 3cm）
       → IK 执行拨动（取点偏移0 → 左侧规划抬高2cm → 到位6s
-        → 左移6cm+推力25N，拨完就地停住）
-      → YOLO 立即复核：「远方」= 成功、「就地」= 复看一眼仍「就地」= 失败
+        → 按任务方向横移10cm+推力10N，左右都向柜面-Z下偏15°）
+      → YOLO 立即复核：识别目标状态=成功；仍为拨前状态=复看后失败
       → 成功直接收尾；失败插值回「<距离>终点」路点重试
   收尾：快速插值到「起手点测试」路点 → 到位立即释放手臂
 
@@ -42,8 +42,8 @@
 
 from .client import ReachClient
 from .console_client import ConsoleAbort, ConsoleClient
-from .flow import ErrorCode, FlowError, FlowResult, SwitchFlow
+from .flow import ErrorCode, FlowError, FlowResult, SwitchFlow, resolve_flip_intent
 from .yolo_client import YoloClient
 
 __all__ = ["ReachClient", "SwitchFlow", "FlowError", "FlowResult", "ErrorCode",
-           "ConsoleClient", "ConsoleAbort", "YoloClient"]
+           "ConsoleClient", "ConsoleAbort", "YoloClient", "resolve_flip_intent"]

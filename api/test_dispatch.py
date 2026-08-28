@@ -406,17 +406,6 @@ def task_submit(body: dict | None = None):
             "reach_external": False,
             "owns_arm": False,
         }
-        if kind == "remote_to_close":
-            _task["state"] = "done"
-            _task["finished_at"] = now
-            _task["result"] = {
-                "ok": False,
-                "code": 1,
-                "code_name": "NOT_IMPLEMENTED",
-                "message": "「远方 → 就地」暂未支持",
-                "detail": {},
-            }
-            return {"ok": True, "task_id": _task["id"]}
         threading.Thread(target=_run_task, args=(_task,), daemon=True).start()
         return {"ok": True, "task_id": _task["id"]}
 

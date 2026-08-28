@@ -1,29 +1,24 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "defaults": {
     "site": "factory",
-    "offset_preset": "摔手后",
+    "offset_preset_by_kind": {
+      "close_to_remote": "",
+      "remote_to_close": ""
+    },
     "lift_mm": {
-      "base": 0.0,
+      "base": 10.0,
       "step": 10.0,
       "max": 30.0
     }
   },
   "offset_presets": [
     {
-      "name": "右到左配置-1",
-      "offset_mm": {
-        "x": 7.0,
-        "y": -2.0,
-        "z": 0.0
-      }
-    },
-    {
       "name": "摔手后",
       "offset_mm": {
-        "x": 25.0,
+        "x": 20.0,
         "y": 10.0,
-        "z": -20.0
+        "z": -15.0
       }
     }
   ]

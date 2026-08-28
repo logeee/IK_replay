@@ -9,13 +9,10 @@ POSE_UNAVAILABLE；重试轮插值回配套「X.XX-起手式新终点」路点�
 场景判断和拨后复核走 7004 YOLO 服务（python -m api.yolo_server）：
 每处视觉判断连问 3 帧再下结论；配了 YOLO 却仍没结论时报 YOLO_FAILED
 退出（手臂受控回落），不转人工——无人值守的自动化不能卡在等人上。
-本 API 只做一套已验证的动作（从右向左拨）。YOLO 识别的是开关的真实印刷
-状态（工厂柜实测：印刷相反时也能正确读出「远方」）。
-
-现场（site）决定这套动作的起止状态（flip_from → flip_to）：
-  实验室柜（lab，默认）：就地 → 远方——识别「就地」= 要拨、「远方」= 无需拨；
-  工厂柜（factory，两旋钮印刷相反）：远方 → 就地——识别「远方」= 要拨、
-  「就地」= 无需拨。
+YOLO 识别的是开关的真实印刷状态（工厂柜实测：印刷相反时也能正确读出
+「远方」）。任务 kind 决定起止状态，site + kind 决定物理拨动方向：
+  工厂柜远方→就地：从右向左；工厂柜就地→远方：从左向右。
+  实验室柜的印刷方向相反，因此同一物理方向对应相反的状态变化。
 拨完识别 flip_to = 成功、flip_from = 失败重试。
 
 取点（默认走 7005 语义点云算法）：冻结同帧 RGB-D → 建墙面坐标系 →
@@ -83,6 +80,35 @@ class FlowResult:
     detail: dict[str, Any] = field(default_factory=dict)
 
 
+FLIP_KIND_STATES: dict[str, tuple[str, str]] = {
+    "close_to_remote": ("就地", "远方"),
+    "remote_to_close": ("远方", "就地"),
+}
+SITE_RTL_KIND = {
+    "lab": "close_to_remote",
+    "factory": "remote_to_close",
+}
+
+
+def resolve_flip_intent(site: str, kind: str | None = None) -> dict[str, str]:
+    """Resolve semantic states and the physical direction for one task."""
+    clean_site = str(site or "").strip().lower()
+    if clean_site not in SITE_RTL_KIND:
+        raise ValueError(f"不支持的现场：{site!r}")
+    clean_kind = str(kind or SITE_RTL_KIND[clean_site]).strip().lower()
+    if clean_kind not in FLIP_KIND_STATES:
+        raise ValueError(f"不支持的拨动任务：{kind!r}")
+    flip_from, flip_to = FLIP_KIND_STATES[clean_kind]
+    direction = "rtl" if clean_kind == SITE_RTL_KIND[clean_site] else "ltr"
+    return {
+        "site": clean_site,
+        "kind": clean_kind,
+        "flip_from": flip_from,
+        "flip_to": flip_to,
+        "direction": direction,
+    }
+
+
 class SwitchFlow:
     """一键开始 → … → 拨动完成 的整条流程。
 
@@ -130,6 +156,7 @@ class SwitchFlow:
                  align_timeout_s: float = 90.0,
                  exec_timeout_s: float = 120.0,
                  site: str = "lab",                # lab=实验室柜 / factory=工厂柜（印刷相反）
+                 flip_kind: str | None = None,      # close_to_remote / remote_to_close
                  pointcloud: Any = None,           # 7005 点云找点客户端（None=退回旧框偏移法）
                  # 目的点人工微调（墙面系，米）：算法算出目的点后再叠加，
                  # 不动"粉点→目的点"的模型偏移。x=沿墙向右 y=法向入墙 z=沿墙向上
@@ -172,7 +199,7 @@ class SwitchFlow:
         self.dmax = dmax
         self.approach_offset_m = approach_offset_m
         self.reach_duration_s = reach_duration_s
-        self.sidestep_cm = sidestep_cm
+        self.sidestep_distance_cm = abs(float(sidestep_cm))
         self.push_force_n = push_force_n
         self.lift_m = lift_m
         self.endpoint_speed_rad_s = endpoint_speed_rad_s
@@ -182,11 +209,17 @@ class SwitchFlow:
         self.lift_max_m = max(0.0, float(lift_max_m))
         self.align_timeout_s = align_timeout_s
         self.exec_timeout_s = exec_timeout_s
-        self.site = site
-        # 本柜这套"向左拨"动作的起止状态（YOLO 读的是真实印刷状态）：
-        # 实验室柜 就地→远方；工厂柜两旋钮印刷相反，同一动作是 远方→就地
-        self.flip_from, self.flip_to = (
-            ("远方", "就地") if site == "factory" else ("就地", "远方")
+        intent = resolve_flip_intent(site, flip_kind)
+        self.site = intent["site"]
+        self.flip_kind = intent["kind"]
+        self.flip_from = intent["flip_from"]
+        self.flip_to = intent["flip_to"]
+        self.flip_direction = intent["direction"]
+        # 正=左移、负=右移；外部参数只决定距离绝对值，方向由任务语义唯一决定。
+        self.sidestep_cm = (
+            self.sidestep_distance_cm
+            if self.flip_direction == "rtl"
+            else -self.sidestep_distance_cm
         )
         self._current_pose: dict | None = None
         self._armed_by_flow = False   # 手臂是流程接管的（而非用户本来就接管着）
@@ -282,11 +315,16 @@ class SwitchFlow:
         t0 = time.monotonic()
         try:
             self._log("═══ 1️⃣ 一键开始 ═══")
-            if self.site == "factory":
-                # 措辞别带阶段卡的关键词（如"拨动成功"），看板靠日志兜底推进度
-                self._log("现场=工厂柜（两旋钮印刷相反）：本次向左拨动作为"
-                          "「远方 → 就地」——识别「远方」= 要拨、"
-                          "「就地」= 目标状态")
+            direction_text = "从右向左（左移）" if self.flip_direction == "rtl" \
+                else "从左向右（右移）"
+            # 措辞别带阶段卡的关键词（如"拨动成功"），看板靠日志兜底推进度
+            self._log(
+                f"现场={'工厂柜（印刷相反）' if self.site == 'factory' else '实验室柜'}："
+                f"任务「{self.flip_from} → {self.flip_to}」，物理方向 "
+                f"{direction_text} {self.sidestep_distance_cm:g}cm；"
+                f"识别「{self.flip_from}」= 要拨、"
+                f"「{self.flip_to}」= 目标状态"
+            )
             self._confirm("preflight",
                           "即将检查前置条件（reach 服务 / 真机能力 / 确认台），"
                           "若手臂未接管会自动接管")
@@ -300,10 +338,6 @@ class SwitchFlow:
             if not scene.get("need_flip", True):
                 self._release_if_flow_armed()
                 return self._done(t0, "无需拨动，流程结束", scene=scene)
-            if scene.get("direction") == "ltr":
-                self._release_if_flow_armed()
-                raise FlowError(ErrorCode.NOT_IMPLEMENTED,
-                                "「从左向右」拨动暂未支持（只验证过从右向左），流程退出")
             self._log(f"场景: {scene}")
 
             self._log(f"═══ 3️⃣ 腰部粗对齐：目标 "
@@ -385,10 +419,12 @@ class SwitchFlow:
                     self._log(f"点位: {self._points_brief(points)}")
 
                     self._log("IK 执行拨动")
+                    side_text = "左移" if self.sidestep_cm > 0 else "右移"
                     self._confirm(
                         "flip",
                         f"即将执行 IK 拨动：规划 → {self.reach_duration_s:g}s "
-                        f"到位 → 沿柜面左移 {self.sidestep_cm:g}cm + 前馈推力 "
+                        f"到位 → 沿柜面{side_text} "
+                        f"{self.sidestep_distance_cm:g}cm + 前馈推力 "
                         f"{self.push_force_n:g}N（真机动作，规划就绪后直接执行）",
                         {"点位": self._points_brief(points),
                          "轮次": f"{round_no}/{self.max_flip_rounds}"},
@@ -669,7 +705,7 @@ class SwitchFlow:
         """IK 执行拨动：
 
           取点（接近偏移 0）→ 左侧规划（中段抬高 2cm）→
-          主段到位（6s）→ 沿柜面左移 10cm + 前馈推力 10N
+          主段到位（6s）→ 按任务方向沿柜面横移 10cm + 前馈推力 10N
 
         拨完就地停住直接交给复核（拨动本身不要求到点精度，不再先插值回
         「终点」路点）：成功 → 收尾直接回「起手点测试」；失败 → 重试轮
@@ -734,15 +770,12 @@ class SwitchFlow:
             self._flip_evidence_before()
             self._sidestep_flick(picked, tag)
 
-    def _sidestep_flick(self, picked: dict, tag: str) -> None:
-        """到位后的拨动本体：按真机实际姿态就地规划横移，带前馈推力执行。"""
-        if abs(self.sidestep_cm) < 0.5:
-            return
-        plane = picked.get("plane") or {}
+    def _sidestep_direction(self, plane: dict) -> list[float]:
+        """Return the root-frame left/right direction with the configured tilt."""
         left = plane.get("left_root")
         if not left:
             raise FlowError(ErrorCode.IK_FAILED,
-                            f"{tag} 表面平面拟合失败，定不出左移方向")
+                            "表面平面拟合失败，定不出横移方向")
         sg = 1.0 if self.sidestep_cm > 0 else -1.0
         right = plane.get("right_root")
         if right:
@@ -750,26 +783,32 @@ class SwitchFlow:
             if not wall_up:
                 raise FlowError(
                     ErrorCode.IK_FAILED,
-                    f"{tag} 柜面坐标系缺少 Z 轴，无法计算向下偏移",
+                    "柜面坐标系缺少 Z 轴，无法计算向下偏移",
                 )
             t = math.radians(self.WALL_SIDESTEP_DOWN_DEG)
             c, s = math.cos(t), math.sin(t)
             # 柜面系 X 正=右、Z 正=上。正 sidestep 表示左：
             # 左右分量取 ∓X，两种方向都叠加 -Z 方向 15°。
-            direction = [
+            return [
                 -right[i] * sg * c - wall_up[i] * s
                 for i in range(3)
             ]
-        else:
-            t = math.radians(self.SIDESTEP_TILT_DEG)
-            c, s = math.cos(t), math.sin(t)
-            # 旧取点链路没有柜面 X 轴时才使用兼容算法。
-            direction = [
-                left[0] * sg * c,
-                left[1] * sg * c,
-                left[2] * sg * c - s,
-            ]
+        t = math.radians(self.SIDESTEP_TILT_DEG)
+        c, s = math.cos(t), math.sin(t)
+        # 旧取点链路没有柜面 X 轴时才使用兼容算法。
+        return [
+            left[0] * sg * c,
+            left[1] * sg * c,
+            left[2] * sg * c - s,
+        ]
+
+    def _sidestep_flick(self, picked: dict, tag: str) -> None:
+        """到位后的拨动本体：按任务方向就地规划横移并施加前馈推力。"""
+        if abs(self.sidestep_cm) < 0.5:
+            return
+        direction = self._sidestep_direction(picked.get("plane") or {})
         dist = abs(self.sidestep_cm) / 100.0
+        side_text = "左移" if self.sidestep_cm > 0 else "右移"
 
         joints = self.client.joints()
         if not joints.get("ok"):
@@ -797,7 +836,7 @@ class SwitchFlow:
         if not res.get("ok"):
             raise FlowError(ErrorCode.EXEC_FAILED,
                             f"{tag} 横移执行被拒: {res.get('error')}")
-        self._wait_exec(f"{tag} 拨动（左移+推力）")
+        self._wait_exec(f"{tag} 拨动（{side_text}+推力）")
 
     def _goto_endpoint(self, tag: str) -> None:
         """关节插值回起手式配套的「终点」路点。
@@ -906,10 +945,10 @@ class SwitchFlow:
         return None
 
     def detect_scene(self) -> dict:
-        """2️⃣ 是否需要拨动。按现场的起止状态判断：
+        """2️⃣ 是否需要拨动。按任务语义的起止状态判断：
 
-        YOLO 识别 flip_from（实验室柜「就地」/工厂柜「远方」）→ 需要拨
-        （方向即验证过的从右向左）；flip_to → 已在目标位，无需拨动结束。
+        YOLO 识别 flip_from → 按 site + kind 对应的物理方向拨动；
+        flip_to → 已在目标位，无需拨动结束。
         配了 YOLO 但多次都没结论 → 报 YOLO_FAILED 退出（不转人工，否则
         无人值守的自动化会卡在等人上）。只有压根没配 YOLO 时才走确认台。
         """
@@ -921,7 +960,8 @@ class SwitchFlow:
                         "conf": got["conf"]}
             self._log(f"「{got['scene']}」是本柜拨前状态，需要拨动"
                       f"（{self.flip_from} → {self.flip_to}）")
-            return {"need_flip": True, "direction": "rtl", "source": "yolo",
+            return {"need_flip": True, "direction": self.flip_direction,
+                    "source": "yolo",
                     "conf": got["conf"]}
         if self.yolo is not None:
             raise FlowError(ErrorCode.YOLO_FAILED,
@@ -930,12 +970,13 @@ class SwitchFlow:
                             f"或机器人是否正对柜面")
         answer = self._need_console("YOLO 场景判断").choice(
             "2️⃣ 场景判断（YOLO 无结论，请看相机画面人工判断）\n"
-            "开关需要拨动吗？往哪个方向拨？",
-            ["需要：从右向左", "需要：从左向右", "无需拨动"])
-        if answer == "无需拨动":
+            f"任务目标为「{self.flip_to}」，当前是什么状态？",
+            [f"当前是「{self.flip_from}」：需要拨动",
+             f"当前是「{self.flip_to}」：无需拨动"])
+        if self.flip_to in answer:
             return {"need_flip": False, "source": "console"}
         return {"need_flip": True,
-                "direction": "rtl" if "从右向左" in answer else "ltr",
+                "direction": self.flip_direction,
                 "source": "console"}
 
     # 只认新起手式序列：「0.49-起手式新」，前缀数字是该档的录制距离。
@@ -1110,8 +1151,11 @@ class SwitchFlow:
                   f"[{pc[0]:+.3f}, {pc[1]:+.3f}, {pc[2]:+.3f}] m，"
                   f"模型偏移后目的点 [{tw[0]:+.3f}, {tw[1]:+.3f}, {tw[2]:+.3f}] m")
         if name != self.flip_from:
-            self._log(f"⚠ 面板类别「{name}」与拨前状态「{self.flip_from}」"
-                      f"不一致，仍按算法结果执行")
+            return (
+                None,
+                f"面板类别「{name or '未知'}」与任务拨前状态"
+                f"「{self.flip_from}」不一致，拒绝按错误方向取点",
+            )
 
         # 人工微调：墙面系 (x右, y入墙, z上) → 相机系向量，叠加在算好的
         # 目的点上；粉点→目的点的模型偏移保持原样。
