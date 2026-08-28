@@ -24,8 +24,8 @@ def save_flip_evidence(
     stage: str,
     result: dict[str, Any],
     *,
-    flip_from: str,
-    flip_to: str,
+    flip_from: str | None,
+    flip_to: str | None,
     success: bool | None = None,
     round_no: int | None = None,
     history_dir: Path = PICK_HISTORY_DIR,
@@ -60,11 +60,18 @@ def save_flip_evidence(
             data = loaded
     entry: dict[str, Any] = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "ok": (
+            bool(result["ok"])
+            if "ok" in result
+            else not bool(result.get("error"))
+        ),
         "scene": result.get("scene"),
         "conf": result.get("conf"),
         "boxes": result.get("boxes"),
         "has_image": bool(jpeg_b64),
     }
+    if result.get("error"):
+        entry["error"] = str(result["error"])
     if stage == "before":
         entry["has_wrist_image"] = bool(wrist_jpeg_b64)
         if result.get("wrist_error"):

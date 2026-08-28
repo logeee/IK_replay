@@ -867,6 +867,7 @@ class SwitchFlow:
             return None
         for i in range(1, self.YOLO_ATTEMPTS + 1):
             res = self.yolo.scene(include_image=include_image)
+            self._last_yolo_result = res
             if res.get("ok") and res.get("scene") in ("就地", "远方"):
                 self._log(f"{tag}：YOLO 识别为「{res['scene']}」"
                           f"（置信度 {res.get('conf')}，第 {i} 次尝试）")
@@ -1136,12 +1137,19 @@ class SwitchFlow:
 
     def _flip_evidence_before(self) -> None:
         """横移前抓一帧：此刻开关应仍是拨前状态（手臂可能遮挡，识别可空）。"""
-        if self.yolo is None or not self._last_pick_record:
+        if not self._last_pick_record:
+            return
+        if self.yolo is None:
+            self._save_flip_evidence(
+                "before",
+                {"ok": False, "error": "未配置 YOLO 核验服务"},
+            )
             return
         res = self.yolo.scene(include_image=True, include_wrist=True)
         if res.get("ok"):
             self._save_flip_evidence("before", res)
         else:
+            self._save_flip_evidence("before", res)
             self._log(f"⚠ 拨动前证据抓帧失败（不影响流程）: {res.get('error')}")
 
     def _save_flip_evidence(self, stage: str, res: dict,
@@ -1160,6 +1168,12 @@ class SwitchFlow:
                 round_no=self._last_flip_round,
                 history_dir=self._PICK_HISTORY_DIR,
             )
+            if res.get("error"):
+                self._log(
+                    f"⚠ 拨动{'前' if stage == 'before' else '后'}核验失败已记录："
+                    f"{record}/flip_result.json（{res['error']}）"
+                )
+                return
             suffix = ""
             if stage == "before":
                 suffix = (" + flip_before_wrist.jpg"
@@ -1198,6 +1212,12 @@ class SwitchFlow:
             self._save_flip_evidence("after", got, success=False)
             return False
         if self.yolo is not None:
+            failed = dict(getattr(self, "_last_yolo_result", None) or {})
+            failed["ok"] = False
+            failed["error"] = (
+                f"YOLO 连续 {self.YOLO_ATTEMPTS} 次都没识别到「就地/远方」"
+            )
+            self._save_flip_evidence("after", failed)
             raise FlowError(ErrorCode.YOLO_FAILED,
                             f"复核失败：YOLO 连续 {self.YOLO_ATTEMPTS} 次都没识别到"
                             f"「就地/远方」，无法判定拨动结果——开关是否被手臂"

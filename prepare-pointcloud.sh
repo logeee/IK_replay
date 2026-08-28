@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# 18001 + 7005 专用点云选点启动器。
+# 18001 + 7004 + 7005 专用点云选点与拨动核验启动器。
 #
 # 启动：./prepare-pointcloud.sh
 # 状态：./prepare-pointcloud.sh status
 # 停止：./prepare-pointcloud.sh stop
 #
-# 如果 18001 已由用户手动启动，本脚本会复用它，只启动 7005；
+# 如果服务已由用户手动启动，本脚本会复用它；
 # stop 只关闭由本脚本启动并记录 PID 的进程，不会误关外部 18001。
 
 set -u
@@ -14,21 +14,28 @@ cd "$(dirname "$0")"
 
 PYTHON=${PYTHON:-/home/robot/miniconda3/envs/fastapi/bin/python}
 REACH_PORT=${REACH_PORT:-18001}
+YOLO_PORT=${YOLO_PORT:-7004}
 POINTCLOUD_PORT=${POINTCLOUD_PORT:-7005}
 REACH_BASE="http://127.0.0.1:$REACH_PORT"
+YOLO_BASE="http://127.0.0.1:$YOLO_PORT"
 NETWORK_INTERFACE=${NETWORK_INTERFACE:-enp86s0}
 CAMERA_HOST=${CAMERA_HOST:-127.0.0.1}
 HAND_EYE_CALIB=${HAND_EYE_CALIB:-/home/robot/yx/project/calib/hand_eye_3D/handeye3d_data/biaoding/handeye3d_result.json}
 TOOL_OUT_MM=${TOOL_OUT_MM:-0}
 POINTCLOUD_MODEL=${POINTCLOUD_MODEL:-models/Xuanniu.pt}
 POINTCLOUD_CONF=${POINTCLOUD_CONF:-0.25}
+YOLO_MODEL=${YOLO_MODEL:-$POINTCLOUD_MODEL}
+YOLO_CONF=${YOLO_CONF:-$POINTCLOUD_CONF}
 
 LOG_DIR=logs/service
 REACH_LOG="$LOG_DIR/pointcloud_reach.log"
+YOLO_LOG="$LOG_DIR/pointcloud_yolo.log"
 VIEWER_LOG="$LOG_DIR/pointcloud_viewer.log"
 REACH_PID_FILE="$LOG_DIR/pointcloud_reach.pid"
+YOLO_PID_FILE="$LOG_DIR/pointcloud_yolo.pid"
 VIEWER_PID_FILE="$LOG_DIR/pointcloud_viewer.pid"
 REACH_TOKEN="reach_server.py --port $REACH_PORT"
+YOLO_TOKEN="api.yolo_server --port $YOLO_PORT"
 VIEWER_TOKEN="api.pointcloud_viewer --port $POINTCLOUD_PORT"
 mkdir -p "$LOG_DIR"
 
@@ -102,6 +109,15 @@ show_status() {
     else
         echo "[18001] 未就绪"
     fi
+    if healthy "$YOLO_BASE/api/yolo/status"; then
+        if owned_pid "$YOLO_PID_FILE" "$YOLO_TOKEN"; then
+            echo "[7004] 运行中，由本脚本启动（pid $(<"$YOLO_PID_FILE")）"
+        else
+            echo "[7004] 运行中，外部进程（本脚本不会关闭）"
+        fi
+    else
+        echo "[7004] 未就绪"
+    fi
     if healthy "http://127.0.0.1:$POINTCLOUD_PORT/api/pointcloud/status"; then
         if owned_pid "$VIEWER_PID_FILE" "$VIEWER_TOKEN"; then
             echo "[7005] 运行中，由本脚本启动（pid $(<"$VIEWER_PID_FILE")）"
@@ -116,6 +132,7 @@ show_status() {
 case "${1:-start}" in
     stop)
         stop_owned "7005点云" "$VIEWER_PID_FILE" "$VIEWER_TOKEN" 20
+        stop_owned "7004 YOLO" "$YOLO_PID_FILE" "$YOLO_TOKEN" 20
         stop_owned "18001 Reach" "$REACH_PID_FILE" "$REACH_TOKEN" 50
         exit 0
         ;;
@@ -139,6 +156,10 @@ if [[ ! -f "$HAND_EYE_CALIB" ]]; then
     echo "[启动失败] 手眼标定文件不存在: $HAND_EYE_CALIB"
     exit 1
 fi
+if [[ ! -f "$YOLO_MODEL" ]]; then
+    echo "[启动失败] YOLO 模型不存在: $YOLO_MODEL"
+    exit 1
+fi
 
 started_reach=0
 if healthy "$REACH_BASE/api/reach/status"; then
@@ -154,6 +175,7 @@ else
         --network-interface "$NETWORK_INTERFACE" \
         --calib "$HAND_EYE_CALIB" \
         --tool-out-mm "$TOOL_OUT_MM" \
+        --yolo-base "$YOLO_BASE" \
         >>"$REACH_LOG" 2>&1 &
     reach_pid=$!
     echo "$reach_pid" >"$REACH_PID_FILE"
@@ -167,22 +189,49 @@ else
     echo "[18001] 已就绪"
 fi
 
-if healthy "http://127.0.0.1:$POINTCLOUD_PORT/api/pointcloud/status"; then
-    echo "[7005] 已经就绪，未重复启动"
-elif port_in_use "$POINTCLOUD_PORT"; then
-    echo "[启动失败] 端口 $POINTCLOUD_PORT 已被其他服务占用"
+started_yolo=0
+if healthy "$YOLO_BASE/api/yolo/status"; then
+    echo "[7004] 已经就绪，未重复启动"
+elif port_in_use "$YOLO_PORT"; then
+    echo "[启动失败] 端口 $YOLO_PORT 已被其他服务占用"
     if (( started_reach )); then
         stop_owned "18001 Reach" "$REACH_PID_FILE" "$REACH_TOKEN" 50
     fi
     exit 1
 else
-    if [[ ! -f "$POINTCLOUD_MODEL" ]]; then
-        echo "[启动失败] YOLO 模型不存在: $POINTCLOUD_MODEL"
+    nohup env PYTHONUNBUFFERED=1 "$PYTHON" -m api.yolo_server \
+        --port "$YOLO_PORT" \
+        --reach-base "$REACH_BASE" \
+        --model "$YOLO_MODEL" \
+        --conf "$YOLO_CONF" \
+        >>"$YOLO_LOG" 2>&1 &
+    yolo_pid=$!
+    echo "$yolo_pid" >"$YOLO_PID_FILE"
+    started_yolo=1
+    echo "[7004] 启动中 pid=$yolo_pid 日志=$YOLO_LOG"
+    if ! wait_until_ready \
+        "7004" "$YOLO_BASE/api/yolo/status" "$yolo_pid" 80 "$YOLO_LOG"; then
+        stop_owned "7004 YOLO" "$YOLO_PID_FILE" "$YOLO_TOKEN" 20
         if (( started_reach )); then
             stop_owned "18001 Reach" "$REACH_PID_FILE" "$REACH_TOKEN" 50
         fi
         exit 1
     fi
+    echo "[7004] 已就绪"
+fi
+
+if healthy "http://127.0.0.1:$POINTCLOUD_PORT/api/pointcloud/status"; then
+    echo "[7005] 已经就绪，未重复启动"
+elif port_in_use "$POINTCLOUD_PORT"; then
+    echo "[启动失败] 端口 $POINTCLOUD_PORT 已被其他服务占用"
+    if (( started_yolo )); then
+        stop_owned "7004 YOLO" "$YOLO_PID_FILE" "$YOLO_TOKEN" 20
+    fi
+    if (( started_reach )); then
+        stop_owned "18001 Reach" "$REACH_PID_FILE" "$REACH_TOKEN" 50
+    fi
+    exit 1
+else
     nohup env PYTHONUNBUFFERED=1 "$PYTHON" -m api.pointcloud_viewer \
         --port "$POINTCLOUD_PORT" \
         --reach-base "$REACH_BASE" \
@@ -196,6 +245,9 @@ else
         "7005" "http://127.0.0.1:$POINTCLOUD_PORT/api/pointcloud/status" \
         "$viewer_pid" 80 "$VIEWER_LOG"; then
         stop_owned "7005点云" "$VIEWER_PID_FILE" "$VIEWER_TOKEN" 20
+        if (( started_yolo )); then
+            stop_owned "7004 YOLO" "$YOLO_PID_FILE" "$YOLO_TOKEN" 20
+        fi
         if (( started_reach )); then
             stop_owned "18001 Reach" "$REACH_PID_FILE" "$REACH_TOKEN" 50
         fi
@@ -207,5 +259,6 @@ fi
 IP=$(ip route get 8.8.8.8 2>/dev/null | awk \
     '{for (i=1; i<=NF; i++) if ($i=="src") {print $(i+1); exit}}')
 echo
+echo "YOLO 核验服务:  $YOLO_BASE/"
 echo "点云选点页面: http://${IP:-127.0.0.1}:$POINTCLOUD_PORT/"
 echo "停止本脚本启动的服务: $0 stop"

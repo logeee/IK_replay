@@ -43,6 +43,31 @@ def _scene_with_retries(
     return None, last
 
 
+def _persist_failure(
+    record: str,
+    stage: str,
+    result: dict[str, Any] | None,
+    *,
+    flip_from: str | None,
+    flip_to: str | None,
+    error: str,
+) -> dict[str, Any]:
+    """Persist a failed/indeterminate verification, retaining any captured image."""
+    failed = dict(result or {})
+    failed["ok"] = False
+    failed["error"] = error
+    try:
+        return save_flip_evidence(
+            record,
+            stage,
+            failed,
+            flip_from=flip_from,
+            flip_to=flip_to,
+        )
+    except Exception as exc:
+        return {"persistence_error": str(exc)}
+
+
 def capture_manual_before(spec: dict[str, Any]) -> dict[str, Any]:
     """Capture head + right wrist immediately before a manual sidestep."""
     record = str(spec.get("record") or "")
@@ -56,20 +81,38 @@ def capture_manual_before(spec: dict[str, Any]) -> dict[str, Any]:
     result = recognized or last
     if not result or not result.get("ok"):
         flip_to = _opposite(hint)
+        error = (result or {}).get("error") or "拨动前相机抓帧失败"
         return {
             "ok": False,
             "record": record,
             "flip_from": hint or None,
             "flip_to": flip_to,
-            "error": (result or {}).get("error") or "拨动前相机抓帧失败",
+            "error": error,
+            **_persist_failure(
+                record,
+                "before",
+                result,
+                flip_from=hint or None,
+                flip_to=flip_to,
+                error=error,
+            ),
         }
     flip_from = result.get("scene") if result.get("scene") in SCENES else hint
     flip_to = _opposite(flip_from)
     if not flip_from or not flip_to:
+        error = "拨动前 YOLO 未识别到「就地/远方」，无法确定目标状态"
         return {
             "ok": False,
             "record": record,
-            "error": "拨动前 YOLO 未识别到「就地/远方」，无法确定目标状态",
+            "error": error,
+            **_persist_failure(
+                record,
+                "before",
+                result,
+                flip_from=flip_from or None,
+                flip_to=flip_to,
+                error=error,
+            ),
         }
     try:
         saved = save_flip_evidence(
@@ -100,15 +143,37 @@ def verify_manual_after(context: dict[str, Any]) -> dict[str, Any]:
         or flip_from not in SCENES
         or flip_to != _opposite(flip_from)
     ):
-        return {"ok": False, "error": "拨动复核上下文无效"}
+        error = "拨动复核上下文无效"
+        saved = (
+            _persist_failure(
+                record,
+                "after",
+                None,
+                flip_from=flip_from or None,
+                flip_to=flip_to or None,
+                error=error,
+            )
+            if valid_record_name(record)
+            else {}
+        )
+        return {"ok": False, "record": record or None, "error": error, **saved}
 
     yolo = YoloClient(state.yolo_base)
     got, last = _scene_with_retries(yolo)
     if got is None:
+        error = (last or {}).get("error") or "拨动后 YOLO 无结论"
         return {
             "ok": False,
             "record": record,
-            "error": (last or {}).get("error") or "拨动后 YOLO 无结论",
+            "error": error,
+            **_persist_failure(
+                record,
+                "after",
+                last,
+                flip_from=flip_from,
+                flip_to=flip_to,
+                error=error,
+            ),
         }
     if got["scene"] == flip_to:
         final = got

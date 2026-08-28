@@ -56,6 +56,8 @@ export interface PickMeta {
 /** 拨动前/后单帧证据（flow 写入 flip_result.json） */
 export interface FlipStage {
   ts?: string;
+  ok?: boolean;
+  error?: string;
   scene?: string | null;
   conf?: number | null;
   boxes?: YoloBox[] | null;
@@ -68,8 +70,8 @@ export interface FlipStage {
 export interface FlipResult {
   before?: FlipStage;
   after?: FlipStage;
-  flip_from?: string;
-  flip_to?: string;
+  flip_from?: string | null;
+  flip_to?: string | null;
   round?: number | null;
 }
 

@@ -257,7 +257,8 @@ function fmtMm(v?: number | null): string {
 
     <div v-if="record.flip" class="exec-section">
       <h2 class="section-title">
-        拨动前后对比（{{ record.flip.flip_from }} → {{ record.flip.flip_to
+        拨动前后对比（{{ record.flip.flip_from ?? "未知" }} →
+        {{ record.flip.flip_to ?? "未知"
         }}<template v-if="record.flip.round">，第 {{ record.flip.round }} 轮</template>）
         <span
           v-if="record.flip.after?.success != null"
@@ -265,6 +266,12 @@ function fmtMm(v?: number | null): string {
           :class="record.flip.after.success ? 'exec-done' : 'exec-error'"
         >
           {{ record.flip.after.success ? "拨动成功" : "拨动未成功" }}
+        </span>
+        <span
+          v-else-if="record.flip.after?.error || record.flip.before?.error"
+          class="badge exec-error"
+        >
+          核验失败
         </span>
       </h2>
       <div class="flip-grid">
@@ -279,6 +286,9 @@ function fmtMm(v?: number | null): string {
             }}<template v-if="record.flip[stage]?.conf != null">
               （conf {{ record.flip[stage]!.conf!.toFixed(2) }}）</template>
             <span class="mono flip-ts">{{ record.flip[stage]?.ts }}</span>
+          </div>
+          <div v-if="record.flip[stage]?.error" class="flip-error">
+            核验失败：{{ record.flip[stage]!.error }}
           </div>
           <div class="flip-camera-grid" :class="{ 'head-only': stage === 'after' }">
             <figure
@@ -543,6 +553,17 @@ function fmtMm(v?: number | null): string {
   margin-bottom: 10px;
   color: var(--text-dim);
   font-size: 13px;
+}
+
+.flip-error {
+  margin: -4px 0 10px;
+  padding: 8px 10px;
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--red) 35%, transparent);
+  border-radius: 6px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .flip-camera-grid {

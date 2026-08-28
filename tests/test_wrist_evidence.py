@@ -45,6 +45,67 @@ class WristEvidenceTest(unittest.TestCase):
         self.assertEqual(save.call_args_list[1].args[1], "after")
         yolo.scene.assert_any_call(include_image=True, include_wrist=True)
 
+    def test_manual_failures_are_persisted_for_history_viewer(self):
+        yolo = mock.Mock()
+        yolo.scene.return_value = {
+            "ok": False,
+            "error": "YOLO 服务不可达",
+        }
+        with (
+            mock.patch.object(flip_verification, "YoloClient", return_value=yolo),
+            mock.patch.object(
+                flip_verification,
+                "save_flip_evidence",
+                return_value={"head_saved": False, "wrist_saved": False},
+            ) as save,
+            mock.patch.object(flip_verification.time, "sleep"),
+        ):
+            result = flip_verification.capture_manual_before(
+                {
+                    "record": "20260828_120000_1234abcd",
+                    "flip_from": "就地",
+                }
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "YOLO 服务不可达")
+        self.assertEqual(save.call_args.args[1], "before")
+        persisted = save.call_args.args[2]
+        self.assertFalse(persisted["ok"])
+        self.assertEqual(persisted["error"], result["error"])
+
+    def test_indeterminate_after_stage_retains_image_and_error(self):
+        yolo = mock.Mock()
+        yolo.scene.return_value = {
+            "ok": True,
+            "scene": None,
+            "jpeg_b64": "head",
+        }
+        with (
+            mock.patch.object(flip_verification, "YoloClient", return_value=yolo),
+            mock.patch.object(
+                flip_verification,
+                "save_flip_evidence",
+                return_value={"head_saved": True, "wrist_saved": False},
+            ) as save,
+            mock.patch.object(flip_verification.time, "sleep"),
+        ):
+            result = flip_verification.verify_manual_after(
+                {
+                    "record": "20260828_120000_1234abcd",
+                    "flip_from": "就地",
+                    "flip_to": "远方",
+                }
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "拨动后 YOLO 无结论")
+        self.assertEqual(save.call_args.args[1], "after")
+        persisted = save.call_args.args[2]
+        self.assertEqual(persisted["jpeg_b64"], "head")
+        self.assertFalse(persisted["ok"])
+        self.assertEqual(persisted["error"], result["error"])
+
     def test_7005_record_name_attaches_to_current_18001_pick(self):
         previous_context = perception.state.pick_context
         previous_revision = perception.state.pick_revision
@@ -115,6 +176,14 @@ class WristEvidenceTest(unittest.TestCase):
             result = json.loads((record_dir / "flip_result.json").read_text())
             self.assertTrue(result["before"]["has_image"])
             self.assertTrue(result["before"]["has_wrist_image"])
+
+            flow._save_flip_evidence(
+                "after",
+                {"ok": False, "error": "YOLO 服务不可达"},
+            )
+            result = json.loads((record_dir / "flip_result.json").read_text())
+            self.assertFalse(result["after"]["ok"])
+            self.assertEqual(result["after"]["error"], "YOLO 服务不可达")
 
             flow._save_flip_evidence(
                 "after",
