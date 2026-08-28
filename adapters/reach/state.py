@@ -61,6 +61,7 @@ class ReachState:
         self.pick_revision_lock = threading.Lock()
         self.torso_diag: dict | None = None        # 最近一次执行的躯干漂移诊断
         self.log_dir: Path | None = None           # 每段执行落一行 JSONL
+        self.pick_history_dir: Path | None = None  # 与选点记录一同保存执行诊断
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.joint_names: list[str] = []
         self.arm_lock = threading.Lock()
@@ -216,6 +217,7 @@ def configure(*, camera, wrist_camera=None, robot_model, robot_id: str, chain_id
     state.sequences_dir = project_root / "data" / "sequences"
     state.sidesteps_dir = project_root / "data" / "sidesteps"
     state.log_dir = project_root / "logs" / "reach"
+    state.pick_history_dir = project_root / "data" / "pick_history"
     state.enabled = True
 
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -25,12 +26,20 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from core.pick_execution_archive import (
+    EXECUTIONS_FILENAME,
+    load_embedded_executions,
+)
+
 PICK_HISTORY_DIR = ROOT / "data" / "pick_history"
 REACH_LOG_DIR = ROOT / "logs" / "reach"
 DIST_DIR = ROOT / "web-picks" / "dist"
 RECORD_FILES = ("snapshot.jpg", "cloud.ply", "meta.json",
                 "flip_before.jpg", "flip_after.jpg",
-                "flip_before_wrist.jpg", "flip_result.json")
+                "flip_before_wrist.jpg", "flip_result.json",
+                EXECUTIONS_FILENAME)
 _RECORD_NAME_RE = re.compile(r"^[0-9]{8}_[0-9]{6}_[0-9a-f]{8}$")
 _MEDIA_TYPES = {
     "snapshot.jpg": "image/jpeg",
@@ -40,6 +49,7 @@ _MEDIA_TYPES = {
     "flip_after.jpg": "image/jpeg",
     "flip_before_wrist.jpg": "image/jpeg",
     "flip_result.json": "application/json",
+    EXECUTIONS_FILENAME: "application/x-ndjson",
 }
 
 app = FastAPI(title="pick-history-viewer")
@@ -123,35 +133,49 @@ def _exec_summary(rec: dict[str, Any]) -> dict[str, Any]:
 
 
 def _load_exec_records() -> list[dict[str, Any]]:
-    if not REACH_LOG_DIR.is_dir():
-        return []
-    records: list[dict[str, Any]] = []
-    for path in sorted(REACH_LOG_DIR.glob("reach_*.jsonl")):
-        try:
-            stat = path.stat()
-            key = (stat.st_mtime, stat.st_size)
-        except OSError:
-            continue
-        cached = _exec_cache.get(path.name)
-        if cached and cached[0] == key:
-            records.extend(cached[1])
-            continue
-        file_records: list[dict[str, Any]] = []
-        try:
-            with path.open(encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        file_records.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-        except OSError:
-            continue
-        _exec_cache[path.name] = (key, file_records)
-        records.extend(file_records)
-    return records
+    # New records carry their own diagnostics, so copying one pick-history
+    # directory is sufficient. The central reach logs remain a fallback for
+    # records created before the self-contained format was introduced.
+    records = load_embedded_executions(PICK_HISTORY_DIR)
+    if REACH_LOG_DIR.is_dir():
+        for path in sorted(REACH_LOG_DIR.glob("reach_*.jsonl")):
+            try:
+                stat = path.stat()
+                key = (stat.st_mtime, stat.st_size)
+            except OSError:
+                continue
+            cached = _exec_cache.get(path.name)
+            if cached and cached[0] == key:
+                records.extend(cached[1])
+                continue
+            file_records: list[dict[str, Any]] = []
+            try:
+                with path.open(encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            file_records.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+            except OSError:
+                continue
+            _exec_cache[path.name] = (key, file_records)
+            records.extend(file_records)
+
+    # The same execution is normally present in both locations on the robot.
+    # Keep only one copy while preserving records without an id.
+    deduplicated: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for record in records:
+        execution_id = str(record.get("id") or "")
+        if execution_id:
+            if execution_id in seen_ids:
+                continue
+            seen_ids.add(execution_id)
+        deduplicated.append(record)
+    return deduplicated
 
 
 @app.get("/api/executions")

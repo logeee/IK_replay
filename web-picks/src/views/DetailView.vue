@@ -436,8 +436,12 @@ function fmtSignedMetersAsMm(v?: number | null): string {
       </div>
     </div>
 
-    <div v-if="executions.length" class="exec-section">
+    <div class="exec-section">
       <h2 class="section-title">执行记录（基坐标系漂移与误差归因）</h2>
+      <div v-if="!executions.length" class="card exec-empty">
+        未找到与本次选点关联的18001执行诊断。新记录会将诊断直接保存在本记录目录；
+        旧记录需从服务器集中日志回填。
+      </div>
       <div v-for="e in executions" :key="e.id" class="card exec-card">
         <div class="exec-head">
           <span class="badge" :class="`exec-${execResultKind(e.result)}`">
@@ -823,6 +827,11 @@ function fmtSignedMetersAsMm(v?: number | null): string {
 .exec-card {
   padding: 14px 18px 16px;
   margin-bottom: 12px;
+}
+
+.exec-empty {
+  padding: 18px;
+  color: var(--text-dim);
 }
 
 .exec-head {

@@ -14,6 +14,8 @@ from typing import Any
 import numpy as np
 from fastapi.responses import JSONResponse
 
+from core.pick_execution_archive import append_execution
+
 from .flip_verification import capture_manual_before, verify_manual_after
 from .state import (_read_joints, _read_torso, _torso_drift, _torso_rotation,
                     router, state)
@@ -588,6 +590,8 @@ def _log_exec(kind: str, result: str, q_target, *, sag=None, settle_trim=None,
             path = state.log_dir / f"reach_{completed_at:%Y%m%d}.jsonl"
             with path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        if state.pick_history_dir is not None:
+            append_execution(state.pick_history_dir, rec)
     except Exception:
         pass    # 记日志永远不能把执行搞挂
 

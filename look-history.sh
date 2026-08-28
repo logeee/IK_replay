@@ -263,6 +263,9 @@ else
     fi
     echo "[历史记录] Python: $FASTAPI_PY"
 
+    echo "[历史记录] 正在把旧执行诊断回填到对应记录目录…"
+    "$FASTAPI_PY" tools/embed_pick_executions.py
+
     if [[ ! -x "$WEB_DIR/node_modules/.bin/vue-tsc" ]]; then
         echo "[历史记录] 首次运行，正在安装前端依赖…"
         (cd "$WEB_DIR" && npm ci)

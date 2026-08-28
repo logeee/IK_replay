@@ -104,6 +104,7 @@ class ExecutionHandoffTests(unittest.TestCase):
             "controller",
             "joint_names",
             "log_dir",
+            "pick_history_dir",
             "pick_target_root",
             "pick_target_torso",
             "pick_pixel",
@@ -116,10 +117,15 @@ class ExecutionHandoffTests(unittest.TestCase):
         ]
         saved = {name: getattr(state, name) for name in attributes}
         saved_history = list(state.execution_history)
+        temporary = tempfile.TemporaryDirectory()
+        history_dir = Path(temporary.name)
+        record_name = "20260828_120000_1234abcd"
+        (history_dir / record_name).mkdir()
         try:
             state.controller = Controller()
             state.joint_names = ["j1", "j2"]
             state.log_dir = None
+            state.pick_history_dir = history_dir
             state.pick_target_root = [0.4, 0.0, 0.8]
             state.pick_target_torso = [0.4, 0.0, 0.8]
             state.pick_pixel = [300, 200]
@@ -127,6 +133,7 @@ class ExecutionHandoffTests(unittest.TestCase):
                 "selection_mode": "frozen_rgbd_pointcloud",
                 "source_frame_id": "frame-8",
                 "capture_id": "capture-8",
+                "record": record_name,
                 "p_root": [0.4, 0.0, 0.8],
             }
             state.pick_torso = None
@@ -171,12 +178,18 @@ class ExecutionHandoffTests(unittest.TestCase):
             self.assertAlmostEqual(record["tcp"]["ik_mm"], 1.0)
             detail = execution.reach_execution(record["id"])
             self.assertEqual(detail["execution"]["id"], record["id"])
+            embedded = (
+                history_dir / record_name / "executions.jsonl"
+            ).read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(embedded), 1)
+            self.assertEqual(json.loads(embedded[0])["id"], record["id"])
             json.dumps(record)
         finally:
             for name, value in saved.items():
                 setattr(state, name, value)
             state.execution_history.clear()
             state.execution_history.extend(saved_history)
+            temporary.cleanup()
 
     def test_sequence_replay_passes_last_sent_command_to_exec_loop(self):
         state = recordings.state
