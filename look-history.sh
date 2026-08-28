@@ -1,56 +1,242 @@
 #!/usr/bin/env bash
 # 一键构建并启动拨动历史可视化；默认端口 7010。
 #
-#   ./look-history.sh          启动（已运行则只打印地址）
-#   ./look-history.sh stop     停止
-#   ./look-history.sh restart  重启
+#   ./look-history.sh                  启动（已运行则只打印地址）
+#   ./look-history.sh --port 7011      在指定端口启动（可与默认实例并存）
+#   ./look-history.sh stop             停止默认端口上的实例
+#   ./look-history.sh stop --port 7011 停止指定端口上的实例
+#   ./look-history.sh restart          重启
+#
+# Python 查找顺序：PYTHON / FASTAPI_PY → conda 环境 fastapi → PATH 上的 python3。
 
 set -euo pipefail
 cd "$(dirname "$0")"
 
+CMD=start
 PORT="${HISTORY_PORT:-7010}"
-FASTAPI_PY=/home/robot/miniconda3/envs/fastapi/bin/python
+
+usage() {
+    echo "用法: $0 [start|stop|restart] [--port PORT]"
+    echo "      默认端口 ${HISTORY_PORT:-7010}（也可设 HISTORY_PORT）"
+    echo "      Python 可用 PYTHON=... 覆盖，默认找 conda 环境 fastapi"
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        start|stop|restart)
+            CMD=$1
+            shift
+            ;;
+        --port|-p)
+            if [[ -z "${2:-}" || ! "$2" =~ ^[0-9]+$ ]]; then
+                echo "错误: --port 需要一个数字端口" >&2
+                exit 2
+            fi
+            PORT=$2
+            shift 2
+            ;;
+        --port=*)
+            PORT="${1#*=}"
+            if [[ ! "$PORT" =~ ^[0-9]+$ ]]; then
+                echo "错误: --port 需要一个数字端口" >&2
+                exit 2
+            fi
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "未知参数: $1" >&2
+            usage
+            exit 2
+            ;;
+    esac
+done
+
+if (( PORT < 1 || PORT > 65535 )); then
+    echo "错误: 端口必须在 1–65535 之间" >&2
+    exit 2
+fi
+
+# 跨机器：优先 PYTHON / FASTAPI_PY；否则用本机 conda 的 fastapi 环境
+# （机器人 miniconda3、本机 /opt/anaconda3 都能解析到）。
+conda_bin() {
+    local c
+    for c in \
+        "${CONDA_EXE:-}" \
+        /opt/anaconda3/bin/conda \
+        /opt/miniconda3/bin/conda \
+        /home/robot/miniconda3/bin/conda \
+        "${HOME}/miniconda3/bin/conda" \
+        "${HOME}/anaconda3/bin/conda" \
+        "${HOME}/mambaforge/bin/conda" \
+        "${HOME}/miniforge3/bin/conda"
+    do
+        if [[ -n "$c" && -x "$c" ]]; then
+            printf '%s' "$c"
+            return 0
+        fi
+    done
+    c=$(command -v conda 2>/dev/null || true)
+    if [[ -n "$c" && -x "$c" ]]; then
+        printf '%s' "$c"
+        return 0
+    fi
+    return 1
+}
+
+conda_roots() {
+    local bin base py
+    if [[ -n "${CONDA_PREFIX:-}" ]]; then
+        printf '%s\n' "$CONDA_PREFIX"
+        printf '%s\n' "$(dirname "$CONDA_PREFIX")"
+    fi
+    if bin=$(conda_bin); then
+        base=$("$bin" info --base 2>/dev/null) || true
+        [[ -n "$base" ]] && printf '%s\n' "$base"
+    fi
+    py=$(command -v python3 2>/dev/null || true)
+    if [[ -n "$py" ]]; then
+        # .../bin/python3 → conda base
+        base=$(cd "$(dirname "$py")/.." && pwd)
+        printf '%s\n' "$base"
+    fi
+    printf '%s\n' \
+        /home/robot/miniconda3 \
+        /opt/anaconda3 \
+        /opt/miniconda3 \
+        "${HOME}/miniconda3" \
+        "${HOME}/anaconda3" \
+        "${HOME}/mambaforge" \
+        "${HOME}/miniforge3"
+}
+
+resolve_python() {
+    local py root prefix seen=""
+
+    for py in "${PYTHON:-}" "${FASTAPI_PY:-}"; do
+        if [[ -n "$py" && -x "$py" ]]; then
+            printf '%s' "$py"
+            return 0
+        fi
+    done
+
+    if [[ "${CONDA_DEFAULT_ENV:-}" == "fastapi" && -x "${CONDA_PREFIX:-}/bin/python" ]]; then
+        printf '%s' "$CONDA_PREFIX/bin/python"
+        return 0
+    fi
+
+    while IFS= read -r root; do
+        [[ -z "$root" || ! -d "$root" ]] && continue
+        case ":$seen:" in
+            *":$root:"*) continue ;;
+        esac
+        seen="$seen:$root"
+        prefix="$root/envs/fastapi"
+        for py in "$prefix/bin/python" "$prefix/bin/python3"; do
+            if [[ -x "$py" ]]; then
+                printf '%s' "$py"
+                return 0
+            fi
+        done
+    done < <(conda_roots)
+
+    py=$(command -v python3 2>/dev/null || true)
+    if [[ -n "$py" ]]; then
+        printf '%s' "$py"
+        return 0
+    fi
+    return 1
+}
+
+port_in_use() {
+    local port=$1
+    if command -v ss >/dev/null 2>&1; then
+        [[ -n "$(ss -ltnH "sport = :$port" 2>/dev/null)" ]]
+    elif command -v lsof >/dev/null 2>&1; then
+        lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    else
+        return 1
+    fi
+}
+
+lan_ip() {
+    local ip
+    ip=$(ip route get 8.8.8.8 2>/dev/null \
+        | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
+    [[ -n "$ip" ]] && { printf '%s' "$ip"; return 0; }
+    for ip in \
+        "$(ipconfig getifaddr en0 2>/dev/null || true)" \
+        "$(ipconfig getifaddr en1 2>/dev/null || true)"
+    do
+        [[ -n "$ip" ]] && { printf '%s' "$ip"; return 0; }
+    done
+    printf '127.0.0.1'
+}
+
 WEB_DIR=web-picks
 LOG_DIR=logs/service
-PID_FILE="$LOG_DIR/picks_history.pid"
-LOG_FILE="$LOG_DIR/picks_history.log"
+PID_FILE="$LOG_DIR/picks_history.${PORT}.pid"
+LOG_FILE="$LOG_DIR/picks_history.${PORT}.log"
+# 旧版默认端口把 pid 写在不分端口的文件里，stop/已运行检测时一并认
+LEGACY_PID_FILE="$LOG_DIR/picks_history.pid"
 
 mkdir -p "$LOG_DIR"
 
-running_pid() {
-    if [[ -f "$PID_FILE" ]]; then
-        local pid
-        pid=$(<"$PID_FILE")
-        if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-            printf '%s' "$pid"
-            return 0
-        fi
-        rm -f "$PID_FILE"
+pid_alive() {
+    local pid=$1
+    [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
+}
+
+read_pid_file() {
+    local file=$1
+    [[ -f "$file" ]] || return 1
+    local pid
+    pid=$(<"$file")
+    if pid_alive "$pid"; then
+        printf '%s' "$pid"
+        return 0
     fi
+    rm -f "$file"
     return 1
+}
+
+running_pid() {
+    if read_pid_file "$PID_FILE"; then
+        return 0
+    fi
+    if [[ "$PORT" == "7010" ]]; then
+        read_pid_file "$LEGACY_PID_FILE"
+    else
+        return 1
+    fi
 }
 
 stop_server() {
     local pid
     if ! pid=$(running_pid); then
-        echo "[历史记录] 没有找到由本脚本启动的服务"
+        echo "[历史记录] 没有找到端口 $PORT 上由本脚本启动的服务"
         return
     fi
     kill "$pid"
     for _ in {1..20}; do
         if ! kill -0 "$pid" 2>/dev/null; then
             rm -f "$PID_FILE"
-            echo "[历史记录] 已关闭（pid $pid）"
+            [[ "$PORT" == "7010" ]] && rm -f "$LEGACY_PID_FILE"
+            echo "[历史记录] 已关闭（pid ${pid}，端口 ${PORT}）"
             return
         fi
         sleep 0.25
     done
     kill -9 "$pid" 2>/dev/null || true
     rm -f "$PID_FILE"
-    echo "[历史记录] 超时未退出，已强制关闭（pid $pid）"
+    [[ "$PORT" == "7010" ]] && rm -f "$LEGACY_PID_FILE"
+    echo "[历史记录] 超时未退出，已强制关闭（pid ${pid}，端口 ${PORT}）"
 }
 
-case "${1:-start}" in
+case "$CMD" in
     stop)
         stop_server
         exit 0
@@ -58,23 +244,25 @@ case "${1:-start}" in
     restart)
         stop_server
         ;;
-    start|"")
-        ;;
-    *)
-        echo "用法: $0 [start|stop|restart]"
-        exit 2
+    start)
         ;;
 esac
 
 if pid=$(running_pid); then
-    echo "[历史记录] 已在运行（pid $pid，端口 $PORT）"
+    echo "[历史记录] 已在运行（pid ${pid}，端口 ${PORT}）"
 elif curl -sf --max-time 1 "http://127.0.0.1:$PORT/api/picks?limit=1" \
     >/dev/null; then
     echo "[历史记录] 端口 $PORT 上已有历史查看服务，直接使用"
-elif [[ -n "$(ss -ltnH "sport = :$PORT" 2>/dev/null)" ]]; then
+elif port_in_use "$PORT"; then
     echo "[历史记录] 端口 $PORT 已被其他程序占用"
     exit 1
 else
+    if ! FASTAPI_PY=$(resolve_python); then
+        echo "[历史记录] 找不到 Python。请创建 conda 环境 fastapi，或设置 PYTHON=/path/to/python" >&2
+        exit 1
+    fi
+    echo "[历史记录] Python: $FASTAPI_PY"
+
     if [[ ! -x "$WEB_DIR/node_modules/.bin/vue-tsc" ]]; then
         echo "[历史记录] 首次运行，正在安装前端依赖…"
         (cd "$WEB_DIR" && npm ci)
@@ -89,6 +277,9 @@ else
 
     ready=false
     for _ in {1..20}; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            break
+        fi
         if curl -sf --max-time 1 "http://127.0.0.1:$PORT/api/picks?limit=1" \
             >/dev/null; then
             ready=true
@@ -97,11 +288,12 @@ else
         sleep 0.25
     done
     if [[ "$ready" != true ]]; then
+        rm -f "$PID_FILE"
         echo "[历史记录] 启动失败，请查看 $LOG_FILE"
+        tail -n 20 "$LOG_FILE" 2>/dev/null || true
         exit 1
     fi
-    echo "[历史记录] 已启动（pid $pid，日志 $LOG_FILE）"
+    echo "[历史记录] 已启动（pid ${pid}，日志 ${LOG_FILE}）"
 fi
 
-IP=$(ip route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
-echo "浏览器打开: http://${IP:-127.0.0.1}:$PORT/"
+echo "浏览器打开: http://$(lan_ip):$PORT/"
