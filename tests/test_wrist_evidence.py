@@ -45,6 +45,33 @@ class WristEvidenceTest(unittest.TestCase):
         self.assertEqual(save.call_args_list[1].args[1], "after")
         yolo.scene.assert_any_call(include_image=True, include_wrist=True)
 
+    def test_manual_reverse_path_records_remote_to_close(self):
+        yolo = mock.Mock()
+        yolo.scene.side_effect = [
+            {"ok": True, "scene": "远方", "jpeg_b64": "head",
+             "wrist_jpeg_b64": "wrist"},
+            {"ok": True, "scene": "就地", "jpeg_b64": "after"},
+        ]
+        with (
+            mock.patch.object(flip_verification, "YoloClient", return_value=yolo),
+            mock.patch.object(
+                flip_verification,
+                "save_flip_evidence",
+                return_value={"head_saved": True, "wrist_saved": True},
+            ) as save,
+        ):
+            before = flip_verification.capture_manual_before(
+                {"record": "20260828_120000_1234abcd"}
+            )
+            after = flip_verification.verify_manual_after(before)
+
+        self.assertEqual(
+            (before["flip_from"], before["flip_to"]), ("远方", "就地")
+        )
+        self.assertTrue(after["success"])
+        self.assertEqual(save.call_args_list[0].kwargs["flip_from"], "远方")
+        self.assertEqual(save.call_args_list[1].kwargs["flip_to"], "就地")
+
     def test_manual_failures_are_persisted_for_history_viewer(self):
         yolo = mock.Mock()
         yolo.scene.return_value = {
@@ -197,6 +224,54 @@ class WristEvidenceTest(unittest.TestCase):
             self.assertFalse((record_dir / "flip_after_wrist.jpg").exists())
             result = json.loads((record_dir / "flip_result.json").read_text())
             self.assertNotIn("has_wrist_image", result["after"])
+
+    def test_flow_context_is_attached_to_pick_meta(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = "20260828_120000_1234abcd"
+            record_dir = root / record
+            record_dir.mkdir()
+            (record_dir / "meta.json").write_text(
+                json.dumps({"adjustment_wall_mm": {"x": 25, "y": 10, "z": -20}}),
+                encoding="utf-8",
+            )
+
+            flow = object.__new__(SwitchFlow)
+            flow._PICK_HISTORY_DIR = root
+            flow._measured_distance_m = 0.53
+            flow._current_pose = {
+                "name": "0.49-起手式新",
+                "file": "0.49-起手式新_20260822_031632.json",
+                "manual": False,
+                "min_distance_m": 0.49,
+            }
+            flow.max_flip_rounds = 3
+            flow.lift_base_m = 0.01
+            flow.lift_step_m = 0.01
+            flow.lift_max_m = 0.03
+            flow.lift_m = 0.02
+            flow.approach_offset_m = 0.0
+            flow._log = mock.Mock()
+
+            flow._save_pick_flow_context(
+                {
+                    "record": record,
+                    "p_root": [0.1, 0.2, 0.3],
+                },
+                round_no=2,
+                target_lift_m=0.02,
+                effective_target_root_m=[0.1, 0.2, 0.32],
+            )
+
+            meta = json.loads((record_dir / "meta.json").read_text())
+            self.assertEqual(meta["adjustment_wall_mm"]["x"], 25)
+            context = meta["flow_context"]
+            self.assertEqual(context["distance_m"], 0.53)
+            self.assertEqual(context["opening_pose"]["name"], "0.49-起手式新")
+            self.assertEqual(context["opening_pose"]["min_distance_m"], 0.49)
+            self.assertEqual(context["round"], 2)
+            self.assertEqual(context["target_lift_m"], 0.02)
+            self.assertEqual(context["effective_target_root_m"], [0.1, 0.2, 0.32])
 
     def test_yolo_scene_adds_wrist_frame_without_using_it_for_decision(self):
         head = b"\xff\xd8head\xff\xd9"

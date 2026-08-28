@@ -1,0 +1,181 @@
+from __future__ import annotations
+
+import math
+import unittest
+from unittest import mock
+
+from api import dispatch
+from api.flow import SwitchFlow, resolve_flip_intent
+
+
+class _YoloSequence:
+    def __init__(self, *scenes: str):
+        self._scenes = list(scenes)
+
+    def scene(self, **_kwargs):
+        scene = self._scenes.pop(0)
+        return {"ok": True, "scene": scene, "conf": 0.9, "boxes": []}
+
+
+class FlipIntentTests(unittest.TestCase):
+    def test_factory_states_and_physical_directions_are_symmetric(self):
+        left = resolve_flip_intent("factory", "remote_to_close")
+        right = resolve_flip_intent("factory", "close_to_remote")
+
+        self.assertEqual(
+            (left["flip_from"], left["flip_to"], left["direction"]),
+            ("远方", "就地", "rtl"),
+        )
+        self.assertEqual(
+            (right["flip_from"], right["flip_to"], right["direction"]),
+            ("就地", "远方", "ltr"),
+        )
+
+    def test_factory_constructor_applies_direction_to_distance_sign(self):
+        left = SwitchFlow(
+            client=mock.Mock(),
+            site="factory",
+            flip_kind="remote_to_close",
+            sidestep_cm=10,
+        )
+        right = SwitchFlow(
+            client=mock.Mock(),
+            site="factory",
+            flip_kind="close_to_remote",
+            sidestep_cm=10,
+        )
+
+        self.assertEqual(left.sidestep_cm, 10.0)
+        self.assertEqual(right.sidestep_cm, -10.0)
+
+    def test_cabinet_axis_direction_mirrors_x_but_keeps_downward_tilt(self):
+        plane = {
+            "left_root": [-1.0, 0.0, 0.0],
+            "right_root": [1.0, 0.0, 0.0],
+            "wall_up_root": [0.0, 0.0, 1.0],
+        }
+        left = SwitchFlow(
+            client=mock.Mock(),
+            site="factory",
+            flip_kind="remote_to_close",
+        )._sidestep_direction(plane)
+        right = SwitchFlow(
+            client=mock.Mock(),
+            site="factory",
+            flip_kind="close_to_remote",
+        )._sidestep_direction(plane)
+
+        cosine = math.cos(math.radians(15))
+        downward = -math.sin(math.radians(15))
+        self.assertAlmostEqual(left[0], -cosine)
+        self.assertAlmostEqual(right[0], cosine)
+        self.assertAlmostEqual(left[2], downward)
+        self.assertAlmostEqual(right[2], downward)
+
+    def test_detect_scene_uses_requested_target_and_direction(self):
+        already_done = SwitchFlow(
+            client=mock.Mock(),
+            yolo=_YoloSequence("远方"),
+            site="factory",
+            flip_kind="close_to_remote",
+        )
+        needs_flip = SwitchFlow(
+            client=mock.Mock(),
+            yolo=_YoloSequence("就地"),
+            site="factory",
+            flip_kind="close_to_remote",
+        )
+
+        self.assertFalse(already_done.detect_scene()["need_flip"])
+        result = needs_flip.detect_scene()
+        self.assertTrue(result["need_flip"])
+        self.assertEqual(result["direction"], "ltr")
+
+    def test_verify_flip_accepts_requested_target(self):
+        flow = SwitchFlow(
+            client=mock.Mock(),
+            yolo=_YoloSequence("远方"),
+            site="factory",
+            flip_kind="close_to_remote",
+        )
+        flow._save_flip_evidence = mock.Mock()
+
+        self.assertTrue(flow.verify_flip())
+        flow._save_flip_evidence.assert_called_once()
+        self.assertTrue(flow._save_flip_evidence.call_args.kwargs["success"])
+
+    def test_verify_flip_rejects_source_state_after_second_look(self):
+        flow = SwitchFlow(
+            client=mock.Mock(),
+            yolo=_YoloSequence("就地", "就地"),
+            site="factory",
+            flip_kind="close_to_remote",
+        )
+        flow._save_flip_evidence = mock.Mock()
+
+        with mock.patch("api.flow.time.sleep"):
+            self.assertFalse(flow.verify_flip())
+        self.assertFalse(flow._save_flip_evidence.call_args.kwargs["success"])
+
+
+class FactoryDispatchTests(unittest.TestCase):
+    def test_factory_accepts_both_directions(self):
+        self.assertTrue(dispatch._kind_supported("factory", "remote_to_close"))
+        self.assertTrue(dispatch._kind_supported("factory", "close_to_remote"))
+        self.assertFalse(dispatch._kind_supported("lab", "remote_to_close"))
+
+    def test_direction_specific_default_offsets_are_resolved(self):
+        defaults = {
+            "defaults": {
+                "offset_preset_by_kind": {
+                    "remote_to_close": "左拨",
+                    "close_to_remote": "右拨",
+                }
+            },
+            "offset_presets": [
+                {"name": "左拨", "offset_mm": {"x": 5, "y": 1, "z": -2}},
+                {"name": "右拨", "offset_mm": {"x": -6, "y": 2, "z": -3}},
+            ],
+        }
+
+        left, _ = dispatch._resolve_offset(None, defaults, "remote_to_close")
+        right, _ = dispatch._resolve_offset(None, defaults, "close_to_remote")
+        explicit, source = dispatch._resolve_offset(
+            {"target_offset_wall_mm": {"x": 1, "y": 2, "z": 3}},
+            defaults,
+            "close_to_remote",
+        )
+
+        self.assertEqual(left, (5, 1, -2))
+        self.assertEqual(right, (-6, 2, -3))
+        self.assertEqual(explicit, (1.0, 2.0, 3.0))
+        self.assertEqual(source, "请求指定")
+
+    def test_factory_close_to_remote_task_reaches_worker(self):
+        with dispatch._lock:
+            original_task = dispatch._task
+            original_check = dispatch._check
+            original_stats = dict(dispatch._task_stats)
+            dispatch._task = None
+            dispatch._check = None
+        try:
+            with mock.patch.object(dispatch.threading, "Thread") as thread:
+                result = dispatch.task_submit({
+                    "language": "Change the switch from close to remote",
+                    "site": "factory",
+                })
+            self.assertTrue(result["ok"])
+            self.assertEqual(dispatch._task["direction"], "ltr")
+            self.assertEqual(dispatch._task["flip_from"], "就地")
+            self.assertEqual(dispatch._task["flip_to"], "远方")
+            thread.return_value.start.assert_called_once()
+        finally:
+            with dispatch._lock:
+                dispatch._task = original_task
+                dispatch._check = original_check
+                dispatch._task_stats.clear()
+                dispatch._task_stats.update(original_stats)
+
+
+if __name__ == "__main__":
+    unittest.main()

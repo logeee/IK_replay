@@ -3,8 +3,8 @@
   "defaults": {
     "site": "factory",
     "offset_preset_by_kind": {
-      "close_to_remote": "",
-      "remote_to_close": ""
+      "close_to_remote": "摔手后",
+      "remote_to_close": "摔手后"
     },
     "lift_mm": {
       "base": 10.0,

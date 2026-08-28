@@ -104,6 +104,19 @@ function adjClass(mm: number | null): string {
   if (mm >= 15) return "adj-mid";
   return "adj-low";
 }
+
+function flowSummary(r: PickRecord): string | null {
+  const flow = r.meta.flow_context;
+  if (!flow) return null;
+  const parts: string[] = [];
+  if (flow.distance_m != null) parts.push(`距柜面 ${flow.distance_m.toFixed(3)} m`);
+  if (flow.opening_pose?.name) parts.push(flow.opening_pose.name);
+  if (flow.target_lift_m != null) {
+    const mm = flow.target_lift_m * 1000;
+    parts.push(`本轮上抬 ${mm >= 0 ? "+" : ""}${mm.toFixed(1)} mm`);
+  }
+  return parts.join(" · ") || null;
+}
 </script>
 
 <template>
@@ -225,6 +238,9 @@ function adjClass(mm: number | null): string {
               conf {{ bestConf(r)!.toFixed(2) }}
             </span>
           </div>
+          <div v-if="flowSummary(r)" class="flow-summary">
+            {{ flowSummary(r) }}
+          </div>
           <div class="time mono">{{ formatTime(r.meta.saved_at) }}</div>
         </div>
       </RouterLink>
@@ -339,5 +355,13 @@ function adjClass(mm: number | null): string {
 .time {
   color: var(--text-dim);
   font-size: 13px;
+}
+
+.flow-summary {
+  margin: -1px 0 8px;
+  color: var(--amber);
+  font-size: 12px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
 }
 </style>

@@ -1067,9 +1067,25 @@ def manual_waypoints():
 @app.get("/config/defaults")
 def config_defaults_get():
     """默认现场 + 默认偏移配置 + 全部命名偏移配置。"""
-    return {"ok": True, **_current_defaults(),
-            "site_labels": SITE_LABELS,
-            "offset_limit_mm": TARGET_OFFSET_LIMIT_MM}
+    cfg = _current_defaults()
+    # 兼容浏览器里仍缓存着的单方向旧页面：旧页面只读取 offset_preset。
+    # 对工厂柜它代表远→就，对实验室柜代表就→远；新版页面使用 by_kind。
+    defaults = dict(cfg["defaults"])
+    legacy_kind = resolve_flip_intent(defaults["site"])["kind"]
+    defaults["offset_preset"] = (
+        defaults.get("offset_preset_by_kind") or {}
+    ).get(legacy_kind, "")
+    content = {
+        "ok": True,
+        **cfg,
+        "defaults": defaults,
+        "site_labels": SITE_LABELS,
+        "offset_limit_mm": TARGET_OFFSET_LIMIT_MM,
+    }
+    return JSONResponse(
+        content,
+        headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
+    )
 
 
 @app.post("/config/defaults")
@@ -1085,9 +1101,12 @@ def config_defaults_set(body: dict | None = None):
         )
     elif "offset_preset" in body:
         legacy = str(body.get("offset_preset") or "").strip()
-        cfg["defaults"]["offset_preset_by_kind"] = {
-            kind: legacy for kind in CHECK_KIND_STATES
-        }
+        # 旧页面只有一个下拉框，只更新该现场原本对应的方向，避免覆盖新版
+        # 页面已经为另一个方向独立保存的配置。
+        by_kind = dict(cfg["defaults"].get("offset_preset_by_kind") or {})
+        legacy_kind = resolve_flip_intent(cfg["defaults"]["site"])["kind"]
+        by_kind[legacy_kind] = legacy
+        cfg["defaults"]["offset_preset_by_kind"] = by_kind
     if "lift_mm" in body:
         cfg["defaults"]["lift_mm"] = body.get("lift_mm")
     try:
@@ -1285,7 +1304,14 @@ def task_abort():
 
 @app.get("/")
 def index():
-    return FileResponse(WEB_DIR / "dispatch.html")
+    return FileResponse(
+        WEB_DIR / "dispatch.html",
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.get("/api/info")

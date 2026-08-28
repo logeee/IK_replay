@@ -45,7 +45,11 @@ from typing import Any
 
 from .client import ReachClient
 from .console_client import ConsoleAbort, ConsoleClient
-from .flip_evidence import PICK_HISTORY_DIR, save_flip_evidence
+from .flip_evidence import (
+    PICK_HISTORY_DIR,
+    save_flip_evidence,
+    save_pick_flow_context,
+)
 from .yolo_client import YoloClient
 
 
@@ -222,6 +226,7 @@ class SwitchFlow:
             else -self.sidestep_distance_cm
         )
         self._current_pose: dict | None = None
+        self._measured_distance_m: float | None = None
         self._armed_by_flow = False   # 手臂是流程接管的（而非用户本来就接管着）
         self._arm_moved = False       # 已下发过手臂动作 → 失败时要先受控回落
         # 拨动证据：横移前/复核时各存一帧头部相机图 + YOLO 判定，
@@ -359,6 +364,7 @@ class SwitchFlow:
             self._confirm("measure", "即将测量距柜面距离（纯测量，不动机器人）")
             self._step_begin("4️⃣ 测距离")
             distance_m = self.measure_distance()
+            self._measured_distance_m = distance_m
             self._log(f"距柜面 {distance_m:.3f} m")
 
             last_error: FlowError | None = None
@@ -738,6 +744,7 @@ class SwitchFlow:
                 target[2] += lift
                 self._log(f"{tag} 目标点上抬 {lift * 1000:g} mm（{why}）"
                           f"（z {picked['p_root'][2]:.3f} → {target[2]:.3f} m）")
+            self._save_pick_flow_context(picked, round_no, lift, target)
 
             joints = self.client.joints()
             if not joints.get("ok"):
@@ -1201,6 +1208,52 @@ class SwitchFlow:
     # 同处一包，7005 /picks 和 web-picks 可回看。存档失败只记日志，
     # 绝不影响主流程。
     _PICK_HISTORY_DIR = PICK_HISTORY_DIR
+
+    def _save_pick_flow_context(
+        self,
+        picked: dict,
+        round_no: int,
+        target_lift_m: float,
+        effective_target_root_m: list[float],
+    ) -> None:
+        """Persist this round's distance, pose and every extra target lift."""
+        record = picked.get("record")
+        if not record:
+            return
+        pose = self._current_pose or {}
+        opening_pose = {
+            key: pose.get(key)
+            for key in ("name", "file", "manual", "min_distance_m")
+            if key in pose
+        }
+        context = {
+            "distance_m": self._measured_distance_m,
+            "opening_pose": opening_pose,
+            "round": round_no,
+            "max_rounds": self.max_flip_rounds,
+            # 点云配置微调落在 meta.adjustment_*；以下是流程随后追加的偏移。
+            "target_lift_m": target_lift_m,
+            "lift_base_m": self.lift_base_m,
+            "lift_step_m": self.lift_step_m,
+            "lift_max_m": self.lift_max_m,
+            "planner_mid_lift_m": self.lift_m,
+            "approach_offset_m": self.approach_offset_m,
+            "picked_target_root_m": [
+                float(value) for value in (picked.get("p_root") or [])
+            ],
+            "effective_target_root_m": [
+                float(value) for value in effective_target_root_m
+            ],
+        }
+        try:
+            path = save_pick_flow_context(
+                record,
+                context,
+                history_dir=self._PICK_HISTORY_DIR,
+            )
+            self._log(f"本轮距离、起手式及附加偏移已存：{path}")
+        except Exception as exc:
+            self._log(f"⚠ 流程参数存档失败（不影响流程）: {exc}")
 
     def _flip_evidence_before(self) -> None:
         """横移前抓一帧：此刻开关应仍是拨前状态（手臂可能遮挡，识别可空）。"""

@@ -19,6 +19,37 @@ def valid_record_name(record: str) -> bool:
     return bool(_RECORD_NAME_RE.fullmatch(str(record)))
 
 
+def save_pick_flow_context(
+    record: str,
+    context: dict[str, Any],
+    *,
+    history_dir: Path = PICK_HISTORY_DIR,
+) -> str:
+    """Attach the actual flow parameters to an existing pick record."""
+    if not valid_record_name(record):
+        raise ValueError(f"非法选点记录名: {record!r}")
+    record_dir = history_dir / record
+    if not record_dir.is_dir():
+        raise FileNotFoundError(f"选点记录不存在: {record}")
+    meta_path = record_dir / "meta.json"
+    if not meta_path.is_file():
+        raise FileNotFoundError(f"选点记录缺少 meta.json: {record}")
+
+    loaded = json.loads(meta_path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError(f"选点记录 meta.json 格式错误: {record}")
+    loaded["flow_context"] = dict(context)
+
+    # 先写同目录临时文件再替换，避免 look-history 正在读取时看到半份 JSON。
+    temp_path = record_dir / ".meta.json.tmp"
+    temp_path.write_text(
+        json.dumps(loaded, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temp_path.replace(meta_path)
+    return str(meta_path)
+
+
 def save_flip_evidence(
     record: str,
     stage: str,

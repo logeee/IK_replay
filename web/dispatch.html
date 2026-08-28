@@ -354,10 +354,11 @@
     <div class="bar-row">
       <span class="bar-title">手动触发</span>
       <select id="manualSite" title="工厂柜支持远方→就地向左拨，以及就地→远方向右拨">
+        <option value="factory">工厂柜（支持双向）</option>
         <option value="lab">实验室柜</option>
-        <option value="factory">工厂柜（印刷相反）</option>
       </select>
       <select id="manualLanguage"></select>
+      <span id="manualDirectionHint" class="hint"></span>
       <label title="勾选后每个主要步骤执行前都会在下方等待确认">
         <input id="manualStep" type="checkbox" checked />每步手动确认
       </label>
@@ -958,11 +959,15 @@ const SITE_LANGUAGE_OPTIONS = {
 };
 
 function syncLanguageOptions() {
-  const options = SITE_LANGUAGE_OPTIONS[$("manualSite").value] || SITE_LANGUAGE_OPTIONS.lab;
+  const site = $("manualSite").value;
+  const options = SITE_LANGUAGE_OPTIONS[site] || SITE_LANGUAGE_OPTIONS.lab;
   $("manualLanguage").innerHTML = options.map((option) =>
     `<option value="${escapeHtml(option.value)}"${option.disabled ? " disabled" : ""}>`
     + `${escapeHtml(option.label)}</option>`
   ).join("");
+  $("manualDirectionHint").textContent = site === "factory"
+    ? "工厂双向：远→就向左 / 就→远向右"
+    : "实验室：当前仅支持就→远";
 }
 $("manualSite").addEventListener("change", syncLanguageOptions);
 syncLanguageOptions();
@@ -1049,7 +1054,8 @@ function renderDefaultPresetPreview() {
 
 async function loadDefaultsConfig() {
   try {
-    const response = await fetch("/config/defaults");
+    // 保存后必须重新读取磁盘配置，禁止浏览器复用保存前的 GET 缓存。
+    const response = await fetch(`/config/defaults?_=${Date.now()}`, { cache: "no-store" });
     const data = await response.json();
     if (!data.ok) throw new Error(data.error || `HTTP ${response.status}`);
     offsetPresets = data.offset_presets || [];
@@ -1061,6 +1067,9 @@ async function loadDefaultsConfig() {
       lift_mm: (data.defaults || {}).lift_mm || { base: 10, step: 10, max: 30 },
     };
     if (wasFirstLoad) {
+      // 手动测试默认跟随已保存现场；工厂柜会立即显示两个可执行方向。
+      $("manualSite").value = currentDefaults.site;
+      syncLanguageOptions();
       // 手动栏的上抬输入首次按保存的默认值预填，之后不覆盖手填值
       $("liftBase").value = currentDefaults.lift_mm.base;
       $("liftStep").value = currentDefaults.lift_mm.step;

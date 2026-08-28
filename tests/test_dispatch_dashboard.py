@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -21,6 +22,69 @@ class DispatchDashboardTests(unittest.TestCase):
         html = dispatch.WEB_DIR.joinpath("dispatch.html").read_text(encoding="utf-8")
         self.assertIn("拨闸任务流程监控", html)
         self.assertIn('fetch("/task/status"', html)
+        self.assertIn("就地 → 远方（向右拨）", html)
+        self.assertIn('id="defaultPresetRemoteToClose"', html)
+        self.assertIn('id="defaultPresetCloseToRemote"', html)
+        self.assertEqual(response.headers["cache-control"], "no-store, max-age=0")
+        self.assertIn('cache: "no-store"', html)
+
+    def test_defaults_get_keeps_stale_single_preset_page_compatible(self):
+        config = {
+            "schema_version": 2,
+            "defaults": {
+                "site": "factory",
+                "offset_preset_by_kind": {
+                    "remote_to_close": "左拨",
+                    "close_to_remote": "右拨",
+                },
+                "lift_mm": {"base": 10, "step": 10, "max": 30},
+            },
+            "offset_presets": [],
+        }
+        with patch.object(dispatch, "_current_defaults", return_value=config):
+            response = dispatch.config_defaults_get()
+
+        body = json.loads(response.body)
+        self.assertEqual(body["defaults"]["offset_preset"], "左拨")
+        self.assertEqual(
+            body["defaults"]["offset_preset_by_kind"]["close_to_remote"],
+            "右拨",
+        )
+        self.assertEqual(response.headers["cache-control"], "no-store, max-age=0")
+
+    def test_stale_single_preset_save_preserves_other_factory_direction(self):
+        config = {
+            "schema_version": 2,
+            "defaults": {
+                "site": "factory",
+                "offset_preset_by_kind": {
+                    "remote_to_close": "旧左拨",
+                    "close_to_remote": "保留右拨",
+                },
+                "lift_mm": {"base": 10, "step": 10, "max": 30},
+            },
+            "offset_presets": [
+                {"name": "新左拨", "offset_mm": {"x": 1, "y": 2, "z": 3}},
+                {"name": "保留右拨", "offset_mm": {"x": 4, "y": 5, "z": 6}},
+            ],
+        }
+        with (
+            patch.object(dispatch, "_current_defaults", return_value=config),
+            patch.object(
+                dispatch,
+                "save_dispatch_defaults",
+                side_effect=lambda payload: payload,
+            ) as save,
+        ):
+            response = dispatch.config_defaults_set({
+                "site": "factory",
+                "offset_preset": "新左拨",
+            })
+
+        self.assertTrue(response["ok"])
+        saved = save.call_args.args[0]["defaults"]["offset_preset_by_kind"]
+        self.assertEqual(saved["remote_to_close"], "新左拨")
+        self.assertEqual(saved["close_to_remote"], "保留右拨")
 
     def test_dashboard_inline_javascript_is_valid(self):
         node = shutil.which("node")

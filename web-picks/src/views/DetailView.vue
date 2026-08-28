@@ -61,6 +61,7 @@ const adjMag = computed(() =>
 );
 
 const wallAdj = computed(() => wallAdjustment(meta.value));
+const flowContext = computed(() => meta.value.flow_context ?? null);
 
 // ---- 该次选点对应的执行记录（按 capture_id 关联 18001 的 JSONL）----
 const executions = ref<ExecSummary[]>([]);
@@ -105,6 +106,16 @@ function resultLabel(result?: string): string {
 function fmtMm(v?: number | null): string {
   return v != null ? `${v.toFixed(1)}` : "-";
 }
+
+function fmtMeters(v?: number | null): string {
+  return v != null ? `${v.toFixed(3)} m` : "-";
+}
+
+function fmtSignedMetersAsMm(v?: number | null): string {
+  if (v == null) return "-";
+  const mm = v * 1000;
+  return `${mm >= 0 ? "+" : ""}${mm.toFixed(1)} mm`;
+}
 </script>
 
 <template>
@@ -140,6 +151,89 @@ function fmtMm(v?: number | null): string {
         更新 →
       </RouterLink>
     </div>
+
+    <section class="card key-config">
+      <div class="key-config-head">
+        <div>
+          <h2>关键配置与实际执行参数</h2>
+          <p>点云配置偏移与流程追加的根坐标偏移分开显示，避免漏算逐轮上抬。</p>
+        </div>
+        <span v-if="flowContext?.round" class="badge slot">
+          第 {{ flowContext.round }}/{{ flowContext.max_rounds ?? "?" }} 轮
+        </span>
+      </div>
+      <div class="key-config-grid">
+        <article class="key-block">
+          <div class="key-label">点云配置偏移</div>
+          <div v-if="wallAdj" class="key-value wall-value">
+            右 {{ wallAdj.x.toFixed(1) }} / 上 {{ wallAdj.z.toFixed(1) }} / 入墙
+            {{ wallAdj.y.toFixed(1) }} mm
+          </div>
+          <div v-else class="key-value">墙面系 -</div>
+          <div class="key-detail mono">
+            相机系 {{ formatVec(meta.adjustment_mm, 1) }} mm
+          </div>
+          <div class="key-chips">
+            <span>模长 {{ adjMag !== null ? adjMag.toFixed(1) + " mm" : "-" }}</span>
+            <span>接近 {{ fmtMeters(meta.approach_offset_m ?? flowContext?.approach_offset_m) }}</span>
+          </div>
+        </article>
+
+        <article class="key-block">
+          <div class="key-label">距离与起手式</div>
+          <template v-if="flowContext">
+            <div class="key-value">{{ fmtMeters(flowContext.distance_m) }}</div>
+            <div class="key-detail opening-name">
+              {{ flowContext.opening_pose?.name ?? "未记录起手式" }}
+            </div>
+            <div class="key-chips">
+              <span>
+                适用档位
+                {{ fmtMeters(flowContext.opening_pose?.min_distance_m) }}
+              </span>
+              <span v-if="flowContext.opening_pose?.manual">手动选择</span>
+              <span v-else>自动选择</span>
+            </div>
+            <div v-if="flowContext.opening_pose?.file" class="key-file mono">
+              {{ flowContext.opening_pose.file }}
+            </div>
+          </template>
+          <div v-else class="key-missing">旧记录未保存距柜面和起手式</div>
+        </article>
+
+        <article class="key-block extra-offset">
+          <div class="key-label">本轮流程附加偏移</div>
+          <template v-if="flowContext">
+            <div class="key-value">
+              目标根坐标 Z {{ fmtSignedMetersAsMm(flowContext.target_lift_m) }}
+            </div>
+            <div class="key-detail">
+              上抬规则：首轮
+              {{ fmtSignedMetersAsMm(flowContext.lift_base_m) }}，每轮
+              {{ fmtSignedMetersAsMm(flowContext.lift_step_m) }}，上限
+              {{ fmtSignedMetersAsMm(flowContext.lift_max_m) }}
+            </div>
+            <div class="key-chips">
+              <span>
+                轨迹中段抬高
+                {{ fmtSignedMetersAsMm(flowContext.planner_mid_lift_m) }}
+              </span>
+            </div>
+            <div
+              v-if="
+                flowContext.picked_target_root_m?.length === 3 &&
+                flowContext.effective_target_root_m?.length === 3
+              "
+              class="key-file mono"
+            >
+              目标 Z {{ flowContext.picked_target_root_m[2].toFixed(3) }} →
+              {{ flowContext.effective_target_root_m[2].toFixed(3) }} m
+            </div>
+          </template>
+          <div v-else class="key-missing">旧记录未保存逐轮上抬参数</div>
+        </article>
+      </div>
+    </section>
 
     <div class="split">
       <div class="pane">
@@ -181,7 +275,7 @@ function fmtMm(v?: number | null): string {
       </div>
 
       <div class="card panel">
-        <h3>微调量</h3>
+        <h3>点云配置偏移明细</h3>
         <dl>
           <dt>相机系 (mm)</dt>
           <dd class="mono">{{ formatVec(meta.adjustment_mm, 1) }}</dd>
@@ -461,6 +555,117 @@ function fmtMm(v?: number | null): string {
 .nav-btn:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+.key-config {
+  padding: 18px;
+  margin-bottom: 20px;
+  border-color: color-mix(in srgb, var(--amber) 55%, var(--border));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--amber) 8%, transparent), transparent 45%),
+    var(--card);
+}
+
+.key-config-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.key-config-head h2 {
+  margin: 0;
+  font-size: 18px;
+  color: var(--amber);
+}
+
+.key-config-head p {
+  margin: 4px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.key-config-head .badge {
+  margin-left: auto;
+  flex: none;
+}
+
+.key-config-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.key-block {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-soft);
+}
+
+.key-block.extra-offset {
+  border-color: color-mix(in srgb, var(--amber) 40%, var(--border));
+}
+
+.key-label {
+  margin-bottom: 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.key-value {
+  color: var(--accent);
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.wall-value {
+  color: var(--amber);
+  font-size: 18px;
+}
+
+.key-detail {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.opening-name {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.key-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.key-chips span {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.key-file,
+.key-missing {
+  margin-top: 9px;
+  color: var(--text-dim);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1050px) {
+  .key-config-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .split {

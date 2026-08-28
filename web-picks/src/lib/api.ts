@@ -21,6 +21,26 @@ export interface YoloBox {
   polygon?: number[][];
 }
 
+export interface FlowContext {
+  distance_m?: number | null;
+  opening_pose?: {
+    name?: string;
+    file?: string;
+    manual?: boolean;
+    min_distance_m?: number;
+  };
+  round?: number;
+  max_rounds?: number;
+  target_lift_m?: number;
+  lift_base_m?: number;
+  lift_step_m?: number;
+  lift_max_m?: number;
+  planner_mid_lift_m?: number;
+  approach_offset_m?: number;
+  picked_target_root_m?: number[];
+  effective_target_root_m?: number[];
+}
+
 export interface PickMeta {
   saved_at?: string;
   capture_id?: string;
@@ -51,6 +71,7 @@ export interface PickMeta {
   } | null;
   yolo_boxes?: YoloBox[];
   crop_radius_m?: number;
+  flow_context?: FlowContext | null;
 }
 
 /** 拨动前/后单帧证据（flow 写入 flip_result.json） */

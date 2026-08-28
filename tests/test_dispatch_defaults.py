@@ -8,6 +8,7 @@ from pathlib import Path
 
 from core.dispatch_defaults import (
     DEFAULT_DISPATCH_DEFAULTS,
+    DEFAULT_DISPATCH_DEFAULTS_PATH,
     DEFAULT_LIFT_MM,
     find_offset_preset,
     load_dispatch_defaults,
@@ -20,8 +21,14 @@ from core.dispatch_defaults import (
 
 def _config(**overrides):
     payload = {
-        "schema_version": 1,
-        "defaults": {"site": "factory", "offset_preset": ""},
+        "schema_version": 2,
+        "defaults": {
+            "site": "factory",
+            "offset_preset_by_kind": {
+                "close_to_remote": "",
+                "remote_to_close": "",
+            },
+        },
         "offset_presets": [],
     }
     payload.update(overrides)
@@ -41,9 +48,21 @@ class DispatchDefaultsTest(unittest.TestCase):
         self.assertEqual(config, DEFAULT_DISPATCH_DEFAULTS)
         self.assertEqual(config["defaults"]["site"], "factory")
 
+    def test_repository_config_has_independent_factory_direction_presets(self):
+        config = load_dispatch_defaults(DEFAULT_DISPATCH_DEFAULTS_PATH)
+        by_kind = config["defaults"]["offset_preset_by_kind"]
+        self.assertIn("remote_to_close", by_kind)
+        self.assertIn("close_to_remote", by_kind)
+
     def test_save_and_load_roundtrip_with_named_presets(self):
         payload = _config(
-            defaults={"site": "lab", "offset_preset": "右手偏移配置-1"},
+            defaults={
+                "site": "lab",
+                "offset_preset_by_kind": {
+                    "close_to_remote": "右手偏移配置-1",
+                    "remote_to_close": "备用",
+                },
+            },
             offset_presets=[
                 {"name": "右手偏移配置-1",
                  "offset_mm": {"x": 6, "y": -2, "z": -4}},
@@ -53,6 +72,13 @@ class DispatchDefaultsTest(unittest.TestCase):
         saved = save_dispatch_defaults(payload, self.path)
         loaded = load_dispatch_defaults(self.path)
         self.assertEqual(saved, loaded)
+        self.assertEqual(
+            loaded["defaults"]["offset_preset_by_kind"],
+            {
+                "close_to_remote": "右手偏移配置-1",
+                "remote_to_close": "备用",
+            },
+        )
         preset = find_offset_preset(loaded, "右手偏移配置-1")
         self.assertEqual(preset["offset_mm"], {"x": 6.0, "y": -2.0, "z": -4.0})
         # 缺省轴按 0 补齐
@@ -62,7 +88,13 @@ class DispatchDefaultsTest(unittest.TestCase):
     def test_rejects_bad_site(self):
         with self.assertRaisesRegex(ValueError, "site"):
             validate_dispatch_defaults(
-                _config(defaults={"site": "moon", "offset_preset": ""}))
+                _config(defaults={
+                    "site": "moon",
+                    "offset_preset_by_kind": {
+                        "close_to_remote": "",
+                        "remote_to_close": "",
+                    },
+                }))
 
     def test_rejects_duplicate_preset_names(self):
         with self.assertRaisesRegex(ValueError, "重复"):
@@ -78,7 +110,27 @@ class DispatchDefaultsTest(unittest.TestCase):
     def test_rejects_default_pointing_to_missing_preset(self):
         with self.assertRaisesRegex(ValueError, "不存在的配置"):
             validate_dispatch_defaults(
-                _config(defaults={"site": "lab", "offset_preset": "不存在"}))
+                _config(defaults={
+                    "site": "lab",
+                    "offset_preset_by_kind": {
+                        "close_to_remote": "不存在",
+                        "remote_to_close": "",
+                    },
+                }))
+
+    def test_v1_single_preset_migrates_to_both_directions(self):
+        migrated = validate_dispatch_defaults({
+            "schema_version": 1,
+            "defaults": {"site": "factory", "offset_preset": "旧配置"},
+            "offset_presets": [
+                {"name": "旧配置", "offset_mm": {"x": 3}},
+            ],
+        })
+        self.assertEqual(migrated["schema_version"], 2)
+        self.assertEqual(
+            migrated["defaults"]["offset_preset_by_kind"],
+            {"close_to_remote": "旧配置", "remote_to_close": "旧配置"},
+        )
 
     def test_offset_mm_accepts_missing_axes(self):
         self.assertEqual(validate_offset_mm(None),
@@ -96,9 +148,14 @@ class DispatchDefaultsTest(unittest.TestCase):
         saved = save_dispatch_defaults(_config(), self.path)
         self.assertEqual(saved["defaults"]["lift_mm"], DEFAULT_LIFT_MM)
         # 显式配置能存取
-        payload = _config(defaults={"site": "lab", "offset_preset": "",
-                                    "lift_mm": {"base": 0, "step": 5,
-                                                "max": 20}})
+        payload = _config(defaults={
+            "site": "lab",
+            "offset_preset_by_kind": {
+                "close_to_remote": "",
+                "remote_to_close": "",
+            },
+            "lift_mm": {"base": 0, "step": 5, "max": 20},
+        })
         saved = save_dispatch_defaults(payload, self.path)
         self.assertEqual(load_dispatch_defaults(self.path)
                          ["defaults"]["lift_mm"],
