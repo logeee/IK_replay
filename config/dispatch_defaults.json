@@ -2,7 +2,7 @@
   "schema_version": 1,
   "defaults": {
     "site": "factory",
-    "offset_preset": "右到左配置-1",
+    "offset_preset": "摔手后",
     "lift_mm": {
       "base": 0.0,
       "step": 10.0,
@@ -16,6 +16,14 @@
         "x": 7.0,
         "y": -2.0,
         "z": 0.0
+      }
+    },
+    {
+      "name": "摔手后",
+      "offset_mm": {
+        "x": 25.0,
+        "y": 10.0,
+        "z": -20.0
       }
     }
   ]

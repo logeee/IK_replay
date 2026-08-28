@@ -43,9 +43,9 @@ def main() -> int:
                         help="取点接近偏移（m，0=顶到表面，负=压入表面）")
     parser.add_argument("--duration", type=float, default=6.0,
                         help="IK 主段（到位）时长（s）")
-    parser.add_argument("--sidestep-cm", type=float, default=6.0,
+    parser.add_argument("--sidestep-cm", type=float, default=10.0,
                         help="到位后沿柜面左移距离（cm，负=右移）")
-    parser.add_argument("--push-n", type=float, default=25.0,
+    parser.add_argument("--push-n", type=float, default=10.0,
                         help="横移时的前馈推力（N）")
     parser.add_argument("--lift-cm", type=float, default=2.0,
                         help="规划中段抬高（cm）")

@@ -9,7 +9,7 @@
   "fine": {
     "target_deg": 0.0,
     "command_tolerance_deg": 4.0,
-    "accept_min_deg": -5.0,
-    "accept_max_deg": 5.0
+    "accept_min_deg": -8.0,
+    "accept_max_deg": 8.0
   }
 }

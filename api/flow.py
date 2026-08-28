@@ -116,8 +116,8 @@ class SwitchFlow:
                  # ---- IK 拨动段参数（index.html 真机验证过的一组）----
                  approach_offset_m: float = 0.0,   # 接近偏移：0 = 指尖顶到表面
                  reach_duration_s: float = 6.0,    # 主段（到位）时长
-                 sidestep_cm: float = 6.0,         # 到位后沿柜面左移（负=右移）
-                 push_force_n: float = 25.0,       # 横移时的前馈推力
+                 sidestep_cm: float = 10.0,        # 到位后沿柜面左移（负=右移）
+                 push_force_n: float = 10.0,       # 横移时的前馈推力
                  lift_m: float = 0.02,             # 规划中段抬高 2cm（防刮底）
                  endpoint_speed_rad_s: float = 0.3,  # 插值回「终点」路点的关节限速
                  max_flip_rounds: int = 3,         # 拨动失败回到 5️⃣ 的最大轮数
@@ -669,7 +669,7 @@ class SwitchFlow:
         """IK 执行拨动：
 
           取点（接近偏移 0）→ 左侧规划（中段抬高 2cm）→
-          主段到位（6s）→ 沿柜面左移 6cm + 前馈推力 25N（快拨 1s）
+          主段到位（6s）→ 沿柜面左移 10cm + 前馈推力 10N
 
         拨完就地停住直接交给复核（拨动本身不要求到点精度，不再先插值回
         「终点」路点）：成功 → 收尾直接回「起手点测试」；失败 → 重试轮
