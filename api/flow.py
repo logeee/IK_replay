@@ -660,9 +660,9 @@ class SwitchFlow:
             self._fine_align_with_retry(attempts=2)
         return self.detect_points()
 
-    # 语义点云：沿柜面 ±X 并向 -Z 偏 10°；旧链路保留向下倾 2°。
+    # 语义点云：沿柜面 ±X 并向 -Z 偏 15°；旧链路保留向下倾 2°。
     SIDESTEP_TILT_DEG = 2.0
-    WALL_SIDESTEP_DOWN_DEG = 10.0
+    WALL_SIDESTEP_DOWN_DEG = 15.0
     SIDESTEP_PUSH_SPEED = 0.06   # 带推力时快拨（m/s）：借冲量越过定位卡点
 
     def flip_switch(self, points: list[dict], round_no: int = 1) -> None:
@@ -755,7 +755,7 @@ class SwitchFlow:
             t = math.radians(self.WALL_SIDESTEP_DOWN_DEG)
             c, s = math.cos(t), math.sin(t)
             # 柜面系 X 正=右、Z 正=上。正 sidestep 表示左：
-            # 左右分量取 ∓X，两种方向都叠加 -Z 方向 10°。
+            # 左右分量取 ∓X，两种方向都叠加 -Z 方向 15°。
             direction = [
                 -right[i] * sg * c - wall_up[i] * s
                 for i in range(3)

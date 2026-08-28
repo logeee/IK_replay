@@ -946,9 +946,9 @@ async function appendSidestepPreview(panel, stepCm) {
   }
 }
 
-// 语义点云沿柜面 ±X 横移并向柜面 -Z 偏 10°；旧链路保留向下倾 2°。
+// 语义点云沿柜面 ±X 横移并向柜面 -Z 偏 15°；旧链路保留向下倾 2°。
 const SIDESTEP_TILT_DEG = 2;
-const WALL_SIDESTEP_DOWN_DEG = 10;
+const WALL_SIDESTEP_DOWN_DEG = 15;
 
 function sidestepDirection(sign) {
   const right = reach.plane.right_root;
@@ -958,7 +958,7 @@ function sidestepDirection(sign) {
       throw new Error("柜面坐标系缺少 Z 轴，无法计算向下偏移");
     }
     const t = (WALL_SIDESTEP_DOWN_DEG * Math.PI) / 180;
-    // X 正=右、Z 正=上；左右两种横移均叠加 -Z 方向 10°。
+    // X 正=右、Z 正=上；左右两种横移均叠加 -Z 方向 15°。
     return right.map((value, i) =>
       -value * sign * Math.cos(t) - wallUp[i] * Math.sin(t));
   }
