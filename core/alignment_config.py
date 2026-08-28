@@ -23,8 +23,8 @@ DEFAULT_ALIGNMENT_CONFIG: dict[str, Any] = {
     "fine": {
         "target_deg": -3.0,
         "command_tolerance_deg": 1.5,
-        "accept_min_deg": -5.0,
-        "accept_max_deg": 5.0,
+        "accept_min_deg": -8.0,
+        "accept_max_deg": 8.0,
     },
 }
 

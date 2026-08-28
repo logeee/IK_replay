@@ -19,8 +19,8 @@ class AlignmentConfigTests(unittest.TestCase):
         config = load_alignment_config(DEFAULT_ALIGNMENT_CONFIG_PATH)
         self.assertEqual(config["coarse"]["accept_min_deg"], -8.5)
         self.assertEqual(config["coarse"]["accept_max_deg"], 0.0)
-        self.assertEqual(config["fine"]["accept_min_deg"], -5.0)
-        self.assertEqual(config["fine"]["accept_max_deg"], 5.0)
+        self.assertEqual(config["fine"]["accept_min_deg"], -8.0)
+        self.assertEqual(config["fine"]["accept_max_deg"], 8.0)
         for stage in ("coarse", "fine"):
             values = config[stage]
             self.assertGreaterEqual(
@@ -68,15 +68,15 @@ class _MeasureOnlyClient:
 
 
 class FlowAcceptanceRangeTests(unittest.TestCase):
-    def test_coarse_upper_zero_and_fine_upper_five_are_accepted(self):
+    def test_coarse_upper_zero_and_fine_upper_eight_are_accepted(self):
         coarse_client = _MeasureOnlyClient(-1.0)
         coarse_flow = SwitchFlow(client=coarse_client)
         coarse_flow.waist_align(-7.0, -8.5, 0.0, 0.75)
         self.assertFalse(coarse_client.align_started)
 
-        fine_client = _MeasureOnlyClient(4.0)
+        fine_client = _MeasureOnlyClient(7.0)
         fine_flow = SwitchFlow(client=fine_client)
-        fine_flow.waist_align(-3.0, -5.0, 5.0, 1.0)
+        fine_flow.waist_align(0.0, -8.0, 8.0, 4.0)
         self.assertFalse(fine_client.align_started)
 
 
