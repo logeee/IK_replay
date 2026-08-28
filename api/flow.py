@@ -660,8 +660,9 @@ class SwitchFlow:
             self._fine_align_with_retry(attempts=2)
         return self.detect_points()
 
-    # 横移方向 = 拟合平面的"左"再向下倾 2°（同 main.js SIDESTEP_TILT_DEG）
+    # 语义点云：沿柜面 ±X 并向 -Z 偏 10°；旧链路保留向下倾 2°。
     SIDESTEP_TILT_DEG = 2.0
+    WALL_SIDESTEP_DOWN_DEG = 10.0
     SIDESTEP_PUSH_SPEED = 0.06   # 带推力时快拨（m/s）：借冲量越过定位卡点
 
     def flip_switch(self, points: list[dict], round_no: int = 1) -> None:
@@ -737,15 +738,37 @@ class SwitchFlow:
         """到位后的拨动本体：按真机实际姿态就地规划横移，带前馈推力执行。"""
         if abs(self.sidestep_cm) < 0.5:
             return
-        left = (picked.get("plane") or {}).get("left_root")
+        plane = picked.get("plane") or {}
+        left = plane.get("left_root")
         if not left:
             raise FlowError(ErrorCode.IK_FAILED,
                             f"{tag} 表面平面拟合失败，定不出左移方向")
         sg = 1.0 if self.sidestep_cm > 0 else -1.0
-        t = math.radians(self.SIDESTEP_TILT_DEG)
-        c, s = math.cos(t), math.sin(t)
-        # 先取实际移动方向（±左），再往下倾：右移时同样是"偏下"
-        direction = [left[0] * sg * c, left[1] * sg * c, left[2] * sg * c - s]
+        right = plane.get("right_root")
+        if right:
+            wall_up = plane.get("wall_up_root")
+            if not wall_up:
+                raise FlowError(
+                    ErrorCode.IK_FAILED,
+                    f"{tag} 柜面坐标系缺少 Z 轴，无法计算向下偏移",
+                )
+            t = math.radians(self.WALL_SIDESTEP_DOWN_DEG)
+            c, s = math.cos(t), math.sin(t)
+            # 柜面系 X 正=右、Z 正=上。正 sidestep 表示左：
+            # 左右分量取 ∓X，两种方向都叠加 -Z 方向 10°。
+            direction = [
+                -right[i] * sg * c - wall_up[i] * s
+                for i in range(3)
+            ]
+        else:
+            t = math.radians(self.SIDESTEP_TILT_DEG)
+            c, s = math.cos(t), math.sin(t)
+            # 旧取点链路没有柜面 X 轴时才使用兼容算法。
+            direction = [
+                left[0] * sg * c,
+                left[1] * sg * c,
+                left[2] * sg * c - s,
+            ]
         dist = abs(self.sidestep_cm) / 100.0
 
         joints = self.client.joints()

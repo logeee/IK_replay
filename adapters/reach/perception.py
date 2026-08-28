@@ -339,19 +339,52 @@ def _pointcloud_plane(value: dict | None, p_cam: np.ndarray) -> dict | None:
         rotation = state.T_cam2root[:3, :3]
         normal_root = rotation @ normal_cam
         center_root = rotation @ center_cam + state.T_cam2root[:3, 3]
-        facing = -normal_root
-        left_root = np.cross(np.array([0.0, 0.0, 1.0]), facing)
-        left_norm = float(np.linalg.norm(left_root))
-        if left_norm < 1e-3:
-            return None
-        left_root /= left_norm
-        left_root -= float(np.dot(left_root, normal_root)) * normal_root
-        left_root /= float(np.linalg.norm(left_root))
+        right_root = None
+        wall_up_root = None
+        axis_source = "normal_cross_up"
+        if value.get("x_axis_camera") is not None:
+            wall_x_camera = np.asarray(
+                value["x_axis_camera"], dtype=float
+            ).reshape(3)
+            right = rotation @ wall_x_camera
+            right_norm = float(np.linalg.norm(right))
+            if np.isfinite(right).all() and right_norm > 1e-3:
+                right_root = right / right_norm
+                axis_source = str(
+                    value.get("axis_source") or "wall_coordinate_x"
+                )
+        if right_root is not None and value.get("z_axis_camera") is not None:
+            wall_z_camera = np.asarray(
+                value["z_axis_camera"], dtype=float
+            ).reshape(3)
+            wall_up = rotation @ wall_z_camera
+            # 只消除 X/Z 间的浮点误差，方向仍完全来自同一个柜面坐标系。
+            wall_up -= float(np.dot(wall_up, right_root)) * right_root
+            wall_up_norm = float(np.linalg.norm(wall_up))
+            if np.isfinite(wall_up).all() and wall_up_norm > 1e-3:
+                wall_up_root = wall_up / wall_up_norm
+        if right_root is None:
+            facing = -normal_root
+            left_root = np.cross(np.array([0.0, 0.0, 1.0]), facing)
+            left_norm = float(np.linalg.norm(left_root))
+            if left_norm < 1e-3:
+                return None
+            left_root /= left_norm
+            left_root -= float(np.dot(left_root, normal_root)) * normal_root
+            left_root /= float(np.linalg.norm(left_root))
+            right_root = -left_root
+        else:
+            left_root = -right_root
         return {
             "center_root": center_root.tolist(),
             "normal_root": normal_root.tolist(),
             "normal_cam": normal_cam.tolist(),
             "left_root": left_root.tolist(),
+            "right_root": right_root.tolist(),
+            "wall_up_root": (
+                wall_up_root.tolist() if wall_up_root is not None else None
+            ),
+            "horizontal_axis_source": axis_source,
             "rms_mm": float(value.get("rms_mm", 0.0)),
             "points": int(value.get("points", 0)),
             "radius_m": float(value.get("radius_m", 0.12)),

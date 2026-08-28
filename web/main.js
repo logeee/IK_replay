@@ -943,10 +943,22 @@ async function appendSidestepPreview(panel, stepCm) {
   }
 }
 
-// 横移方向 = 拟合平面的"左"（右移取反）再向下倾 SIDESTEP_TILT_DEG 度
+// 语义点云沿柜面 ±X 横移并向柜面 -Z 偏 10°；旧链路保留向下倾 2°。
 const SIDESTEP_TILT_DEG = 2;
+const WALL_SIDESTEP_DOWN_DEG = 10;
 
 function sidestepDirection(sign) {
+  const right = reach.plane.right_root;
+  if (Array.isArray(right) && right.length === 3) {
+    const wallUp = reach.plane.wall_up_root;
+    if (!Array.isArray(wallUp) || wallUp.length !== 3) {
+      throw new Error("柜面坐标系缺少 Z 轴，无法计算向下偏移");
+    }
+    const t = (WALL_SIDESTEP_DOWN_DEG * Math.PI) / 180;
+    // X 正=右、Z 正=上；左右两种横移均叠加 -Z 方向 10°。
+    return right.map((value, i) =>
+      -value * sign * Math.cos(t) - wallUp[i] * Math.sin(t));
+  }
   const t = (SIDESTEP_TILT_DEG * Math.PI) / 180;
   const l = reach.plane.left_root;
   const c = Math.cos(t);
@@ -981,6 +993,11 @@ async function refreshSidesteps() {
 // 防呆检查已按用户要求全部注释掉，由人保证工况一致（机器人正视电柜、起点姿态
 // 与录制时相近）。要恢复保护就取消下面两段注释。
 function matchSidestepRecording(stepCm, joints) {
+  // 柜面坐标系可提供准确的水平 X 轴时必须重新做笛卡尔规划。旧关节增量
+  // 在不同起点不是刚体平移，正是“右移变右上”的来源，不能覆盖柜面轴。
+  if (reach.plane?.horizontal_axis_source === "wall_coordinate_x") {
+    return null;
+  }
   const rec = (reach.sidesteps || []).find((r) => Number(r.step_cm) === stepCm);
   if (!rec?.waypoints?.length) {
     return null;
@@ -1096,7 +1113,7 @@ async function sidestepReach(stepCm, options = {}) {
     reachMsg(`${dirName}移轨迹有碰撞，已禁止执行`, "error");
     return;
   }
-  if (!seg.replayed) {
+  if (!seg.replayed && reach.plane?.horizontal_axis_source !== "wall_coordinate_x") {
     saveSidestepRecording(stepCm, seg);   // 落盘录制：下次同工况免 IK 直接回放
   }
   if (!st.armed) {

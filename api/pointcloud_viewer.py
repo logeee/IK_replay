@@ -900,6 +900,24 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
             reference,
             distortion=capture_value.distortion,
         )
+        # 语义点云已经建立了稳定的柜面坐标系（X 正方向=右）。局部平面仍
+        # 负责接近法向，但横移轴直接沿用柜面 X，避免用世界 Z×法向推导时
+        # 受躯干倾斜影响而把“右移”算成右上。
+        wall_axes = (capture_value.auto_target or {}).get("wall_axes_camera")
+        if plane is not None and isinstance(wall_axes, list) and wall_axes:
+            wall_x = np.asarray(wall_axes[0], dtype=float).reshape(3)
+            wall_x_norm = float(np.linalg.norm(wall_x))
+            if np.isfinite(wall_x).all() and wall_x_norm > 1e-6:
+                plane = dict(plane)
+                plane["x_axis_camera"] = (wall_x / wall_x_norm).tolist()
+                if len(wall_axes) >= 3:
+                    wall_z = np.asarray(wall_axes[2], dtype=float).reshape(3)
+                    wall_z_norm = float(np.linalg.norm(wall_z))
+                    if np.isfinite(wall_z).all() and wall_z_norm > 1e-6:
+                        plane["z_axis_camera"] = (
+                            wall_z / wall_z_norm
+                        ).tolist()
+                plane["axis_source"] = "wall_coordinate_x"
         request_body = {
             "p_camera_surface": p_camera.tolist(),
             "pixel": body.get("pixel"),

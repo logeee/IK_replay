@@ -443,7 +443,24 @@ class PointCloudBackendTest(unittest.TestCase):
         }
         with mock.patch.object(
             pointcloud_viewer._http, "post", return_value=upstream
-        ) as post:
+        ) as post, mock.patch.object(
+            pointcloud_viewer,
+            "fit_surface_plane",
+            return_value={
+                "center_cam": [0.0, 0.0, 1.0],
+                "normal_cam": [0.0, 0.0, -1.0],
+                "rms_mm": 1.0,
+                "points": 500,
+                "radius_m": 0.12,
+            },
+        ):
+            pointcloud_viewer._latest.auto_target = {
+                "wall_axes_camera": [
+                    [1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                    [0.0, -1.0, 0.0],
+                ]
+            }
             confirmed = pointcloud_viewer.confirm_pointcloud_target(
                 metadata["capture_id"],
                 {
@@ -472,6 +489,9 @@ class PointCloudBackendTest(unittest.TestCase):
         self.assertEqual(sent["model_version"], "0.2.0-s")
         self.assertEqual(sent["target_point_slot"], 1)
         self.assertEqual(sent["matched_detection_name"], "远方")
+        self.assertEqual(sent["plane"]["x_axis_camera"], [1.0, 0.0, 0.0])
+        self.assertEqual(sent["plane"]["z_axis_camera"], [0.0, -1.0, 0.0])
+        self.assertEqual(sent["plane"]["axis_source"], "wall_coordinate_x")
         attached = post.call_args_list[1].kwargs["json"]
         self.assertEqual(attached["capture_id"], metadata["capture_id"])
         self.assertEqual(attached["record"], confirmed["record"])
@@ -637,6 +657,9 @@ class ReachPointCloudConfirmationTest(unittest.TestCase):
                     "plane": {
                         "center_cam": [0.0, 0.0, 1.0],
                         "normal_cam": [0.0, 0.0, -1.0],
+                        "x_axis_camera": [1.0, 0.0, 0.0],
+                        "z_axis_camera": [0.0, 1.0, 0.0],
+                        "axis_source": "wall_coordinate_x",
                         "rms_mm": 1.0,
                         "points": 500,
                         "radius_m": 0.12,
@@ -648,6 +671,19 @@ class ReachPointCloudConfirmationTest(unittest.TestCase):
             self.assertEqual(result["selection_mode"], "frozen_rgbd_pointcloud")
             self.assertEqual(result["pixel"], [320, 240])
             self.assertEqual(result["plane"]["source"], "frozen_rgbd")
+            np.testing.assert_allclose(
+                result["plane"]["right_root"], [0.0, 1.0, 0.0]
+            )
+            np.testing.assert_allclose(
+                result["plane"]["left_root"], [0.0, -1.0, 0.0]
+            )
+            np.testing.assert_allclose(
+                result["plane"]["wall_up_root"], [0.0, 0.0, 1.0]
+            )
+            self.assertEqual(
+                result["plane"]["horizontal_axis_source"],
+                "wall_coordinate_x",
+            )
             self.assertEqual(
                 state.pick_context["selection_mode"],
                 "frozen_rgbd_pointcloud",
