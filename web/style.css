@@ -829,9 +829,9 @@ button:disabled {
 }
 
 .reach-offset-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
-  flex-wrap: nowrap;
   align-items: flex-end;
 }
 

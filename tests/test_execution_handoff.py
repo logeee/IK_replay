@@ -191,6 +191,70 @@ class ExecutionHandoffTests(unittest.TestCase):
             state.execution_history.extend(saved_history)
             temporary.cleanup()
 
+    def test_execute_passes_configured_push_hold_to_worker(self):
+        state = execution.state
+        attributes = [
+            "controller",
+            "joint_names",
+            "exec_running",
+            "exec_thread",
+            "pick_context",
+            "pick_target_root",
+            "pick_target_torso",
+            "pick_pixel",
+            "pick_torso",
+        ]
+        saved = {name: getattr(state, name) for name in attributes}
+        try:
+            controller = _SequenceController()
+            controller.read_measured = mock.Mock(
+                return_value=np.array([0.0, 0.0])
+            )
+            state.controller = controller
+            state.joint_names = ["j1", "j2"]
+            state.exec_running = False
+            state.pick_context = None
+            state.pick_target_root = None
+            state.pick_target_torso = None
+            state.pick_pixel = None
+            state.pick_torso = None
+            fake_thread = mock.Mock()
+            with (
+                mock.patch.object(
+                    execution,
+                    "_position_jacobian",
+                    return_value=np.zeros((3, 2)),
+                ),
+                mock.patch.object(
+                    execution.threading,
+                    "Thread",
+                    return_value=fake_thread,
+                ) as thread,
+            ):
+                result = execution.reach_execute(
+                    {
+                        "waypoints": [
+                            {"j1": 0.0, "j2": 0.0},
+                            {"j1": 0.1, "j2": 0.1},
+                        ],
+                        "push": {
+                            "direction_root": [1.0, 0.0, 0.0],
+                            "force_n": 10.0,
+                        },
+                        "push_hold_s": 0.3,
+                    }
+                )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(
+                thread.call_args.kwargs["kwargs"]["push_hold_s"],
+                0.3,
+            )
+            fake_thread.start.assert_called_once()
+        finally:
+            for name, value in saved.items():
+                setattr(state, name, value)
+
     def test_sequence_replay_passes_last_sent_command_to_exec_loop(self):
         state = recordings.state
         attributes = [

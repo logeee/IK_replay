@@ -188,6 +188,7 @@ async function initReach() {
     delWp: document.getElementById("reachDelWpBtn"),
     stepLen: document.getElementById("reachStepLen"),
     pushForce: document.getElementById("reachPushForce"),
+    pushHold: document.getElementById("reachPushHold"),
     stepMode: document.getElementById("reachStepMode"),
     collisionCheck: document.getElementById("reachCollisionCheck"),
     stepNext: document.getElementById("reachStepNext"),
@@ -1125,11 +1126,16 @@ async function sidestepReach(stepCm, options = {}) {
     return;
   }
   const pushN = Math.max(0, Number(reach.dom.pushForce?.value || 0));
+  const pushHoldS = Math.min(
+    5,
+    Math.max(0, Number(reach.dom.pushHold?.value || 0)),
+  );
   if (!options.skipConfirm) {
     const ok = window.confirm(
       `确认沿电柜表面${dirName}移 ${Math.abs(stepCm).toFixed(0)}cm？手臂将运动。\n` +
       `直线插补 ${seg.steps} 步 · 最大 IK 误差 ${Number(seg.max_ik_error_mm).toFixed(1)} mm · ` +
-      `推力 ${pushN}N · 碰撞: ${seg.collision?.status_label || "-"}`);
+      `推力 ${pushN}N（终点保持 ${pushHoldS.toFixed(1)}s）· ` +
+      `碰撞: ${seg.collision?.status_label || "-"}`);
     if (!ok) {
       return;
     }
@@ -1158,6 +1164,7 @@ async function sidestepReach(stepCm, options = {}) {
         duration: pushN > 0
           ? Math.max(1, Math.abs(stepCm) / 100 / 0.06)
           : Math.max(2, Math.abs(stepCm) / 100 / 0.02),
+        push_hold_s: pushHoldS,
         // 沿移动方向的前馈力：接触旋钮后位置环刚度不够，靠它出力拨动
         ...(pushN > 0 ? {
           push: {

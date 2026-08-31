@@ -310,6 +310,7 @@ def reach_execute(body: dict):
     Body: {"waypoints": [named_joints, ...], "duration": float,
            "max_speed_rad_s": float?, "label": str?,
            "push": {"direction_root": [x,y,z], "force_n": float}?,
+           "push_hold_s": float?,
            "flip_evidence": {"record": str, "flip_from": str?}?}
 
     label（可选）：段名，只用于 logs/reach 里区分主轨迹/横移/收回。
@@ -320,6 +321,7 @@ def reach_execute(body: dict):
     push（可选）：执行期间在 TCP 上沿指定方向叠加前馈力（τ=JᵀF）。
     纯位置控制的侧向刚度很低（~300 N/m），贴着旋钮也使不上力；
     有了前馈力矩，接触后能持续出力把旋钮拨过去。
+    push_hold_s：轨迹指令收敛后保持满推力的秒数，范围 0～5，默认 1.5。
 
     flip_evidence 仅由 18001 手动横移传入：启动横移前拍头部+右腕，
     横移完成后用头部 YOLO 复核并把 success 写回同一条 7005 记录。
@@ -332,6 +334,18 @@ def reach_execute(body: dict):
     duration = float(body.get("duration") or 4.0)
     speed = float(np.clip(float(body.get("max_speed_rad_s") or 0.2), 0.05, 0.5))
     label = str(body.get("label") or "reach")[:32]
+    try:
+        push_hold_s = float(body.get("push_hold_s", 1.5))
+    except (TypeError, ValueError):
+        return JSONResponse(
+            {"ok": False, "error": "push_hold_s 必须是数字"},
+            status_code=400,
+        )
+    if not math.isfinite(push_hold_s) or not 0.0 <= push_hold_s <= 5.0:
+        return JSONResponse(
+            {"ok": False, "error": "push_hold_s 必须在 0～5 秒之间"},
+            status_code=400,
+        )
     if len(waypoints) < 2:
         return JSONResponse({"ok": False, "error": "轨迹至少要有 2 个路点"}, status_code=400)
     try:
@@ -435,6 +449,7 @@ def reach_execute(body: dict):
             args=(q_list, duration),
             kwargs={
                 "push_tau": push_tau,
+                "push_hold_s": push_hold_s,
                 "speed": speed,
                 "label": label,
                 "command_start_q": command_start,
@@ -461,6 +476,7 @@ def _tcp_position(q) -> list[float] | None:
 
 def _log_exec(kind: str, result: str, q_target, *, sag=None, settle_trim=None,
               duration=None, speed=None, pushing: bool = False, push_tau=None,
+              push_hold_s: float | None = None,
               trace=None, command_handoff=None,
               execution_context: dict | None = None) -> None:
     """每段真机动作落一行 JSONL：logs/reach/reach_YYYYMMDD.jsonl。
@@ -507,6 +523,7 @@ def _log_exec(kind: str, result: str, q_target, *, sag=None, settle_trim=None,
                 "duration_s": duration,
                 "max_speed_rad_s": speed,
                 "pushing": pushing,
+                "push_hold_s": push_hold_s,
                 "grav_alpha": st.get("grav_alpha"),
                 "payload_kg": st.get("payload_kg"),
                 "kp": st.get("kp"), "kd": st.get("kd"),
@@ -766,6 +783,7 @@ def _run_settle_trim(ctl, target: np.ndarray) -> dict | None:
 
 def _exec_loop(q_list: list[np.ndarray], duration: float,
                push_tau: np.ndarray | None = None, speed: float = 0.2,
+               push_hold_s: float = 1.5,
                label: str = "reach", command_start_q: np.ndarray | None = None,
                command_handoff: dict | None = None,
                execution_context: dict | None = None,
@@ -773,7 +791,8 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
     ctl = state.controller
     trace, trace_stop = _start_torso_trace(ctl)
     log = dict(duration=duration, speed=speed, pushing=push_tau is not None,
-               push_tau=push_tau, trace=trace, command_handoff=command_handoff,
+               push_tau=push_tau, push_hold_s=push_hold_s,
+               trace=trace, command_handoff=command_handoff,
                execution_context=execution_context)
     completed = False
     try:
@@ -828,13 +847,13 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
                 break
             time.sleep(0.1)
 
-        # 推力模式：位置到不到位没有意义（被旋钮/表面顶着），收敛后持续
-        # 顶 1.5s 把旋钮拨到底，然后撤力刚性保持。
+        # 推力模式：位置到不到位没有意义（被旋钮/表面顶着），收敛后按
+        # 调用方配置继续保持满力，然后撤力刚性保持。
         if push_tau is not None:
-            if not state.exec_cancel.is_set():
+            if not state.exec_cancel.is_set() and push_hold_s > 0:
                 state.exec_message = "持续出力中"
                 state.exec_phase = "push_hold"
-                deadline = time.monotonic() + 1.5
+                deadline = time.monotonic() + push_hold_s
                 while time.monotonic() < deadline and not state.exec_cancel.is_set():
                     time.sleep(0.05)
             # 撤力渐出：顶着的手臂/身体像压紧的弹簧，力矩瞬间清零会"啪"地
