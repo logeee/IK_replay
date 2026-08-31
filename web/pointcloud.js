@@ -96,7 +96,8 @@ let pixels = null;
 let classIds = null;
 let captureMeta = null;
 let colorMode = "rgb";
-let viewMode = "live";
+let viewMode = "rgb";
+let snapshotImageUrl = null;
 let selection = null;
 let replacementArmed = false;
 let selectionPending = false;
@@ -161,6 +162,10 @@ function setViewMode(mode) {
   const live = mode === "live";
   const snapshot = mode === "snapshot";
   const pointcloud = !live && !snapshot;
+  if (!live) {
+    // 隐藏实时图时立即断开 MJPEG，只有再次手动点击才恢复取流。
+    $("liveStream").removeAttribute("src");
+  }
   $("liveStream").classList.toggle("hidden", !live);
   $("snapshotStage").classList.toggle("hidden", !snapshot);
   viewport.classList.toggle("hidden", !pointcloud);
@@ -527,7 +532,9 @@ async function loadCapture(meta, { restore = false, reportProgress = false } = {
     layoutSnapshot();
     drawSnapshotBoxes();
   };
-  snapshotImage.src = `${meta.image_url}?t=${Date.now()}`;
+  // 只记录地址，不自动下载/显示；用户点击“显示快照图片”时才加载。
+  snapshotImage.removeAttribute("src");
+  snapshotImageUrl = `${meta.image_url}?t=${Date.now()}`;
   installCloud(decoded, { preserveView });
   renderBoxes(meta);
   renderCaptureInfo(meta);
@@ -548,7 +555,8 @@ async function loadCapture(meta, { restore = false, reportProgress = false } = {
   const restoredColor = preserveView && ["rgb", "semantic"].includes(stored.colorMode)
     ? stored.colorMode : "rgb";
   setColorMode(restoredColor);
-  if (preserveView && ["live", "snapshot", "rgb", "semantic"].includes(stored.viewMode)) {
+  // 图片显示必须由本次页面会话中的人工点击触发，不恢复上次的图片模式。
+  if (preserveView && ["rgb", "semantic"].includes(stored.viewMode)) {
     setViewMode(stored.viewMode);
   }
   updateAutoTargetButton();
@@ -1033,7 +1041,19 @@ function showSnapshot() {
     setStatus("请先点击“拍一下”生成快照", "error");
     return;
   }
+  const image = $("snapshotImage");
+  if (snapshotImageUrl && image.getAttribute("src") !== snapshotImageUrl) {
+    image.src = snapshotImageUrl;
+  }
   setViewMode("snapshot");
+}
+
+function showLive() {
+  const image = $("liveStream");
+  if (!image.getAttribute("src")) {
+    image.src = `/api/pointcloud/stream?t=${Date.now()}`;
+  }
+  setViewMode("live");
 }
 
 let pointerDown = null;
@@ -1094,7 +1114,7 @@ $("captureBtn").addEventListener("click", capture);
 $("autoTarget").addEventListener("click", autoTarget);
 $("snapshotImage").addEventListener("click", selectSnapshotPixel);
 $("confirmTarget").addEventListener("click", confirmTarget);
-$("liveMode").addEventListener("click", () => setViewMode("live"));
+$("liveMode").addEventListener("click", showLive);
 $("snapshotMode").addEventListener("click", showSnapshot);
 $("rgbMode").addEventListener("click", () => setColorMode("rgb"));
 $("semanticMode").addEventListener("click", () => setColorMode("semantic"));

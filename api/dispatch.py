@@ -34,7 +34,7 @@
                                 "site": "lab",  # 可选，现场：lab=实验室柜（默认）
                                                 # factory=工厂柜（两旋钮印刷相反）
                                 "target_offset_wall_mm": {"x":0,"y":0,"z":0},
-                                # 可选，目的点人工微调（墙面系，mm，单轴限 ±50）：
+                                # 可选，目的点人工微调（墙面系，mm，单轴限 ±100）：
                                 # x=沿墙向右 y=法向入墙 z=沿墙向上。叠加在 7005
                                 # 点云算法算出的目的点上，不动粉点→目的点的模型偏移
                                 "lift_mm": {"base":10,"step":10,"max":30}}
@@ -852,7 +852,7 @@ def _resolve_offset(
 
 # 目的点人工微调（墙面系）单轴上限：微调是给毫米级落点纠偏用的，
 # 超过这个量说明算法/标定有问题，该修根源而不是硬掰
-TARGET_OFFSET_LIMIT_MM = 50.0
+TARGET_OFFSET_LIMIT_MM = 100.0
 
 
 def _parse_target_offset(value: Any) -> tuple[float, float, float]:
@@ -1119,7 +1119,7 @@ def config_defaults_set(body: dict | None = None):
 @app.post("/config/offset-presets")
 def config_preset_upsert(body: dict | None = None):
     """新建/覆盖命名偏移配置。Body: {"name": "右手偏移配置-1",
-    "offset_mm": {"x":右,"y":入墙,"z":上}}（mm，单轴限 ±50）"""
+    "offset_mm": {"x":右,"y":入墙,"z":上}}（mm，单轴限 ±100）"""
     body = body or {}
     name = str(body.get("name") or "").strip()
     if not name:

@@ -3,11 +3,11 @@
   "defaults": {
     "site": "factory",
     "offset_preset_by_kind": {
-      "close_to_remote": "摔手后",
+      "close_to_remote": "向右-降低10cm后",
       "remote_to_close": "摔手后"
     },
     "lift_mm": {
-      "base": 10.0,
+      "base": 0.0,
       "step": 10.0,
       "max": 30.0
     }
@@ -19,6 +19,14 @@
         "x": 20.0,
         "y": 10.0,
         "z": -15.0
+      }
+    },
+    {
+      "name": "向右-降低10cm后",
+      "offset_mm": {
+        "x": 60.0,
+        "y": -20.0,
+        "z": 15.0
       }
     }
   ]

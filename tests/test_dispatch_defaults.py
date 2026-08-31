@@ -104,8 +104,12 @@ class DispatchDefaultsTest(unittest.TestCase):
             ]))
 
     def test_rejects_offset_over_limit(self):
+        self.assertEqual(
+            validate_offset_mm({"x": 100, "y": -100}),
+            {"x": 100.0, "y": -100.0, "z": 0.0},
+        )
         with self.assertRaisesRegex(ValueError, "超范围"):
-            validate_offset_mm({"x": 51})
+            validate_offset_mm({"x": 101})
 
     def test_rejects_default_pointing_to_missing_preset(self):
         with self.assertRaisesRegex(ValueError, "不存在的配置"):

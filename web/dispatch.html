@@ -162,7 +162,7 @@
     padding: 9px 14px; cursor: pointer; transition: .15s ease;
   }
   select, input[type="number"], input[type="text"] { cursor: auto; }
-  /* 数字框：收窄左右内边距、居中，负号+两位数（如 -50）也能完整显示 */
+  /* 数字框：收窄左右内边距、居中，负号+三位数（如 -100）也能完整显示 */
   input[type="number"] { padding: 9px 6px; text-align: center; }
   button:hover:not(:disabled) { border-color: rgba(79, 209, 197, .55); }
   button:disabled { opacity: .45; cursor: not-allowed; }
@@ -374,9 +374,9 @@
       </select>
       <span class="offset-group" title="算法（粉点+模型偏移）算出目的点之后，再在墙面坐标系里叠加的人工修正量；不改变粉点→目的点的模型偏移。方向对应 7005 页面的微调键：右=D 上=W 入墙=E">
         目的点微调(mm)
-        <label>右+ <input id="offsetX" type="number" min="-50" max="50" step="1" value="0" /></label>
-        <label>上+ <input id="offsetZ" type="number" min="-50" max="50" step="1" value="0" /></label>
-        <label>入墙+ <input id="offsetY" type="number" min="-50" max="50" step="1" value="0" /></label>
+        <label>右+ <input id="offsetX" type="number" min="-100" max="100" step="1" value="0" /></label>
+        <label>上+ <input id="offsetZ" type="number" min="-100" max="100" step="1" value="0" /></label>
+        <label>入墙+ <input id="offsetY" type="number" min="-100" max="100" step="1" value="0" /></label>
       </span>
       <span class="offset-group" title="抵消手臂重力下垂：IK 拨动的目标点整体抬高。首轮抬「首轮」值，每重试一轮再加「每轮+」，合计不超过「封顶」。不按距柜面远近区分。页面打开时按外部调用默认配置预填">
         拨点上抬(mm)
@@ -512,7 +512,7 @@
 <div id="presetsModal" class="modal" hidden>
   <div class="modal-card">
     <h3>偏移配置管理</h3>
-    <p class="modal-note">命名的目的点微调量（墙面坐标系，mm，单轴限 ±50）。
+    <p class="modal-note">命名的目的点微调量（墙面坐标系，mm，单轴限 ±100）。
       算法算出目的点后叠加，不改变粉点 → 目的点的模型偏移。</p>
     <table class="preset-table">
       <thead><tr><th>配置名</th><th>右+</th><th>上+</th><th>入墙+</th><th></th></tr></thead>
@@ -520,9 +520,9 @@
     </table>
     <div class="preset-editor">
       <input id="presetName" type="text" maxlength="40" placeholder="配置名，如 右手偏移配置-1" />
-      <label>右+ <input id="presetX" type="number" min="-50" max="50" step="1" value="0" /></label>
-      <label>上+ <input id="presetZ" type="number" min="-50" max="50" step="1" value="0" /></label>
-      <label>入墙+ <input id="presetY" type="number" min="-50" max="50" step="1" value="0" /></label>
+      <label>右+ <input id="presetX" type="number" min="-100" max="100" step="1" value="0" /></label>
+      <label>上+ <input id="presetZ" type="number" min="-100" max="100" step="1" value="0" /></label>
+      <label>入墙+ <input id="presetY" type="number" min="-100" max="100" step="1" value="0" /></label>
       <button id="savePreset" class="primary">保存（同名覆盖）</button>
     </div>
     <div class="modal-buttons">
@@ -974,7 +974,7 @@ syncLanguageOptions();
 
 function readOffsetMm(id) {
   const value = Number($(id).value) || 0;
-  return Math.min(50, Math.max(-50, Math.round(value * 10) / 10));
+  return Math.min(100, Math.max(-100, Math.round(value * 10) / 10));
 }
 
 function readLiftMm(id) {

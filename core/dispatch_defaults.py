@@ -25,7 +25,7 @@ DEFAULT_DISPATCH_DEFAULTS_PATH = (
 )
 
 SITES = ("lab", "factory")
-OFFSET_LIMIT_MM = 50.0     # 单轴上限，与 /task/flip 的校验一致
+OFFSET_LIMIT_MM = 100.0    # 单轴上限，与 /task/flip 的校验一致
 PRESET_NAME_MAX = 40
 LIFT_LIMIT_MM = 50.0       # 拨点上抬各项上限（首轮/每轮递增/封顶）
 

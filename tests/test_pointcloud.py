@@ -708,5 +708,29 @@ class ReachPointCloudConfirmationTest(unittest.TestCase):
                 setattr(state, name, value)
 
 
+class PointCloudDashboardTest(unittest.TestCase):
+    def test_camera_images_require_an_explicit_button_click(self):
+        html = (pointcloud_viewer.WEB_DIR / "pointcloud.html").read_text(
+            encoding="utf-8"
+        )
+        script = (pointcloud_viewer.WEB_DIR / "pointcloud.js").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('id="liveStream" class="hidden"', html)
+        self.assertNotIn('id="liveStream" src=', html)
+        self.assertIn("显示实时图片", html)
+        self.assertIn("显示快照图片", html)
+        self.assertIn('let viewMode = "rgb";', script)
+        self.assertIn(
+            '$("liveMode").addEventListener("click", showLive);',
+            script,
+        )
+        self.assertIn(
+            'if (preserveView && ["rgb", "semantic"].includes(stored.viewMode))',
+            script,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2,8 +2,6 @@
 import { computed, onMounted, ref } from "vue";
 import {
   adjustmentMagnitude,
-  execResultKind,
-  fetchExecutions,
   fetchRecords,
   fileUrl,
   formatTime,
@@ -13,8 +11,6 @@ import {
 const records = ref<PickRecord[]>([]);
 const loading = ref(true);
 const error = ref("");
-// capture_id → 执行情况（次数 + 最近一次结果）
-const execByCapture = ref<Record<string, { count: number; kind: string }>>({});
 
 const nameFilter = ref<string>("全部");
 const slotFilter = ref<number | null>(null);
@@ -28,26 +24,7 @@ onMounted(async () => {
   } finally {
     loading.value = false;
   }
-  try {
-    // 摘要按时间倒序，首个即最近一次结果
-    const map: Record<string, { count: number; kind: string }> = {};
-    for (const e of await fetchExecutions()) {
-      if (!e.capture_id) continue;
-      if (!map[e.capture_id]) {
-        map[e.capture_id] = { count: 0, kind: execResultKind(e.result) };
-      }
-      map[e.capture_id].count += 1;
-    }
-    execByCapture.value = map;
-  } catch {
-    /* 执行日志可能不存在，角标留空 */
-  }
 });
-
-function execInfo(r: PickRecord) {
-  const id = r.meta.capture_id;
-  return id ? execByCapture.value[id] ?? null : null;
-}
 
 const detectionNames = computed(() => {
   const s = new Set<string>();
@@ -221,19 +198,6 @@ function flowSummary(r: PickRecord): string | null {
             >
               {{ r.flip!.after!.success ? "拨动✓" : "拨动✗" }}
             </span>
-            <span
-              v-if="execInfo(r)"
-              class="badge exec"
-              :class="`exec-${execInfo(r)!.kind}`"
-            >
-              {{
-                execInfo(r)!.kind === "done"
-                  ? "已执行"
-                  : execInfo(r)!.kind === "cancelled"
-                    ? "执行中止"
-                    : "执行异常"
-              }}{{ execInfo(r)!.count > 1 ? ` ×${execInfo(r)!.count}` : "" }}
-            </span>
             <span v-if="bestConf(r) !== null" class="conf">
               conf {{ bestConf(r)!.toFixed(2) }}
             </span>
@@ -335,21 +299,6 @@ function flowSummary(r: PickRecord): string | null {
   color: var(--text-dim);
   font-size: 12px;
   margin-left: auto;
-}
-
-.badge.exec-done {
-  background: rgba(90, 212, 111, 0.15);
-  color: var(--green);
-}
-
-.badge.exec-cancelled {
-  background: rgba(143, 163, 192, 0.15);
-  color: var(--text-dim);
-}
-
-.badge.exec-error {
-  background: rgba(255, 93, 93, 0.15);
-  color: var(--red);
 }
 
 .time {
