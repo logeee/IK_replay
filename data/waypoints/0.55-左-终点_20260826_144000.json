@@ -2,20 +2,20 @@
   "name": "0.55-左-终点",
   "chain_id": "right_arm",
   "named_joints": {
-    "right_shoulder_pitch_joint": -1.1577429012989016,
-    "right_shoulder_roll_joint": -0.22122284251445987,
-    "right_shoulder_yaw_joint": 0.502322629700116,
-    "right_elbow_joint": 0.14837951157919482,
-    "right_wrist_roll_joint": -1.072837058862575,
-    "right_wrist_pitch_joint": 0.3896402387508052,
-    "right_wrist_yaw_joint": -0.0009428309899332382
+    "right_shoulder_pitch_joint": -0.9025312388952845,
+    "right_shoulder_roll_joint": -0.13102619045629055,
+    "right_shoulder_yaw_joint": 0.48505345605212874,
+    "right_elbow_joint": 0.19138298735037193,
+    "right_wrist_roll_joint": -1.2061513965147057,
+    "right_wrist_pitch_joint": 0.2897202081058686,
+    "right_wrist_yaw_joint": -0.21361673926856226
   },
-  "created_at": "2026-08-26 14:41:46",
-  "generated_from": "0.50-左-起手式_20260826_134700.json",
-  "forward_offset_m": 0.050000000000000044,
+  "created_at": "2026-08-28 16:17:03",
+  "generated_from": "0.55-左-起手式_20260826_144000.json",
+  "forward_offset_m": 0.0,
   "offset_root_m": [
-    0.050000000000000044,
     0.0,
-    0.0
+    0.0,
+    -0.1
   ]
 }
