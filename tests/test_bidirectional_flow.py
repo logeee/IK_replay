@@ -48,6 +48,66 @@ class FlipIntentTests(unittest.TestCase):
         self.assertEqual(left.sidestep_cm, 10.0)
         self.assertEqual(right.sidestep_cm, -10.0)
 
+    def test_rightward_flip_selects_left_prefixed_opening_pose(self):
+        client = mock.Mock()
+        client.sequences.return_value = {
+            "sequences": [
+                {
+                    "name": "0.50-起手式新",
+                    "file": "0.50-起手式新_20260822_031632.json",
+                    "waypoints": [
+                        "录制点位1_20260726_151627.json",
+                        "0.50-起手式新终点_20260822_031632.json",
+                    ],
+                },
+                {
+                    "name": "0.50-左-起手式",
+                    "file": "0.50-左-起手式_20260826_134700.json",
+                    "waypoints": [
+                        "录制点位1_20260726_151627.json",
+                        "0.50-左-终点_20260826_134700.json",
+                    ],
+                },
+            ],
+        }
+        rightward = SwitchFlow(
+            client=client,
+            site="factory",
+            flip_kind="close_to_remote",
+        )
+        leftward = SwitchFlow(
+            client=client,
+            site="factory",
+            flip_kind="remote_to_close",
+        )
+
+        right_pose = rightward.choose_opening_pose(0.53)
+        left_pose = leftward.choose_opening_pose(0.53)
+
+        self.assertEqual(right_pose["name"], "0.50-左-起手式")
+        self.assertEqual(right_pose["endpoint_name"], "0.50-左-终点")
+        self.assertEqual(left_pose["name"], "0.50-起手式新")
+        self.assertEqual(left_pose["endpoint_name"], "0.50-起手式新终点")
+
+    def test_retry_uses_selected_left_pose_endpoint(self):
+        flow = SwitchFlow(
+            client=mock.Mock(),
+            site="factory",
+            flip_kind="close_to_remote",
+        )
+        flow._current_pose = {
+            "name": "0.50-左-起手式",
+            "endpoint_name": "0.50-左-终点",
+        }
+        flow._interp_to_waypoint = mock.Mock()
+
+        flow._goto_endpoint("重试回位")
+
+        flow._interp_to_waypoint.assert_called_once_with(
+            "0.50-左-终点",
+            "重试回位",
+        )
+
     def test_cabinet_axis_direction_mirrors_x_but_keeps_downward_tilt(self):
         plane = {
             "left_root": [-1.0, 0.0, 0.0],

@@ -1,9 +1,9 @@
 """拨动开关全流程编排。
 
 已部署的步骤（测平面/测距、腰部对齐、pick→规划→执行）直接走 reach_server；
-起手式按距离自动选：只认「X.XX-起手式新」，选档 = 实测距离-0.03m 向下取
-最近档（如 0.52m → 0.49 档），最低档 0.46 覆盖 0.46~0.49m，比最低档还近报
-POSE_UNAVAILABLE；重试轮插值回配套「X.XX-起手式新终点」路点；收尾 =
+起手式按距离和物理拨动方向自动选：向左拨使用「X.XX-起手式新」，向右拨
+使用「X.XX-左-起手式」；选档 = 实测距离-0.03m 向下取最近档。重试轮插值
+回所选序列配套的终点路点；收尾 =
 插值到「起手点测试」路点后释放手臂——成功和失败（含重试耗尽）都走这个
 回落，避免手臂停在柜面前被权重渐出交还本体。
 场景判断和拨后复核走 7004 YOLO 服务（python -m api.yolo_server）：
@@ -848,15 +848,18 @@ class SwitchFlow:
     def _goto_endpoint(self, tag: str) -> None:
         """关节插值回起手式配套的「终点」路点。
 
-        新起手式的终点路点名 = 序列名 + 「终点」：
-        「0.49-起手式新」 → 「0.49-起手式新终点」。
+        优先使用序列最后一个路点的名字，因此普通起手式和向右拨起手式都能
+        正确配对：
+        「0.49-起手式新」→「0.49-起手式新终点」；
+        「0.49-左-起手式」→「0.49-左-终点」。
         """
         pose = self._current_pose or {}
         name = str(pose.get("name") or "").strip()
         if not name:
             raise FlowError(ErrorCode.EXEC_FAILED,
                             f"{tag} 没有当前起手式，配不出终点路点名")
-        self._interp_to_waypoint(f"{name}终点", tag)
+        endpoint_name = str(pose.get("endpoint_name") or f"{name}终点")
+        self._interp_to_waypoint(endpoint_name, tag)
 
     def _interp_to_waypoint(self, wp_name: str, tag: str,
                             only_if_beyond_rad: float = 0.0,
@@ -986,28 +989,37 @@ class SwitchFlow:
                 "direction": self.flip_direction,
                 "source": "console"}
 
-    # 只认新起手式序列：「0.49-起手式新」，前缀数字是该档的录制距离。
+    # 向左拨使用原「0.49-起手式新」；向右拨使用「0.49-左-起手式」。
+    # 前缀数字是该档的录制距离。
     NEW_POSE_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)-起手式新\s*$")
+    LEFT_POSE_PATTERN = re.compile(
+        r"^\s*(\d+(?:\.\d+)?)-左-起手式\s*$"
+    )
     # 选档 = 实测距离 - 0.03 m（手臂前伸量按比柜面近 3cm 的档位录制）。
     POSE_MARGIN_M = 0.03
 
     def choose_opening_pose(self, distance_m: float) -> dict:
         """5️⃣ 按距离选起手式（已定规则，自动选，不问确认台）。
 
-        只认「X.XX-起手式新」序列，选档 = 实测距离 - 0.03 m 向下取最近档：
-        0.52 m → 「0.49-起手式新」。距离在最低档~最低档+0.03 m 之间
-        （现为 0.46~0.49 m）统一用最低档「0.46-起手式新」；比最低档还近
+        向左拨只认「X.XX-起手式新」，向右拨只认「X.XX-左-起手式」。
+        两组都按实测距离 - 0.03 m 向下取最近档；比该组最低档还近时
         → POSE_UNAVAILABLE。
         """
         seqs = (self.client.sequences().get("sequences") or [])
+        rightward = self.flip_direction == "ltr"
+        pattern = self.LEFT_POSE_PATTERN if rightward else self.NEW_POSE_PATTERN
+        family = "左-起手式" if rightward else "起手式新"
         poses: list[tuple[float, dict]] = []
         for s in seqs:
-            m = self.NEW_POSE_PATTERN.match(str(s.get("name") or ""))
+            m = pattern.match(str(s.get("name") or ""))
             if m:
                 poses.append((float(m.group(1)), s))
         if not poses:
-            raise FlowError(ErrorCode.POSE_UNAVAILABLE,
-                            "没有任何新起手式序列（如「0.46-起手式新」）")
+            example = "0.46-左-起手式" if rightward else "0.46-起手式新"
+            raise FlowError(
+                ErrorCode.POSE_UNAVAILABLE,
+                f"没有任何「{family}」序列（如「{example}」）",
+            )
         floor_thr = min(thr for thr, _ in poses)
         if distance_m < floor_thr:
             raise FlowError(
@@ -1020,8 +1032,17 @@ class SwitchFlow:
         if not usable:
             usable = [(thr, s) for thr, s in poses if thr == floor_thr]
         thr, seq = max(usable, key=lambda p: p[0])
+        endpoint_name = ""
+        waypoints = seq.get("waypoints") or []
+        if waypoints:
+            endpoint_name = re.sub(
+                r"_\d{8}_\d{6}\.json$",
+                "",
+                str(waypoints[-1]),
+            )
         return {"name": seq["name"], "file": seq["file"],
-                "manual": False, "min_distance_m": thr}
+                "manual": False, "min_distance_m": thr,
+                "endpoint_name": endpoint_name}
 
     # 所有起手式序列都从这个已录路点起录。起点漂移 >0.5 rad 时服务端会
     # 重新规划（轨迹未经人工验证，还会覆盖文件里的录制），所以运行序列前
