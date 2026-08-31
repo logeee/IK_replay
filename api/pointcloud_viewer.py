@@ -38,6 +38,9 @@ from .pointcloud_core import (
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = ROOT / "web"
+SCENE_MISMATCH_TRAINING_DIR = (
+    ROOT / "data" / "training_samples" / "scene_mismatch"
+)
 
 app = FastAPI(title="pointcloud-viewer")
 app.mount("/web", StaticFiles(directory=WEB_DIR), name="pointcloud-web")
@@ -488,6 +491,62 @@ def capture_metadata(capture_id: str):
             status_code=404,
         )
     return capture_value.metadata
+
+
+@app.post("/api/pointcloud/training-sample/scene-mismatch/{capture_id}")
+def save_scene_mismatch_training_sample(capture_id: str, body: dict | None = None):
+    """保存类别与任务预期不一致的原始图及标签，供后续补充训练。"""
+    capture_value = _capture_by_id(capture_id)
+    if capture_value is None:
+        return JSONResponse(
+            {"ok": False, "error": "快照不存在或已被新快照替换"},
+            status_code=404,
+        )
+    body = body or {}
+    observed = str(body.get("observed_scene") or "").strip()
+    expected = str(body.get("expected_scene") or "").strip()
+    if not observed or not expected:
+        return JSONResponse(
+            {"ok": False, "error": "缺少 observed_scene 或 expected_scene"},
+            status_code=422,
+        )
+
+    try:
+        SCENE_MISMATCH_TRAINING_DIR.mkdir(parents=True, exist_ok=True)
+        stem = f"{time.strftime('%Y%m%d_%H%M%S')}_{capture_id[:8]}"
+        image_path = SCENE_MISMATCH_TRAINING_DIR / f"{stem}.jpg"
+        label_path = SCENE_MISMATCH_TRAINING_DIR / f"{stem}.json"
+        image_path.write_bytes(capture_value.jpeg)
+        label = {
+            "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "reason": "scene_mismatch",
+            "capture_id": capture_id,
+            "observed_scene": observed,
+            "expected_scene": expected,
+            "site": body.get("site"),
+            "flip_kind": body.get("flip_kind"),
+            "direction": body.get("direction"),
+            "attempt": body.get("attempt"),
+            "image_file": image_path.name,
+            "model": capture_value.metadata.get("model"),
+            "boxes": capture_value.boxes,
+            "auto_target": capture_value.auto_target,
+            "capture": capture_value.metadata,
+        }
+        label_path.write_text(
+            json.dumps(label, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        return JSONResponse(
+            {"ok": False, "error": f"训练样本保存失败: {exc}"},
+            status_code=500,
+        )
+    return {
+        "ok": True,
+        "image": str(image_path),
+        "label": str(label_path),
+    }
 
 
 @app.get("/api/pointcloud/data/{capture_id}")

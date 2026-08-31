@@ -33,6 +33,14 @@ class PointcloudClient:
         return self._post(f"/api/pointcloud/auto-target/{capture_id}",
                           None, 60.0)
 
+    def save_scene_mismatch(self, capture_id: str, body: dict) -> dict:
+        """保存识别类别与任务预期不一致的训练样本。"""
+        return self._post(
+            f"/api/pointcloud/training-sample/scene-mismatch/{capture_id}",
+            body,
+            15.0,
+        )
+
     def confirm(self, capture_id: str, body: dict) -> dict:
         """把相机系目标交 18001 确认，返回与 /pick 同构的 p_root/plane。"""
         return self._post(f"/api/pointcloud/confirm/{capture_id}", body, 30.0)

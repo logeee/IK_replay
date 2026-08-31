@@ -150,6 +150,9 @@ class FlipIntentTests(unittest.TestCase):
         with mock.patch("api.flow.time.sleep"):
             flow._wait_robot_stable()
 
+        self.assertEqual(flow.WAIST_STABLE_MAX_RANGE_DEG, 0.03)
+        self.assertEqual(flow.IMU_STABLE_MAX_RANGE_DEG, 0.03)
+        self.assertEqual(flow.WAIST_STABLE_TIMEOUT_S, 20.0)
         self.assertGreaterEqual(client.torso.call_count, 2)
         client.perpendicular.assert_not_called()
         client.joints.assert_not_called()
@@ -161,8 +164,8 @@ class FlipIntentTests(unittest.TestCase):
         def torso():
             nonlocal sample_count
             sample_count += 1
-            # 0.001 rad ≈ 0.057°：低于旧的 0.2°，但应被新的 0.05° 阈值拦住。
-            imu_pitch = 0.001 if sample_count <= 7 and sample_count % 2 else 0.0
+            # 0.0006 rad ≈ 0.034°：应被新的 0.03° 阈值拦住。
+            imu_pitch = 0.0006 if sample_count <= 7 and sample_count % 2 else 0.0
             return {
                 "ok": True,
                 "waist_names": ["waist_yaw", "waist_roll", "waist_pitch"],
@@ -191,6 +194,47 @@ class FlipIntentTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["waist_rad"], torso["waist_rad"])
         self.assertEqual(result["imu_rpy"], torso["imu_rpy"])
+
+    def test_scene_mismatch_is_archived_for_future_training(self):
+        pointcloud = mock.Mock()
+        pointcloud.capture.return_value = {
+            "ok": True,
+            "capture_id": "capture-mismatch",
+        }
+        pointcloud.auto_target.return_value = {
+            "ok": True,
+            "matched_detection_name": "就地",
+            "target_point_slot": 1,
+            "panel_center_wall_m": [0.0, 0.0, 0.0],
+            "target_wall_m": [0.01, 0.02, 0.03],
+        }
+        pointcloud.save_scene_mismatch.return_value = {
+            "ok": True,
+            "image": "data/training_samples/scene_mismatch/sample.jpg",
+        }
+        flow = SwitchFlow(
+            client=mock.Mock(),
+            pointcloud=pointcloud,
+            site="factory",
+            flip_kind="remote_to_close",
+        )
+        flow._log = mock.Mock()
+
+        picked, error = flow._pointcloud_pick_once(1)
+
+        self.assertIsNone(picked)
+        self.assertIn("「就地」", error)
+        pointcloud.save_scene_mismatch.assert_called_once_with(
+            "capture-mismatch",
+            {
+                "observed_scene": "就地",
+                "expected_scene": "远方",
+                "site": "factory",
+                "flip_kind": "remote_to_close",
+                "direction": "rtl",
+                "attempt": 1,
+            },
+        )
 
     def test_cabinet_axis_direction_mirrors_x_but_keeps_downward_tilt(self):
         plane = {

@@ -322,6 +322,11 @@ class PointCloudBackendTest(unittest.TestCase):
         self._pick_dir = tempfile.TemporaryDirectory()
         self.old_pick_history = pointcloud_viewer.PICK_HISTORY_DIR
         pointcloud_viewer.PICK_HISTORY_DIR = Path(self._pick_dir.name)
+        self._training_dir = tempfile.TemporaryDirectory()
+        self.old_training_dir = pointcloud_viewer.SCENE_MISMATCH_TRAINING_DIR
+        pointcloud_viewer.SCENE_MISMATCH_TRAINING_DIR = Path(
+            self._training_dir.name
+        )
 
     def tearDown(self):
         pointcloud_viewer._model = self.old_model
@@ -330,7 +335,9 @@ class PointCloudBackendTest(unittest.TestCase):
         pointcloud_viewer._latest = self.old_latest
         pointcloud_viewer._capture_progress.clear()
         pointcloud_viewer.PICK_HISTORY_DIR = self.old_pick_history
+        pointcloud_viewer.SCENE_MISMATCH_TRAINING_DIR = self.old_training_dir
         self._pick_dir.cleanup()
+        self._training_dir.cleanup()
 
     def test_capture_builds_downloadable_binary_from_one_snapshot(self):
         bgr = np.full((2, 2, 3), [10, 20, 30], dtype=np.uint8)
@@ -408,6 +415,43 @@ class PointCloudBackendTest(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         image_response = pointcloud_viewer.capture_image("missing")
         self.assertEqual(image_response.status_code, 404)
+
+    def test_scene_mismatch_archives_raw_image_and_training_label(self):
+        bgr = np.full((2, 2, 3), [10, 20, 30], dtype=np.uint8)
+        ok, jpeg = cv2.imencode(".jpg", bgr)
+        self.assertTrue(ok)
+        snapshot = {
+            "jpeg": jpeg.tobytes(),
+            "depth_mm": np.full((2, 2), 1000, dtype=np.float32),
+            "intrinsics": (100.0, 100.0, 0.5, 0.5),
+            "metadata": {"frame_id": "mismatch-frame"},
+            "T_cam2root": None,
+        }
+        with mock.patch.object(
+            pointcloud_viewer,
+            "_fetch_rgbd_snapshot",
+            return_value=snapshot,
+        ):
+            capture = pointcloud_viewer.capture({"stride": 1})
+
+        saved = pointcloud_viewer.save_scene_mismatch_training_sample(
+            capture["capture_id"],
+            {
+                "observed_scene": "就地",
+                "expected_scene": "远方",
+                "site": "factory",
+                "attempt": 1,
+            },
+        )
+
+        self.assertTrue(saved["ok"])
+        self.assertEqual(Path(saved["image"]).read_bytes(), jpeg.tobytes())
+        label = json.loads(Path(saved["label"]).read_text(encoding="utf-8"))
+        self.assertEqual(label["reason"], "scene_mismatch")
+        self.assertEqual(label["observed_scene"], "就地")
+        self.assertEqual(label["expected_scene"], "远方")
+        self.assertEqual(label["capture_id"], capture["capture_id"])
+        self.assertEqual(label["capture"]["source"]["frame_id"], "mismatch-frame")
 
     def test_rgb_click_and_confirm_use_the_frozen_capture(self):
         bgr = np.full((2, 2, 3), [10, 20, 30], dtype=np.uint8)

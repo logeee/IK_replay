@@ -1096,9 +1096,9 @@ class SwitchFlow:
     # 取点前只看机器人自身腰关节和IMU，不用柜面法向或距离参与稳定判定。
     WAIST_STABLE_WINDOW_S = 1.5
     WAIST_STABLE_SAMPLE_GAP_S = 0.25
-    WAIST_STABLE_MAX_RANGE_DEG = 0.2
-    IMU_STABLE_MAX_RANGE_DEG = 0.05
-    WAIST_STABLE_TIMEOUT_S = 10.0
+    WAIST_STABLE_MAX_RANGE_DEG = 0.03
+    IMU_STABLE_MAX_RANGE_DEG = 0.03
+    WAIST_STABLE_TIMEOUT_S = 20.0
 
     def _wait_robot_stable(self) -> None:
         """腰关节和IMU同时稳定后才允许冻结 RGB-D。"""
@@ -1290,6 +1290,32 @@ class SwitchFlow:
                   f"[{pc[0]:+.3f}, {pc[1]:+.3f}, {pc[2]:+.3f}] m，"
                   f"模型偏移后目的点 [{tw[0]:+.3f}, {tw[1]:+.3f}, {tw[2]:+.3f}] m")
         if name != self.flip_from:
+            try:
+                archived = self.pointcloud.save_scene_mismatch(
+                    cap["capture_id"],
+                    {
+                        "observed_scene": name or "未知",
+                        "expected_scene": self.flip_from,
+                        "site": self.site,
+                        "flip_kind": self.flip_kind,
+                        "direction": self.flip_direction,
+                        "attempt": attempt,
+                    },
+                )
+                if archived.get("ok"):
+                    self._log(
+                        f"类别不一致图像已保存为训练样本："
+                        f"{archived.get('image')}"
+                    )
+                else:
+                    self._log(
+                        f"⚠ 类别不一致训练样本保存失败（不影响重试）："
+                        f"{archived.get('error')}"
+                    )
+            except Exception as exc:
+                self._log(
+                    f"⚠ 类别不一致训练样本保存失败（不影响重试）：{exc}"
+                )
             return (
                 None,
                 f"面板类别「{name or '未知'}」与任务拨前状态"
