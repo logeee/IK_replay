@@ -2,7 +2,7 @@
 
 已部署的步骤（测平面/测距、腰部对齐、pick→规划→执行）直接走 reach_server；
 起手式按距离和物理拨动方向自动选：向左拨使用「X.XX-起手式新」，向右拨
-使用「X.XX-左-起手式」；选档 = 实测距离-0.03m 向下取最近档。重试轮插值
+使用「X.XX-左-起手式」；选档 = 实测距离-0.03m 后四舍五入到最近档。重试轮插值
 回所选序列配套的终点路点；收尾 =
 插值到「起手点测试」路点后释放手臂——成功和失败（含重试耗尽）都走这个
 回落，避免手臂停在柜面前被权重渐出交还本体。
@@ -995,14 +995,16 @@ class SwitchFlow:
     LEFT_POSE_PATTERN = re.compile(
         r"^\s*(\d+(?:\.\d+)?)-左-起手式\s*$"
     )
-    # 选档 = 实测距离 - 0.03 m（手臂前伸量按比柜面近 3cm 的档位录制）。
+    # 选档基准 = 实测距离 - 0.03 m（手臂前伸量按比柜面近 3cm 的档位录制），
+    # 再选数值最接近的已有档位；恰好位于两档中间时取较高档。
     POSE_MARGIN_M = 0.03
 
     def choose_opening_pose(self, distance_m: float) -> dict:
         """5️⃣ 按距离选起手式（已定规则，自动选，不问确认台）。
 
         向左拨只认「X.XX-起手式新」，向右拨只认「X.XX-左-起手式」。
-        两组都按实测距离 - 0.03 m 向下取最近档；比该组最低档还近时
+        两组都按实测距离 - 0.03 m 四舍五入到最近已有档位；正好位于两档
+        中间时取较高档。比该组最低档还近时
         → POSE_UNAVAILABLE。
         """
         seqs = (self.client.sequences().get("sequences") or [])
@@ -1026,12 +1028,20 @@ class SwitchFlow:
                 ErrorCode.POSE_UNAVAILABLE,
                 f"距柜面 {distance_m:.3f} m，小于最低起手式档位 {floor_thr} m"
                 f"——距离太近，无可用起手式")
-        # 1e-9 抵消浮点误差，保证 0.49 - 0.03 能命中 0.46 档
-        usable = [(thr, s) for thr, s in poses
-                  if thr <= distance_m - self.POSE_MARGIN_M + 1e-9]
-        if not usable:
-            usable = [(thr, s) for thr, s in poses if thr == floor_thr]
-        thr, seq = max(usable, key=lambda p: p[0])
+        target_thr = distance_m - self.POSE_MARGIN_M
+        # 距离最近即四舍五入；第二关键字 -thr 让两档等距时选择较高档。
+        # 最低档覆盖“实际距离已到最低档、但减去 3cm 后略低于最低档”的区间。
+        if target_thr < floor_thr:
+            candidates = [(thr, s) for thr, s in poses if thr == floor_thr]
+        else:
+            # 微小正偏置消除 0.455 这类二进制浮点表示误差，落实“五入”。
+            rounding_target = target_thr + 1e-9
+            nearest = min(
+                poses,
+                key=lambda item: (abs(item[0] - rounding_target), -item[0]),
+            )[0]
+            candidates = [(thr, s) for thr, s in poses if thr == nearest]
+        thr, seq = candidates[0]
         endpoint_name = ""
         waypoints = seq.get("waypoints") or []
         if waypoints:

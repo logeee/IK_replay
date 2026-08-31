@@ -89,6 +89,33 @@ class FlipIntentTests(unittest.TestCase):
         self.assertEqual(left_pose["name"], "0.50-起手式新")
         self.assertEqual(left_pose["endpoint_name"], "0.50-起手式新终点")
 
+    def test_opening_pose_distance_is_rounded_to_nearest_higher_tie(self):
+        client = mock.Mock()
+        client.sequences.return_value = {
+            "sequences": [
+                {
+                    "name": f"{distance:.2f}-左-起手式",
+                    "file": f"{distance:.2f}-左-起手式_20260826_144000.json",
+                    "waypoints": [],
+                }
+                for distance in (0.45, 0.46)
+            ],
+        }
+        flow = SwitchFlow(
+            client=client,
+            site="factory",
+            flip_kind="close_to_remote",
+        )
+
+        self.assertEqual(
+            flow.choose_opening_pose(0.486)["name"],
+            "0.46-左-起手式",
+        )
+        self.assertEqual(
+            flow.choose_opening_pose(0.485)["name"],
+            "0.46-左-起手式",
+        )
+
     def test_retry_uses_selected_left_pose_endpoint(self):
         flow = SwitchFlow(
             client=mock.Mock(),
