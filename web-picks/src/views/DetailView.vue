@@ -229,7 +229,7 @@ function fmtSignedMetersAsMm(v?: number | null): string {
             </template>
           </dl>
         </template>
-        <div v-else class="key-missing">旧记录未保存距柜面和起手式</div>
+        <div v-else class="key-missing">本次手动流程未保存距柜面和起手式</div>
       </div>
 
       <div class="card panel">
