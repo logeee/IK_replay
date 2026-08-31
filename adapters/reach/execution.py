@@ -115,6 +115,49 @@ def reach_joints():
     return {"ok": True, "named_joints": dict(zip(state.joint_names, q))}
 
 
+@router.get("/torso")
+def reach_torso():
+    """当前腰关节和IMU姿态；供流程判断机器人是否停止自平衡摆动。"""
+    try:
+        torso = _read_torso()
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+    if not torso:
+        return JSONResponse(
+            {"ok": False, "error": "没有腰部状态源"},
+            status_code=503,
+        )
+    raw_names = torso.get("waist_names")
+    raw_positions = torso.get("waist_rad")
+    raw_imu_rpy = torso.get("imu_rpy")
+    names = list(raw_names) if raw_names is not None else []
+    positions = (
+        [float(value) for value in raw_positions]
+        if raw_positions is not None else []
+    )
+    imu_rpy = (
+        [float(value) for value in raw_imu_rpy]
+        if raw_imu_rpy is not None else []
+    )
+    if not names or len(names) != len(positions):
+        return JSONResponse(
+            {"ok": False, "error": "腰关节状态不完整"},
+            status_code=503,
+        )
+    if len(imu_rpy) != 3:
+        return JSONResponse(
+            {"ok": False, "error": "IMU姿态状态不完整"},
+            status_code=503,
+        )
+    return {
+        "ok": True,
+        "waist_names": names,
+        "waist_rad": positions,
+        "imu_rpy": imu_rpy,
+        "captured_monotonic": time.monotonic(),
+    }
+
+
 # --------------- 接管 / 释放手臂（由前端操作） ---------------
 
 

@@ -124,6 +124,10 @@ class ReachClient:
     def joints(self) -> dict:
         return self.get("/joints")
 
+    def torso(self) -> dict:
+        """只读腰关节位置和IMU姿态，不触发柜面拟合或相机采集。"""
+        return self.get("/torso")
+
     def motors(self, ids: str | None = None) -> dict:
         """全身电机角度（只读）。缺省 = 左右腿俯仰/偏航 + 腰偏航 5 个。"""
         return self.get("/motors", **({"ids": ids} if ids else {}))

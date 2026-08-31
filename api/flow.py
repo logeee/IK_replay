@@ -1093,7 +1093,110 @@ class SwitchFlow:
     POINT_AU = 1.230   # u = x1 + au×框宽（>1 即框右缘外侧，手柄位置）
     POINT_AV = 0.543   # v = y1 + av×框高
 
-    DETECT_SETTLE_S = 2.0   # 到位/对齐后腰部还在自平衡，等它稳住再取点
+    # 取点前只看机器人自身腰关节和IMU，不用柜面法向或距离参与稳定判定。
+    WAIST_STABLE_WINDOW_S = 1.5
+    WAIST_STABLE_SAMPLE_GAP_S = 0.25
+    WAIST_STABLE_MAX_RANGE_DEG = 0.2
+    IMU_STABLE_MAX_RANGE_DEG = 0.05
+    WAIST_STABLE_TIMEOUT_S = 10.0
+
+    def _wait_robot_stable(self) -> None:
+        """腰关节和IMU同时稳定后才允许冻结 RGB-D。"""
+        required = max(
+            2,
+            math.ceil(
+                self.WAIST_STABLE_WINDOW_S / self.WAIST_STABLE_SAMPLE_GAP_S
+            ) + 1,
+        )
+        waist_samples: deque[list[float]] = deque(maxlen=required)
+        imu_samples: deque[list[float]] = deque(maxlen=required)
+        waist_names: tuple[str, ...] = ()
+        deadline = time.monotonic() + self.WAIST_STABLE_TIMEOUT_S
+        last_waist_range_deg: float | None = None
+        last_imu_range_deg: float | None = None
+        self._log(
+            f"等待机器人稳定：连续 {self.WAIST_STABLE_WINDOW_S:g}s "
+            f"腰关节摆幅 ≤{self.WAIST_STABLE_MAX_RANGE_DEG:g}°，"
+            f"IMU摆幅 ≤{self.IMU_STABLE_MAX_RANGE_DEG:g}°"
+        )
+        while True:
+            state = self.client.torso()
+            if not state.get("ok"):
+                raise FlowError(
+                    ErrorCode.PRECONDITION,
+                    f"无法读取腰关节/IMU稳定状态: {state.get('error')}",
+                )
+            names = tuple(str(name) for name in state.get("waist_names") or [])
+            positions = [
+                float(value) for value in (state.get("waist_rad") or [])
+            ]
+            imu_rpy = [float(value) for value in (state.get("imu_rpy") or [])]
+            if not names or len(names) != len(positions):
+                raise FlowError(
+                    ErrorCode.PRECONDITION,
+                    "腰关节稳定状态不完整",
+                )
+            if len(imu_rpy) != 3:
+                raise FlowError(
+                    ErrorCode.PRECONDITION,
+                    "IMU稳定状态不完整",
+                )
+            if not all(math.isfinite(value) for value in positions + imu_rpy):
+                raise FlowError(
+                    ErrorCode.PRECONDITION,
+                    "腰关节/IMU稳定状态包含非法数值",
+                )
+            if names != waist_names:
+                waist_names = names
+                waist_samples.clear()
+                imu_samples.clear()
+            waist_samples.append(positions)
+            imu_samples.append(imu_rpy)
+            if len(waist_samples) == required:
+                waist_ranges_deg = [
+                    math.degrees(max(values) - min(values))
+                    for values in zip(*waist_samples)
+                ]
+                # IMU角度可能跨过 ±π；相对窗口首帧展开后再计算摆幅。
+                imu_ranges_deg = []
+                for values in zip(*imu_samples):
+                    reference = values[0]
+                    unwrapped = [
+                        reference + math.remainder(value - reference, 2 * math.pi)
+                        for value in values
+                    ]
+                    imu_ranges_deg.append(
+                        math.degrees(max(unwrapped) - min(unwrapped))
+                    )
+                last_waist_range_deg = max(waist_ranges_deg)
+                last_imu_range_deg = max(imu_ranges_deg)
+                if (
+                    last_waist_range_deg <= self.WAIST_STABLE_MAX_RANGE_DEG
+                    and last_imu_range_deg <= self.IMU_STABLE_MAX_RANGE_DEG
+                ):
+                    self._log(
+                        f"机器人已稳定（{self.WAIST_STABLE_WINDOW_S:g}s："
+                        f"腰关节最大摆幅 {last_waist_range_deg:.3f}°，"
+                        f"IMU最大摆幅 {last_imu_range_deg:.3f}°），开始取点"
+                    )
+                    return
+            if time.monotonic() >= deadline:
+                detail = ""
+                if (
+                    last_waist_range_deg is not None
+                    and last_imu_range_deg is not None
+                ):
+                    detail = (
+                        f"，最近窗口腰关节/IMU最大摆幅 "
+                        f"{last_waist_range_deg:.3f}°/"
+                        f"{last_imu_range_deg:.3f}°"
+                    )
+                raise FlowError(
+                    ErrorCode.ALIGN_FAILED,
+                    f"等待机器人稳定超过 {self.WAIST_STABLE_TIMEOUT_S:g}s"
+                    f"{detail}",
+                )
+            time.sleep(self.WAIST_STABLE_SAMPLE_GAP_S)
 
     def detect_points(self) -> list[dict]:
         """7️⃣ 开关取点，三条路径按优先级：
@@ -1110,12 +1213,10 @@ class SwitchFlow:
         退出（手臂由失败收尾受控回落），不转人工干等。
         """
         if self.pointcloud is not None:
-            self._log(f"等 {self.DETECT_SETTLE_S:.0f}s 让躯干自平衡稳定后取点")
-            time.sleep(self.DETECT_SETTLE_S)
+            self._wait_robot_stable()
             return self._detect_points_pointcloud()
         if self.yolo is not None:
-            self._log(f"等 {self.DETECT_SETTLE_S:.0f}s 让躯干自平衡稳定后取点")
-            time.sleep(self.DETECT_SETTLE_S)
+            self._wait_robot_stable()
             for i in range(1, self.YOLO_ATTEMPTS + 1):
                 res = self.yolo.infer()
                 boxes = ([b for b in res.get("boxes") or []

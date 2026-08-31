@@ -4,6 +4,7 @@ import math
 import unittest
 from unittest import mock
 
+from adapters.reach import execution as reach_execution
 from api import dispatch
 from api.flow import SwitchFlow, resolve_flip_intent
 
@@ -134,6 +135,62 @@ class FlipIntentTests(unittest.TestCase):
             "0.50-左-终点",
             "重试回位",
         )
+
+    def test_pick_stability_uses_only_waist_and_imu_not_wall(self):
+        client = mock.Mock()
+        client.torso.return_value = {
+            "ok": True,
+            "waist_names": ["waist_yaw", "waist_roll", "waist_pitch"],
+            "waist_rad": [0.1, -0.05, 0.02],
+            "imu_rpy": [0.01, -0.02, 0.03],
+        }
+        flow = SwitchFlow(client=client)
+        flow._log = mock.Mock()
+
+        with mock.patch("api.flow.time.sleep"):
+            flow._wait_robot_stable()
+
+        self.assertGreaterEqual(client.torso.call_count, 2)
+        client.perpendicular.assert_not_called()
+        client.joints.assert_not_called()
+
+    def test_stable_waist_does_not_pass_while_imu_is_moving(self):
+        client = mock.Mock()
+        sample_count = 0
+
+        def torso():
+            nonlocal sample_count
+            sample_count += 1
+            # 0.001 rad ≈ 0.057°：低于旧的 0.2°，但应被新的 0.05° 阈值拦住。
+            imu_pitch = 0.001 if sample_count <= 7 and sample_count % 2 else 0.0
+            return {
+                "ok": True,
+                "waist_names": ["waist_yaw", "waist_roll", "waist_pitch"],
+                "waist_rad": [0.1, -0.05, 0.02],
+                "imu_rpy": [0.0, imu_pitch, 0.0],
+            }
+
+        client.torso.side_effect = torso
+        flow = SwitchFlow(client=client)
+        flow._log = mock.Mock()
+
+        with mock.patch("api.flow.time.sleep"):
+            flow._wait_robot_stable()
+
+        self.assertGreater(client.torso.call_count, 7)
+
+    def test_torso_endpoint_exposes_waist_and_imu_together(self):
+        torso = {
+            "waist_names": ["waist_yaw", "waist_roll", "waist_pitch"],
+            "waist_rad": [0.1, 0.2, 0.3],
+            "imu_rpy": [0.01, 0.02, 0.03],
+        }
+        with mock.patch.object(reach_execution, "_read_torso", return_value=torso):
+            result = reach_execution.reach_torso()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["waist_rad"], torso["waist_rad"])
+        self.assertEqual(result["imu_rpy"], torso["imu_rpy"])
 
     def test_cabinet_axis_direction_mirrors_x_but_keeps_downward_tilt(self):
         plane = {
