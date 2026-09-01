@@ -97,6 +97,15 @@ from fastapi.responses import FileResponse, JSONResponse
 from copy import deepcopy
 
 from core.alignment_config import load_alignment_config
+from core.capability_registry import (
+    ARM_LABELS,
+    IMPLEMENTED_METHODS,
+    calibration_info,
+    capability_for,
+    ensure_registry,
+    find_hand,
+    load_registry,
+)
 from core.dispatch_defaults import (
     DEFAULT_DISPATCH_DEFAULTS,
     DEFAULT_LIFT_MM,
@@ -111,6 +120,7 @@ from .client import ReachClient
 from .console_client import ConsoleClient
 from .flow import (
     FLIP_KIND_STATES,
+    SITE_RTL_KIND,
     ErrorCode,
     FlowError,
     SwitchFlow,
@@ -170,6 +180,62 @@ def _count_finished_task_locked(task: dict) -> None:
     task["stats_counted"] = True
 
 
+# ---------------------------------------------------- 能力注册表（18000 配置）
+
+# 四级能力注册表在进程启动时读一次（改配置后重启 17001 生效，不热切换）。
+# 读失败时置 None → 按旧的 SITE_SUPPORTED_KINDS / --calib 行为走，不拦任务。
+_capability_registry_cache: dict[str, Any] | None = None
+_capability_registry_loaded = False
+
+
+def _capability_registry() -> dict[str, Any] | None:
+    global _capability_registry_cache, _capability_registry_loaded
+    if not _capability_registry_loaded:
+        _capability_registry_loaded = True
+        try:
+            # 只读加载（文件不存在返回内存种子）；落盘种子由 main() 的
+            # ensure_registry 负责，避免测试/工具导入时产生写文件副作用。
+            _capability_registry_cache = load_registry()
+        except Exception as exc:
+            print(f"[dispatch] 能力注册表读取失败，按旧行为走: {exc}")
+            _capability_registry_cache = None
+    return _capability_registry_cache
+
+
+def _active_arm_context() -> dict[str, Any] | None:
+    """激活组合（臂 + 手型号）对应的执行链与标定；注册表不可用时 None。"""
+    registry = _capability_registry()
+    if registry is None:
+        return None
+    active = registry.get("active")
+    if not active:
+        return None
+    hand = find_hand(registry, active["hand_id"]) or {}
+    calib = calibration_info(registry, active["arm"], active["hand_id"])
+    return {
+        "arm": active["arm"],
+        "hand_id": active["hand_id"],
+        "hand_name": hand.get("name") or active["hand_id"],
+        "tool_out_mm": hand.get("tool_out_mm"),
+        "calib_status": calib["status"],
+        "calib_path": (str(ROOT / calib["path"])
+                       if calib["status"] == "ready" else None),
+    }
+
+
+def _capability_for_kind(site: str, kind: str) -> dict[str, Any] | None:
+    """激活组合下，某现场 + 任务方向对应的已启用能力条目。"""
+    registry = _capability_registry()
+    if registry is None:
+        return None
+    active = registry.get("active")
+    if not active or site not in SITE_RTL_KIND:
+        return None
+    direction = "rtl" if kind == SITE_RTL_KIND[site] else "ltr"
+    return capability_for(registry, active["arm"], active["hand_id"],
+                          direction, site)
+
+
 # ------------------------------------------------------------ reach 生命周期
 
 
@@ -182,10 +248,32 @@ def _reach_alive(timeout_s: float = 2.0) -> bool:
 
 
 def _spawn_reach(task: dict) -> None:
-    """子进程拉起 reach_server，输出落到日志文件。"""
+    """子进程拉起 reach_server，输出落到日志文件。
+
+    执行链 / 手眼标定 / TCP 外移优先取能力注册表的激活组合（18000 配置）；
+    注册表不可用或标定待补时回退命令行参数并在任务日志里说明。
+    """
     log_dir = ROOT / "logs" / "reach"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"dispatch_reach_{datetime.now():%Y%m%d_%H%M%S}.log"
+    chain = "right_arm"
+    calib = _args.calib
+    tool_out_mm = _args.tool_out_mm
+    ctx = _active_arm_context()
+    if ctx is not None:
+        chain = ctx["arm"]
+        if ctx["tool_out_mm"] is not None:
+            tool_out_mm = ctx["tool_out_mm"]
+        if ctx["calib_path"]:
+            calib = ctx["calib_path"]
+            task["log"].append(
+                f"激活组合 {ARM_LABELS.get(chain, chain)}+{ctx['hand_name']}："
+                f"标定 {calib}")
+        else:
+            task["log"].append(
+                f"⚠ 激活组合 {ARM_LABELS.get(chain, chain)}+{ctx['hand_name']} "
+                f"的标定{'待补' if ctx['calib_status'] == 'pending' else '未登记'}"
+                f"，回退命令行标定 {calib}")
     cmd = [
         sys.executable,
         str(ROOT / "reach_server.py"),
@@ -196,8 +284,9 @@ def _spawn_reach(task: dict) -> None:
         "--camera-name", _args.camera_name,
         "--camera-rgbd-calib", _args.camera_rgbd_calib,
         "--network-interface", _args.network_interface,
-        "--calib", _args.calib,
-        "--tool-out-mm", str(_args.tool_out_mm),
+        "--chain", chain,
+        "--calib", calib,
+        "--tool-out-mm", str(tool_out_mm),
         "--yolo-base", _args.yolo,
     ]
     if _args.camera_port is not None:
@@ -443,8 +532,28 @@ def _run_task(task: dict) -> None:
             f"{fine['accept_min_deg']:+.1f}°~{fine['accept_max_deg']:+.1f}°"
         )
 
+        # 能力注册表（18000 配置）：激活组合下该任务的实现方式参数与起手式正则
+        capability = _capability_for_kind(task.get("site") or "lab",
+                                          task.get("kind") or "")
+        capability_kwargs: dict[str, Any] = {}
+        if capability is not None:
+            params = capability["method_params"]
+            capability_kwargs = {
+                "sidestep_cm": params["sidestep_cm"],
+                "push_force_n": params["push_force_n"],
+                "push_hold_s": params["push_hold_s"],
+                "sidestep_down_deg": params["down_deg"],
+                "pose_pattern": capability["assets"]["pose_pattern"] or None,
+            }
+            task["log"].append(
+                f"能力配置「{capability['task']['name']}·"
+                f"{capability['method']}」({capability['id']})："
+                f"横移 {params['sidestep_cm']:g}cm、推力 "
+                f"{params['push_force_n']:g}N、保持 {params['push_hold_s']:g}s、"
+                f"下倾 {params['down_deg']:g}°")
         flow = SwitchFlow(client=ReachClient(_args.reach_base),
                           console=console, yolo=yolo,
+                          **capability_kwargs,
                           coarse_target_deg=coarse["target_deg"],
                           coarse_accept_min_deg=coarse["accept_min_deg"],
                           coarse_accept_max_deg=coarse["accept_max_deg"],
@@ -799,6 +908,8 @@ LANGUAGE_TASKS = {
 # 远方→就地向左拨，反向任务就地→远方向右拨。实验室柜的镜像动作仍未验收。
 SITES = ("lab", "factory")
 SITE_LABELS = {"lab": "实验室柜", "factory": "工厂柜（印刷相反）"}
+# 旧的硬编码支持表：仅在能力注册表不可用（读失败/未设激活组合）时兜底。
+# 正常路径由注册表的激活组合 + 已启用能力推导（种子内容与本表一致）。
 SITE_SUPPORTED_KINDS = {
     "lab": frozenset({"close_to_remote"}),
     "factory": frozenset({"close_to_remote", "remote_to_close"}),
@@ -806,7 +917,15 @@ SITE_SUPPORTED_KINDS = {
 
 
 def _kind_supported(site: str, kind: str) -> bool:
-    return kind in SITE_SUPPORTED_KINDS.get(site, ())
+    registry = _capability_registry()
+    if registry is None or not registry.get("active"):
+        return kind in SITE_SUPPORTED_KINDS.get(site, ())
+    cap = _capability_for_kind(site, kind)
+    return cap is not None and cap["method"] in IMPLEMENTED_METHODS
+
+
+def _supported_kinds(site: str) -> list[str]:
+    return [kind for kind in FLIP_KIND_STATES if _kind_supported(site, kind)]
 
 
 def _parse_language(text: str) -> str | None:
@@ -910,8 +1029,8 @@ def _unsupported_message(kind: str, site: str) -> str:
     pre, post = CHECK_KIND_STATES[kind]
     supported = "、".join(
         f"「{CHECK_KIND_STATES[item][0]} → {CHECK_KIND_STATES[item][1]}」"
-        for item in SITE_SUPPORTED_KINDS[site]
-    )
+        for item in _supported_kinds(site)
+    ) or "（无——激活组合下没有该柜已启用的能力）"
     return (f"「{pre} → {post}」在{SITE_LABELS[site]}上的镜像动作"
             f"尚未真机验证；该柜当前支持 {supported}")
 
@@ -1504,6 +1623,17 @@ def index():
 
 @app.get("/api/info")
 def service_info():
+    ctx = _active_arm_context()
+    capability = None
+    if ctx is not None:
+        capability = {
+            "arm": ctx["arm"],
+            "hand": ctx["hand_name"],
+            "calib_status": ctx["calib_status"],
+            "supported_kinds_by_site": {
+                site: _supported_kinds(site) for site in SITES
+            },
+        }
     return {"service": "flip-dispatch",
             "usage": {"check": 'POST /check/flip  body={"language": "..."}'
                                '（站位检查，同步，客户端超时建议 ≥300s）',
@@ -1513,7 +1643,8 @@ def service_info():
                       "arm_stop": "POST /arm/stop（中断流程→半刚度安全回位→释放）",
                       "estop": "POST /emergency/stop（任何状态：急停+释放手臂）"},
             "languages": ["Change the switch from close to remote",
-                          "Change the switch from remote to close"]}
+                          "Change the switch from remote to close"],
+            "capability": capability}
 
 
 def _lan_ip() -> str:
@@ -1573,6 +1704,17 @@ def main() -> None:
     _args.reach_base = _args.reach_base.rstrip("/")
 
     print(f"[dispatch] 调度服务已启动（常驻属正常）: http://{_lan_ip()}:{_args.port}/")
+    try:
+        ensure_registry()   # 首次运行落盘种子并尽力归档标定
+    except Exception as exc:
+        print(f"[dispatch] 能力注册表初始化失败: {exc}")
+    ctx = _active_arm_context()   # 启动时读一次能力注册表（重启生效）
+    if ctx is not None:
+        print(f"[dispatch] 能力激活组合: {ARM_LABELS.get(ctx['arm'], ctx['arm'])}"
+              f" + {ctx['hand_name']}（标定 {ctx['calib_status']}）"
+              f"；可接任务由 18000 注册表推导")
+    else:
+        print("[dispatch] 能力注册表不可用，按旧的硬编码支持表与 --calib 走")
     print(f"[dispatch] 外部触发: POST /task/flip （body 带 language）→ 轮询 GET /task/status")
     print(f"[dispatch] reach_server 按需拉起: {sys.executable} reach_server.py "
           f"--port {_args.reach_port} --camera-source zmq "

@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "active": {
+    "arm": "right_arm",
+    "hand_id": "yinshi-right-1"
+  },
+  "hands": [
+    {
+      "id": "yinshi-right-1",
+      "name": "因时-右-1",
+      "design_side": "right",
+      "tool_out_mm": 15.0,
+      "notes": ""
+    }
+  ],
+  "calibrations": [
+    {
+      "arm": "right_arm",
+      "hand_id": "yinshi-right-1",
+      "path": "config/hand_eye/right_arm__yinshi-right-1/handeye3d_result.json",
+      "source_path": "/home/robot/yx/project/calib/hand_eye_3D/handeye3d_data/biaoding/handeye3d_result.json",
+      "registered_at": "2026-09-01T15:46:43"
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "cap-rtl-flick",
+      "arm": "right_arm",
+      "hand_id": "yinshi-right-1",
+      "task": {
+        "name": "旋钮右到左",
+        "direction": "rtl",
+        "sites": [
+          "lab",
+          "factory"
+        ]
+      },
+      "method": "flick",
+      "method_params": {
+        "sidestep_cm": 10.0,
+        "push_force_n": 15.0,
+        "push_hold_s": 1.5,
+        "down_deg": 15.0
+      },
+      "assets": {
+        "pose_pattern": "^\\s*(\\d+(?:\\.\\d+)?)-起手式新\\s*$",
+        "endpoint_pattern": ""
+      },
+      "enabled": true,
+      "notes": "真机已验证"
+    },
+    {
+      "id": "cap-ltr-flick",
+      "arm": "right_arm",
+      "hand_id": "yinshi-right-1",
+      "task": {
+        "name": "旋钮左到右",
+        "direction": "ltr",
+        "sites": [
+          "factory"
+        ]
+      },
+      "method": "flick",
+      "method_params": {
+        "sidestep_cm": 10.0,
+        "push_force_n": 15.0,
+        "push_hold_s": 1.5,
+        "down_deg": 15.0
+      },
+      "assets": {
+        "pose_pattern": "^\\s*(\\d+(?:\\.\\d+)?)-左-起手式\\s*$",
+        "endpoint_pattern": ""
+      },
+      "enabled": true,
+      "notes": "真机已验证（工厂柜）"
+    }
+  ]
+}

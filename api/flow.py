@@ -149,6 +149,9 @@ class SwitchFlow:
                  reach_duration_s: float = 6.0,    # 主段（到位）时长
                  sidestep_cm: float = 10.0,        # 到位后沿柜面左移（负=右移）
                  push_force_n: float = 15.0,       # 横移时的前馈推力
+                 push_hold_s: float | None = None,  # 拨过后满推力保持秒数（None=执行端默认 1.5）
+                 sidestep_down_deg: float | None = None,  # 横移向下倾角（None=类默认 15°）
+                 pose_pattern: str | None = None,   # 起手式命名正则（能力注册表注入；None=按方向用内置正则）
                  lift_m: float = 0.02,             # 规划中段抬高 2cm（防刮底）
                  endpoint_speed_rad_s: float = 0.3,  # 插值回「终点」路点的关节限速
                  max_flip_rounds: int = 3,         # 拨动失败回到 5️⃣ 的最大轮数
@@ -211,6 +214,14 @@ class SwitchFlow:
         self.reach_duration_s = reach_duration_s
         self.sidestep_distance_cm = abs(float(sidestep_cm))
         self.push_force_n = push_force_n
+        self.push_hold_s = None if push_hold_s is None else float(push_hold_s)
+        self.sidestep_down_deg = (
+            self.WALL_SIDESTEP_DOWN_DEG if sidestep_down_deg is None
+            else float(sidestep_down_deg)
+        )
+        self.pose_pattern = (
+            re.compile(pose_pattern) if pose_pattern else None
+        )
         self.lift_m = lift_m
         self.endpoint_speed_rad_s = endpoint_speed_rad_s
         self.max_flip_rounds = max_flip_rounds
@@ -845,7 +856,7 @@ class SwitchFlow:
                     ErrorCode.IK_FAILED,
                     "柜面坐标系缺少 Z 轴，无法计算向下偏移",
                 )
-            t = math.radians(self.WALL_SIDESTEP_DOWN_DEG)
+            t = math.radians(self.sidestep_down_deg)
             c, s = math.cos(t), math.sin(t)
             # 柜面系 X 正=右、Z 正=上。正 sidestep 表示左：
             # 左右分量取 ∓X，两种方向都叠加 -Z 方向 15°。
@@ -892,6 +903,8 @@ class SwitchFlow:
             # 沿移动方向的前馈力：接触后位置环刚度不够，靠它出力拨动
             body["push"] = {"direction_root": direction,
                             "force_n": self.push_force_n}
+            if self.push_hold_s is not None:
+                body["push_hold_s"] = self.push_hold_s
         self._check_abort()
         res = self.client.execute(**body)
         if not res.get("ok"):
@@ -1077,13 +1090,22 @@ class SwitchFlow:
         """
         seqs = (self.client.sequences().get("sequences") or [])
         rightward = self.flip_direction == "ltr"
-        pattern = self.LEFT_POSE_PATTERN if rightward else self.NEW_POSE_PATTERN
-        family = "左-起手式" if rightward else "起手式新"
+        if self.pose_pattern is not None:
+            # 能力注册表注入的正则优先（第 1 捕获组 = 档位距离 m）
+            pattern = self.pose_pattern
+            family = f"注册表正则 {pattern.pattern}"
+        else:
+            pattern = (self.LEFT_POSE_PATTERN if rightward
+                       else self.NEW_POSE_PATTERN)
+            family = "左-起手式" if rightward else "起手式新"
         poses: list[tuple[float, dict]] = []
         for s in seqs:
             m = pattern.match(str(s.get("name") or ""))
             if m:
-                poses.append((float(m.group(1)), s))
+                try:
+                    poses.append((float(m.group(1)), s))
+                except (TypeError, ValueError):
+                    continue   # 注入正则的第 1 组不是数字 → 该序列不参与选档
         if not poses:
             example = "0.46-左-起手式" if rightward else "0.46-起手式新"
             raise FlowError(
