@@ -32,7 +32,7 @@ function submit() {
         <input
           v-model.trim="form.id"
           :readonly="!!hand"
-          placeholder="qiangnao-right-1"
+          placeholder="qiangnao-1-right"
         />
       </label>
       <label class="field">名称

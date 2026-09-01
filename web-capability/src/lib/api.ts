@@ -41,6 +41,9 @@ export interface Registry {
 
 export type CalibStatus = "ready" | "pending" | "missing";
 
+/** 残差字段：旧归档是数字，hand_eye_3D 输出是 {rms, ...} 统计块 */
+export type ResidualMm = number | { rms?: number; [key: string]: unknown };
+
 export interface CalibInfo {
   arm: string;
   hand_id: string;
@@ -49,8 +52,12 @@ export interface CalibInfo {
   source_path: string;
   registered_at: string;
   solved_at: string | null;
-  residual_mm: number | null;
+  residual_mm: ResidualMm | null;
   num_samples: number | null;
+  has_mount: boolean;
+  mount_solved_at: string | null;
+  mount_residual_mm: ResidualMm | null;
+  suggested_tool_out_mm: number | null;
 }
 
 export interface ParamSpec {

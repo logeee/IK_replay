@@ -12,7 +12,7 @@ class SeedAndPersistenceTests(unittest.TestCase):
     def test_seed_contains_two_verified_capabilities(self):
         seed = reg.seed_registry()
         self.assertEqual(seed["active"],
-                         {"arm": "right_arm", "hand_id": "yinshi-right-1"})
+                         {"arm": "right_arm", "hand_id": "yinshi-1-right"})
         directions = {cap["task"]["direction"]
                       for cap in seed["capabilities"]}
         self.assertEqual(directions, {"rtl", "ltr"})
@@ -50,7 +50,7 @@ class SeedAndPersistenceTests(unittest.TestCase):
             path = Path(temporary) / "capability_registry.json"
             seed = reg.seed_registry()
             seed["hands"].append({
-                "id": "qiangnao-left-1", "name": "强脑-左-1",
+                "id": "qiangnao-1-left", "name": "强脑-左-1",
                 "design_side": "left", "tool_out_mm": 12.0, "notes": "",
             })
             saved = reg.save_registry(seed, path)
@@ -117,8 +117,8 @@ class ValidationTests(unittest.TestCase):
 class CalibrationTests(unittest.TestCase):
     def test_calib_rel_path_is_combo_unique(self):
         self.assertEqual(
-            reg.calib_rel_path("right_arm", "yinshi-right-1"),
-            "config/hand_eye/right_arm__yinshi-right-1/handeye3d_result.json",
+            reg.calib_rel_path("right_arm", "yinshi-1-right"),
+            "config/hand_eye/right_arm__yinshi-1-right/handeye3d_result.json",
         )
 
     def test_import_copies_from_source_path(self):
@@ -137,10 +137,54 @@ class CalibrationTests(unittest.TestCase):
             archived = root / calib["path"]
             self.assertTrue(archived.is_file())
             info = reg.calibration_info(
-                registry, "right_arm", "yinshi-right-1", root)
+                registry, "right_arm", "yinshi-1-right", root)
             self.assertEqual(info["status"], "ready")
             self.assertEqual(info["residual_mm"], 2.5)
             self.assertEqual(info["num_samples"], 30)
+
+    def test_mount_fields_exposed_with_suggested_tool_out(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            registry = reg.seed_registry()
+            calib = registry["calibrations"][0]
+            archived = root / calib["path"]
+            archived.parent.mkdir(parents=True)
+            archived.write_text(json.dumps({
+                "T_cam2base": [[1, 0, 0, 0]], "solved_at": "2026-09-01",
+                "residual_mm": {"rms": 3.1}, "num_samples": 24,
+                "p_tool_wrist_m": [0.155, 0.01, -0.02],
+                "T_wrist2hand": [[1, 0, 0, 0], [0, 1, 0, 0],
+                                 [0, 0, 1, 0], [0, 0, 0, 1]],
+                "mount_solved_at": "2026-09-01T21:00:00",
+                "mount_residual_mm": {"rms": 2.2},
+                "tcp_points_wrist_m": [
+                    {"id": "tip:R_thumb_tip", "p_wrist_m": [0.12, -0.04, 0.01]},
+                    {"id": "tip:R_index_tip", "p_wrist_m": [0.172, 0.012, -0.018]},
+                ],
+            }), encoding="utf-8")
+            info = reg.calibration_info(
+                registry, "right_arm", "yinshi-1-right", root)
+            self.assertEqual(info["status"], "ready")
+            self.assertTrue(info["has_mount"])
+            self.assertEqual(info["mount_solved_at"], "2026-09-01T21:00:00")
+            self.assertEqual(info["mount_residual_mm"], {"rms": 2.2})
+            self.assertAlmostEqual(info["suggested_tool_out_mm"], 17.0)
+
+    def test_mount_absent_keeps_fields_null(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            registry = reg.seed_registry()
+            calib = registry["calibrations"][0]
+            archived = root / calib["path"]
+            archived.parent.mkdir(parents=True)
+            archived.write_text(json.dumps({
+                "T_cam2base": [[1, 0, 0, 0]], "num_samples": 12,
+            }), encoding="utf-8")
+            info = reg.calibration_info(
+                registry, "right_arm", "yinshi-1-right", root)
+            self.assertEqual(info["status"], "ready")
+            self.assertFalse(info["has_mount"])
+            self.assertIsNone(info["suggested_tool_out_mm"])
 
     def test_missing_source_reports_pending(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -150,13 +194,13 @@ class CalibrationTests(unittest.TestCase):
             calib["source_path"] = str(root / "nowhere.json")
             self.assertFalse(reg.try_import_calibration(calib, root))
             info = reg.calibration_info(
-                registry, "right_arm", "yinshi-right-1", root)
+                registry, "right_arm", "yinshi-1-right", root)
             self.assertEqual(info["status"], "pending")
 
     def test_unregistered_combo_reports_missing(self):
         registry = reg.seed_registry()
         info = reg.calibration_info(
-            registry, "left_arm", "yinshi-right-1",
+            registry, "left_arm", "yinshi-1-right",
             Path(tempfile.gettempdir()) / "no-such-root")
         self.assertEqual(info["status"], "missing")
 
@@ -165,21 +209,21 @@ class QueryTests(unittest.TestCase):
     def test_capability_for_matches_direction_and_site(self):
         registry = reg.seed_registry()
         rtl = reg.capability_for(
-            registry, "right_arm", "yinshi-right-1", "rtl", "lab")
+            registry, "right_arm", "yinshi-1-right", "rtl", "lab")
         self.assertIsNotNone(rtl)
         self.assertEqual(rtl["task"]["name"], "旋钮右到左")
         # 向右拨（ltr）只在 factory 验证过 → lab 不匹配
         self.assertIsNone(reg.capability_for(
-            registry, "right_arm", "yinshi-right-1", "ltr", "lab"))
+            registry, "right_arm", "yinshi-1-right", "ltr", "lab"))
         self.assertIsNotNone(reg.capability_for(
-            registry, "right_arm", "yinshi-right-1", "ltr", "factory"))
+            registry, "right_arm", "yinshi-1-right", "ltr", "factory"))
 
     def test_disabled_capability_not_matched(self):
         registry = reg.seed_registry()
         for cap in registry["capabilities"]:
             cap["enabled"] = False
         self.assertIsNone(reg.capability_for(
-            registry, "right_arm", "yinshi-right-1", "rtl", "factory"))
+            registry, "right_arm", "yinshi-1-right", "rtl", "factory"))
 
 
 if __name__ == "__main__":

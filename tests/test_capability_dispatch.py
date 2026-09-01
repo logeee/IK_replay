@@ -86,10 +86,10 @@ class SpawnReachTests(_RegistryTestCase):
             yolo="http://127.0.0.1:7004", camera_port=None,
         )
         info = {"status": calib_status,
-                "path": reg.calib_rel_path("right_arm", "yinshi-right-1"),
+                "path": reg.calib_rel_path("right_arm", "yinshi-1-right"),
                 "source_path": "", "registered_at": "",
                 "solved_at": None, "residual_mm": None, "num_samples": None,
-                "arm": "right_arm", "hand_id": "yinshi-right-1"}
+                "arm": "right_arm", "hand_id": "yinshi-1-right"}
         with tempfile.TemporaryDirectory() as temporary:
             with (
                 mock.patch.object(dispatch, "_args", args),
@@ -108,7 +108,7 @@ class SpawnReachTests(_RegistryTestCase):
         self.assertEqual(cmd[cmd.index("--chain") + 1], "right_arm")
         calib = cmd[cmd.index("--calib") + 1]
         self.assertTrue(calib.endswith(
-            "config/hand_eye/right_arm__yinshi-right-1/handeye3d_result.json"))
+            "config/hand_eye/right_arm__yinshi-1-right/handeye3d_result.json"))
         # tool_out_mm 取手型号登记值
         self.assertEqual(cmd[cmd.index("--tool-out-mm") + 1], "15.0")
         self.assertTrue(any("激活组合" in line for line in task["log"]))

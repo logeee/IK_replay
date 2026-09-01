@@ -85,7 +85,7 @@ def seed_registry() -> dict[str, Any]:
     task.sites 复刻原 SITE_SUPPORTED_KINDS：向左拨（rtl）lab+factory 都
     验证过，向右拨（ltr）只在 factory 验证过。
     """
-    hand_id = "yinshi-right-1"
+    hand_id = "yinshi-1-right"
     return validate_registry({
         "schema_version": 1,
         "active": {"arm": "right_arm", "hand_id": hand_id},
@@ -466,7 +466,9 @@ def calibration_info(registry: dict[str, Any], arm: str, hand_id: str,
                      root: Path = PROJECT_ROOT) -> dict[str, Any]:
     """某组合的标定状态：ready（归档就绪）/ pending（待补）/ missing（未登记）。
 
-    ready 时附带标定文件里的 solved_at / residual_mm / num_samples。
+    ready 时附带标定文件里的 solved_at / residual_mm / num_samples；若归档的
+    是 hand_eye_3D 的合并版结果（含手安装标定 T_wrist2hand），一并暴露安装
+    标定状态和按食指指尖推导的 tool_out_mm 建议值（仅供参考，登记值仍是权威）。
     """
     entry = None
     for calib in registry.get("calibrations") or []:
@@ -485,6 +487,10 @@ def calibration_info(registry: dict[str, Any], arm: str, hand_id: str,
         "solved_at": None,
         "residual_mm": None,
         "num_samples": None,
+        "has_mount": False,
+        "mount_solved_at": None,
+        "mount_residual_mm": None,
+        "suggested_tool_out_mm": None,
     }
     if abs_path.is_file():
         info["status"] = "ready"
@@ -493,9 +499,41 @@ def calibration_info(registry: dict[str, Any], arm: str, hand_id: str,
             info["solved_at"] = payload.get("solved_at")
             info["residual_mm"] = payload.get("residual_mm")
             info["num_samples"] = payload.get("num_samples")
+            if payload.get("T_wrist2hand") is not None:
+                info["has_mount"] = True
+                info["mount_solved_at"] = payload.get("mount_solved_at")
+                info["mount_residual_mm"] = payload.get("mount_residual_mm")
+                info["suggested_tool_out_mm"] = _suggested_tool_out_mm(payload)
         except (OSError, json.JSONDecodeError, AttributeError):
             pass
     return info
+
+
+def _suggested_tool_out_mm(payload: dict[str, Any]) -> float | None:
+    """由安装标定推导 tool_out_mm 建议值。
+
+    18001 的 TCP = p_tool 沿腕系 +x 外移 tool_out_mm；安装标定给出了食指
+    指尖在腕系的真实坐标，两者 x 分量之差就是应补的外移量。超出登记
+    范围（0~100mm）视为数据异常，不给建议。
+    """
+    try:
+        p_tool = payload.get("p_tool_wrist_m")
+        tips = payload.get("tcp_points_wrist_m") or []
+        if not isinstance(p_tool, list) or len(p_tool) != 3:
+            return None
+        index_tip = next(
+            (tip for tip in tips
+             if isinstance(tip, dict) and "index" in str(tip.get("id", "")).lower()),
+            None,
+        )
+        if index_tip is None:
+            return None
+        delta_mm = (float(index_tip["p_wrist_m"][0]) - float(p_tool[0])) * 1000.0
+    except (TypeError, ValueError, KeyError, IndexError):
+        return None
+    if not math.isfinite(delta_mm) or not 0.0 <= delta_mm <= 100.0:
+        return None
+    return round(delta_mm, 1)
 
 
 # ------------------------------------------------------------------ 查询

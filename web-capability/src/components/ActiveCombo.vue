@@ -43,6 +43,13 @@ const CALIB_TEXT: Record<string, string> = {
   missing: "标定未登记",
 };
 
+const calibResidualText = computed<string | null>(() => {
+  const value = calib.value?.residual_mm;
+  if (typeof value === "number") return value.toFixed(1);
+  const rms = value?.rms;
+  return typeof rms === "number" ? rms.toFixed(1) : null;
+});
+
 const isCurrent = computed(() => {
   const active = props.payload.registry.active;
   return (
@@ -85,8 +92,8 @@ const activeCapCount = computed(
       <div class="status">
         <span class="badge" :class="calibStatus">
           {{ CALIB_TEXT[calibStatus] }}
-          <template v-if="calib?.residual_mm != null">
-            · 残差 {{ calib.residual_mm.toFixed(1) }}mm
+          <template v-if="calibResidualText">
+            · 残差 {{ calibResidualText }}mm
           </template>
         </span>
         <span v-if="isCurrent" class="badge on">当前激活</span>
