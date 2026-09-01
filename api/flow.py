@@ -243,6 +243,11 @@ class SwitchFlow:
         # 强制停止开关：外部（/emergency/stop）置位后，流程在最近的检查点退出。
         # 置位时手臂多半已被强停端点直接释放了，所以退出路径不再做受控回落。
         self.abort = threading.Event()
+        # 软复位与硬急停分开：流程停止后要等待调度层完成低刚度回位和释放，
+        # 防止任务线程提前关闭 reach_server。
+        self.reset_and_release = threading.Event()
+        self.reset_complete = threading.Event()
+        self.reset_result: dict[str, Any] | None = None
         # 手动模式步骤闸门：设置后每个主要步骤执行前先调用它（阻塞等操作员
         # 确认）。签名 gate(step_id, message, detail)；操作员选择中止时应抛
         # FlowError(ABORTED)。None = 全自动，不出提示。
@@ -255,9 +260,29 @@ class SwitchFlow:
     def request_abort(self) -> None:
         self.abort.set()
 
+    def request_reset_and_release(self) -> None:
+        self.reset_and_release.set()
+
+    def finish_reset_and_release(self, result: dict[str, Any]) -> None:
+        self.reset_result = dict(result)
+        self.reset_complete.set()
+
     def _check_abort(self) -> None:
         if self.abort.is_set():
             raise FlowError(ErrorCode.ABORTED, "收到强制停止")
+        if self.reset_and_release.is_set():
+            raise FlowError(ErrorCode.ABORTED, "收到机械臂复位并释放请求")
+
+    def safe_reset_waypoints(self) -> list[str]:
+        """当前姿态到释放点的安全路径；左-起手式先经过配套终点。"""
+        route: list[str] = []
+        pose = self._current_pose
+        if self._is_left_start_pose(pose):
+            endpoint = self._pose_endpoint_name(pose)
+            if endpoint:
+                route.append(endpoint)
+        route.append(self.DESCEND_WAYPOINT)
+        return route
 
     # ------------------------------------------------------ 步骤计时与手动闸门
 
@@ -304,6 +329,8 @@ class SwitchFlow:
     def _confirm(self, step_id: str, message: str,
                  detail: dict[str, Any] | None = None) -> None:
         """手动模式闸门：阻塞到操作员决定；等待时长单独计，不算进步骤耗时。"""
+        # 全自动也必须经过这个中断检查，确保“复位并释放”后不会进入下一动作。
+        self._check_abort()
         if self.gate is None:
             return
         self._step_finish()
@@ -325,6 +352,7 @@ class SwitchFlow:
         """1️⃣ 一键开始。任何一步失败即返回，携带占位错误码。"""
         t0 = time.monotonic()
         try:
+            self._check_abort()
             self._log("═══ 1️⃣ 一键开始 ═══")
             direction_text = "从右向左（左移）" if self.flip_direction == "rtl" \
                 else "从左向右（右移）"
@@ -497,6 +525,17 @@ class SwitchFlow:
                 # 强制停止：手臂已由 /emergency/stop 急停并释放，这里绝不能
                 # 再下发回落动作——那等于在"已经放手"之后又去动机器人
                 self._log("强制停止：不做回落，手臂控制权已交还本体")
+            elif self.reset_and_release.is_set():
+                self._log("机械臂复位请求：流程已中断，等待低刚度回位并释放")
+                if not self.reset_complete.wait(timeout=90.0):
+                    self._log("⚠ 等待机械臂复位结果超时；保持当前接管状态")
+                elif (self.reset_result or {}).get("ok"):
+                    self._log("机械臂已回到起手点测试并释放")
+                else:
+                    self._log(
+                        "⚠ 机械臂复位未完成："
+                        f"{(self.reset_result or {}).get('error') or '未知错误'}"
+                    )
             else:
                 self._descend_on_failure()
             self._log_step_summary()
@@ -776,6 +815,7 @@ class SwitchFlow:
                       f"IK 误差 {plan.get('max_ik_error_mm')}mm")
 
             self._arm_moved = True
+            self._check_abort()
             res = self.client.execute(
                 waypoints=[f["named_joints"] for f in frames],
                 duration=self.reach_duration_s, label="flow_reach")
@@ -852,6 +892,7 @@ class SwitchFlow:
             # 沿移动方向的前馈力：接触后位置环刚度不够，靠它出力拨动
             body["push"] = {"direction_root": direction,
                             "force_n": self.push_force_n}
+        self._check_abort()
         res = self.client.execute(**body)
         if not res.get("ok"):
             raise FlowError(ErrorCode.EXEC_FAILED,
@@ -917,6 +958,7 @@ class SwitchFlow:
         speed = speed_rad_s or self.endpoint_speed_rad_s
         duration = max(1.5, travel / max(speed, 0.05))
         self._arm_moved = True
+        self._check_abort()
         res = self.client.execute(waypoints=[cur, end], duration=duration,
                                   max_speed_rad_s=speed,
                                   label=f"flow_goto_{wp_name}"[:32])
@@ -1094,6 +1136,7 @@ class SwitchFlow:
         self._interp_to_waypoint(self.SEQ_START_WAYPOINT, "起手式起点",
                                  only_if_beyond_rad=0.4)
         self._arm_moved = True
+        self._check_abort()
         res = self.client.run_sequence(pose["file"])
         if not res.get("ok"):
             raise FlowError(ErrorCode.EXEC_FAILED,
@@ -1105,6 +1148,7 @@ class SwitchFlow:
             self._log(f"起手式「{pose['name']}」首次规划完成"
                       f"（{res.get('frames')} 帧，约 {res.get('duration_s')}s），"
                       f"继续执行")
+            self._check_abort()
             res = self.client.run_sequence(pose["file"])
             if not res.get("ok") or res.get("preview"):
                 raise FlowError(ErrorCode.EXEC_FAILED,

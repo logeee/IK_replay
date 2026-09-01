@@ -6,7 +6,7 @@ from unittest import mock
 
 from adapters.reach import execution as reach_execution
 from api import dispatch
-from api.flow import SwitchFlow, resolve_flip_intent
+from api.flow import FlowError, SwitchFlow, resolve_flip_intent
 
 
 class _YoloSequence:
@@ -212,6 +212,22 @@ class FlipIntentTests(unittest.TestCase):
             "0.50-左-终点", "失败收尾第一段"
         )
         client.disarm.assert_not_called()
+
+    def test_reset_request_stops_flow_and_uses_left_safe_route(self):
+        flow = SwitchFlow(client=mock.Mock())
+        flow._current_pose = {
+            "name": "0.50-左-起手式",
+            "endpoint_name": "0.50-左-终点",
+        }
+
+        flow.request_reset_and_release()
+
+        self.assertEqual(
+            flow.safe_reset_waypoints(),
+            ["0.50-左-终点", flow.DESCEND_WAYPOINT],
+        )
+        with self.assertRaisesRegex(FlowError, "复位并释放"):
+            flow._check_abort()
 
     def test_pick_stability_uses_only_waist_and_imu_not_wall(self):
         client = mock.Mock()

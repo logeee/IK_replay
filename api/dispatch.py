@@ -64,8 +64,8 @@
       · 其他动作：前往某已录位点 / 接管手臂 / 释放手臂——在流程线程上
         串行执行，完成后回到同一确认提示，可连续选择多个其他动作
     POST /task/decision → 提交上述决定；GET /manual/waypoints → 位点列表。
-    POST /arm/stop      → 机械臂急停（= 18001 页面的「急停」）：只冻结手臂
-                          轨迹、刚性保持当前位置，不释放手臂、不结束任务。
+    POST /arm/stop      → 机械臂复位并释放：立即冻结当前轨迹并中断流程，
+                          以50% Kp、0.15rad/s沿安全路点回「起手点测试」后释放。
     POST /emergency/stop → 强制停止（任何状态下都可调，没任务在跑也能用）：
                           停转身 → 急停手臂轨迹 → 释放手臂（权重渐出，控制权
                           交还本体）→ 关掉自己拉起的 reach_server（放相机/DDS）。
@@ -328,10 +328,15 @@ class _ManualGate:
                 }
             self._event.clear()
             while not self._event.wait(timeout=0.2):
-                if flow.abort.is_set():
+                if flow.abort.is_set() or flow.reset_and_release.is_set():
                     with _lock:
                         self.task["prompt"] = None
-                    raise FlowError(ErrorCode.ABORTED, "等待确认时收到强制停止")
+                    message = (
+                        "等待确认时收到机械臂复位并释放请求"
+                        if flow.reset_and_release.is_set()
+                        else "等待确认时收到强制停止"
+                    )
+                    raise FlowError(ErrorCode.ABORTED, message)
             with _lock:
                 decision, self._decision = self._decision or {}, None
                 self.task["prompt"] = None   # 执行动作期间不接受新决定
@@ -376,7 +381,7 @@ class _ManualGate:
                         **({} if ok else {"error": str(res.get("error"))})}
             return {"label": label, "ok": False, "error": "不支持的动作"}
         except FlowError as exc:
-            if flow.abort.is_set():
+            if flow.abort.is_set() or flow.reset_and_release.is_set():
                 raise
             return {"label": label, "ok": False, "error": exc.message}
         except Exception as exc:
@@ -475,6 +480,10 @@ def _run_task(task: dict) -> None:
         if _estop.is_set():
             # 强制停止卡在"拉起 reach"和"建流程"之间时，别让流程真的跑起来
             flow.request_abort()
+        if task.get("reset_requested"):
+            flow.request_reset_and_release()
+            if task.get("reset_result") is not None:
+                flow.finish_reset_and_release(task["reset_result"])
         task["state"] = "running"
         result = flow.run()
         task["result"] = {"ok": result.ok, "code": int(result.code),
@@ -1000,6 +1009,7 @@ def task_submit(body: dict | None = None):
                  "lift_mm": dict(lift_mm), "lift_source": lift_source,
                  "started_at": now, "finished_at": None,
                  "result": None, "flow": None,
+                 "reset_requested": False, "reset_result": None,
                  "log": [f"指令: {language}（{kind}，"
                          f"{intent['flip_from']}→{intent['flip_to']}，"
                          f"{'向左拨' if intent['direction'] == 'rtl' else '向右拨'}，"
@@ -1302,34 +1312,159 @@ def _emergency_stop(reason: str) -> dict:
             "task_state": task["state"] if task else "idle"}
 
 
+ARM_RESET_WAYPOINT = "起手点测试"
+ARM_RESET_SPEED_RAD_S = 0.15
+ARM_RESET_STIFFNESS_SCALE = 0.5
+ARM_RESET_SEGMENT_TIMEOUT_S = 60.0
+
+
+def _wait_arm_idle(client: ReachClient, timeout_s: float) -> dict:
+    deadline = time.monotonic() + timeout_s
+    last: dict = {}
+    while time.monotonic() < deadline:
+        last = client.exec_status()
+        if not last.get("running"):
+            return last
+        time.sleep(0.1)
+    client.stop()
+    raise RuntimeError(f"等待机械臂停止超过 {timeout_s:g}s，已再次冻结")
+
+
+def _reset_arm_via_waypoints(
+    client: ReachClient, waypoint_names: list[str]
+) -> list[str]:
+    """以半刚度、低速逐段回位；全部到位后才释放。"""
+    available = {
+        str(item.get("name")): item
+        for item in (client.waypoints().get("waypoints") or [])
+    }
+    actions: list[str] = []
+    for name in waypoint_names:
+        target = available.get(name)
+        if target is None:
+            raise RuntimeError(f"找不到安全复位路点「{name}」")
+        joints = client.joints()
+        if not joints.get("ok"):
+            raise RuntimeError(f"读取当前关节失败: {joints.get('error')}")
+        current = joints["named_joints"]
+        end = target["named_joints"]
+        travel = max(
+            abs(float(end[key]) - float(current.get(key, 0.0)))
+            for key in end
+        )
+        duration = max(2.0, travel / ARM_RESET_SPEED_RAD_S * 1.2)
+        started = client.execute(
+            waypoints=[current, end],
+            duration=duration,
+            max_speed_rad_s=ARM_RESET_SPEED_RAD_S,
+            stiffness_scale=ARM_RESET_STIFFNESS_SCALE,
+            label=f"arm_reset_{name}"[:32],
+        )
+        if not started.get("ok"):
+            raise RuntimeError(
+                f"回「{name}」被拒: {started.get('error') or started}"
+            )
+        ended = _wait_arm_idle(client, ARM_RESET_SEGMENT_TIMEOUT_S)
+        message = str(ended.get("message") or "")
+        if any(word in message for word in ("中止", "出错", "急停")):
+            raise RuntimeError(f"回「{name}」未完成: {message}")
+        actions.append(
+            f"50%刚度低速到「{name}」"
+            f"（Kp×{ARM_RESET_STIFFNESS_SCALE:g}，"
+            f"≤{ARM_RESET_SPEED_RAD_S:g}rad/s）"
+        )
+    released = client.disarm()
+    if not released.get("ok"):
+        raise RuntimeError(f"释放手臂失败: {released.get('error') or released}")
+    actions.append("释放手臂")
+    return actions
+
+
 @app.post("/arm/stop")
 def arm_stop():
-    """机械臂急停（等同 18001 页面的「急停」按钮）：只冻结手臂轨迹。
+    """立即冻结当前动作、中断流程，再半刚度低速回安全点并释放。
 
-    手臂刚性保持在当前指令位，不下坠；不释放手臂、不停基座对中、
-    不关 reach_server、不结束任务。与 /emergency/stop 的区别：急停后
-    手臂仍被我们接管，处理完可继续操作；正在跑的流程会在当前动作处
-    按执行失败的既有路径收尾（可能进入重试或报错）。
+    左-起手式沿用防碰柜路径：先回配套终点，再到「起手点测试」。
+    任一回位段失败都保持接管，不直接释放。
     """
     if not _reach_alive(1.5):
         return JSONResponse(
             {"ok": False,
              "error": "reach_server 未在运行，手臂本来就不受我们控制"},
             status_code=409)
-    try:
-        r = _http.post(f"{_reach_base()}/api/reach/stop", json={},
-                       timeout=5.0)
-        data = r.json() if r.content else {}
-    except (requests.RequestException, ValueError) as exc:
-        return JSONResponse(
-            {"ok": False, "error": f"急停请求失败: {exc}"}, status_code=502)
     with _lock:
         task = _task
-    if task is not None and task["state"] != "done":
-        task["log"].append("🖐 网页触发机械臂急停：轨迹已冻结（手臂未释放）")
-    return {"ok": True,
-            "message": "已急停：手臂刚性保持当前位置（未释放，流程未结束）",
-            "reach": data}
+        flow: SwitchFlow | None = (
+            task.get("flow")
+            if task is not None and task.get("state") != "done"
+            else None
+        )
+        if task is not None and task.get("state") != "done":
+            task["reset_requested"] = True
+            task["prompt"] = None
+    if flow is not None:
+        flow.request_reset_and_release()
+
+    result: dict[str, Any] = {
+        "ok": False,
+        "arm_released": False,
+        "actions": [],
+    }
+    try:
+        client = ReachClient(_reach_base())
+        try:
+            _http.post(
+                f"{_reach_base()}/api/reach/align_yaw",
+                json={"stop": True},
+                timeout=3.0,
+            )
+            result["actions"].append("停止腰部对中")
+        except requests.RequestException:
+            result["actions"].append("停止腰部对中请求失败")
+
+        stopped = client.stop()
+        if not stopped.get("ok"):
+            raise RuntimeError(
+                f"冻结当前轨迹失败: {stopped.get('error') or stopped}"
+            )
+        result["actions"].append("立即冻结当前机械臂轨迹")
+        _wait_arm_idle(client, 5.0)
+
+        route = (
+            flow.safe_reset_waypoints()
+            if flow is not None
+            else [ARM_RESET_WAYPOINT]
+        )
+        result["actions"].extend(_reset_arm_via_waypoints(client, route))
+        result.update(
+            ok=True,
+            arm_released=True,
+            message="当前流程已中断；机械臂已低刚度回到起手点测试并释放",
+            route=route,
+        )
+    except Exception as exc:
+        result.update(
+            error=str(exc),
+            message=(
+                "当前流程已中断，但机械臂未能完成安全复位；"
+                "为安全起见保持接管，请人工处置"
+            ),
+        )
+    finally:
+        with _lock:
+            if task is not None and task.get("state") != "done":
+                task["reset_result"] = dict(result)
+                task["log"].append(
+                    "🖐 机械臂复位并释放："
+                    + (
+                        "；".join(result["actions"])
+                        if result.get("ok")
+                        else f"失败，保持接管（{result.get('error')}）"
+                    )
+                )
+        if flow is not None:
+            flow.finish_reset_and_release(result)
+    return result
 
 
 @app.post("/emergency/stop")
@@ -1375,7 +1510,7 @@ def service_info():
                       "start": 'POST /task/flip  body={"language": "..."}',
                       "status": "GET /task/status",
                       "abort": "POST /task/abort",
-                      "arm_stop": "POST /arm/stop（只急停手臂轨迹，不释放）",
+                      "arm_stop": "POST /arm/stop（中断流程→半刚度安全回位→释放）",
                       "estop": "POST /emergency/stop（任何状态：急停+释放手臂）"},
             "languages": ["Change the switch from close to remote",
                           "Change the switch from remote to close"]}

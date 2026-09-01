@@ -352,6 +352,7 @@ def reach_execute(body: dict):
 
     Body: {"waypoints": [named_joints, ...], "duration": float,
            "max_speed_rad_s": float?, "label": str?,
+           "stiffness_scale": float?,
            "push": {"direction_root": [x,y,z], "force_n": float}?,
            "push_hold_s": float?,
            "flip_evidence": {"record": str, "flip_from": str?}?}
@@ -360,6 +361,8 @@ def reach_execute(body: dict):
 
     max_speed_rad_s（可选）：本次执行的关节限速档（默认 0.2，收回段等
     低精度动作可以给 0.4 提速），不会超过 --arm-max-speed 天花板。
+    stiffness_scale（可选）：本段位置环 Kp 临时倍率，范围 0.2~1.0；
+    Kd 保持不变，执行结束自动恢复。用于低刚度安全复位。
 
     push（可选）：执行期间在 TCP 上沿指定方向叠加前馈力（τ=JᵀF）。
     纯位置控制的侧向刚度很低（~300 N/m），贴着旋钮也使不上力；
@@ -377,6 +380,18 @@ def reach_execute(body: dict):
     duration = float(body.get("duration") or 4.0)
     speed = float(np.clip(float(body.get("max_speed_rad_s") or 0.2), 0.05, 0.5))
     label = str(body.get("label") or "reach")[:32]
+    try:
+        stiffness_scale = float(body.get("stiffness_scale", 1.0))
+    except (TypeError, ValueError):
+        return JSONResponse(
+            {"ok": False, "error": "stiffness_scale 必须是数字"},
+            status_code=400,
+        )
+    if not math.isfinite(stiffness_scale) or not 0.2 <= stiffness_scale <= 1.0:
+        return JSONResponse(
+            {"ok": False, "error": "stiffness_scale 必须在 0.2~1.0 之间"},
+            status_code=400,
+        )
     try:
         push_hold_s = float(body.get("push_hold_s", 1.5))
     except (TypeError, ValueError):
@@ -499,6 +514,7 @@ def reach_execute(body: dict):
                 "command_handoff": command_handoff,
                 "execution_context": execution_context,
                 "flip_evidence": flip_context,
+                "stiffness_scale": stiffness_scale,
             },
             daemon=True)
         state.exec_thread.start()
@@ -521,7 +537,8 @@ def _log_exec(kind: str, result: str, q_target, *, sag=None, settle_trim=None,
               duration=None, speed=None, pushing: bool = False, push_tau=None,
               push_hold_s: float | None = None,
               trace=None, command_handoff=None,
-              execution_context: dict | None = None) -> None:
+              execution_context: dict | None = None,
+              stiffness_scale: float = 1.0) -> None:
     """每段真机动作落一行 JSONL：logs/reach/reach_YYYYMMDD.jsonl。
 
     调参靠的是横向对比（改了 α / payload / kp 之后到底好了多少），
@@ -571,6 +588,7 @@ def _log_exec(kind: str, result: str, q_target, *, sag=None, settle_trim=None,
                 "payload_kg": st.get("payload_kg"),
                 "kp": st.get("kp"), "kd": st.get("kd"),
                 "kp_wrist": st.get("kp_wrist"), "kd_wrist": st.get("kd_wrist"),
+                "stiffness_scale": stiffness_scale,
                 "use_imu_gravity": st.get("use_imu_gravity"),
             },
             "joint_names": state.joint_names,
@@ -824,23 +842,70 @@ def _run_settle_trim(ctl, target: np.ndarray) -> dict | None:
     return info
 
 
+def _apply_stiffness_scale(controller, scale: float) -> dict | None:
+    """临时缩放位置环 Kp；返回可用于恢复的快照。Kd 保持不变以保留阻尼。"""
+    if scale >= 1.0 - 1e-9:
+        return None
+    required = ("kp", "kp_wrist", "kp_vec")
+    if not all(hasattr(controller, name) for name in required):
+        raise RuntimeError("当前手臂控制器不支持临时降低刚度")
+    lock = getattr(controller, "_lock", None)
+
+    def update() -> dict:
+        snapshot = {
+            "kp": float(controller.kp),
+            "kp_wrist": float(controller.kp_wrist),
+            "kp_vec": np.asarray(controller.kp_vec, dtype=float).copy(),
+        }
+        controller.kp = snapshot["kp"] * scale
+        controller.kp_wrist = snapshot["kp_wrist"] * scale
+        controller.kp_vec = snapshot["kp_vec"] * scale
+        return snapshot
+
+    if lock is None:
+        return update()
+    with lock:
+        return update()
+
+
+def _restore_stiffness(controller, snapshot: dict | None) -> None:
+    if snapshot is None:
+        return
+    lock = getattr(controller, "_lock", None)
+
+    def restore() -> None:
+        controller.kp = snapshot["kp"]
+        controller.kp_wrist = snapshot["kp_wrist"]
+        controller.kp_vec = snapshot["kp_vec"]
+
+    if lock is None:
+        restore()
+    else:
+        with lock:
+            restore()
+
+
 def _exec_loop(q_list: list[np.ndarray], duration: float,
                push_tau: np.ndarray | None = None, speed: float = 0.2,
                push_hold_s: float = 1.5,
                label: str = "reach", command_start_q: np.ndarray | None = None,
                command_handoff: dict | None = None,
                execution_context: dict | None = None,
-               flip_evidence: dict | None = None) -> None:
+               flip_evidence: dict | None = None,
+               stiffness_scale: float = 1.0) -> None:
     ctl = state.controller
     trace, trace_stop = _start_torso_trace(ctl)
     log = dict(duration=duration, speed=speed, pushing=push_tau is not None,
                push_tau=push_tau, push_hold_s=push_hold_s,
                trace=trace, command_handoff=command_handoff,
-               execution_context=execution_context)
+               execution_context=execution_context,
+               stiffness_scale=stiffness_scale)
     completed = False
+    stiffness_snapshot = None
     try:
         if command_start_q is None:
             raise RuntimeError("缺少上一帧已发送关节命令，拒绝启动轨迹")
+        stiffness_snapshot = _apply_stiffness_scale(ctl, stiffness_scale)
         state.last_settle_trim = None   # 上一段的修正偏置不代表本段
         control_q_list = _build_control_waypoints(q_list, command_start_q)
         state.exec_phase = "traj"
@@ -975,6 +1040,7 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
         state.exec_message = f"执行出错已停止: {exc}"
         _log_exec(label, f"error: {exc}", q_list[-1], **log)
     finally:
+        _restore_stiffness(ctl, stiffness_snapshot)
         trace_stop.set()
         if completed and flip_evidence is not None:
             try:

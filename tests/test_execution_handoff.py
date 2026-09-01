@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import inspect
 import json
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -86,6 +88,39 @@ class ExecutionHandoffTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "过期"):
             _validated_command_snapshot(
                 snapshot, 2, now=10.0 + COMMAND_SNAPSHOT_MAX_AGE_S + 0.01)
+
+    def test_temporary_stiffness_scale_halves_kp_and_restores_it(self):
+        class Controller:
+            def __init__(self):
+                self._lock = threading.Lock()
+                self.kp = 140.0
+                self.kp_wrist = 50.0
+                self.kp_vec = np.array([140.0, 140.0, 50.0])
+                self.kd_vec = np.array([3.0, 3.0, 2.0])
+
+        controller = Controller()
+
+        snapshot = execution._apply_stiffness_scale(controller, 0.5)
+
+        self.assertEqual(controller.kp, 70.0)
+        self.assertEqual(controller.kp_wrist, 25.0)
+        np.testing.assert_allclose(controller.kp_vec, [70.0, 70.0, 25.0])
+        np.testing.assert_allclose(controller.kd_vec, [3.0, 3.0, 2.0])
+
+        execution._restore_stiffness(controller, snapshot)
+        self.assertEqual(controller.kp, 140.0)
+        self.assertEqual(controller.kp_wrist, 50.0)
+        np.testing.assert_allclose(controller.kp_vec, [140.0, 140.0, 50.0])
+
+    def test_execution_logger_accepts_stiffness_scale_from_worker(self):
+        bound = inspect.signature(execution._log_exec).bind(
+            "opening_pose",
+            "done",
+            [0.0],
+            stiffness_scale=1.0,
+        )
+
+        self.assertEqual(bound.arguments["stiffness_scale"], 1.0)
 
     def test_execution_log_is_structured_and_exposed_without_log_directory(self):
         class Controller:

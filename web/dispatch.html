@@ -365,7 +365,7 @@
       <label>最大轮数 <input id="manualRetries" type="number" min="1" max="20" value="3" /></label>
       <span class="spacer"></span>
       <button id="manualStart" class="primary">① 启动流程</button>
-      <button id="manualArmStop" class="danger" title="等同 18001 页面的「急停」：手臂轨迹立即冻结、刚性保持当前位置；不释放手臂、不结束流程，处理完可继续">🖐 机械臂急停</button>
+      <button id="manualArmStop" class="danger" title="立即冻结当前动作并中断流程；以50%刚度、0.15rad/s沿安全路径回到「起手点测试」，然后释放手臂">🖐 机械臂复位并释放</button>
       <button id="manualEstop" class="danger" title="全套收场：停转身 → 急停手臂 → 释放手臂（控制权交还本体）→ 关掉自己拉起的 reach_server">强制停止</button>
     </div>
     <div class="bar-row">
@@ -1374,8 +1374,8 @@ $("manualStart").addEventListener("click", async () => {
 
 $("manualArmStop").addEventListener("click", async () => {
   const data = await postJson("/arm/stop", {});
-  setHint(data.ok ? (data.message || "已急停：手臂保持当前位置")
-                  : (data.error || "机械臂急停失败"));
+  setHint(data.ok ? (data.message || "机械臂已安全复位并释放")
+                  : (data.error || "机械臂复位失败，当前保持接管"));
   poll();
 });
 

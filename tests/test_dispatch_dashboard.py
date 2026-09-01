@@ -7,11 +7,13 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from unittest.mock import patch
 
 from fastapi.responses import FileResponse
 
 from api import dispatch
+from api.flow import SwitchFlow
 
 
 class DispatchDashboardTests(unittest.TestCase):
@@ -106,6 +108,71 @@ class DispatchDashboardTests(unittest.TestCase):
                 text=True,
             )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_arm_stop_interrupts_flow_then_half_stiffness_resets_and_releases(self):
+        flow = SwitchFlow(client=mock.Mock())
+        flow._current_pose = {
+            "name": "0.50-左-起手式",
+            "endpoint_name": "0.50-左-终点",
+        }
+        task = {
+            "state": "running",
+            "flow": flow,
+            "prompt": {"id": "waiting"},
+            "log": [],
+        }
+        client = mock.Mock()
+        client.stop.return_value = {"ok": True}
+        client.exec_status.return_value = {
+            "ok": True,
+            "running": False,
+            "message": "完成（刚性保持）",
+        }
+        client.waypoints.return_value = {
+            "waypoints": [
+                {
+                    "name": "0.50-左-终点",
+                    "named_joints": {"joint": 0.5},
+                },
+                {
+                    "name": "起手点测试",
+                    "named_joints": {"joint": 0.0},
+                },
+            ],
+        }
+        client.joints.return_value = {
+            "ok": True,
+            "named_joints": {"joint": 0.25},
+        }
+        client.execute.return_value = {"ok": True}
+        client.disarm.return_value = {"ok": True}
+        with dispatch._lock:
+            original_task = dispatch._task
+            dispatch._task = task
+        try:
+            with (
+                patch.object(dispatch, "_reach_alive", return_value=True),
+                patch.object(dispatch, "ReachClient", return_value=client),
+                patch.object(dispatch._http, "post"),
+            ):
+                result = dispatch.arm_stop()
+        finally:
+            with dispatch._lock:
+                dispatch._task = original_task
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["arm_released"])
+        self.assertTrue(flow.reset_and_release.is_set())
+        self.assertTrue(flow.reset_complete.is_set())
+        self.assertIsNone(task["prompt"])
+        self.assertEqual(
+            result["route"], ["0.50-左-终点", "起手点测试"]
+        )
+        self.assertEqual(client.execute.call_count, 2)
+        for call in client.execute.call_args_list:
+            self.assertEqual(call.kwargs["stiffness_scale"], 0.5)
+            self.assertEqual(call.kwargs["max_speed_rad_s"], 0.15)
+        client.disarm.assert_called_once_with()
 
     def test_finished_task_is_counted_exactly_once(self):
         with dispatch._lock:
