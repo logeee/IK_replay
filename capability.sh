@@ -244,6 +244,17 @@ else
     fi
     echo "[能力配置] Python: $FASTAPI_PY"
 
+    # resolve_python may select a conda interpreter without activating that
+    # environment. Make sibling tools (notably node/npm) available as well.
+    FASTAPI_BIN_DIR=$(dirname "$FASTAPI_PY")
+    if [[ -x "$FASTAPI_BIN_DIR/node" && -x "$FASTAPI_BIN_DIR/npm" ]]; then
+        export PATH="$FASTAPI_BIN_DIR:$PATH"
+    fi
+    if ! command -v npm >/dev/null 2>&1; then
+        echo "[能力配置] 找不到 npm。请安装 Node.js/npm，或将其加入 PATH" >&2
+        exit 1
+    fi
+
     if [[ ! -x "$WEB_DIR/node_modules/.bin/vue-tsc" ]]; then
         echo "[能力配置] 首次运行，正在安装前端依赖…"
         (cd "$WEB_DIR" && npm ci)
