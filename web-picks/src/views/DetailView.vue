@@ -195,7 +195,26 @@ function fmtSignedMetersAsMm(v?: number | null): string {
         <dl>
           <dt>相机系 (mm)</dt>
           <dd class="mono">{{ formatVec(meta.adjustment_mm, 1) }}</dd>
-          <template v-if="wallAdj">
+          <template v-if="meta.base_adjustment_wall_mm && wallAdj">
+            <dt>基础偏置 (mm)</dt>
+            <dd class="mono">
+              右 {{ meta.base_adjustment_wall_mm.x.toFixed(1) }} / 上
+              {{ meta.base_adjustment_wall_mm.z.toFixed(1) }} / 入墙
+              {{ meta.base_adjustment_wall_mm.y.toFixed(1) }}
+            </dd>
+            <dt>首轮额外 (mm)</dt>
+            <dd class="mono highlight">
+              右 {{ (meta.first_round_adjustment_wall_mm?.x ?? 0).toFixed(1) }} /
+              上 {{ (meta.first_round_adjustment_wall_mm?.z ?? 0).toFixed(1) }} /
+              入墙 {{ (meta.first_round_adjustment_wall_mm?.y ?? 0).toFixed(1) }}
+            </dd>
+            <dt>本轮合计 (mm)</dt>
+            <dd class="mono">
+              右 {{ wallAdj.x.toFixed(1) }} / 上 {{ wallAdj.z.toFixed(1) }} / 入墙
+              {{ wallAdj.y.toFixed(1) }}
+            </dd>
+          </template>
+          <template v-else-if="wallAdj">
             <dt>墙面系 (mm){{ wallAdj.derived ? "（换算）" : "" }}</dt>
             <dd class="mono">
               右 {{ wallAdj.x.toFixed(1) }} / 上 {{ wallAdj.z.toFixed(1) }} / 入墙

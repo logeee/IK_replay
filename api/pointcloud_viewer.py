@@ -737,6 +737,11 @@ def _save_pick_record(
             "adjustment_wall_mm": ({k: float(wall_mm[k])
                                     for k in ("x", "y", "z")}
                                    if wall_mm else None),
+            "base_adjustment_wall_mm":
+                request_body.get("base_adjustment_wall_mm"),
+            "first_round_adjustment_wall_mm":
+                request_body.get("first_round_adjustment_wall_mm"),
+            "flow_round": request_body.get("flow_round"),
             "final_p_camera_m": [float(v) for v in p_camera],
             "approach_offset_m": request_body.get("approach_offset_m"),
             "confirm_result": {k: result.get(k) for k in
@@ -1017,6 +1022,29 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
                                   for k in ("x", "y", "z")}
             if not all(np.isfinite(v) for v in adjustment_wall_mm.values()):
                 raise ValueError("adjustment_wall_mm 包含非有限数值")
+        extra_wall_offsets = {}
+        for key in (
+            "base_adjustment_wall_mm",
+            "first_round_adjustment_wall_mm",
+        ):
+            value = body.get(key)
+            if value is not None:
+                if not (
+                    isinstance(value, dict)
+                    and all(axis in value for axis in ("x", "y", "z"))
+                ):
+                    raise ValueError(f"{key} 需为含 x/y/z 的对象")
+                value = {
+                    axis: float(value[axis]) for axis in ("x", "y", "z")
+                }
+                if not all(np.isfinite(item) for item in value.values()):
+                    raise ValueError(f"{key} 包含非有限数值")
+            extra_wall_offsets[key] = value
+        flow_round = body.get("flow_round")
+        if flow_round is not None:
+            flow_round = int(flow_round)
+            if flow_round < 1:
+                raise ValueError("flow_round 必须大于等于 1")
         request_body.update(
             {
                 "selection_source": selection_source,
@@ -1024,6 +1052,8 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
                 "target_point_slot": target_point_slot,
                 "matched_detection_name": matched_detection_name,
                 "adjustment_wall_mm": adjustment_wall_mm,
+                **extra_wall_offsets,
+                "flow_round": flow_round,
             }
         )
     except (KeyError, TypeError, ValueError) as exc:

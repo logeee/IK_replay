@@ -461,6 +461,10 @@ def _run_task(task: dict) -> None:
                           target_offset_wall_m=tuple(
                               v / 1000.0 for v in
                               (task.get("target_offset_wall_mm")
+                               or [0.0, 0.0, 0.0])),
+                          first_round_offset_wall_m=tuple(
+                              v / 1000.0 for v in
+                              (task.get("first_round_offset_wall_mm")
                                or [0.0, 0.0, 0.0])))
         task["flow"] = flow
         if task.get("manual"):
@@ -850,6 +854,24 @@ def _resolve_offset(
     )
 
 
+def _resolve_first_round_offset(
+    body: dict | None, defaults: dict, kind: str
+) -> tuple[tuple[float, float, float], str]:
+    """首轮额外墙面系偏置：请求显式值优先，否则按任务方向读取默认。"""
+    raw = (body or {}).get("first_round_offset_wall_mm")
+    if raw is not None:
+        return _parse_target_offset(raw), "请求指定"
+    by_kind = (
+        defaults["defaults"].get("first_round_offset_wall_mm_by_kind") or {}
+    )
+    saved = by_kind.get(kind) or {}
+    pre, post = CHECK_KIND_STATES[kind]
+    return (
+        _parse_target_offset(saved),
+        f"「{pre}→{post}」首轮默认偏置",
+    )
+
+
 # 目的点人工微调（墙面系）单轴上限：微调是给毫米级落点纠偏用的，
 # 超过这个量说明算法/标定有问题，该修根源而不是硬掰
 TARGET_OFFSET_LIMIT_MM = 100.0
@@ -920,7 +942,22 @@ def task_submit(body: dict | None = None):
     intent = resolve_flip_intent(site, kind)
     try:
         offset_mm, offset_source = _resolve_offset(body, defaults, kind)
+        first_offset_mm, first_offset_source = _resolve_first_round_offset(
+            body, defaults, kind
+        )
         lift_mm, lift_source = _resolve_lift(body, defaults)
+        first_total_mm = tuple(
+            offset_mm[index] + first_offset_mm[index]
+            for index in range(3)
+        )
+        for index, axis in enumerate(("右", "入墙", "上")):
+            if abs(first_total_mm[index]) > TARGET_OFFSET_LIMIT_MM:
+                raise ValueError(
+                    f"首轮{axis}方向合计偏置超范围：单轴限 "
+                    f"±{TARGET_OFFSET_LIMIT_MM:g} mm"
+                    f"（基础 {offset_mm[index]:g} + 首轮额外 "
+                    f"{first_offset_mm[index]:g} = {first_total_mm[index]:g}）"
+                )
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
 
@@ -941,6 +978,12 @@ def task_submit(body: dict | None = None):
         offset_note = (f"，目的点微调 右{offset_mm[0]:+g}/上{offset_mm[2]:+g}"
                        f"/入墙{offset_mm[1]:+g} mm（{offset_source}）"
                        if any(offset_mm) else "")
+        first_offset_note = (
+            f"，首轮额外偏置 右{first_offset_mm[0]:+g}/"
+            f"上{first_offset_mm[2]:+g}/入墙{first_offset_mm[1]:+g} mm"
+            f"（{first_offset_source}）"
+            if any(first_offset_mm) else ""
+        )
         lift_note = (f"，拨点上抬 首轮{lift_mm['base']:g}"
                      f"/每轮+{lift_mm['step']:g}"
                      f"/封顶{lift_mm['max']:g} mm（{lift_source}）")
@@ -952,6 +995,8 @@ def task_submit(body: dict | None = None):
                  "prompt": None, "gate": None,
                  "target_offset_wall_mm": list(offset_mm),
                  "offset_source": offset_source,
+                 "first_round_offset_wall_mm": list(first_offset_mm),
+                 "first_round_offset_source": first_offset_source,
                  "lift_mm": dict(lift_mm), "lift_source": lift_source,
                  "started_at": now, "finished_at": None,
                  "result": None, "flow": None,
@@ -961,7 +1006,7 @@ def task_submit(body: dict | None = None):
                          f"现场 {SITE_LABELS[site]}"
                          f"·{site_source}，最多 {retries} 轮"
                          f"{'，手动确认模式' if manual else ''}"
-                         f"{offset_note}{lift_note}）"],
+                         f"{offset_note}{first_offset_note}{lift_note}）"],
                  "reach_proc": None, "reach_external": False,
                  "stats_counted": False}
         _task_stats["accepted"] += 1
@@ -1011,6 +1056,10 @@ def task_status():
             "target_offset_wall_mm": t.get("target_offset_wall_mm")
                                      or [0.0, 0.0, 0.0],
             "offset_source": t.get("offset_source") or "",
+            "first_round_offset_wall_mm":
+                t.get("first_round_offset_wall_mm") or [0.0, 0.0, 0.0],
+            "first_round_offset_source":
+                t.get("first_round_offset_source") or "",
             "lift_mm": t.get("lift_mm") or dict(DEFAULT_LIFT_MM),
             "lift_source": t.get("lift_source") or "",
             "started_at": t["started_at"], "finished_at": t["finished_at"],
@@ -1107,6 +1156,10 @@ def config_defaults_set(body: dict | None = None):
         legacy_kind = resolve_flip_intent(cfg["defaults"]["site"])["kind"]
         by_kind[legacy_kind] = legacy
         cfg["defaults"]["offset_preset_by_kind"] = by_kind
+    if "first_round_offset_wall_mm_by_kind" in body:
+        cfg["defaults"]["first_round_offset_wall_mm_by_kind"] = (
+            body.get("first_round_offset_wall_mm_by_kind")
+        )
     if "lift_mm" in body:
         cfg["defaults"]["lift_mm"] = body.get("lift_mm")
     try:

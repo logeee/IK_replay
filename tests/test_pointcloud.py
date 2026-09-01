@@ -513,6 +513,11 @@ class PointCloudBackendTest(unittest.TestCase):
                     "pixel": picked["pixel"],
                     "adjustment_camera_m": [0.001, 0.0, 0.0],
                     "adjustment_wall_mm": {"x": 1.0, "y": 0.0, "z": 0.0},
+                    "base_adjustment_wall_mm": {"x": 0.0, "y": 0.0, "z": 0.0},
+                    "first_round_adjustment_wall_mm": {
+                        "x": 1.0, "y": 0.0, "z": 0.0
+                    },
+                    "flow_round": 1,
                     "approach_offset_m": 0.0,
                     "selection_source": "target-finder/0.2.0-s",
                     "model_version": "0.2.0-s",
@@ -554,6 +559,11 @@ class PointCloudBackendTest(unittest.TestCase):
         self.assertEqual(
             record_meta["adjustment_wall_mm"], {"x": 1.0, "y": 0.0, "z": 0.0}
         )
+        self.assertEqual(
+            record_meta["first_round_adjustment_wall_mm"],
+            {"x": 1.0, "y": 0.0, "z": 0.0},
+        )
+        self.assertEqual(record_meta["flow_round"], 1)
 
     def test_auto_target_uses_frozen_capture_and_caches_result(self):
         bgr = np.full((2, 2, 3), [10, 20, 30], dtype=np.uint8)

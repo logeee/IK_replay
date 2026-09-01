@@ -1,10 +1,22 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "defaults": {
     "site": "factory",
     "offset_preset_by_kind": {
       "close_to_remote": "向右-降低10cm后",
       "remote_to_close": "摔手后"
+    },
+    "first_round_offset_wall_mm_by_kind": {
+      "close_to_remote": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "remote_to_close": {
+        "x": 0.0,
+        "y": 10.0,
+        "z": 0.0
+      }
     },
     "lift_mm": {
       "base": 0.0,
@@ -18,14 +30,14 @@
       "offset_mm": {
         "x": 20.0,
         "y": 15.0,
-        "z": -10.0
+        "z": -5.0
       }
     },
     {
       "name": "向右-降低10cm后",
       "offset_mm": {
-        "x": 55.0,
-        "y": 10.0,
+        "x": 60.0,
+        "y": 0.0,
         "z": 15.0
       }
     }

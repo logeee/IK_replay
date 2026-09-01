@@ -37,6 +37,9 @@ export interface FlowContext {
   lift_max_m?: number;
   planner_mid_lift_m?: number;
   approach_offset_m?: number;
+  base_offset_wall_m?: number[];
+  first_round_offset_wall_m?: number[];
+  effective_offset_wall_m?: number[];
   picked_target_root_m?: number[];
   effective_target_root_m?: number[];
 }
@@ -53,6 +56,9 @@ export interface PickMeta {
   adjustment_camera_m?: number[];
   adjustment_mm?: number[];
   adjustment_wall_mm?: { x: number; y: number; z: number } | null;
+  base_adjustment_wall_mm?: { x: number; y: number; z: number } | null;
+  first_round_adjustment_wall_mm?: { x: number; y: number; z: number } | null;
+  flow_round?: number | null;
   final_p_camera_m?: number[];
   approach_offset_m?: number;
   confirm_result?: {

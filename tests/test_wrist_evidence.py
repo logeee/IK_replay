@@ -251,6 +251,8 @@ class WristEvidenceTest(unittest.TestCase):
             flow.lift_max_m = 0.03
             flow.lift_m = 0.02
             flow.approach_offset_m = 0.0
+            flow.target_offset_wall_m = (0.025, 0.01, -0.02)
+            flow.first_round_offset_wall_m = (0.0, 0.015, 0.0)
             flow._log = mock.Mock()
 
             flow._save_pick_flow_context(
@@ -271,6 +273,12 @@ class WristEvidenceTest(unittest.TestCase):
             self.assertEqual(context["opening_pose"]["min_distance_m"], 0.49)
             self.assertEqual(context["round"], 2)
             self.assertEqual(context["target_lift_m"], 0.02)
+            self.assertEqual(
+                context["base_offset_wall_m"], [0.025, 0.01, -0.02]
+            )
+            self.assertEqual(
+                context["first_round_offset_wall_m"], [0.0, 0.0, 0.0]
+            )
             self.assertEqual(context["effective_target_root_m"], [0.1, 0.2, 0.32])
 
     def test_yolo_scene_adds_wrist_frame_without_using_it_for_decision(self):

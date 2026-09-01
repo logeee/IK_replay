@@ -164,13 +164,18 @@ class SwitchFlow:
                  pointcloud: Any = None,           # 7005 点云找点客户端（None=退回旧框偏移法）
                  # 目的点人工微调（墙面系，米）：算法算出目的点后再叠加，
                  # 不动"粉点→目的点"的模型偏移。x=沿墙向右 y=法向入墙 z=沿墙向上
-                 target_offset_wall_m: tuple[float, float, float] = (0.0, 0.0, 0.0)):
+                 target_offset_wall_m: tuple[float, float, float] = (0.0, 0.0, 0.0),
+                 # 仅第1轮在上述基础偏移之上额外叠加；第2轮起自动归零。
+                 first_round_offset_wall_m: tuple[float, float, float] = (0.0, 0.0, 0.0)):
         self.client = client or ReachClient()
         self.console = console
         self.yolo = yolo
         self.pointcloud = pointcloud
         self.target_offset_wall_m = tuple(
             float(v) for v in target_offset_wall_m
+        )
+        self.first_round_offset_wall_m = tuple(
+            float(v) for v in first_round_offset_wall_m
         )
         self.coarse_target_deg = coarse_target_deg
         self.coarse_accept_min_deg = (
@@ -421,7 +426,7 @@ class SwitchFlow:
                     self._confirm("detect_points",
                                   "即将取点（视觉识别拨动目标，不动机器人）")
                     self._step_begin(f"7️⃣ 取点（第{round_no}轮）")
-                    points = self._detect_points_held()
+                    points = self._detect_points_held(round_no)
                     self._log(f"点位: {self._points_brief(points)}")
 
                     self._log("IK 执行拨动")
@@ -688,10 +693,10 @@ class SwitchFlow:
                         f"抬手后 {attempts} 次纠偏仍在 {yaw:+.2f}°，"
                         f"未收进保持带 {band}，手臂将受控回落")
 
-    def _detect_points_held(self) -> list[dict]:
+    def _detect_points_held(self, round_no: int = 1) -> list[dict]:
         """取点前后都守住保持带：取点期间漂出就重新纠偏，再重新取点。"""
         for attempt in (1, 2):
-            points = self.detect_points()
+            points = self.detect_points(round_no)
             yaw = self._fine_yaw("取点后复查")
             if self._in_band(
                 yaw, self.fine_accept_min_deg, self.fine_accept_max_deg
@@ -700,7 +705,7 @@ class SwitchFlow:
             self._log(f"取点期间漂出保持带（yaw {yaw:+.2f}°），"
                       f"重新纠偏后重新取点（第 {attempt} 次）")
             self._fine_align_with_retry(attempts=2)
-        return self.detect_points()
+        return self.detect_points(round_no)
 
     # 语义点云：沿柜面 ±X 并向 -Z 偏 15°；旧链路保留向下倾 2°。
     SIDESTEP_TILT_DEG = 2.0
@@ -1198,7 +1203,7 @@ class SwitchFlow:
                 )
             time.sleep(self.WAIST_STABLE_SAMPLE_GAP_S)
 
-    def detect_points(self) -> list[dict]:
+    def detect_points(self, round_no: int = 1) -> list[dict]:
         """7️⃣ 开关取点，三条路径按优先级：
 
         1. 7005 语义点云算法（默认）：冻结同帧 RGB-D → 墙面坐标系 →
@@ -1214,7 +1219,7 @@ class SwitchFlow:
         """
         if self.pointcloud is not None:
             self._wait_robot_stable()
-            return self._detect_points_pointcloud()
+            return self._detect_points_pointcloud(round_no)
         if self.yolo is not None:
             self._wait_robot_stable()
             for i in range(1, self.YOLO_ATTEMPTS + 1):
@@ -1258,11 +1263,11 @@ class SwitchFlow:
                 parts.append(f"({pt.get('u')},{pt.get('v')})")
         return "；".join(parts)
 
-    def _detect_points_pointcloud(self) -> list[dict]:
+    def _detect_points_pointcloud(self, round_no: int = 1) -> list[dict]:
         """7005 语义点云算法找点，与网页「算法找点1/3」同一条链路。"""
         last_err = ""
         for i in range(1, self.YOLO_ATTEMPTS + 1):
-            picked, last_err = self._pointcloud_pick_once(i)
+            picked, last_err = self._pointcloud_pick_once(i, round_no)
             if picked is not None:
                 return [picked]
             self._log(f"点云找点第 {i}/{self.YOLO_ATTEMPTS} 次失败：{last_err}")
@@ -1274,7 +1279,9 @@ class SwitchFlow:
             f"（最后一次：{last_err}）——检查 7005 点云服务是否在跑、"
             f"画面有无遮挡反光")
 
-    def _pointcloud_pick_once(self, attempt: int) -> tuple[dict | None, str]:
+    def _pointcloud_pick_once(
+        self, attempt: int, round_no: int = 1
+    ) -> tuple[dict | None, str]:
         """拍帧 → 算法找点 → 人工微调 → 18001 确认。返回 (picked, 错误)。"""
         cap = self.pointcloud.capture()
         if not cap.get("ok"):
@@ -1299,6 +1306,7 @@ class SwitchFlow:
                         "site": self.site,
                         "flip_kind": self.flip_kind,
                         "direction": self.flip_direction,
+                        "round": round_no,
                         "attempt": attempt,
                     },
                 )
@@ -1325,7 +1333,12 @@ class SwitchFlow:
         # 人工微调：墙面系 (x右, y入墙, z上) → 相机系向量，叠加在算好的
         # 目的点上；粉点→目的点的模型偏移保持原样。
         target_cam = [float(v) for v in tgt["target_camera_m"]]
-        off = self.target_offset_wall_m
+        base_off = self.target_offset_wall_m
+        first_off = (
+            self.first_round_offset_wall_m
+            if round_no == 1 else (0.0, 0.0, 0.0)
+        )
+        off = tuple(base_off[index] + first_off[index] for index in range(3))
         adj_cam = [0.0, 0.0, 0.0]
         if any(abs(v) > 1e-9 for v in off):
             axes = tgt.get("wall_axes_camera")
@@ -1333,8 +1346,23 @@ class SwitchFlow:
                 return None, "算法结果缺墙面坐标轴，无法应用人工偏移"
             adj_cam = [sum(off[k] * float(axes[k][i]) for k in range(3))
                        for i in range(3)]
-            self._log(f"目的点人工微调（墙面系）：右 {off[0] * 1000:+.1f} / "
-                      f"上 {off[2] * 1000:+.1f} / 入墙 {off[1] * 1000:+.1f} mm")
+        self._log(
+            f"基础偏置（墙面系）：右 {base_off[0] * 1000:+.1f} / "
+            f"上 {base_off[2] * 1000:+.1f} / "
+            f"入墙 {base_off[1] * 1000:+.1f} mm"
+        )
+        if round_no == 1:
+            self._log(
+                f"首轮额外偏置：右 {first_off[0] * 1000:+.1f} / "
+                f"上 {first_off[2] * 1000:+.1f} / "
+                f"入墙 {first_off[1] * 1000:+.1f} mm"
+            )
+        elif any(abs(v) > 1e-9 for v in self.first_round_offset_wall_m):
+            self._log("首轮额外偏置本轮不应用")
+        self._log(
+            f"本轮合计偏置：右 {off[0] * 1000:+.1f} / "
+            f"上 {off[2] * 1000:+.1f} / 入墙 {off[1] * 1000:+.1f} mm"
+        )
 
         res = self.pointcloud.confirm(cap["capture_id"], {
             "p_camera": [target_cam[i] + adj_cam[i] for i in range(3)],
@@ -1344,6 +1372,17 @@ class SwitchFlow:
             "adjustment_wall_mm": {"x": off[0] * 1000.0,
                                    "y": off[1] * 1000.0,
                                    "z": off[2] * 1000.0},
+            "base_adjustment_wall_mm": {
+                "x": base_off[0] * 1000.0,
+                "y": base_off[1] * 1000.0,
+                "z": base_off[2] * 1000.0,
+            },
+            "first_round_adjustment_wall_mm": {
+                "x": first_off[0] * 1000.0,
+                "y": first_off[1] * 1000.0,
+                "z": first_off[2] * 1000.0,
+            },
+            "flow_round": round_no,
             "approach_offset_m": self.approach_offset_m,
             "selection_source": tgt.get("selection_source") or "flow-auto",
             "model_version": tgt.get("model_version"),
@@ -1384,12 +1423,28 @@ class SwitchFlow:
             for key in ("name", "file", "manual", "min_distance_m")
             if key in pose
         }
+        base_offset = tuple(
+            getattr(self, "target_offset_wall_m", (0.0, 0.0, 0.0))
+        )
+        configured_first_offset = tuple(
+            getattr(self, "first_round_offset_wall_m", (0.0, 0.0, 0.0))
+        )
+        first_offset = (
+            configured_first_offset
+            if round_no == 1 else (0.0, 0.0, 0.0)
+        )
         context = {
             "distance_m": self._measured_distance_m,
             "opening_pose": opening_pose,
             "round": round_no,
             "max_rounds": self.max_flip_rounds,
-            # 点云配置微调落在 meta.adjustment_*；以下是流程随后追加的偏移。
+            "base_offset_wall_m": list(base_offset),
+            "first_round_offset_wall_m": list(first_offset),
+            "effective_offset_wall_m": [
+                base_offset[index] + first_offset[index]
+                for index in range(3)
+            ],
+            # 根坐标系目标上抬与墙面系取点偏置分开记录。
             "target_lift_m": target_lift_m,
             "lift_base_m": self.lift_base_m,
             "lift_step_m": self.lift_step_m,

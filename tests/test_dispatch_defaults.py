@@ -21,7 +21,7 @@ from core.dispatch_defaults import (
 
 def _config(**overrides):
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "defaults": {
             "site": "factory",
             "offset_preset_by_kind": {
@@ -53,6 +53,9 @@ class DispatchDefaultsTest(unittest.TestCase):
         by_kind = config["defaults"]["offset_preset_by_kind"]
         self.assertIn("remote_to_close", by_kind)
         self.assertIn("close_to_remote", by_kind)
+        first_by_kind = config["defaults"]["first_round_offset_wall_mm_by_kind"]
+        self.assertIn("remote_to_close", first_by_kind)
+        self.assertIn("close_to_remote", first_by_kind)
 
     def test_save_and_load_roundtrip_with_named_presets(self):
         payload = _config(
@@ -130,10 +133,40 @@ class DispatchDefaultsTest(unittest.TestCase):
                 {"name": "旧配置", "offset_mm": {"x": 3}},
             ],
         })
-        self.assertEqual(migrated["schema_version"], 2)
+        self.assertEqual(migrated["schema_version"], 3)
         self.assertEqual(
             migrated["defaults"]["offset_preset_by_kind"],
             {"close_to_remote": "旧配置", "remote_to_close": "旧配置"},
+        )
+        self.assertEqual(
+            migrated["defaults"]["first_round_offset_wall_mm_by_kind"],
+            {
+                "close_to_remote": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "remote_to_close": {"x": 0.0, "y": 0.0, "z": 0.0},
+            },
+        )
+
+    def test_first_round_offsets_are_direction_specific(self):
+        payload = _config(defaults={
+            "site": "factory",
+            "offset_preset_by_kind": {
+                "close_to_remote": "",
+                "remote_to_close": "",
+            },
+            "first_round_offset_wall_mm_by_kind": {
+                "close_to_remote": {"x": 1, "y": 12, "z": 3},
+                "remote_to_close": {"x": -4, "y": 15, "z": -6},
+            },
+        })
+
+        saved = save_dispatch_defaults(payload, self.path)
+
+        self.assertEqual(
+            saved["defaults"]["first_round_offset_wall_mm_by_kind"],
+            {
+                "close_to_remote": {"x": 1.0, "y": 12.0, "z": 3.0},
+                "remote_to_close": {"x": -4.0, "y": 15.0, "z": -6.0},
+            },
         )
 
     def test_offset_mm_accepts_missing_axes(self):

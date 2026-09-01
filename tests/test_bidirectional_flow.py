@@ -232,8 +232,64 @@ class FlipIntentTests(unittest.TestCase):
                 "site": "factory",
                 "flip_kind": "remote_to_close",
                 "direction": "rtl",
+                "round": 1,
                 "attempt": 1,
             },
+        )
+
+    def test_first_round_wall_offset_is_additive_and_then_stops(self):
+        pointcloud = mock.Mock()
+        pointcloud.capture.side_effect = [
+            {"ok": True, "capture_id": "round-1"},
+            {"ok": True, "capture_id": "round-2"},
+        ]
+        pointcloud.auto_target.return_value = {
+            "ok": True,
+            "matched_detection_name": "远方",
+            "target_point_slot": 1,
+            "panel_center_wall_m": [0.0, 0.0, 0.0],
+            "target_wall_m": [0.01, 0.02, 0.03],
+            "target_camera_m": [1.0, 2.0, 3.0],
+            "wall_axes_camera": [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+        }
+        pointcloud.confirm.return_value = {
+            "ok": True,
+            "p_root": [1.0, 2.0, 3.0],
+        }
+        flow = SwitchFlow(
+            client=mock.Mock(),
+            pointcloud=pointcloud,
+            site="factory",
+            flip_kind="remote_to_close",
+            target_offset_wall_m=(0.01, 0.02, 0.03),
+            first_round_offset_wall_m=(0.004, 0.005, 0.006),
+        )
+        flow._log = mock.Mock()
+
+        flow._pointcloud_pick_once(1, round_no=1)
+        flow._pointcloud_pick_once(1, round_no=2)
+
+        first = pointcloud.confirm.call_args_list[0].args[1]
+        second = pointcloud.confirm.call_args_list[1].args[1]
+        self.assertEqual(
+            first["adjustment_wall_mm"],
+            {"x": 14.0, "y": 25.0, "z": 36.0},
+        )
+        self.assertEqual(
+            first["first_round_adjustment_wall_mm"],
+            {"x": 4.0, "y": 5.0, "z": 6.0},
+        )
+        self.assertEqual(
+            second["adjustment_wall_mm"],
+            {"x": 10.0, "y": 20.0, "z": 30.0},
+        )
+        self.assertEqual(
+            second["first_round_adjustment_wall_mm"],
+            {"x": 0.0, "y": 0.0, "z": 0.0},
         )
 
     def test_cabinet_axis_direction_mirrors_x_but_keeps_downward_tilt(self):
@@ -318,7 +374,11 @@ class FactoryDispatchTests(unittest.TestCase):
                 "offset_preset_by_kind": {
                     "remote_to_close": "左拨",
                     "close_to_remote": "右拨",
-                }
+                },
+                "first_round_offset_wall_mm_by_kind": {
+                    "remote_to_close": {"x": 1, "y": 11, "z": 2},
+                    "close_to_remote": {"x": -3, "y": 12, "z": 4},
+                },
             },
             "offset_presets": [
                 {"name": "左拨", "offset_mm": {"x": 5, "y": 1, "z": -2}},
@@ -333,13 +393,37 @@ class FactoryDispatchTests(unittest.TestCase):
             defaults,
             "close_to_remote",
         )
+        first_left, _ = dispatch._resolve_first_round_offset(
+            None, defaults, "remote_to_close"
+        )
+        first_right, _ = dispatch._resolve_first_round_offset(
+            None, defaults, "close_to_remote"
+        )
 
         self.assertEqual(left, (5, 1, -2))
         self.assertEqual(right, (-6, 2, -3))
+        self.assertEqual(first_left, (1.0, 11.0, 2.0))
+        self.assertEqual(first_right, (-3.0, 12.0, 4.0))
         self.assertEqual(explicit, (1.0, 2.0, 3.0))
         self.assertEqual(source, "请求指定")
 
     def test_factory_close_to_remote_task_reaches_worker(self):
+        defaults = {
+            "schema_version": 3,
+            "defaults": {
+                "site": "factory",
+                "offset_preset_by_kind": {
+                    "remote_to_close": "",
+                    "close_to_remote": "",
+                },
+                "first_round_offset_wall_mm_by_kind": {
+                    "remote_to_close": {"x": 0, "y": 0, "z": 0},
+                    "close_to_remote": {"x": 0, "y": 7, "z": 0},
+                },
+                "lift_mm": {"base": 0, "step": 0, "max": 30},
+            },
+            "offset_presets": [],
+        }
         with dispatch._lock:
             original_task = dispatch._task
             original_check = dispatch._check
@@ -347,7 +431,11 @@ class FactoryDispatchTests(unittest.TestCase):
             dispatch._task = None
             dispatch._check = None
         try:
-            with mock.patch.object(dispatch.threading, "Thread") as thread:
+            with (
+                mock.patch.object(dispatch, "_current_defaults",
+                                  return_value=defaults),
+                mock.patch.object(dispatch.threading, "Thread") as thread,
+            ):
                 result = dispatch.task_submit({
                     "language": "Change the switch from close to remote",
                     "site": "factory",
@@ -356,6 +444,10 @@ class FactoryDispatchTests(unittest.TestCase):
             self.assertEqual(dispatch._task["direction"], "ltr")
             self.assertEqual(dispatch._task["flip_from"], "就地")
             self.assertEqual(dispatch._task["flip_to"], "远方")
+            self.assertEqual(
+                dispatch._task["first_round_offset_wall_mm"],
+                [0.0, 7.0, 0.0],
+            )
             thread.return_value.start.assert_called_once()
         finally:
             with dispatch._lock:

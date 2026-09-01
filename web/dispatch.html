@@ -386,6 +386,16 @@
       </span>
       <span id="manualHint" class="hint"></span>
     </div>
+    <div class="bar-row">
+      <span class="offset-group" title="只在第1轮叠加到上方目的点微调；第2轮起自动归零。方向为柜面坐标系。">
+        首轮额外偏置(mm)
+        <label>右+ <input id="firstOffsetX" type="number" min="-100" max="100" step="1" value="0" /></label>
+        <label>上+ <input id="firstOffsetZ" type="number" min="-100" max="100" step="1" value="0" /></label>
+        <label>入墙+ <input id="firstOffsetY" type="number" min="-100" max="100" step="1" value="0" /></label>
+      </span>
+      <button id="learnFirstRoundDefault" title="把当前三个首轮额外偏置保存为当前拨动方向的API默认值">学习当前为本方向默认</button>
+      <span id="firstOffsetHint" class="hint">仅第1轮应用</span>
+    </div>
   </section>
 
   <section id="promptPanel" class="panel prompt-panel" hidden>
@@ -495,6 +505,18 @@
       <select id="defaultPresetCloseToRemote"><option value="">无</option></select>
     </label>
     <div id="defaultPresetPreview" class="modal-note"></div>
+    <div class="modal-field">
+      远方 → 就地首轮额外偏置(mm)
+      <label>右+ <input id="defaultFirstRtlX" type="number" min="-100" max="100" step="1" value="0" /></label>
+      <label>上+ <input id="defaultFirstRtlZ" type="number" min="-100" max="100" step="1" value="0" /></label>
+      <label>入墙+ <input id="defaultFirstRtlY" type="number" min="-100" max="100" step="1" value="0" /></label>
+    </div>
+    <div class="modal-field">
+      就地 → 远方首轮额外偏置(mm)
+      <label>右+ <input id="defaultFirstLtrX" type="number" min="-100" max="100" step="1" value="0" /></label>
+      <label>上+ <input id="defaultFirstLtrZ" type="number" min="-100" max="100" step="1" value="0" /></label>
+      <label>入墙+ <input id="defaultFirstLtrY" type="number" min="-100" max="100" step="1" value="0" /></label>
+    </div>
     <div class="modal-field" title="抵消手臂重力下垂：IK 拨动目标点整体抬高。首轮抬「首轮」值，每重试一轮再加「每轮+」，合计不超过「封顶」（各 0~50 mm）">
       默认拨点上抬(mm)
       <label>首轮 <input id="defaultLiftBase" type="number" min="0" max="50" step="1" value="10" /></label>
@@ -764,14 +786,18 @@ function renderDetails(data) {
   $("detailDuration").textContent = duration === null ? "—" : formatDuration(duration);
   $("detailRetries").textContent = data.retries ? `${data.retries}轮` : "—";
   const offsetMm = data.target_offset_wall_mm || [];
+  const firstOffsetMm = data.first_round_offset_wall_mm || [];
   const offsetSource = data.offset_source ? `，${data.offset_source}` : "";
+  const firstOffsetPart = firstOffsetMm.some((value) => Number(value))
+    ? `；首轮额外 右${firstOffsetMm[0]}mm / 上${firstOffsetMm[2]}mm / 入墙${firstOffsetMm[1]}mm`
+    : "";
   const liftPart = data.lift_mm
     ? `；上抬 ${liftText(data.lift_mm)}${data.lift_source ? `（${data.lift_source}）` : ""}`
     : "";
   $("detailOffset").textContent = !data.task_id ? "—"
     : (offsetMm.some((value) => Number(value))
       ? `右${offsetMm[0]}mm / 上${offsetMm[2]}mm / 入墙${offsetMm[1]}mm（墙面系${offsetSource}）`
-      : "无") + liftPart;
+      : "无") + firstOffsetPart + liftPart;
   $("reachState").textContent = `REACH ${data.reach_alive ? "ONLINE" : "OFFLINE"}`;
   $("reachState").style.color = data.reach_alive ? "var(--green)" : "var(--muted)";
 
@@ -969,7 +995,10 @@ function syncLanguageOptions() {
     ? "工厂双向：远→就向左 / 就→远向右"
     : "实验室：当前仅支持就→远";
 }
-$("manualSite").addEventListener("change", syncLanguageOptions);
+$("manualSite").addEventListener("change", () => {
+  syncLanguageOptions();
+  if (defaultsLoadedOnce) fillManualFirstRoundFromDefault();
+});
 syncLanguageOptions();
 
 function readOffsetMm(id) {
@@ -992,6 +1021,10 @@ let defaultsLoadedOnce = false;
 let currentDefaults = {
   site: "factory",
   offset_preset_by_kind: { close_to_remote: "", remote_to_close: "" },
+  first_round_offset_wall_mm_by_kind: {
+    close_to_remote: { x: 0, y: 0, z: 0 },
+    remote_to_close: { x: 0, y: 0, z: 0 },
+  },
   lift_mm: { base: 10, step: 10, max: 30 },
 };
 
@@ -1000,8 +1033,41 @@ function presetByName(name) {
 }
 
 function offsetText(off) {
-  return `右${off.x} / 上${off.z} / 入墙${off.y} mm`;
+  return `右${off.x ?? 0} / 上${off.z ?? 0} / 入墙${off.y ?? 0} mm`;
 }
+
+function currentManualKind() {
+  return $("manualLanguage").value === "Change the switch from remote to close"
+    ? "remote_to_close" : "close_to_remote";
+}
+
+function readOffsetInputs(xId, yId, zId) {
+  return {
+    x: readOffsetMm(xId),
+    y: readOffsetMm(yId),
+    z: readOffsetMm(zId),
+  };
+}
+
+function writeOffsetInputs(offset, xId, yId, zId) {
+  const value = offset || { x: 0, y: 0, z: 0 };
+  $(xId).value = value.x || 0;
+  $(yId).value = value.y || 0;
+  $(zId).value = value.z || 0;
+}
+
+function fillManualFirstRoundFromDefault() {
+  const byKind = currentDefaults.first_round_offset_wall_mm_by_kind || {};
+  writeOffsetInputs(
+    byKind[currentManualKind()],
+    "firstOffsetX",
+    "firstOffsetY",
+    "firstOffsetZ",
+  );
+  $("firstOffsetHint").textContent = "已载入本方向默认；修改后可学习当前";
+}
+
+$("manualLanguage").addEventListener("change", fillManualFirstRoundFromDefault);
 
 function fillPresetSelect(select, emptyLabel, selected) {
   const wanted = selected !== undefined ? selected : select.value;
@@ -1017,10 +1083,13 @@ function renderConfigSummary() {
   const byKind = currentDefaults.offset_preset_by_kind || {};
   const rtlPreset = presetByName(byKind.remote_to_close);
   const ltrPreset = presetByName(byKind.close_to_remote);
+  const firstByKind = currentDefaults.first_round_offset_wall_mm_by_kind || {};
   $("configSummary").textContent =
     `默认现场：${SITE_LABELS[currentDefaults.site] || currentDefaults.site}`
     + ` ｜ 远→就偏移：${rtlPreset ? `「${rtlPreset.name}」` : "无"}`
     + ` ｜ 就→远偏移：${ltrPreset ? `「${ltrPreset.name}」` : "无"}`
+    + ` ｜ 首轮额外 远→就：${offsetText(firstByKind.remote_to_close || {})}`
+    + `；就→远：${offsetText(firstByKind.close_to_remote || {})}`
     + ` ｜ 拨点上抬：${liftText(currentDefaults.lift_mm)}`
     + ` ｜ 已存偏移配置 ${offsetPresets.length} 条`;
 }
@@ -1064,12 +1133,19 @@ async function loadDefaultsConfig() {
       site: (data.defaults || {}).site || "factory",
       offset_preset_by_kind: (data.defaults || {}).offset_preset_by_kind
         || { close_to_remote: "", remote_to_close: "" },
+      first_round_offset_wall_mm_by_kind:
+        (data.defaults || {}).first_round_offset_wall_mm_by_kind
+        || {
+          close_to_remote: { x: 0, y: 0, z: 0 },
+          remote_to_close: { x: 0, y: 0, z: 0 },
+        },
       lift_mm: (data.defaults || {}).lift_mm || { base: 10, step: 10, max: 30 },
     };
     if (wasFirstLoad) {
       // 手动测试默认跟随已保存现场；工厂柜会立即显示两个可执行方向。
       $("manualSite").value = currentDefaults.site;
       syncLanguageOptions();
+      fillManualFirstRoundFromDefault();
       // 手动栏的上抬输入首次按保存的默认值预填，之后不覆盖手填值
       $("liftBase").value = currentDefaults.lift_mm.base;
       $("liftStep").value = currentDefaults.lift_mm.step;
@@ -1126,6 +1202,19 @@ $("editDefaults").addEventListener("click", () => {
     currentDefaults.offset_preset_by_kind.close_to_remote,
   );
   renderDefaultPresetPreview();
+  const firstByKind = currentDefaults.first_round_offset_wall_mm_by_kind || {};
+  writeOffsetInputs(
+    firstByKind.remote_to_close,
+    "defaultFirstRtlX",
+    "defaultFirstRtlY",
+    "defaultFirstRtlZ",
+  );
+  writeOffsetInputs(
+    firstByKind.close_to_remote,
+    "defaultFirstLtrX",
+    "defaultFirstLtrY",
+    "defaultFirstLtrZ",
+  );
   $("defaultLiftBase").value = currentDefaults.lift_mm.base;
   $("defaultLiftStep").value = currentDefaults.lift_mm.step;
   $("defaultLiftMax").value = currentDefaults.lift_mm.max;
@@ -1143,6 +1232,18 @@ $("saveDefaults").addEventListener("click", async () => {
       remote_to_close: $("defaultPresetRemoteToClose").value,
       close_to_remote: $("defaultPresetCloseToRemote").value,
     },
+    first_round_offset_wall_mm_by_kind: {
+      remote_to_close: readOffsetInputs(
+        "defaultFirstRtlX",
+        "defaultFirstRtlY",
+        "defaultFirstRtlZ",
+      ),
+      close_to_remote: readOffsetInputs(
+        "defaultFirstLtrX",
+        "defaultFirstLtrY",
+        "defaultFirstLtrZ",
+      ),
+    },
     lift_mm: {
       base: readLiftMm("defaultLiftBase"),
       step: readLiftMm("defaultLiftStep"),
@@ -1155,6 +1256,36 @@ $("saveDefaults").addEventListener("click", async () => {
   }
   await loadDefaultsConfig();
   closeModal("defaultsModal");
+});
+
+$("learnFirstRoundDefault").addEventListener("click", async () => {
+  const kind = currentManualKind();
+  const current = readOffsetInputs(
+    "firstOffsetX",
+    "firstOffsetY",
+    "firstOffsetZ",
+  );
+  const nextByKind = {
+    close_to_remote: {
+      ...(currentDefaults.first_round_offset_wall_mm_by_kind.close_to_remote
+        || { x: 0, y: 0, z: 0 }),
+    },
+    remote_to_close: {
+      ...(currentDefaults.first_round_offset_wall_mm_by_kind.remote_to_close
+        || { x: 0, y: 0, z: 0 }),
+    },
+  };
+  nextByKind[kind] = current;
+  const data = await postJson("/config/defaults", {
+    first_round_offset_wall_mm_by_kind: nextByKind,
+  });
+  if (!data.ok) {
+    $("firstOffsetHint").textContent = data.error || "学习失败";
+    return;
+  }
+  await loadDefaultsConfig();
+  $("firstOffsetHint").textContent =
+    `已学习为${kind === "remote_to_close" ? "远→就" : "就→远"}默认：${offsetText(current)}`;
 });
 
 // ---- 弹窗二：偏移配置管理 ----
@@ -1214,13 +1345,29 @@ $("manualStart").addEventListener("click", async () => {
   const retries = Math.min(20, Math.max(1, Number($("manualRetries").value) || 3));
   const manual = $("manualStep").checked;
   const offset = { x: readOffsetMm("offsetX"), y: readOffsetMm("offsetY"), z: readOffsetMm("offsetZ") };
+  const firstOffset = readOffsetInputs(
+    "firstOffsetX",
+    "firstOffsetY",
+    "firstOffsetZ",
+  );
   const lift = { base: readLiftMm("liftBase"), step: readLiftMm("liftStep"), max: readLiftMm("liftMax") };
   const mode = manual ? "每个主要步骤执行前都需要在本页确认" : "全自动执行（无每步确认）";
   const offsetNote = (offset.x || offset.y || offset.z)
     ? `\n目的点微调（墙面系）：右${offset.x}mm / 上${offset.z}mm / 入墙${offset.y}mm` : "";
-  if (!confirm(`确认启动拨闸流程？\n现场：${SITE_LABELS[site]}\n指令：${language}\n${mode}，最多 ${retries} 轮${offsetNote}\n拨点上抬：${liftText(lift)}`)) return;
+  const firstOffsetNote = (firstOffset.x || firstOffset.y || firstOffset.z)
+    ? `\n首轮额外偏置：右${firstOffset.x}mm / 上${firstOffset.z}mm / 入墙${firstOffset.y}mm`
+    : "\n首轮额外偏置：无";
+  if (!confirm(`确认启动拨闸流程？\n现场：${SITE_LABELS[site]}\n指令：${language}\n${mode}，最多 ${retries} 轮${offsetNote}${firstOffsetNote}\n拨点上抬：${liftText(lift)}`)) return;
   const data = await postJson("/task/flip",
-    { language, retries, manual, site, target_offset_wall_mm: offset, lift_mm: lift });
+    {
+      language,
+      retries,
+      manual,
+      site,
+      target_offset_wall_mm: offset,
+      first_round_offset_wall_mm: firstOffset,
+      lift_mm: lift,
+    });
   setHint(data.ok ? `任务已创建 ${data.task_id}` : (data.error || "启动失败"));
   poll();
 });

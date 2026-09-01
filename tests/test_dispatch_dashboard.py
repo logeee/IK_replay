@@ -25,6 +25,9 @@ class DispatchDashboardTests(unittest.TestCase):
         self.assertIn("就地 → 远方（向右拨）", html)
         self.assertIn('id="defaultPresetRemoteToClose"', html)
         self.assertIn('id="defaultPresetCloseToRemote"', html)
+        self.assertIn('id="firstOffsetY"', html)
+        self.assertIn('id="learnFirstRoundDefault"', html)
+        self.assertIn("first_round_offset_wall_mm_by_kind", html)
         self.assertEqual(response.headers["cache-control"], "no-store, max-age=0")
         self.assertIn('cache: "no-store"', html)
 
