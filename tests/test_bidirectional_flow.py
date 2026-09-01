@@ -48,6 +48,8 @@ class FlipIntentTests(unittest.TestCase):
 
         self.assertEqual(left.sidestep_cm, 10.0)
         self.assertEqual(right.sidestep_cm, -10.0)
+        self.assertEqual(left.push_force_n, 15.0)
+        self.assertEqual(right.push_force_n, 15.0)
 
     def test_rightward_flip_selects_left_prefixed_opening_pose(self):
         client = mock.Mock()
