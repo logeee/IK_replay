@@ -3,9 +3,10 @@
 已部署的步骤（测平面/测距、腰部对齐、pick→规划→执行）直接走 reach_server；
 起手式按距离和物理拨动方向自动选：向左拨使用「X.XX-起手式新」，向右拨
 使用「X.XX-左-起手式」；选档 = 实测距离-0.03m 后四舍五入到最近档。重试轮插值
-回所选序列配套的终点路点；收尾 =
-插值到「起手点测试」路点后释放手臂——成功和失败（含重试耗尽）都走这个
-回落，避免手臂停在柜面前被权重渐出交还本体。
+回所选序列配套的终点路点；普通起手式收尾直接插值到「起手点测试」，左-
+起手式必须先回配套终点、再到「起手点测试」，最后才释放手臂。成功和失败
+（含重试耗尽）都走对应的安全回落，避免手臂扫到柜面或停在柜面前被权重
+渐出交还本体。
 场景判断和拨后复核走 7004 YOLO 服务（python -m api.yolo_server）：
 每处视觉判断连问 3 帧再下结论；配了 YOLO 却仍没结论时报 YOLO_FAILED
 退出（手臂受控回落），不转人工——无人值守的自动化不能卡在等人上。
@@ -449,10 +450,17 @@ class SwitchFlow:
                     if self.verify_flip():
                         self._log("拨动成功 ✔")
                         self._log("═══ 收尾：快速回落 ═══")
+                        left_safe_route = self._is_left_start_pose(pose)
+                        route_text = (
+                            f"先回配套终点「{self._pose_endpoint_name(pose)}」，"
+                            f"再回落到「{self.DESCEND_WAYPOINT}」"
+                            if left_safe_route
+                            else f"回落到「{self.DESCEND_WAYPOINT}」"
+                        )
                         self._confirm(
                             "descend",
-                            f"拨动成功：即将快速回落到「{self.DESCEND_WAYPOINT}」"
-                            f"路点并释放手臂（真机动作）",
+                            f"拨动成功：即将{route_text}，到位后释放手臂"
+                            f"（真机动作）",
                         )
                         self._step_begin("🔟 收尾回落与释放")
                         self.descend_fast(pose)
@@ -850,6 +858,19 @@ class SwitchFlow:
                             f"{tag} 横移执行被拒: {res.get('error')}")
         self._wait_exec(f"{tag} 拨动（{side_text}+推力）")
 
+    def _pose_endpoint_name(self, pose: dict | None) -> str:
+        """返回起手式配套终点名，兼容左-起手式的独立命名规则。"""
+        selected = pose or {}
+        explicit = str(selected.get("endpoint_name") or "").strip()
+        if explicit:
+            return explicit
+        name = str(selected.get("name") or "").strip()
+        if not name:
+            return ""
+        if self.LEFT_POSE_PATTERN.match(name):
+            return re.sub(r"-起手式$", "-终点", name)
+        return f"{name}终点"
+
     def _goto_endpoint(self, tag: str) -> None:
         """关节插值回起手式配套的「终点」路点。
 
@@ -863,7 +884,7 @@ class SwitchFlow:
         if not name:
             raise FlowError(ErrorCode.EXEC_FAILED,
                             f"{tag} 没有当前起手式，配不出终点路点名")
-        endpoint_name = str(pose.get("endpoint_name") or f"{name}终点")
+        endpoint_name = self._pose_endpoint_name(pose)
         self._interp_to_waypoint(endpoint_name, tag)
 
     def _interp_to_waypoint(self, wp_name: str, tag: str,
@@ -1561,10 +1582,34 @@ class SwitchFlow:
     DESCEND_WAYPOINT = "起手点测试"   # 复核成功后插值回落到这个已录路点
     DESCEND_SPEED_RAD_S = 0.6         # 收尾回落比常规插值快一倍
 
+    def _is_left_start_pose(self, pose: dict | None = None) -> bool:
+        """是否为需要经配套终点避开柜面的「X.XX-左-起手式」。"""
+        selected = pose or self._current_pose or {}
+        return bool(self.LEFT_POSE_PATTERN.match(
+            str(selected.get("name") or "").strip()
+        ))
+
+    def _descend_to_safe_waypoint(
+        self, pose: dict | None, tag: str
+    ) -> None:
+        """按起手式选择安全收尾路径；本方法不释放手臂。"""
+        if self._is_left_start_pose(pose):
+            selected = pose or self._current_pose or {}
+            endpoint_name = self._pose_endpoint_name(selected)
+            self._log(
+                f"{tag}使用左-起手式安全路径：先回「{endpoint_name}」，"
+                f"再到「{self.DESCEND_WAYPOINT}」"
+            )
+            self._interp_to_waypoint(endpoint_name, f"{tag}第一段")
+        self._interp_to_waypoint(
+            self.DESCEND_WAYPOINT,
+            tag,
+            speed_rad_s=self.DESCEND_SPEED_RAD_S,
+        )
+
     def descend_fast(self, pose: dict | None) -> None:
-        """收尾：快速关节插值到「起手点测试」路点，到位立即释放手臂。"""
-        self._interp_to_waypoint(self.DESCEND_WAYPOINT, "收尾",
-                                 speed_rad_s=self.DESCEND_SPEED_RAD_S)
+        """安全收尾到「起手点测试」；左-起手式先回配套终点。"""
+        self._descend_to_safe_waypoint(pose, "收尾")
         self._log("释放手臂")
         res = self.client.disarm()
         if not res.get("ok"):
@@ -1572,7 +1617,7 @@ class SwitchFlow:
                             f"释放手臂失败: {res.get('error')}")
 
     def _descend_on_failure(self) -> None:
-        """失败收尾：手臂动过就先回落到「起手点测试」，再按接管来源决定释放。
+        """失败收尾：按起手式安全回落，再按接管来源决定是否释放。
 
         不回落的话手臂会停在柜面前（拨动结束的姿态），随 reach_server 退出
         做 1s 权重渐出交还本体控制器——那一刻姿态不受我们控制，有下坠风险。
@@ -1584,8 +1629,7 @@ class SwitchFlow:
             return
         self._log("═══ 失败收尾：受控回落 ═══")
         try:
-            self._interp_to_waypoint(self.DESCEND_WAYPOINT, "失败收尾",
-                                     speed_rad_s=self.DESCEND_SPEED_RAD_S)
+            self._descend_to_safe_waypoint(self._current_pose, "失败收尾")
         except Exception as exc:
             # 没收回来就别主动松手：保持刚性，交给人处置
             self._log(f"⚠ 回落失败，手臂停在半空且保持接管，请人工扶住后处置: {exc}")

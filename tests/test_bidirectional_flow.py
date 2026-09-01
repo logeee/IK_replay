@@ -125,7 +125,6 @@ class FlipIntentTests(unittest.TestCase):
         )
         flow._current_pose = {
             "name": "0.50-左-起手式",
-            "endpoint_name": "0.50-左-终点",
         }
         flow._interp_to_waypoint = mock.Mock()
 
@@ -135,6 +134,82 @@ class FlipIntentTests(unittest.TestCase):
             "0.50-左-终点",
             "重试回位",
         )
+
+    def test_left_start_pose_descends_via_endpoint_before_release(self):
+        client = mock.Mock()
+        client.disarm.return_value = {"ok": True}
+        flow = SwitchFlow(client=client)
+        pose = {
+            "name": "0.50-左-起手式",
+            "endpoint_name": "0.50-左-终点",
+        }
+        flow._current_pose = pose
+        flow._interp_to_waypoint = mock.Mock()
+        flow._log = mock.Mock()
+
+        flow.descend_fast(pose)
+
+        self.assertEqual(
+            flow._interp_to_waypoint.call_args_list,
+            [
+                mock.call("0.50-左-终点", "收尾第一段"),
+                mock.call(
+                    flow.DESCEND_WAYPOINT,
+                    "收尾",
+                    speed_rad_s=flow.DESCEND_SPEED_RAD_S,
+                ),
+            ],
+        )
+        client.disarm.assert_called_once_with()
+
+    def test_failed_left_pose_cleanup_uses_same_safe_route(self):
+        client = mock.Mock()
+        client.disarm.return_value = {"ok": True}
+        flow = SwitchFlow(client=client)
+        flow._current_pose = {
+            "name": "0.50-左-起手式",
+            "endpoint_name": "0.50-左-终点",
+        }
+        flow._arm_moved = True
+        flow._armed_by_flow = True
+        flow._interp_to_waypoint = mock.Mock()
+        flow._log = mock.Mock()
+
+        flow._descend_on_failure()
+
+        self.assertEqual(
+            flow._interp_to_waypoint.call_args_list,
+            [
+                mock.call("0.50-左-终点", "失败收尾第一段"),
+                mock.call(
+                    flow.DESCEND_WAYPOINT,
+                    "失败收尾",
+                    speed_rad_s=flow.DESCEND_SPEED_RAD_S,
+                ),
+            ],
+        )
+        client.disarm.assert_called_once_with()
+
+    def test_left_cleanup_does_not_release_if_endpoint_return_fails(self):
+        client = mock.Mock()
+        flow = SwitchFlow(client=client)
+        flow._current_pose = {
+            "name": "0.50-左-起手式",
+            "endpoint_name": "0.50-左-终点",
+        }
+        flow._arm_moved = True
+        flow._armed_by_flow = True
+        flow._interp_to_waypoint = mock.Mock(
+            side_effect=RuntimeError("终点不可达")
+        )
+        flow._log = mock.Mock()
+
+        flow._descend_on_failure()
+
+        flow._interp_to_waypoint.assert_called_once_with(
+            "0.50-左-终点", "失败收尾第一段"
+        )
+        client.disarm.assert_not_called()
 
     def test_pick_stability_uses_only_waist_and_imu_not_wall(self):
         client = mock.Mock()
