@@ -37,18 +37,22 @@
                                 # 可选，目的点人工微调（墙面系，mm，单轴限 ±100）：
                                 # x=沿墙向右 y=法向入墙 z=沿墙向上。叠加在 7005
                                 # 点云算法算出的目的点上，不动粉点→目的点的模型偏移
-                                "lift_mm": {"base":10,"step":10,"max":30}}
+                                "lift_mm": {"base":10,"step":10,"max":30},
                                 # 可选，拨点上抬（抵消重力下垂，mm，各项 0~50）：
                                 # 首轮抬 base，每重试一轮加 step，合计封顶 max。
                                 # 不按距柜面远近区分
-                          site / target_offset_wall_mm / lift_mm 不带时自动套「外部调用
-                          默认配置」（两个任务方向可分别选择命名偏移配置；
+                                "push_force_n": 15}
+                                # 可选，沿拨动方向的前馈推力（N，0~40；0=关闭）
+                          site / target_offset_wall_mm / lift_mm / push_force_n
+                          不带时自动套「外部调用
+                          默认配置」（两个任务方向可分别选择命名偏移配置和推力；
                           GET/POST /config/defaults 读改存，配置由
                           POST /config/offset-presets[/delete] 管理）
                           返回 {"ok": true, "task_id": "..."}；执行中再触发 → 409
 
 现场（site）：工厂柜支持双向——「远方→就地」向左拨，
-    「就地→远方」向右拨；两边使用相同位移、推力、下倾、重试和收尾逻辑。
+    「就地→远方」向右拨；两边使用相同位移、下倾、重试和收尾逻辑，推力可
+    按方向分别配置。
     实验室柜当前只开放「就地→远方」。YOLO 识别真实印刷状态，language
     决定"要拨/已到位"类别，site + language 决定物理左右方向。
     GET  /task/status  → 状态机 idle/starting/running/done + 流程日志尾部
@@ -109,11 +113,13 @@ from core.capability_registry import (
 from core.dispatch_defaults import (
     DEFAULT_DISPATCH_DEFAULTS,
     DEFAULT_LIFT_MM,
+    DEFAULT_PUSH_FORCE_N,
     find_offset_preset,
     load_dispatch_defaults,
     save_dispatch_defaults,
     validate_lift_mm,
     validate_offset_mm,
+    validate_push_force_n,
 )
 
 from .client import ReachClient
@@ -566,6 +572,9 @@ def _run_task(task: dict) -> None:
                           site=task.get("site") or "lab",
                           flip_kind=task.get("kind"),
                           pointcloud=pointcloud,
+                          push_force_n=float(
+                              task.get("push_force_n", DEFAULT_PUSH_FORCE_N)
+                          ),
                           lift_base_m=(task.get("lift_mm")
                                        or DEFAULT_LIFT_MM)["base"] / 1000.0,
                           lift_step_m=(task.get("lift_mm")
@@ -962,6 +971,29 @@ def _resolve_lift(body: dict | None, defaults: dict) -> tuple[dict, str]:
     return dict(saved), "默认配置"
 
 
+def _resolve_push_force(
+    body: dict | None,
+    defaults: dict,
+    kind: str,
+) -> tuple[float, str]:
+    """请求显式推力优先，否则按拨动方向读取 17001 默认值。"""
+    if (body or {}).get("push_force_n") is not None:
+        return (
+            validate_push_force_n((body or {}).get("push_force_n")),
+            "请求指定",
+        )
+    saved_by_kind = defaults["defaults"].get("push_force_n_by_kind") or {}
+    saved = saved_by_kind.get(
+        kind,
+        defaults["defaults"].get("push_force_n"),
+    )
+    pre, post = CHECK_KIND_STATES[kind]
+    return (
+        validate_push_force_n(saved),
+        f"「{pre}→{post}」默认配置",
+    )
+
+
 def _resolve_offset(
     body: dict | None, defaults: dict, kind: str
 ) -> tuple[tuple[float, float, float], str]:
@@ -1074,6 +1106,11 @@ def task_submit(body: dict | None = None):
             body, defaults, kind
         )
         lift_mm, lift_source = _resolve_lift(body, defaults)
+        push_force_n, push_force_source = _resolve_push_force(
+            body,
+            defaults,
+            kind,
+        )
         first_total_mm = tuple(
             offset_mm[index] + first_offset_mm[index]
             for index in range(3)
@@ -1115,6 +1152,9 @@ def task_submit(body: dict | None = None):
         lift_note = (f"，拨点上抬 首轮{lift_mm['base']:g}"
                      f"/每轮+{lift_mm['step']:g}"
                      f"/封顶{lift_mm['max']:g} mm（{lift_source}）")
+        push_force_note = (
+            f"，拨动推力 {push_force_n:g} N（{push_force_source}）"
+        )
         _task = {"id": uuid.uuid4().hex[:10], "state": "starting",
                  "language": language, "kind": kind, "retries": retries,
                  "manual": manual, "site": site,
@@ -1126,6 +1166,8 @@ def task_submit(body: dict | None = None):
                  "first_round_offset_wall_mm": list(first_offset_mm),
                  "first_round_offset_source": first_offset_source,
                  "lift_mm": dict(lift_mm), "lift_source": lift_source,
+                 "push_force_n": push_force_n,
+                 "push_force_source": push_force_source,
                  "started_at": now, "finished_at": None,
                  "result": None, "flow": None,
                  "reset_requested": False, "reset_result": None,
@@ -1135,7 +1177,8 @@ def task_submit(body: dict | None = None):
                          f"现场 {SITE_LABELS[site]}"
                          f"·{site_source}，最多 {retries} 轮"
                          f"{'，手动确认模式' if manual else ''}"
-                         f"{offset_note}{first_offset_note}{lift_note}）"],
+                         f"{offset_note}{first_offset_note}{lift_note}"
+                         f"{push_force_note}）"],
                  "reach_proc": None, "reach_external": False,
                  "stats_counted": False}
         _task_stats["accepted"] += 1
@@ -1191,6 +1234,8 @@ def task_status():
                 t.get("first_round_offset_source") or "",
             "lift_mm": t.get("lift_mm") or dict(DEFAULT_LIFT_MM),
             "lift_source": t.get("lift_source") or "",
+            "push_force_n": t.get("push_force_n", DEFAULT_PUSH_FORCE_N),
+            "push_force_source": t.get("push_force_source") or "",
             "started_at": t["started_at"], "finished_at": t["finished_at"],
             "reach_alive": _reach_alive(0.5),
             "manual": bool(t.get("manual")), "prompt": prompt,
@@ -1253,6 +1298,9 @@ def config_defaults_get():
     defaults["offset_preset"] = (
         defaults.get("offset_preset_by_kind") or {}
     ).get(legacy_kind, "")
+    defaults["push_force_n"] = (
+        defaults.get("push_force_n_by_kind") or {}
+    ).get(legacy_kind, DEFAULT_PUSH_FORCE_N)
     content = {
         "ok": True,
         **cfg,
@@ -1291,6 +1339,17 @@ def config_defaults_set(body: dict | None = None):
         )
     if "lift_mm" in body:
         cfg["defaults"]["lift_mm"] = body.get("lift_mm")
+    if "push_force_n_by_kind" in body:
+        cfg["defaults"]["push_force_n_by_kind"] = (
+            body.get("push_force_n_by_kind")
+        )
+    elif "push_force_n" in body:
+        by_kind = dict(
+            cfg["defaults"].get("push_force_n_by_kind") or {}
+        )
+        legacy_kind = resolve_flip_intent(cfg["defaults"]["site"])["kind"]
+        by_kind[legacy_kind] = body.get("push_force_n")
+        cfg["defaults"]["push_force_n_by_kind"] = by_kind
     try:
         saved = save_dispatch_defaults(cfg)
     except ValueError as exc:

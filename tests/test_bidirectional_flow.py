@@ -500,9 +500,42 @@ class FactoryDispatchTests(unittest.TestCase):
         self.assertEqual(explicit, (1.0, 2.0, 3.0))
         self.assertEqual(source, "请求指定")
 
+    def test_push_force_uses_saved_default_and_explicit_request_wins(self):
+        defaults = {
+            "defaults": {
+                "push_force_n_by_kind": {
+                    "remote_to_close": 18,
+                    "close_to_remote": 9,
+                },
+            },
+        }
+
+        left, left_source = dispatch._resolve_push_force(
+            None,
+            defaults,
+            "remote_to_close",
+        )
+        right, right_source = dispatch._resolve_push_force(
+            None,
+            defaults,
+            "close_to_remote",
+        )
+        explicit, explicit_source = dispatch._resolve_push_force(
+            {"push_force_n": 7.5},
+            defaults,
+            "remote_to_close",
+        )
+
+        self.assertEqual(left, 18.0)
+        self.assertEqual(left_source, "「远方→就地」默认配置")
+        self.assertEqual(right, 9.0)
+        self.assertEqual(right_source, "「就地→远方」默认配置")
+        self.assertEqual(explicit, 7.5)
+        self.assertEqual(explicit_source, "请求指定")
+
     def test_factory_close_to_remote_task_reaches_worker(self):
         defaults = {
-            "schema_version": 3,
+            "schema_version": 5,
             "defaults": {
                 "site": "factory",
                 "offset_preset_by_kind": {
@@ -514,6 +547,10 @@ class FactoryDispatchTests(unittest.TestCase):
                     "close_to_remote": {"x": 0, "y": 7, "z": 0},
                 },
                 "lift_mm": {"base": 0, "step": 0, "max": 30},
+                "push_force_n_by_kind": {
+                    "remote_to_close": 18,
+                    "close_to_remote": 9,
+                },
             },
             "offset_presets": [],
         }
@@ -540,6 +577,11 @@ class FactoryDispatchTests(unittest.TestCase):
             self.assertEqual(
                 dispatch._task["first_round_offset_wall_mm"],
                 [0.0, 7.0, 0.0],
+            )
+            self.assertEqual(dispatch._task["push_force_n"], 9.0)
+            self.assertEqual(
+                dispatch._task["push_force_source"],
+                "「就地→远方」默认配置",
             )
             thread.return_value.start.assert_called_once()
         finally:

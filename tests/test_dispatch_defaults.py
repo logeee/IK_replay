@@ -10,18 +10,20 @@ from core.dispatch_defaults import (
     DEFAULT_DISPATCH_DEFAULTS,
     DEFAULT_DISPATCH_DEFAULTS_PATH,
     DEFAULT_LIFT_MM,
+    DEFAULT_PUSH_FORCE_N,
     find_offset_preset,
     load_dispatch_defaults,
     save_dispatch_defaults,
     validate_dispatch_defaults,
     validate_lift_mm,
     validate_offset_mm,
+    validate_push_force_n,
 )
 
 
 def _config(**overrides):
     payload = {
-        "schema_version": 3,
+        "schema_version": 5,
         "defaults": {
             "site": "factory",
             "offset_preset_by_kind": {
@@ -47,6 +49,13 @@ class DispatchDefaultsTest(unittest.TestCase):
         config = load_dispatch_defaults(self.path)
         self.assertEqual(config, DEFAULT_DISPATCH_DEFAULTS)
         self.assertEqual(config["defaults"]["site"], "factory")
+        self.assertEqual(
+            config["defaults"]["push_force_n_by_kind"],
+            {
+                "close_to_remote": DEFAULT_PUSH_FORCE_N,
+                "remote_to_close": DEFAULT_PUSH_FORCE_N,
+            },
+        )
 
     def test_repository_config_has_independent_factory_direction_presets(self):
         config = load_dispatch_defaults(DEFAULT_DISPATCH_DEFAULTS_PATH)
@@ -133,7 +142,7 @@ class DispatchDefaultsTest(unittest.TestCase):
                 {"name": "旧配置", "offset_mm": {"x": 3}},
             ],
         })
-        self.assertEqual(migrated["schema_version"], 3)
+        self.assertEqual(migrated["schema_version"], 5)
         self.assertEqual(
             migrated["defaults"]["offset_preset_by_kind"],
             {"close_to_remote": "旧配置", "remote_to_close": "旧配置"},
@@ -205,6 +214,58 @@ class DispatchDefaultsTest(unittest.TestCase):
             validate_lift_mm({"step": -1})
         with self.assertRaisesRegex(ValueError, "数字"):
             validate_lift_mm({"max": "很高"})
+
+    def test_push_force_defaults_roundtrip_and_validation(self):
+        self.assertEqual(validate_push_force_n(None), DEFAULT_PUSH_FORCE_N)
+        self.assertEqual(validate_push_force_n(0), 0.0)
+        self.assertEqual(validate_push_force_n(40), 40.0)
+        payload = _config(defaults={
+            "site": "factory",
+            "offset_preset_by_kind": {
+                "close_to_remote": "",
+                "remote_to_close": "",
+            },
+            "push_force_n_by_kind": {
+                "close_to_remote": 12.5,
+                "remote_to_close": 18,
+            },
+        })
+        saved = save_dispatch_defaults(payload, self.path)
+        self.assertEqual(
+            saved["defaults"]["push_force_n_by_kind"],
+            {"close_to_remote": 12.5, "remote_to_close": 18.0},
+        )
+        self.assertEqual(
+            load_dispatch_defaults(self.path)["defaults"]
+            ["push_force_n_by_kind"],
+            {"close_to_remote": 12.5, "remote_to_close": 18.0},
+        )
+
+    def test_v4_single_push_force_migrates_to_both_directions(self):
+        migrated = validate_dispatch_defaults({
+            "schema_version": 4,
+            "defaults": {
+                "site": "factory",
+                "offset_preset_by_kind": {
+                    "close_to_remote": "",
+                    "remote_to_close": "",
+                },
+                "push_force_n": 11,
+            },
+            "offset_presets": [],
+        })
+        self.assertEqual(
+            migrated["defaults"]["push_force_n_by_kind"],
+            {"close_to_remote": 11.0, "remote_to_close": 11.0},
+        )
+
+    def test_push_force_rejects_out_of_range(self):
+        with self.assertRaisesRegex(ValueError, "超范围"):
+            validate_push_force_n(-1)
+        with self.assertRaisesRegex(ValueError, "超范围"):
+            validate_push_force_n(41)
+        with self.assertRaisesRegex(ValueError, "数字"):
+            validate_push_force_n("很大")
 
 
 if __name__ == "__main__":

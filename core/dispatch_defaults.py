@@ -1,9 +1,9 @@
-"""17001 外部调用默认配置：默认现场 + 命名的目的点偏移配置。
+"""17001 外部调用默认配置：现场、目的点偏移、上抬和拨动推力。
 
 外部平台调 /task/flip、/check/flip 时通常只带 language；这里保存的默认
 现场（lab/factory）和默认偏移配置（墙面系 mm，如「右手偏移配置-1」）
-会自动套用。请求 body 里显式给了 site / target_offset_wall_mm 时以请求
-为准——网页手动单次测试用的就是显式参数，和默认配置互不干扰。
+会自动套用。请求 body 里显式给了对应参数时以请求为准——网页手动单次
+测试用的就是显式参数，和默认配置互不干扰。
 
 文件: config/dispatch_defaults.json，由 17001 网页读改存。
 """
@@ -28,14 +28,16 @@ SITES = ("lab", "factory")
 OFFSET_LIMIT_MM = 100.0    # 单轴上限，与 /task/flip 的校验一致
 PRESET_NAME_MAX = 40
 LIFT_LIMIT_MM = 50.0       # 拨点上抬各项上限（首轮/每轮递增/封顶）
+PUSH_FORCE_LIMIT_N = 40.0  # 与 reach /execute 的推力钳位一致
 
 # 拨点上抬（抵消重力下垂）出厂值：首轮 10 mm，每重试一轮 +10 mm，封顶 30 mm
 DEFAULT_LIFT_MM: dict[str, float] = {"base": 10.0, "step": 10.0, "max": 30.0}
+DEFAULT_PUSH_FORCE_N = 15.0
 FLIP_KINDS = ("close_to_remote", "remote_to_close")
 ZERO_OFFSET_MM: dict[str, float] = {"x": 0.0, "y": 0.0, "z": 0.0}
 
 DEFAULT_DISPATCH_DEFAULTS: dict[str, Any] = {
-    "schema_version": 3,
+    "schema_version": 5,
     "defaults": {
         "site": "factory",
         # 两个任务方向独立标定；"" = 不套偏移配置。
@@ -48,6 +50,9 @@ DEFAULT_DISPATCH_DEFAULTS: dict[str, Any] = {
             kind: dict(ZERO_OFFSET_MM) for kind in FLIP_KINDS
         },
         "lift_mm": dict(DEFAULT_LIFT_MM),
+        "push_force_n_by_kind": {
+            kind: DEFAULT_PUSH_FORCE_N for kind in FLIP_KINDS
+        },
     },
     "offset_presets": [],
 }
@@ -93,6 +98,24 @@ def validate_lift_mm(value: Any, name: str = "lift_mm") -> dict[str, float]:
     return result
 
 
+def validate_push_force_n(
+    value: Any,
+    name: str = "push_force_n",
+) -> float:
+    """Validate the lateral feed-forward force in newtons (0 disables it)."""
+    if value is None:
+        return DEFAULT_PUSH_FORCE_N
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} 必须是数字（N）") from exc
+    if not math.isfinite(number) or not 0 <= number <= PUSH_FORCE_LIMIT_N:
+        raise ValueError(
+            f"{name} 超范围：限 0~{PUSH_FORCE_LIMIT_N:g} N（收到 {value}）"
+        )
+    return number
+
+
 def validate_offset_mm(value: Any, name: str = "offset_mm") -> dict[str, float]:
     """{"x":右,"y":入墙,"z":上}（mm），缺省轴按 0。"""
     if value is None:
@@ -109,8 +132,8 @@ def validate_dispatch_defaults(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("默认配置必须是 JSON object")
     version = int(payload.get("schema_version", -1))
-    if version not in (1, 2, 3):
-        raise ValueError("默认配置 schema_version 必须为 1、2 或 3")
+    if version not in (1, 2, 3, 4, 5):
+        raise ValueError("默认配置 schema_version 必须为 1、2、3、4 或 5")
 
     raw_presets = payload.get("offset_presets")
     if raw_presets is None:
@@ -178,14 +201,30 @@ def validate_dispatch_defaults(payload: Any) -> dict[str, Any]:
         for kind in FLIP_KINDS
     }
     lift_mm = validate_lift_mm(raw_defaults.get("lift_mm"), "defaults.lift_mm")
+    legacy_push_force_n = raw_defaults.get("push_force_n")
+    raw_force_by_kind = raw_defaults.get("push_force_n_by_kind")
+    if raw_force_by_kind is None:
+        raw_force_by_kind = {
+            kind: legacy_push_force_n for kind in FLIP_KINDS
+        }
+    if not isinstance(raw_force_by_kind, dict):
+        raise ValueError("defaults.push_force_n_by_kind 必须是对象")
+    push_force_by_kind = {
+        kind: validate_push_force_n(
+            raw_force_by_kind.get(kind),
+            f"defaults.push_force_n_by_kind.{kind}",
+        )
+        for kind in FLIP_KINDS
+    }
 
     return {
-        "schema_version": 3,
+        "schema_version": 5,
         "defaults": {
             "site": site,
             "offset_preset_by_kind": preset_by_kind,
             "first_round_offset_wall_mm_by_kind": first_by_kind,
             "lift_mm": lift_mm,
+            "push_force_n_by_kind": push_force_by_kind,
         },
         "offset_presets": presets,
     }
