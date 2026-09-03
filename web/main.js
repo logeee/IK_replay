@@ -207,6 +207,13 @@ async function initReach() {
     stepLen: document.getElementById("reachStepLen"),
     pushForce: document.getElementById("reachPushForce"),
     pushHold: document.getElementById("reachPushHold"),
+    twistDir: document.getElementById("reachTwistDir"),
+    twistDist: document.getElementById("reachTwistDist"),
+    twistAngle: document.getElementById("reachTwistAngle"),
+    twistMode: document.getElementById("reachTwistMode"),
+    twistCoRotate: document.getElementById("reachTwistCoRotate"),
+    twistCW: document.getElementById("reachTwistCWBtn"),
+    twistCCW: document.getElementById("reachTwistCCWBtn"),
     stepMode: document.getElementById("reachStepMode"),
     collisionCheck: document.getElementById("reachCollisionCheck"),
     scopeAll: document.getElementById("reachScopeAll"),
@@ -337,6 +344,8 @@ async function initReach() {
   d.nextPick.addEventListener("click", () => stepNextRepick());
   d.nextReturn.addEventListener("click", () => stepNextReturn());
   d.nextDone.addEventListener("click", () => hideStepNext());
+  d.twistCW.addEventListener("click", () => twistReach("cw"));
+  d.twistCCW.addEventListener("click", () => twistReach("ccw"));
   d.fsBtn.addEventListener("click", () => openReachFullscreen());
   d.pointcloudBtn.addEventListener("click", () => {
     const url = new URL(window.location.href);
@@ -1229,6 +1238,123 @@ async function sidestepReach(stepCm, options = {}) {
     await pollReachExec();
   } catch (error) {
     reachMsg(`${dirName}移执行失败: ${error.message}`, "error");
+  }
+}
+
+// ---- 定点扭转测试：捏合点绕指定中心走圆弧（拧/拨旋钮把手） ----
+// 观感目标：只动腕、大臂不动。模式与几何在后端 /api/reach/plan_arc，
+// 这里只负责取真机关节、发参数、预演/执行，并把"每个关节动了多少度"
+// 亮出来——这是测试的核心读数（肩肘行程≈0 才算达标）。
+
+function twistTravelSummary(seg) {
+  const travel = seg.joint_travel_deg || {};
+  const wrist = Object.entries(travel)
+    .filter(([name]) => name.includes("wrist"))
+    .map(([name, deg]) => {
+      const short = name.replace(/^(left|right)_wrist_/, "").replace(/_joint$/, "");
+      return `${short} ${Number(deg).toFixed(1)}°`;
+    })
+    .join(" ");
+  return `腕[${wrist}] 肩肘最大 ${Number(seg.proximal_travel_deg).toFixed(1)}°`;
+}
+
+// twist: "cw"=左扭(顺时针) / "ccw"=右扭(逆时针)，机器人视角面向柜面
+async function twistReach(twist) {
+  const st = reach.status;
+  const panel = state.panels[st.chain_id];
+  if (!panel) {
+    return;
+  }
+  const d = reach.dom;
+  const angle = Math.abs(Number(d.twistAngle.value || 0));
+  if (!angle) {
+    reachMsg("扭转角度(°)为 0，没有可执行的动作", "error");
+    return;
+  }
+  const name = twist === "cw" ? "左扭↻" : "右扭↺";
+  reachMsg(`${name} ${angle}° 规划中…`);
+
+  // 起点 = 真机当前关节（读不到就用面板当前值，纯模拟联调用）
+  let joints = readJointInputs(panel);
+  if (st.joints_available) {
+    try {
+      const j = await fetchJson("/api/reach/joints");
+      if (j.ok) {
+        joints = j.named_joints;
+      }
+    } catch { /* 用面板值兜底 */ }
+  }
+  setJointInputs(panel, joints);
+  Object.assign(state.robotJointState, joints);
+  setRobotJoints(state.robotJointState, false);
+
+  let seg;
+  try {
+    seg = await fetchJson("/api/reach/plan_arc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        start_joints: joints,
+        twist,
+        angle_deg: angle,
+        step_deg: 3,
+        mode: d.twistMode.value,
+        co_rotate: d.twistCoRotate.checked,
+        center_offset_deg: Number(d.twistDir.value || 0),
+        center_offset_cm: Number(d.twistDist.value || 0),
+        check_collision: reachCollisionOn(),
+      }),
+    });
+  } catch (error) {
+    reachMsg(`${name}规划失败: ${error.message}`, "error");
+    return;
+  }
+  panel.frames = seg.waypoints;
+  panel.frameIndex = 0;
+  panel.currentCollision = seg.collision;
+  updateCollisionMetrics(panel, seg.collision);
+  updateTrajectoryLine(panel);
+  visualizeCollision(panel, seg.collision);
+  applyFrame(panel, 0);
+  if (panel.targetHandGroup) {
+    panel.targetHandGroup.visible = false;
+  }
+  if (seg.collision?.status === "collision") {
+    reachMsg(`${name}轨迹有碰撞，已禁止执行`, "error");
+    return;
+  }
+  const summary = `${twistTravelSummary(seg)} · 弧线误差 `
+    + `${Number(seg.max_ik_error_mm).toFixed(1)}mm`
+    + (seg.co_rotate
+       ? ` · 朝向差 ${Number(seg.max_rot_error_deg).toFixed(0)}°`
+       : "");
+  if (!st.armed) {
+    replay(panel);
+    reachMsg(`${name} ${angle}° 已预演（未接管手臂，无法真机执行）· ${summary}`,
+             "success");
+    return;
+  }
+  const ok = window.confirm(
+    `确认真机${name} ${angle}°？手臂将运动。\n`
+    + `半径 ${(Number(seg.radius_m) * 100).toFixed(1)}cm · ${seg.steps} 步 · `
+    + `模式 ${d.twistMode.selectedOptions[0].textContent}\n${summary}`);
+  if (!ok) {
+    return;
+  }
+  try {
+    await fetchJson("/api/reach/execute", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        waypoints: panel.frames.map((frame) => frame.named_joints),
+        label: `${name}${angle}°`,
+        duration: Math.max(2, angle / 15),   // 15°/s，最短 2s
+      }),
+    });
+    reachMsg(`${name} ${angle}° 执行中… ${summary}`, "success");
+    await pollReachExec();
+  } catch (error) {
+    reachMsg(`${name}执行失败: ${error.message}`, "error");
   }
 }
 

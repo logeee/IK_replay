@@ -31,6 +31,15 @@ class NumericalIKSolver(BaseIKSolver):
         rotation_weight = float(options.get("rotation_weight", 0.2))
         regularization_weight = float(options.get("regularization_weight", 0.003))
         solve_orientation = bool(options.get("solve_orientation", True))
+        # 冻结关节：这些关节钉在种子值上，不参与优化（如"只动腕"的定点旋转）
+        frozen = set(options.get("frozen_joints") or [])
+        # 分关节正则倍率：在 regularization_weight 基础上按关节名加倍/打折，
+        # 让优化器"腕便宜、肩肘贵"，把运动尽量塞给末端关节
+        reg_multipliers = options.get("regularization_weights") or {}
+        # 正则锚点：不给=向种子回归（老行为，逐步规划时=上一步）。步进
+        # 轨迹里想压住某些关节的"累积漂移"必须锚到轨迹起点——按步锚每步
+        # 挪一点很便宜，10 步下来大臂照样跑几度
+        reg_anchor = options.get("regularization_anchor")
 
         q_current = self.robot_model.coerce_chain_joints(request.current_joints, request.chain_id)
         q_seed = (
@@ -41,11 +50,32 @@ class NumericalIKSolver(BaseIKSolver):
         lower, upper = self.robot_model.joint_limits(request.chain_id, request.joint_names)
         q_seed = np.clip(q_seed, lower, upper)
 
+        chain_names = self.robot_model.joint_names(request.chain_id)
+        free_idx = np.array(
+            [i for i, name in enumerate(chain_names) if name not in frozen], dtype=int)
+        if free_idx.size == 0:
+            raise ValueError("frozen_joints 把链上所有关节都冻结了，无自由度可解")
+        reg_vec = np.array(
+            [regularization_weight * float(reg_multipliers.get(name, 1.0))
+             for name in chain_names], dtype=float)
+        q_anchor = (
+            np.clip(self.robot_model.coerce_chain_joints(reg_anchor, request.chain_id),
+                    lower, upper)
+            if reg_anchor is not None
+            else q_seed
+        )
+
         target_matrix = transform_from_pose(request.target_pose)
         target_xyz = target_matrix[:3, 3]
         target_rot = target_matrix[:3, :3]
 
-        def residual(q: np.ndarray) -> np.ndarray:
+        def assemble(x: np.ndarray) -> np.ndarray:
+            q = q_seed.copy()
+            q[free_idx] = x
+            return q
+
+        def residual(x: np.ndarray) -> np.ndarray:
+            q = assemble(x)
             tcp_matrix = self.robot_model.tcp_matrix(q, request.chain_id, request.tcp_offset)
             position_error = (tcp_matrix[:3, 3] - target_xyz) * position_weight
             parts = [position_error]
@@ -53,20 +83,20 @@ class NumericalIKSolver(BaseIKSolver):
                 rot_error = _rotation_error_vector(tcp_matrix[:3, :3], target_rot) * rotation_weight
                 parts.append(rot_error)
             if regularization_weight > 0.0:
-                parts.append((q - q_seed) * regularization_weight)
+                parts.append((x - q_anchor[free_idx]) * reg_vec[free_idx])
             return np.concatenate(parts)
 
         result = least_squares(
             residual,
-            q_seed,
-            bounds=(lower, upper),
+            q_seed[free_idx],
+            bounds=(lower[free_idx], upper[free_idx]),
             max_nfev=max_iterations,
             xtol=1e-8,
             ftol=1e-8,
             gtol=1e-8,
         )
 
-        q = np.clip(result.x, lower, upper)
+        q = np.clip(assemble(result.x), lower, upper)
         tcp_matrix = self.robot_model.tcp_matrix(q, request.chain_id, request.tcp_offset)
         tcp_pose = self.robot_model.tcp_pose(q, request.chain_id, request.tcp_offset)
         error_position = float(np.linalg.norm(tcp_matrix[:3, 3] - target_xyz))

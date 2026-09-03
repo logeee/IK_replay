@@ -137,6 +137,40 @@
                   <input id="reachLiftCm" type="number" step="0.5" min="0" value="2" />
                 </label>
               </div>
+              <div class="reach-control-group reach-twist-group"
+                   title="捏住旋钮把手后的定点扭转测试：捏合点绕『过旋转中心、沿柜面法向』的轴走圆弧，手朝向可选跟转。中心用相对当前捏合点的面内方位给出（机器人视角：0°=右 90°=上 135°=左上）">
+                <div class="reach-control-row">
+                  <span>旋转测试</span>
+                  <label class="reach-offset">
+                    <span>中心方位(°)</span>
+                    <input id="reachTwistDir" type="number" step="5" value="135" />
+                  </label>
+                  <label class="reach-offset">
+                    <span>中心距离(cm)</span>
+                    <input id="reachTwistDist" type="number" step="0.5" min="0" value="3" />
+                  </label>
+                  <label class="reach-offset">
+                    <span>角度(°)</span>
+                    <input id="reachTwistAngle" type="number" step="5" min="1" value="30" />
+                  </label>
+                </div>
+                <div class="reach-control-row">
+                  <select id="reachTwistMode"
+                          title="仅腕：冻结肩肘只解腕三关节，大臂绝对不动（弧线有毫米级近似）；加权：全臂参与但重罚肩肘增量；自由：均匀正则对照组">
+                    <option value="wrist_only" selected>仅腕三关节（大臂冻结）</option>
+                    <option value="weighted">全臂·重罚肩肘</option>
+                    <option value="free">全臂·自由（对照）</option>
+                  </select>
+                  <label class="reach-stepmode" title="手朝向跟着圆弧转同样角度（捏死把手时应勾选）；不勾=纯拨动，只有位置沿弧走">
+                    <input id="reachTwistCoRotate" type="checkbox" checked />
+                    <span>朝向跟转</span>
+                  </label>
+                  <button id="reachTwistCWBtn" type="button"
+                          title="顺时针（机器人视角面向柜面）">左扭 ↻</button>
+                  <button id="reachTwistCCWBtn" type="button"
+                          title="逆时针（机器人视角面向柜面）">右扭 ↺</button>
+                </div>
+              </div>
               <div class="reach-actions">
                 <button id="reachScanBtn" type="button">扫描障碍</button>
                 <button id="reachClearObsBtn" type="button" disabled>清除障碍</button>
@@ -252,6 +286,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=98"></script>
+    <script type="module" src="/web/main.js?v=99"></script>
   </body>
 </html>
