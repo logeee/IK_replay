@@ -661,7 +661,7 @@
     <div class="studio-head">
       <div>
         <h3>距离偏移关键帧工作台</h3>
-        <div class="studio-head-copy">墙面坐标系 XYZ · 横轴为所选起手式距离 · 关键帧间逐轴线性过渡</div>
+        <div class="studio-head-copy">墙面坐标系 X / Z / Y · 横轴为所选起手式距离 · 关键帧间逐轴线性过渡</div>
       </div>
       <span class="spacer"></span>
       <button id="closePresets">关闭</button>
@@ -676,7 +676,7 @@
         <div class="editor-toolbar">
           <input id="presetName" type="text" maxlength="40" placeholder="配置名称" />
           <div class="mode-switch" aria-label="偏移配置模式">
-            <button id="presetModeStatic" data-preset-mode="static" class="active">固定 XYZ</button>
+            <button id="presetModeStatic" data-preset-mode="static" class="active">固定 X/Z/Y</button>
             <button id="presetModeKeyframes" data-preset-mode="keyframes">距离关键帧</button>
           </div>
           <span class="spacer"></span>
@@ -687,8 +687,8 @@
         <div id="staticEditorPane" class="editor-section">
           <div class="static-offset-editor">
             <label>右+ X(mm) <input id="presetX" type="number" min="-100" max="100" step="1" value="0" /></label>
-            <label>入墙+ Y(mm) <input id="presetY" type="number" min="-100" max="100" step="1" value="0" /></label>
             <label>上+ Z(mm) <input id="presetZ" type="number" min="-100" max="100" step="1" value="0" /></label>
+            <label>入墙+ Y(mm) <input id="presetY" type="number" min="-100" max="100" step="1" value="0" /></label>
           </div>
           <p class="modal-note">固定模式在所有起手式距离使用同一组偏移，行为与旧配置完全相同。</p>
         </div>
@@ -697,8 +697,8 @@
           <div class="curve-topline">
             <div class="curve-legend">
               <span class="axis-x">X 右+</span>
-              <span class="axis-y">Y 入墙+</span>
               <span class="axis-z">Z 上+</span>
+              <span class="axis-y">Y 入墙+</span>
             </div>
             <div class="curve-preview">
               预览起手式
@@ -707,17 +707,17 @@
             </div>
           </div>
           <div class="chart-shell">
-            <svg id="curveChart" viewBox="0 0 760 250" preserveAspectRatio="none" role="img" aria-label="XYZ 距离偏移曲线"></svg>
+            <svg id="curveChart" viewBox="0 0 760 250" preserveAspectRatio="none" role="img" aria-label="X Z Y 距离偏移曲线"></svg>
             <div class="chart-hint">点击图表可在最近的 0.01 m 档位新增关键帧；相同数值形成水平保持段，边界外保持首末帧数值。</div>
           </div>
           <div class="keyframe-toolbar">
             <strong>关键帧</strong>
-            <span>距离对应起手式名称前缀，XYZ 单位为 mm</span>
+            <span>距离对应起手式名称前缀，X / Z / Y 单位为 mm</span>
             <button id="addKeyframe">＋ 添加关键帧</button>
           </div>
           <div class="keyframe-table-wrap">
             <table class="keyframe-table">
-              <thead><tr><th>起手式距离</th><th>X 右+</th><th>Y 入墙+</th><th>Z 上+</th><th></th></tr></thead>
+              <thead><tr><th>起手式距离</th><th>X 右+</th><th>Z 上+</th><th>Y 入墙+</th><th></th></tr></thead>
               <tbody id="curveKeyframeBody"></tbody>
             </table>
           </div>
@@ -1475,7 +1475,7 @@ $("manualPreset").addEventListener("change", () => {
     if (!manualCurvePresetName) return;
     manualCurvePresetName = "";
     $("manualPreset").value = "";
-    setHint("已切换为手动固定 XYZ；不再使用距离曲线");
+    setHint("已切换为手动固定 X/Z/Y；不再使用距离曲线");
   });
 });
 
@@ -1666,7 +1666,7 @@ function renderCurveTable() {
   body.innerHTML = curveKeyframes.map((frame, index) =>
     `<tr data-frame-index="${index}">`
     + `<td><select data-frame-distance="${index}">${distanceOptions(frame.distance_m)}</select></td>`
-    + ["x", "y", "z"].map((axis) =>
+    + ["x", "z", "y"].map((axis) =>
       `<td><input type="number" min="-100" max="100" step="1" `
       + `data-frame-axis="${axis}" data-frame-index="${index}" value="${frame.offset_mm[axis]}" /></td>`
     ).join("")
@@ -1682,7 +1682,7 @@ function renderCurvePreview() {
   const distance = Number(select.value);
   const offset = interpolateCurveFrames(curveKeyframes, distance);
   $("curvePreviewText").textContent =
-    `X ${offset.x.toFixed(1)} / Y ${offset.y.toFixed(1)} / Z ${offset.z.toFixed(1)} mm`;
+    `X ${offset.x.toFixed(1)} / Z ${offset.z.toFixed(1)} / Y ${offset.y.toFixed(1)} mm`;
 }
 
 function renderCurveChart() {
@@ -1708,7 +1708,7 @@ function renderCurveChart() {
     parts.push(`<text class="label" x="${pad.left - 7}" y="${y(value) + 3}" text-anchor="end">${value}</text>`);
   });
   const frames = normalizeCurveFrames(curveKeyframes);
-  ["x", "y", "z"].forEach((axis) => {
+  ["x", "z", "y"].forEach((axis) => {
     const path = frames.map((frame, index) =>
       `${index ? "L" : "M"} ${x(frame.distance_m).toFixed(2)} ${y(frame.offset_mm[axis]).toFixed(2)}`
     ).join(" ");
@@ -1765,7 +1765,7 @@ function validatePresetEditor() {
     if (frame.distance_m < offsetKeyframeDistance.min || frame.distance_m > offsetKeyframeDistance.max) {
       return { error: `关键帧距离限 ${offsetKeyframeDistance.min.toFixed(2)}–${offsetKeyframeDistance.max.toFixed(2)} m` };
     }
-    for (const axis of ["x", "y", "z"]) {
+    for (const axis of ["x", "z", "y"]) {
       if (Math.abs(frame.offset_mm[axis]) > 100) return { error: `${axis.toUpperCase()} 偏移限 ±100 mm` };
     }
   }
