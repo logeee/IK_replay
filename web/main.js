@@ -207,11 +207,17 @@ async function initReach() {
     stepLen: document.getElementById("reachStepLen"),
     pushForce: document.getElementById("reachPushForce"),
     pushHold: document.getElementById("reachPushHold"),
+    twistModal: document.getElementById("reachTwistModal"),
+    twistOpen: document.getElementById("reachTwistOpenBtn"),
+    twistClose: document.getElementById("reachTwistCloseBtn"),
+    twistCancel: document.getElementById("reachTwistCancelBtn"),
+    twistHint: document.getElementById("reachTwistHint"),
     twistDir: document.getElementById("reachTwistDir"),
     twistDist: document.getElementById("reachTwistDist"),
     twistAngle: document.getElementById("reachTwistAngle"),
     twistMode: document.getElementById("reachTwistMode"),
     twistCoRotate: document.getElementById("reachTwistCoRotate"),
+    twistPreviewOnly: document.getElementById("reachTwistPreviewOnly"),
     twistCW: document.getElementById("reachTwistCWBtn"),
     twistCCW: document.getElementById("reachTwistCCWBtn"),
     stepMode: document.getElementById("reachStepMode"),
@@ -344,6 +350,18 @@ async function initReach() {
   d.nextPick.addEventListener("click", () => stepNextRepick());
   d.nextReturn.addEventListener("click", () => stepNextReturn());
   d.nextDone.addEventListener("click", () => hideStepNext());
+  // 旋转测试弹窗：按钮打开；左扭/右扭点击后自动收起弹窗（露出三维预演）
+  d.twistOpen.addEventListener("click", () => d.twistModal.classList.remove("hidden"));
+  d.twistClose.addEventListener("click", () => d.twistModal.classList.add("hidden"));
+  d.twistCancel.addEventListener("click", () => d.twistModal.classList.add("hidden"));
+  d.twistModal.addEventListener("click", (event) => {
+    if (event.target === d.twistModal) d.twistModal.classList.add("hidden");
+  });
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !d.twistModal.classList.contains("hidden")) {
+      d.twistModal.classList.add("hidden");
+    }
+  });
   d.twistCW.addEventListener("click", () => twistReach("cw"));
   d.twistCCW.addEventListener("click", () => twistReach("ccw"));
   d.fsBtn.addEventListener("click", () => openReachFullscreen());
@@ -1258,6 +1276,13 @@ function twistTravelSummary(seg) {
   return `腕[${wrist}] 肩肘最大 ${Number(seg.proximal_travel_deg).toFixed(1)}°`;
 }
 
+// 面内方位角 → 人话（机器人视角面向柜面：0°=右 90°=上 135°=左上）
+function twistDirLabel(deg) {
+  const names = ["右", "右上", "上", "左上", "左", "左下", "下", "右下"];
+  const idx = Math.round((((deg % 360) + 360) % 360) / 45) % 8;
+  return names[idx];
+}
+
 // twist: "cw"=左扭(顺时针) / "ccw"=右扭(逆时针)，机器人视角面向柜面
 async function twistReach(twist) {
   const st = reach.status;
@@ -1272,7 +1297,13 @@ async function twistReach(twist) {
     return;
   }
   const name = twist === "cw" ? "左扭↻" : "右扭↺";
-  reachMsg(`${name} ${angle}° 规划中…`);
+  // 旋转中心的镜像语义：输入框给的是"左扭"的中心方位（默认 135°=左上
+  // 45°）；右扭自动水平镜像为 180°−方位（135→45，即右上 45°）
+  const dirInput = Number(d.twistDir.value || 135);
+  const centerDeg = twist === "cw" ? dirInput : 180 - dirInput;
+  const centerLabel = `${twistDirLabel(centerDeg)}${(((centerDeg % 360) + 360) % 360)}°`;
+  d.twistModal.classList.add("hidden");   // 收起弹窗，露出三维视图看预演
+  reachMsg(`${name} ${angle}°（中心 ${centerLabel}）规划中…`);
 
   // 起点 = 真机当前关节（读不到就用面板当前值，纯模拟联调用）
   let joints = readJointInputs(panel);
@@ -1300,13 +1331,14 @@ async function twistReach(twist) {
         step_deg: 3,
         mode: d.twistMode.value,
         co_rotate: d.twistCoRotate.checked,
-        center_offset_deg: Number(d.twistDir.value || 0),
+        center_offset_deg: centerDeg,
         center_offset_cm: Number(d.twistDist.value || 0),
         check_collision: reachCollisionOn(),
       }),
     });
   } catch (error) {
     reachMsg(`${name}规划失败: ${error.message}`, "error");
+    d.twistHint.textContent = `${name} ${angle}° 规划失败：${error.message}`;
     return;
   }
   panel.frames = seg.waypoints;
@@ -1328,16 +1360,19 @@ async function twistReach(twist) {
     + (seg.co_rotate
        ? ` · 朝向差 ${Number(seg.max_rot_error_deg).toFixed(0)}°`
        : "");
-  if (!st.armed) {
+  d.twistHint.textContent =
+    `上次：${name} ${angle}°（中心 ${centerLabel}）· ${summary}`;
+  if (d.twistPreviewOnly.checked || !st.armed) {
     replay(panel);
-    reachMsg(`${name} ${angle}° 已预演（未接管手臂，无法真机执行）· ${summary}`,
-             "success");
+    const why = d.twistPreviewOnly.checked ? "仅预演" : "未接管手臂";
+    reachMsg(`${name} ${angle}°（中心 ${centerLabel}）已预演（${why}，不动真机）`
+             + ` · ${summary}`, "success");
     return;
   }
   const ok = window.confirm(
     `确认真机${name} ${angle}°？手臂将运动。\n`
-    + `半径 ${(Number(seg.radius_m) * 100).toFixed(1)}cm · ${seg.steps} 步 · `
-    + `模式 ${d.twistMode.selectedOptions[0].textContent}\n${summary}`);
+    + `中心 ${centerLabel} · 半径 ${(Number(seg.radius_m) * 100).toFixed(1)}cm · `
+    + `${seg.steps} 步 · 模式 ${d.twistMode.selectedOptions[0].textContent}\n${summary}`);
   if (!ok) {
     return;
   }

@@ -137,43 +137,11 @@
                   <input id="reachLiftCm" type="number" step="0.5" min="0" value="2" />
                 </label>
               </div>
-              <div class="reach-control-group reach-twist-group"
-                   title="捏住旋钮把手后的定点扭转测试：捏合点绕『过旋转中心、沿柜面法向』的轴走圆弧，手朝向可选跟转。中心用相对当前捏合点的面内方位给出（机器人视角：0°=右 90°=上 135°=左上）">
-                <div class="reach-control-row">
-                  <span>旋转测试</span>
-                  <label class="reach-offset">
-                    <span>中心方位(°)</span>
-                    <input id="reachTwistDir" type="number" step="5" value="135" />
-                  </label>
-                  <label class="reach-offset">
-                    <span>中心距离(cm)</span>
-                    <input id="reachTwistDist" type="number" step="0.5" min="0" value="3" />
-                  </label>
-                  <label class="reach-offset">
-                    <span>角度(°)</span>
-                    <input id="reachTwistAngle" type="number" step="5" min="1" value="30" />
-                  </label>
-                </div>
-                <div class="reach-control-row">
-                  <select id="reachTwistMode"
-                          title="仅腕：冻结肩肘只解腕三关节，大臂绝对不动（弧线有毫米级近似）；加权：全臂参与但重罚肩肘增量；自由：均匀正则对照组">
-                    <option value="wrist_only" selected>仅腕三关节（大臂冻结）</option>
-                    <option value="weighted">全臂·重罚肩肘</option>
-                    <option value="free">全臂·自由（对照）</option>
-                  </select>
-                  <label class="reach-stepmode" title="手朝向跟着圆弧转同样角度（捏死把手时应勾选）；不勾=纯拨动，只有位置沿弧走">
-                    <input id="reachTwistCoRotate" type="checkbox" checked />
-                    <span>朝向跟转</span>
-                  </label>
-                  <button id="reachTwistCWBtn" type="button"
-                          title="顺时针（机器人视角面向柜面）">左扭 ↻</button>
-                  <button id="reachTwistCCWBtn" type="button"
-                          title="逆时针（机器人视角面向柜面）">右扭 ↺</button>
-                </div>
-              </div>
               <div class="reach-actions">
                 <button id="reachScanBtn" type="button">扫描障碍</button>
                 <button id="reachClearObsBtn" type="button" disabled>清除障碍</button>
+                <button id="reachTwistOpenBtn" type="button"
+                        title="捏住旋钮把手后的定点扭转测试：左扭/右扭参数与预演/执行">旋转测试…</button>
               </div>
               <div class="reach-control-group">
                 <div class="reach-control-row">
@@ -263,6 +231,59 @@
           </div>
         </div>
 
+        <div id="reachTwistModal" class="reach-library-modal hidden"
+             role="dialog" aria-modal="true" aria-labelledby="reachTwistTitle">
+          <div class="reach-library-card">
+            <div class="reach-library-header">
+              <strong id="reachTwistTitle">旋转测试（定点扭转）</strong>
+              <button id="reachTwistCloseBtn" type="button" aria-label="关闭">×</button>
+            </div>
+            <div class="reach-library-fields">
+              <label title="左扭时旋转中心相对当前捏合点的面内方位（柜面坐标系，机器人视角：0°=右 90°=上 135°=左上）；右扭自动水平镜像为 180°−方位（默认 135→45，即右上 45°）">
+                <span>左扭中心方位(°)</span>
+                <input id="reachTwistDir" type="number" step="5" value="135" />
+              </label>
+              <label title="旋转中心到当前捏合点的距离（即把手长度）">
+                <span>中心距离(cm)</span>
+                <input id="reachTwistDist" type="number" step="0.5" min="0" value="3" />
+              </label>
+              <label>
+                <span>角度(°)</span>
+                <input id="reachTwistAngle" type="number" step="5" min="1" value="30" />
+              </label>
+              <label title="仅腕：冻结肩肘只解腕三关节，大臂绝对不动（弧线有毫米级近似）；加权：全臂参与但重罚肩肘增量；自由：均匀正则对照组">
+                <span>求解模式</span>
+                <select id="reachTwistMode">
+                  <option value="wrist_only" selected>仅腕三关节（大臂冻结）</option>
+                  <option value="weighted">全臂·重罚肩肘</option>
+                  <option value="free">全臂·自由（对照）</option>
+                </select>
+              </label>
+            </div>
+            <div class="reach-toggles" style="margin-top: 10px;">
+              <label class="reach-stepmode" title="手朝向跟着圆弧转同样角度（捏死把手时应勾选）；不勾=纯拨动，只有位置沿弧走">
+                <input id="reachTwistCoRotate" type="checkbox" checked />
+                <span>朝向跟转（捏死把手）</span>
+              </label>
+              <label class="reach-stepmode" title="勾选时点左扭/右扭只做三维预演回放，不下发真机（接管与否都安全）；取消勾选且已接管才会弹确认执行">
+                <input id="reachTwistPreviewOnly" type="checkbox" checked />
+                <span>仅预演（不动真机）</span>
+              </label>
+            </div>
+            <div id="reachTwistHint" class="reach-library-hint">
+              左扭↻=顺时针，中心在捏合点左上；右扭↺=逆时针，中心自动镜像到右上。
+              点击后本弹窗关闭、三维视图播放预演，读数看下方消息栏。
+            </div>
+            <div class="reach-library-actions">
+              <button id="reachTwistCancelBtn" type="button">关闭</button>
+              <button id="reachTwistCWBtn" type="button" class="primary"
+                      title="顺时针（机器人视角面向柜面），旋转中心在捏合点左上方">左扭 ↻</button>
+              <button id="reachTwistCCWBtn" type="button" class="primary"
+                      title="逆时针（机器人视角面向柜面），旋转中心在捏合点右上方（方位自动镜像）">右扭 ↺</button>
+            </div>
+          </div>
+        </div>
+
         <div id="reachFsOverlay" class="reach-fs-overlay hidden">
           <div class="reach-fs-bar">
             <span>全屏选点：在画面中点击目标，确认后自动退出全屏（Esc 取消）</span>
@@ -286,6 +307,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=99"></script>
+    <script type="module" src="/web/main.js?v=101"></script>
   </body>
 </html>
