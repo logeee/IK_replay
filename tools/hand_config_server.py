@@ -19,6 +19,10 @@ API：
 - GET  /api/hand/poses        姿态库列表
 - POST /api/hand/poses        {name, positions[6]} 保存
 - POST /api/hand/poses/delete {file} 删除
+- GET  /api/hand/tcp-points   TCP 工作点（自定义 + 标定指尖，含默认标记）
+- POST /api/hand/tcp-points   {name, xyz_hand} 新建；{file, name?, xyz_hand?} 编辑
+- POST /api/hand/tcp-points/delete  {file}
+- POST /api/hand/tcp-points/default {kind, key} 设默认；{} 清除
 """
 
 from __future__ import annotations
@@ -38,7 +42,7 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
-from core import hand_poses  # noqa: E402
+from core import hand_poses, tcp_points  # noqa: E402
 from core.hand_runtime import (  # noqa: E402
     _DEFAULT_PREVIEWS,
     _default_fetch_json,
@@ -204,6 +208,110 @@ def poses_delete(body: dict) -> Any:
     return {"ok": True}
 
 
+# ---- TCP 工作点：手上取的命名点，18001 选中后规划就用它 ----
+
+def _own_point_or_error(filename: str) -> dict | JSONResponse:
+    try:
+        item = tcp_points.load_point(filename)
+    except FileNotFoundError:
+        return JSONResponse(
+            {"ok": False, "error": f"TCP 点不存在: {filename}"},
+            status_code=404)
+    if item.get("hand_id") != CONTEXT["combo"]["hand_id"]:
+        return JSONResponse(
+            {"ok": False,
+             "error": f"该点属于 {item.get('hand_id')}，不是当前激活的手"},
+            status_code=422)
+    return item
+
+
+@app.get("/api/hand/tcp-points")
+def tcp_list() -> dict:
+    hand_id = str(CONTEXT["combo"]["hand_id"])
+    transform = CONTEXT.get("T_wrist2hand")
+    custom = tcp_points.list_points(hand_id)
+    if transform:
+        for item in custom:
+            item["xyz_wrist"] = tcp_points.hand_to_wrist(
+                transform, item["xyz_hand"])
+    calib_items = []
+    for point in CONTEXT.get("calib_tcp_points") or []:
+        entry = {"id": point["id"], "label": point["label"],
+                 "xyz_wrist": point["p_wrist_m"]}
+        if transform:
+            entry["xyz_hand"] = tcp_points.wrist_to_hand(
+                transform, point["p_wrist_m"])
+        calib_items.append(entry)
+    return {
+        "ok": True,
+        "hand_id": hand_id,
+        "custom": custom,
+        "calib": calib_items,
+        "default": tcp_points.get_default(hand_id),
+        "has_wrist_transform": bool(transform),
+    }
+
+
+@app.post("/api/hand/tcp-points")
+def tcp_save(body: dict) -> Any:
+    filename = str(body.get("file") or "")
+    try:
+        if filename:
+            owned = _own_point_or_error(filename)
+            if isinstance(owned, JSONResponse):
+                return owned
+            item = tcp_points.update_point(
+                filename, name=body.get("name"),
+                xyz_hand=body.get("xyz_hand"))
+        else:
+            item = tcp_points.save_point(
+                body.get("name"), body.get("xyz_hand"),
+                hand_id=CONTEXT["combo"]["hand_id"],
+                combo=CONTEXT["combo"])
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+    transform = CONTEXT.get("T_wrist2hand")
+    if transform:
+        item["xyz_wrist"] = tcp_points.hand_to_wrist(
+            transform, item["xyz_hand"])
+    return {"ok": True, "point": item}
+
+
+@app.post("/api/hand/tcp-points/delete")
+def tcp_delete(body: dict) -> Any:
+    filename = str(body.get("file") or "")
+    owned = _own_point_or_error(filename)
+    if isinstance(owned, JSONResponse):
+        return owned
+    tcp_points.delete_point(filename)
+    return {"ok": True}
+
+
+@app.post("/api/hand/tcp-points/default")
+def tcp_default(body: dict) -> Any:
+    hand_id = str(CONTEXT["combo"]["hand_id"])
+    kind = str(body.get("kind") or "")
+    key = str(body.get("key") or "")
+    if not kind and not key:
+        tcp_points.clear_default(hand_id)
+        return {"ok": True, "default": None}
+    if kind == "custom":
+        owned = _own_point_or_error(key)
+        if isinstance(owned, JSONResponse):
+            return owned
+    elif kind == "calib":
+        known = {p["id"] for p in CONTEXT.get("calib_tcp_points") or []}
+        if key not in known:
+            return JSONResponse(
+                {"ok": False, "error": f"标定点不存在: {key}"},
+                status_code=404)
+    try:
+        tcp_points.set_default(hand_id, kind, key)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+    return {"ok": True, "default": tcp_points.get_default(hand_id)}
+
+
 def _lan_ip() -> str:
     import socket
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -275,9 +383,32 @@ def main() -> int:
         side=str(hand.get("design_side") or "right"),
         service_url=args.hand_service_url,
     )
+
+    # 手眼标定：T_wrist2hand（手系点→腕系）与标定指尖点。缺标定时
+    # TCP 点仍可在手坐标系里取/存，只是没有腕系换算与标定点列表。
+    import json as _json
+
+    from core.capability_registry import calib_abs_path
+
+    calib_file = calib_abs_path(
+        str(active.get("arm")), str(active.get("hand_id")))
+    CONTEXT["T_wrist2hand"] = None
+    CONTEXT["calib_tcp_points"] = []
+    if calib_file.is_file():
+        try:
+            calib = _json.loads(calib_file.read_text(encoding="utf-8"))
+            CONTEXT["T_wrist2hand"] = calib.get("T_wrist2hand")
+            CONTEXT["calib_tcp_points"] = tcp_points.calib_tcp_points(calib)
+        except (ValueError, OSError) as exc:
+            print(f"[手配置] 标定文件解析失败（TCP 腕系换算不可用）: {exc}")
+    else:
+        print(f"[手配置] 该组合还没有手眼标定: {calib_file}")
+
     print(f"[手配置] 激活组合: {CONTEXT['hand_name']}"
           f"（{device_id} · {CONTEXT['side']}）")
-    print(f"[手配置] 姿态库: {hand_poses.POSES_DIR}")
+    print(f"[手配置] 姿态库: {hand_poses.POSES_DIR} · "
+          f"TCP 点库: {tcp_points.POINTS_DIR}"
+          f"（标定点 {len(CONTEXT['calib_tcp_points'])} 个）")
     print(f"[手配置] 浏览器打开: http://{_lan_ip()}:{args.port}/")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0

@@ -617,6 +617,24 @@ button:disabled {
   white-space: nowrap;
 }
 
+/* 该列的下拉框（手位 / TCP 点）与按钮同字号同高度：
+   select 不继承排版，没有局部规则就会掉回全局 16px/32px，显得突兀。
+   用 ID 提高优先级，并显式定高，压过全局 input,select 的 32px。 */
+.reach-video-btns select,
+#reachHandPoseSel,
+#reachTcpSel {
+  /* 与全局 button 完全同规格：32 高、12 号、800 粗，行内不齐/粗细不一就是差异来源 */
+  height: 32px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.4;
+  border: 1px solid #c9d5df;
+  border-radius: 5px;
+  background: #ffffff;
+  color: #213142;
+}
+
 .reach-perp-link {
   display: flex;
   align-items: center;

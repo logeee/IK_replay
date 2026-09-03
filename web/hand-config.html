@@ -69,12 +69,21 @@
     .tools input[type=number] { width: 74px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; }
     .tools input[type=text] { flex: 1; min-width: 140px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; }
     label.chk { display: inline-flex; align-items: center; gap: 6px; color: var(--sub); font-size: 13px; cursor: pointer; }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { padding: 6px 8px; border-bottom: 1px solid #e7edf2; text-align: left; }
-    th { color: var(--sub); font-weight: 600; font-size: 12px; }
-    td .pos { color: var(--sub); font-size: 12px; font-variant-numeric: tabular-nums; }
-    td.ops { white-space: nowrap; text-align: right; }
-    td.ops button { min-height: 26px; padding: 2px 10px; font-size: 12px; margin-left: 6px; }
+    /* 窄栏友好的两行式列表：首行 名称+按钮，次行 数据 */
+    .list-row { padding: 9px 0; border-bottom: 1px solid #e7edf2; }
+    .list-row:last-child { border-bottom: none; }
+    .list-head { display: flex; align-items: center; gap: 8px; }
+    .list-head .nm {
+      flex: 1; min-width: 0; font-weight: 600; font-size: 13px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .list-ops { display: flex; gap: 6px; flex: none; }
+    .list-ops button { min-height: 26px; padding: 2px 9px; font-size: 12px; }
+    .list-sub {
+      margin-top: 3px; color: var(--sub); font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
     .badge { padding: 1px 8px; border-radius: 8px; background: #e4ecf2; color: var(--sub); font-size: 12px; }
     #msg { min-height: 18px; font-size: 13px; margin-top: 8px; }
     #msg.ok { color: #1f7a43; }
@@ -90,13 +99,13 @@
       <strong>三维视图</strong>
       <span class="sub">拖动旋转 · 滚轮缩放 · 右键平移</span>
       <span style="flex:1"></span>
-      <label class="chk" title="打开：模型跟随 18089 实时手位；关闭：跟随滑条（摆姿态更直观）">
+      <label class="chk" title="勾选：滑条与 3D 实时跟随手的实际位置；拖动滑条或载入姿态会自动暂停，调完再勾上即可恢复">
         <input id="followLive" type="checkbox" checked /> 跟随实际手位
       </label>
     </div>
     <div id="view3d">
       <div id="view3dMsg" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#8296a8;font-size:13px;pointer-events:none">三维模型加载中…</div>
-      <div id="view3dHint" style="position:absolute;left:10px;bottom:8px;color:#68798a;font-size:12px;pointer-events:none;z-index:2">按 R 后点击模型：设置旋转中心</div>
+      <div id="view3dHint" style="position:absolute;left:10px;bottom:8px;color:#68798a;font-size:12px;pointer-events:none;z-index:2">R：点选旋转中心 · T：取 TCP 工作点</div>
     </div>
   </section>
 
@@ -144,6 +153,25 @@
     <div id="posesBox" style="margin-top:8px"><div class="empty">加载中…</div></div>
   </div>
 
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <strong>TCP 工作点</strong>
+      <span class="sub">按 T 后点模型取点 · 18001 选中后规划就用它</span>
+    </div>
+    <div class="row tools">
+      <input id="tcpName" type="text" placeholder="点名，如：旋钮-捏合点" style="flex:1;min-width:150px" />
+    </div>
+    <div class="row tools">
+      <label>x <input id="tcpX" type="number" step="0.001" value="0" style="width:74px" /></label>
+      <label>y <input id="tcpY" type="number" step="0.001" value="0" style="width:74px" /></label>
+      <label>z <input id="tcpZ" type="number" step="0.001" value="0" style="width:74px" /></label>
+      <button id="tcpSaveBtn" class="primary">保存新点</button>
+      <button id="tcpCancelBtn" style="display:none">取消</button>
+    </div>
+    <div class="sub" id="tcpWristLine" style="margin-top:4px">坐标为手根坐标系（米）；按 T 在模型上点取自动填入</div>
+    <div id="tcpBox" style="margin-top:8px"><div class="empty">加载中…</div></div>
+  </div>
+
   </section>
   </div>
 
@@ -189,6 +217,8 @@ function buildJoints() {
     </div>`).join("");
   JOINT_LABELS.forEach((_, i) => {
     $(`j${i}`).addEventListener("input", () => {
+      // 手动拖滑条 = 进入预览调姿，暂停“跟随实际手位”
+      if ($("followLive").checked) $("followLive").checked = false;
       $(`v${i}`).textContent = parseFloat($(`j${i}`).value).toFixed(2);
       if ($("liveSend").checked) {
         clearTimeout(liveSendTimer);
@@ -229,6 +259,7 @@ async function refreshState() {
       livePositions = hand.positions;
       $("liveLine").textContent = "实际手位：" +
         hand.positions.map((v) => Number(v).toFixed(2)).join("  ");
+      if ($("followLive").checked) setSliders(hand.positions);
     } else {
       livePositions = null;
       $("liveLine").textContent = "实际手位：-";
@@ -243,16 +274,17 @@ async function refreshState() {
 function posesRow(pose) {
   const mismatch = info && (pose.device_id !== info.device_id || pose.side !== info.side);
   const positions = (pose.positions || []).map((v) => Number(v).toFixed(2)).join(" ");
-  return `<tr>
-    <td>${pose.name}${mismatch ? ' <span class="badge">设备不符</span>' : ""}</td>
-    <td class="pos">${positions}</td>
-    <td class="pos">${pose.created_at || "-"}</td>
-    <td class="ops">
-      <button data-op="load" data-file="${pose.file}">载入</button>
-      <button data-op="send" data-file="${pose.file}" class="primary">发送</button>
-      <button data-op="del" data-file="${pose.file}" class="danger">删除</button>
-    </td>
-  </tr>`;
+  return `<div class="list-row">
+    <div class="list-head">
+      <span class="nm" title="${pose.name}">${pose.name}${mismatch ? ' <span class="badge">设备不符</span>' : ""}</span>
+      <span class="list-ops">
+        <button data-op="load" data-file="${pose.file}">载入</button>
+        <button data-op="send" data-file="${pose.file}" class="primary">发送</button>
+        <button data-op="del" data-file="${pose.file}" class="danger">删</button>
+      </span>
+    </div>
+    <div class="list-sub" title="${positions} · ${pose.created_at || ""}">${positions} · ${pose.created_at || "-"}</div>
+  </div>`;
 }
 
 let posesCache = [];
@@ -262,8 +294,7 @@ async function refreshPoses() {
     const body = await fetchJson("/api/hand/poses");
     posesCache = body.poses || [];
     $("posesBox").innerHTML = posesCache.length
-      ? `<table><tr><th>名称</th><th>positions</th><th>保存时间</th><th></th></tr>` +
-        posesCache.map(posesRow).join("") + "</table>"
+      ? posesCache.map(posesRow).join("")
       : `<div class="empty">还没有保存的姿态——调好滑条起个名字保存即可</div>`;
   } catch (error) {
     $("posesBox").innerHTML = `<div class="empty">${error.message}</div>`;
@@ -276,6 +307,7 @@ $("posesBox").addEventListener("click", async (event) => {
   const pose = posesCache.find((item) => item.file === button.dataset.file);
   if (!pose) return;
   if (button.dataset.op === "load") {
+    $("followLive").checked = false;  // 载入的姿态别被跟随轮询盖掉
     setSliders(pose.positions || []);
     msg(`已载入「${pose.name}」到滑条（未发送）`, true);
   } else if (button.dataset.op === "send") {
@@ -352,12 +384,217 @@ $("saveBtn").addEventListener("click", async () => {
   }
 });
 
-// 三维视图钩子：跟随实际手位（默认）或跟随滑条
-window.__renderPositions = () => {
-  const follow = $("followLive")?.checked;
-  if (follow && livePositions) return livePositions;
-  return sliderValues();
+// ---- TCP 工作点：按 T 在模型上取点，命名保存；18001 选中后规划用它 ----
+let tcpCache = null;      // 最近一次 /api/hand/tcp-points 响应
+let tcpEditing = null;    // null=没在编辑；{file:null}=新建中；{file:"x.json"}=编辑既有
+
+// 三维标记默认全隐藏，逐点点「显示」才出现；记录存 localStorage，刷新保持
+const TCP_VIS_KEY = "hand18003.tcpVisible";
+let tcpVisible = new Set();
+try {
+  tcpVisible = new Set(JSON.parse(localStorage.getItem(TCP_VIS_KEY) || "[]"));
+} catch (error) { /* 记录坏了就从空开始 */ }
+
+function tcpVisSave() {
+  localStorage.setItem(TCP_VIS_KEY, JSON.stringify([...tcpVisible]));
+}
+
+const fmt3 = (xyz) => (xyz || []).map((v) => Number(v).toFixed(3)).join(" ");
+
+function tcpXyz() {
+  return [parseFloat($("tcpX").value) || 0,
+          parseFloat($("tcpY").value) || 0,
+          parseFloat($("tcpZ").value) || 0];
+}
+
+function setTcpXyz(xyz) {
+  $("tcpX").value = Number(xyz[0]).toFixed(4);
+  $("tcpY").value = Number(xyz[1]).toFixed(4);
+  $("tcpZ").value = Number(xyz[2]).toFixed(4);
+}
+
+function pushTcpMarkers() {
+  if (!window.__tcpViz) return;
+  const markers = [];
+  const data = tcpCache || {};
+  for (const p of data.custom || []) {
+    if (tcpEditing && tcpEditing.file === p.file) continue;  // 编辑中的用橙色替身
+    if (!tcpVisible.has(`custom:${p.file}`)) continue;       // 默认隐藏
+    markers.push({ xyz: p.xyz_hand, kind: "custom" });
+  }
+  for (const p of data.calib || []) {
+    if (!p.xyz_hand || !tcpVisible.has(`calib:${p.id}`)) continue;
+    markers.push({ xyz: p.xyz_hand, kind: "calib" });
+  }
+  if (tcpEditing) markers.push({ xyz: tcpXyz(), kind: "editing" });
+  window.__tcpViz.setMarkers(markers);
+}
+window.__onTcpVizReady = pushTcpMarkers;
+
+function tcpResetEditor() {
+  tcpEditing = null;
+  $("tcpName").value = "";
+  $("tcpSaveBtn").textContent = "保存新点";
+  $("tcpCancelBtn").style.display = "none";
+  pushTcpMarkers();
+}
+
+function renderTcp() {
+  const data = tcpCache;
+  if (!data || data.ok === false) {
+    $("tcpBox").innerHTML = `<div class="empty">TCP 点加载失败</div>`;
+    return;
+  }
+  const def = data.default;
+  const isDef = (kind, key) => def && def.kind === kind && def.key === key;
+  const visBtn = (visKey) => {
+    const on = tcpVisible.has(visKey);
+    return `<button data-top="vis" data-viskey="${visKey}"`
+      + ` class="${on ? "primary" : ""}"`
+      + ` title="三维视图里${on ? "隐藏" : "显示"}这个点的标记">`
+      + `${on ? "隐藏" : "显示"}</button>`;
+  };
+  const rows = [];
+  for (const p of data.custom || []) {
+    const sub = `手系 ${fmt3(p.xyz_hand)}`
+      + (p.xyz_wrist ? ` · 腕系 ${fmt3(p.xyz_wrist)}` : "");
+    rows.push(`<div class="list-row">
+      <div class="list-head">
+        <span class="nm" title="${p.name}">${p.name}${isDef("custom", p.file) ? ' <span class="badge">默认</span>' : ""}</span>
+        <span class="list-ops">
+          ${visBtn(`custom:${p.file}`)}
+          <button data-top="edit" data-file="${p.file}">编辑</button>
+          <button data-top="def" data-kind="custom" data-key="${p.file}">默认</button>
+          <button data-top="del" data-file="${p.file}" class="danger">删</button>
+        </span>
+      </div>
+      <div class="list-sub" title="${sub}">${sub}</div>
+    </div>`);
+  }
+  for (const p of data.calib || []) {
+    rows.push(`<div class="list-row">
+      <div class="list-head">
+        <span class="nm" title="${p.label}">${p.label} <span class="badge">标定</span>${isDef("calib", p.id) ? ' <span class="badge">默认</span>' : ""}</span>
+        <span class="list-ops">
+          ${p.xyz_hand ? visBtn(`calib:${p.id}`) : ""}
+          <button data-top="def" data-kind="calib" data-key="${p.id}">默认</button>
+        </span>
+      </div>
+      <div class="list-sub">腕系 ${fmt3(p.xyz_wrist)}</div>
+    </div>`);
+  }
+  $("tcpBox").innerHTML = rows.length
+    ? rows.join("")
+    : `<div class="empty">还没有 TCP 点——按 T 在模型上点一个</div>`;
+  $("tcpWristLine").textContent = data.has_wrist_transform
+    ? "坐标为手根坐标系（米）；按 T 在模型上点取自动填入，腕系换算按当前手眼标定"
+    : "坐标为手根坐标系（米）；该组合还没有手眼标定，暂无腕系换算";
+  pushTcpMarkers();
+}
+
+async function refreshTcp() {
+  try {
+    tcpCache = await fetchJson("/api/hand/tcp-points");
+  } catch (error) {
+    tcpCache = { ok: false };
+  }
+  renderTcp();
+}
+
+$("tcpSaveBtn").addEventListener("click", async () => {
+  try {
+    const payload = { name: $("tcpName").value, xyz_hand: tcpXyz() };
+    if (tcpEditing && tcpEditing.file) payload.file = tcpEditing.file;
+    await fetchJson("/api/hand/tcp-points", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    msg(tcpEditing && tcpEditing.file ? "TCP 点已更新" : "TCP 点已保存", true);
+    tcpResetEditor();
+    await refreshTcp();
+  } catch (error) {
+    msg(`TCP 保存失败：${error.message}`, false);
+  }
+});
+
+$("tcpCancelBtn").addEventListener("click", tcpResetEditor);
+
+["tcpX", "tcpY", "tcpZ"].forEach((id) => {
+  $(id).addEventListener("input", () => {
+    if (!tcpEditing) {
+      tcpEditing = { file: null };
+      $("tcpCancelBtn").style.display = "";
+    }
+    pushTcpMarkers();
+  });
+});
+
+$("tcpBox").addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-top]");
+  if (!button) return;
+  try {
+    if (button.dataset.top === "vis") {
+      const visKey = button.dataset.viskey;
+      if (tcpVisible.has(visKey)) tcpVisible.delete(visKey);
+      else tcpVisible.add(visKey);
+      tcpVisSave();
+      renderTcp();  // 重画按钮态 + 标记
+    } else if (button.dataset.top === "edit") {
+      const point = (tcpCache.custom || []).find(
+        (item) => item.file === button.dataset.file);
+      if (!point) return;
+      tcpEditing = { file: point.file };
+      $("tcpName").value = point.name;
+      setTcpXyz(point.xyz_hand);
+      $("tcpSaveBtn").textContent = "更新";
+      $("tcpCancelBtn").style.display = "";
+      pushTcpMarkers();
+    } else if (button.dataset.top === "def") {
+      await fetchJson("/api/hand/tcp-points/default", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: button.dataset.kind,
+                               key: button.dataset.key }),
+      });
+      msg("已设为该手的默认 TCP 点（18001 重启自动应用）", true);
+      await refreshTcp();
+    } else if (button.dataset.top === "del") {
+      await fetchJson("/api/hand/tcp-points/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file: button.dataset.file }),
+      });
+      if (tcpEditing && tcpEditing.file === button.dataset.file) {
+        tcpResetEditor();
+      }
+      tcpVisible.delete(`custom:${button.dataset.file}`);
+      tcpVisSave();
+      await refreshTcp();
+    }
+  } catch (error) {
+    msg(`TCP 操作失败：${error.message}`, false);
+  }
+});
+
+// 三维视图按 T 取点后回调：填进编辑框（新建或更新中的点）
+window.__onTcpPick = (xyz) => {
+  if (!tcpEditing) {
+    tcpEditing = { file: null };
+    $("tcpCancelBtn").style.display = "";
+  }
+  setTcpXyz(xyz);
+  pushTcpMarkers();
+  if (!$("tcpName").value && !(tcpEditing && tcpEditing.file)) {
+    $("tcpName").focus();
+  }
+  msg(`已取点（手系 ${fmt3(xyz)}）——起个名字保存`, true);
 };
+
+// 三维视图始终显示滑条姿态——滑条动、3D 就动（发送前预览）。
+// “跟随实际手位”勾选时，滑条本身每 0.5s 同步真实手位（3D 随之跟随）；
+// 拖滑条 / 载入姿态会自动暂停跟随，避免轮询把你调的姿态盖掉。
+window.__renderPositions = () => sliderValues();
 
 (async function init() {
   buildJoints();
@@ -371,6 +608,7 @@ window.__renderPositions = () => {
   }
   await refreshState();
   await refreshPoses();
+  await refreshTcp();
   setInterval(refreshState, 500);
 })();
 </script>
@@ -610,10 +848,12 @@ function resize() {
 new ResizeObserver(resize).observe(box);
 resize();
 
-// ---- 按 R 后点击模型：把点击到的 mesh 点设为旋转中心 ----
+// ---- 取点交互：R = 旋转中心，T = TCP 工作点 ----
 const hintEl = document.getElementById("view3dHint");
 const raycaster = new THREE.Raycaster();
-let pickMode = false;
+const HINT_IDLE = "R：点选旋转中心 · T：取 TCP 工作点";
+let pickMode = false;      // R：旋转中心
+let tcpPickMode = false;   // T：TCP 点
 let pivotShownAt = 0;
 const pivotMarker = new THREE.Mesh(
   new THREE.SphereGeometry(0.0045, 16, 12),
@@ -622,20 +862,41 @@ const pivotMarker = new THREE.Mesh(
 pivotMarker.visible = false;
 scene.add(pivotMarker);
 
+function updateHint() {
+  if (pickMode) {
+    hintEl.textContent = "点击模型上的点 → 旋转中心（Esc 取消）";
+    hintEl.style.color = "#ffb066";
+  } else if (tcpPickMode) {
+    hintEl.textContent = "点击模型上的点 → 取 TCP 工作点（Esc 取消）";
+    hintEl.style.color = "#5eead4";
+  } else {
+    hintEl.textContent = HINT_IDLE;
+    hintEl.style.color = "#68798a";
+  }
+  box.style.cursor = (pickMode || tcpPickMode) ? "crosshair" : "grab";
+}
+
 function setPickMode(on) {
   pickMode = on;
-  box.style.cursor = on ? "crosshair" : "grab";
-  hintEl.textContent = on
-    ? "点击模型上的点 → 旋转中心（Esc 取消）"
-    : "按 R 后点击模型：设置旋转中心";
-  hintEl.style.color = on ? "#ffb066" : "#68798a";
+  if (on) tcpPickMode = false;
+  updateHint();
+}
+
+function setTcpPickMode(on) {
+  tcpPickMode = on;
+  if (on) pickMode = false;
+  updateHint();
 }
 
 window.addEventListener("keydown", (event) => {
   const tag = event.target?.tagName || "";
   if (/INPUT|TEXTAREA|SELECT/.test(tag)) return;
   if (event.key === "r" || event.key === "R") setPickMode(!pickMode);
-  else if (event.key === "Escape" && pickMode) setPickMode(false);
+  else if (event.key === "t" || event.key === "T") setTcpPickMode(!tcpPickMode);
+  else if (event.key === "Escape" && (pickMode || tcpPickMode)) {
+    setPickMode(false);
+    setTcpPickMode(false);
+  }
 });
 
 let pointerDownAt = null;
@@ -645,7 +906,7 @@ renderer.domElement.addEventListener("pointerdown", (event) => {
 renderer.domElement.addEventListener("pointerup", (event) => {
   const down = pointerDownAt;
   pointerDownAt = null;
-  if (!pickMode || !down) return;
+  if ((!pickMode && !tcpPickMode) || !down) return;
   if (Math.hypot(event.clientX - down[0], event.clientY - down[1]) > 5) return;
   const rect = renderer.domElement.getBoundingClientRect();
   raycaster.setFromCamera(new THREE.Vector2(
@@ -654,16 +915,54 @@ renderer.domElement.addEventListener("pointerup", (event) => {
   ), camera);
   const hit = raycaster.intersectObject(handRoot, true)[0];
   if (!hit) return;  // 没点到模型，继续等
+  if (tcpPickMode) {
+    const local = handRoot.worldToLocal(hit.point.clone());
+    setTcpPickMode(false);
+    window.__onTcpPick?.([local.x, local.y, local.z]);
+    return;
+  }
   controls.target.copy(hit.point);
   pivotMarker.position.copy(hit.point);
   pivotMarker.visible = true;
   pivotShownAt = performance.now();
   setPickMode(false);
 });
+
+// ---- TCP 点标记：手系坐标直接挂在 handRoot 下 ----
+const tcpGroup = new THREE.Group();
+handRoot.add(tcpGroup);
+const TCP_STYLE = {
+  editing: { color: 0xff9d4d, r: 0.0055 },
+  custom: { color: 0x2dd4bf, r: 0.0042 },
+  calib: { color: 0x86c98b, r: 0.0034 },
+};
+window.__tcpViz = {
+  setMarkers(list) {
+    while (tcpGroup.children.length) {
+      const child = tcpGroup.children.pop();
+      child.geometry?.dispose();
+      child.material?.dispose();
+    }
+    for (const item of list || []) {
+      const style = TCP_STYLE[item.kind] || TCP_STYLE.custom;
+      const marker = new THREE.Mesh(
+        new THREE.SphereGeometry(style.r, 14, 10),
+        new THREE.MeshBasicMaterial({ color: style.color }),
+      );
+      marker.position.set(item.xyz[0], item.xyz[1], item.xyz[2]);
+      marker.raycast = () => {};  // 别挡 R/T 的射线
+      tcpGroup.add(marker);
+    }
+  },
+};
+window.__onTcpVizReady?.();
+
 // 测试钩子
 window.__view3d = {
   pick: () => pickMode,
+  tcpPick: () => tcpPickMode,
   target: () => controls.target.toArray(),
+  tcpMarkers: () => tcpGroup.children.length,
 };
 
 // 等经典脚本拿到 /api/hand/info 再加载模型

@@ -193,6 +193,8 @@ async function initReach() {
     startTest: document.getElementById("reachStartTestBtn"),
     handPoseSel: document.getElementById("reachHandPoseSel"),
     handPoseBtn: document.getElementById("reachHandPoseBtn"),
+    tcpSel: document.getElementById("reachTcpSel"),
+    tcpDefaultBtn: document.getElementById("reachTcpDefaultBtn"),
     seqSel: document.getElementById("reachSeqSel"),
     seqPick: document.getElementById("reachSeqPickBtn"),
     seqRun: document.getElementById("reachSeqRunBtn"),
@@ -284,6 +286,10 @@ async function initReach() {
   // 灵巧手位：18003 姿态库；焦点时刷新列表，▶ 立即执行（运动中也可调）
   d.handPoseSel.addEventListener("focus", () => refreshHandPoses());
   d.handPoseBtn.addEventListener("click", () => executeHandPose());
+  // TCP 工作点：选中立即热替换规划用的 p_tool（服务端按激活手过滤）
+  d.tcpSel.addEventListener("focus", () => refreshTcpPoints());
+  d.tcpSel.addEventListener("change", () => selectTcpPoint(false));
+  d.tcpDefaultBtn.addEventListener("click", () => selectTcpPoint(true));
   d.seqPick.addEventListener("click", () => openReachLibrary("sequence"));
   d.libraryGroup.addEventListener("change", () => populateReachLibraryItems());
   d.libraryItem.addEventListener("change", () => updateReachLibraryHint());
@@ -363,6 +369,7 @@ async function initReach() {
   await syncReachJointsOnStartup();
   showFlangeDebug();
   await refreshDexterousHand({ forceModelReload: true });
+  await refreshTcpPoints();   // 需在手模型之后：TCP 小球挂在腕部组
   scheduleDexterousHandPoll();
   updateReachArmUi();
   refreshReachDiag();
@@ -1298,6 +1305,84 @@ async function refreshHandPoses() {
     sel.value = prev;
   }
   reach.dom.handPoseBtn.disabled = !reach.handPoses.length;
+}
+
+// ---- TCP 工作点：18003 手上取的点 + 标定指尖点，服务端只回激活手的 ----
+let reachTcpMarker = null;   // 三维视图里的 TCP 小球（挂在腕部，随臂联动）
+
+function updateReachTcpMarker(xyzWrist) {
+  const wristGroup = state.handGroup?.parent || null;
+  if (reachTcpMarker?.parent) {
+    reachTcpMarker.parent.remove(reachTcpMarker);
+  }
+  if (!wristGroup || !Array.isArray(xyzWrist)) return;
+  if (!reachTcpMarker) {
+    reachTcpMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.007, 14, 10),
+      new THREE.MeshBasicMaterial({ color: 0x2dd4bf }),
+    );
+    reachTcpMarker.name = "reach_tcp_marker";
+  }
+  reachTcpMarker.position.set(xyzWrist[0], xyzWrist[1], xyzWrist[2]);
+  wristGroup.add(reachTcpMarker);
+}
+
+async function refreshTcpPoints() {
+  let data;
+  try {
+    data = await fetchJson("/api/reach/tcp/points");
+  } catch {
+    return;
+  }
+  reach.tcpPoints = data;
+  const sel = reach.dom.tcpSel;
+  if (!data.enabled) {
+    sel.innerHTML = `<option value="">（TCP：无标定/无组合）</option>`;
+    sel.disabled = true;
+    reach.dom.tcpDefaultBtn.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  reach.dom.tcpDefaultBtn.disabled = false;
+  const def = data.default;
+  const mark = (kind, key) =>
+    (def && def.kind === kind && def.key === key) ? "（默认）" : "";
+  const customOpts = (data.custom || []).map((p) =>
+    `<option value="custom:${p.file}">${p.name}${mark("custom", p.file)}</option>`);
+  const calibOpts = (data.calib || []).map((p) =>
+    `<option value="calib:${p.id}">${p.label}·标定${mark("calib", p.id)}</option>`);
+  sel.innerHTML = `<option value="">（TCP：标定默认）</option>`
+    + (customOpts.length
+       ? `<optgroup label="自定义（18003 取点）">${customOpts.join("")}</optgroup>` : "")
+    + (calibOpts.length
+       ? `<optgroup label="标定指尖点">${calibOpts.join("")}</optgroup>` : "");
+  const selection = data.selection;
+  sel.value = selection ? `${selection.kind}:${selection.key}` : "";
+  updateReachTcpMarker(data.p_tool);
+}
+
+async function selectTcpPoint(setDefault) {
+  const sel = reach.dom.tcpSel;
+  const value = sel.value;
+  const [kind, key] = value ? value.split(/:(.+)/) : [null, null];
+  try {
+    const res = await fetchJson("/api/reach/tcp/select", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, key, set_default: Boolean(setDefault) }),
+    });
+    const label = res.selection ? res.selection.label : "标定默认";
+    const xyz = (res.p_tool || []).map((v) => Number(v).toFixed(3)).join(", ");
+    reachMsg(
+      `TCP 工作点 → ${label}（腕系 [${xyz}]）`
+      + (setDefault ? "，已记为该手默认" : "，之后的规划都用它"),
+      "success");
+    updateReachTcpMarker(res.p_tool);
+    if (setDefault) await refreshTcpPoints();
+  } catch (error) {
+    reachMsg(`TCP 切换失败：${error.message}`, "error");
+    await refreshTcpPoints();
+  }
 }
 
 async function executeHandPose(silent) {
@@ -3416,6 +3501,8 @@ async function loadDexterousHand(snapshot) {
   state.handPreview = snapshot.model.preview;
   applyDexterousHandPositions(snapshot);
   state.robotGroup?.updateMatrixWorld(true);
+  // 手模型重建后腕部组可能换了对象，把 TCP 小球重新挂上
+  if (reach.tcpPoints?.p_tool) updateReachTcpMarker(reach.tcpPoints.p_tool);
   publishRenderState("灵巧手模型已加载");
 
   function attachChildren(parentLinkName) {

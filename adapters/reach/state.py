@@ -30,6 +30,10 @@ class ReachState:
         self.T_cam2root: np.ndarray | None = None   # URDF 根 <- 彩色相机
         self.T_cam2torso: np.ndarray | None = None  # torso_link <- 彩色相机
         self.p_tool: list[float] | None = None      # 指尖在腕系的位置（TCP 偏移）
+        self.p_tool_startup: list[float] | None = None  # 启动算出的 p_tool（TCP 选择可还原）
+        self.tcp_selection: dict[str, Any] | None = None  # 18003 TCP 点选择（None=标定默认）
+        self.T_wrist2hand: list[list[float]] | None = None  # 腕系 <- 手URDF根（标定）
+        self.calib_tcp_points: list[dict[str, Any]] = []    # 标定指尖点（腕系，只读）
         self.p_tool_by_marker: dict[str, list[float]] = {}  # 各手部标记点在腕系的位置
         self.tool_reference_marker: str | None = None
         self.wrist_link: str | None = None
@@ -180,6 +184,14 @@ def configure(*, camera, wrist_camera=None, robot_model, robot_id: str, chain_id
     state.T_cam2torso = T_cam2torso
     state.T_cam2root = T_cam2root
     state.p_tool = p_tool
+    state.p_tool_startup = list(p_tool) if p_tool else None
+    state.tcp_selection = None
+    state.T_wrist2hand = calib.get("T_wrist2hand") if calib else None
+    if calib:
+        from core.tcp_points import calib_tcp_points
+        state.calib_tcp_points = calib_tcp_points(calib)
+    else:
+        state.calib_tcp_points = []
     state.p_tool_by_marker = p_tool_by_marker
     state.tool_reference_marker = tool_reference_marker
     state.wrist_link = wrist_link

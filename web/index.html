@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>双臂 IK 调试回放台</title>
-    <link rel="stylesheet" href="/web/style.css?v=66" />
+    <link rel="stylesheet" href="/web/style.css?v=69" />
     <script type="importmap">
       {
         "imports": {
@@ -71,6 +71,14 @@
                   </select>
                   <button id="reachHandPoseBtn" type="button"
                           title="立即把选中手位发给灵巧手（手臂运动中也可随时调）">▶ 手位</button>
+                </div>
+                <div class="reach-goto-actions">
+                  <select id="reachTcpSel"
+                          title="TCP 工作点（18003 手模型上取的点 + 标定指尖点，只列当前激活手的）；选中立即生效，之后的规划都以它为末端参考">
+                    <option value="">（TCP：标定默认）</option>
+                  </select>
+                  <button id="reachTcpDefaultBtn" type="button"
+                          title="把当前选择记为该手的默认 TCP 点，18001 重启自动应用">设默认</button>
                 </div>
               </div>
               <div class="reach-control-group reach-sequence-group">
@@ -244,6 +252,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=97"></script>
+    <script type="module" src="/web/main.js?v=98"></script>
   </body>
 </html>

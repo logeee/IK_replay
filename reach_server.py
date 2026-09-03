@@ -505,6 +505,11 @@ def main() -> int:
         print(f"[reach] 认领可见性: 起手式 {len(visible_sequences)} 个、"
               f"位点 {len(visible_waypoints)} 个（激活组合已启用能力；"
               "列表接口 ?scope=all 看全池）")
+        # 该手的默认 TCP 工作点（18003 设置）：有就热替换 p_tool
+        from adapters.reach.tcp import apply_startup_default
+        tcp_note = apply_startup_default()
+        if tcp_note:
+            print(f"[reach] {tcp_note}")
     if settle_trim != "off":
         print(f"[reach] 落点修正 = {settle_trim}"
               f"（settle 段闭环，死区 0.003 rad，偏置钳位 ±0.03 rad）")

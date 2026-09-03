@@ -2,13 +2,26 @@
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+import sys
+from typing import Any, NoReturn
 
 import cv2
 import numpy as np
 
 from .cabinet_wall_frame import fit_dominant_plane
 from .pointcloud_core import PointCloud, detection_pixel_mask
+
+# 独立 handler：无论宿主进程日志配置如何，都保证打到 stdout（服务日志文件）
+logger = logging.getLogger("panel_fit")
+if not logger.handlers:
+    _handler = logging.StreamHandler(sys.stdout)
+    _handler.setFormatter(
+        logging.Formatter("%(asctime)s [面板拟合] %(message)s", "%H:%M:%S")
+    )
+    logger.addHandler(_handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 
 def fit_yolo_panel_rectangle(
@@ -26,14 +39,24 @@ def fit_yolo_panel_rectangle(
     When ``preferred_axes_camera`` provides wall X and Z, the rectangle
     orientation comes from the wall frame rather than boundary Hough voting.
     """
+    dbg: dict[str, Any] = {}
+
+    def fail(message: str) -> NoReturn:
+        """失败即把逐阶段调试数据整体打进服务日志，便于直接定位。"""
+        lines = [f"拟合失败：{message}"]
+        lines += [f"    {key} = {value}" for key, value in dbg.items()]
+        logger.warning("\n".join(lines))
+        error = ValueError(message)
+        error.debug = dict(dbg)  # type: ignore[attr-defined]
+        raise error
+
     points = np.asarray(points_xyz, dtype=np.float64)
     if points.ndim != 2 or points.shape[1] != 3:
         raise ValueError("YOLO Mask 点云必须是 N×3 数组")
     points = points[np.isfinite(points).all(axis=1)]
+    dbg["mask内有效点"] = int(points.shape[0])
     if points.shape[0] < min_points:
-        raise ValueError(
-            f"YOLO Mask 内有效点不足：{points.shape[0]} < {min_points}"
-        )
+        fail(f"YOLO Mask 内有效点不足：{points.shape[0]} < {min_points}")
     if not 0.001 <= threshold_m <= 0.02:
         raise ValueError("YOLO 面板平面阈值必须在 1–20 mm 之间")
 
@@ -50,11 +73,15 @@ def fit_yolo_panel_rectangle(
     coarse_normal = np.asarray(coarse["normal_camera"], dtype=np.float64)
     signed_distances = (points - coarse_center) @ coarse_normal
     plane_mask = np.abs(signed_distances) <= threshold_m
+    dbg["平面粗拟合"] = (
+        f"内点 {int(plane_mask.sum())}/{points.shape[0]}"
+        f" 比例 {float(plane_mask.mean()):.1%}（阈值 {threshold_m*1000:.0f}mm）"
+    )
     if int(plane_mask.sum()) < min_points:
-        raise ValueError("YOLO Mask 内局部平面内点不足")
+        fail("YOLO Mask 内局部平面内点不足")
     inlier_ratio = float(plane_mask.mean())
     if inlier_ratio < min_inlier_ratio:
-        raise ValueError(f"YOLO 面板平面内点比例仅 {inlier_ratio:.1%}")
+        fail(f"YOLO 面板平面内点比例仅 {inlier_ratio:.1%}")
 
     inliers = points[plane_mask]
     center = inliers.mean(axis=0)
@@ -66,7 +93,7 @@ def fit_yolo_panel_rectangle(
     plane_mask = np.abs(final_distances) <= threshold_m
     inliers = points[plane_mask]
     if inliers.shape[0] < min_points:
-        raise ValueError("局部平面精化后内点不足")
+        fail("局部平面精化后内点不足")
     center = inliers.mean(axis=0)
     _, _, vh = np.linalg.svd(inliers - center, full_matrices=False)
     normal = vh[-1] / np.linalg.norm(vh[-1])
@@ -88,8 +115,12 @@ def fit_yolo_panel_rectangle(
     low = np.quantile(planar, 0.005, axis=0)
     high = np.quantile(planar, 0.995, axis=0)
     extent = high - low
+    dbg["平面精化"] = (
+        f"内点 {inliers.shape[0]} rms {float(np.sqrt(np.mean(residuals**2)))*1000:.1f}mm"
+        f" 范围 {extent[0]*1000:.0f}×{extent[1]*1000:.0f}mm"
+    )
     if float(np.min(extent)) < 0.02:
-        raise ValueError("YOLO 面板平面范围太小，无法识别长短边")
+        fail("YOLO 面板平面范围太小，无法识别长短边")
     cell_size = max(grid_cell_m, float(np.max(extent)) / 900.0)
     grid_shape = np.ceil(extent / cell_size).astype(np.int64) + 5
     grid_shape = np.maximum(grid_shape, 8)
@@ -111,8 +142,12 @@ def fit_yolo_panel_rectangle(
     component_count, component_labels, stats, _ = (
         cv2.connectedComponentsWithStats(grid, connectivity=8)
     )
+    dbg["栅格"] = (
+        f"cell {cell_size*1000:.1f}mm 尺寸 {grid.shape[1]}×{grid.shape[0]}"
+        f" 连通块 {component_count - 1} 个"
+    )
     if component_count <= 1:
-        raise ValueError("YOLO 面板平面没有稳定连通区域")
+        fail("YOLO 面板平面没有稳定连通区域")
     largest_label = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
     component = (component_labels == largest_label).astype(np.uint8)
     # Coplanar mask bleed must not drag the rectangle extent off the panel.
@@ -122,13 +157,14 @@ def fit_yolo_panel_rectangle(
         == largest_label
     )
     component_planar = planar[in_component]
+    dbg["主连通块点数"] = int(component_planar.shape[0])
     if component_planar.shape[0] < min_points:
-        raise ValueError("面板主连通区域内点不足")
+        fail("面板主连通区域内点不足")
     contours, _ = cv2.findContours(
         component, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
     )
     if not contours:
-        raise ValueError("YOLO 面板平面无法提取外轮廓")
+        fail("YOLO 面板平面无法提取外轮廓")
     contour = max(contours, key=cv2.contourArea)
     boundary = np.zeros_like(component)
     cv2.drawContours(boundary, [contour], -1, 255, 1)
@@ -142,8 +178,12 @@ def fit_yolo_panel_rectangle(
         minLineLength=min_line_pixels,
         maxLineGap=max(2, int(round(max_gap_m / cell_size))),
     )
+    dbg["霍夫参数"] = (
+        f"minLineLength {min_line_pixels}px(={min_line_pixels*cell_size*1000:.0f}mm)"
+        f" 检出 {0 if hough is None else len(hough)} 条"
+    )
     if hough is None or len(hough) < 2:
-        raise ValueError("面板外轮廓没有足够的直线边支持")
+        fail("面板外轮廓没有足够的直线边支持")
 
     segments: list[dict[str, Any]] = []
     total_segment_length = 0.0
@@ -166,8 +206,12 @@ def fit_yolo_panel_rectangle(
                 "length": length,
             }
         )
+    dbg["直线段"] = (
+        f"{len(segments)} 段 合计 {total_segment_length*1000:.0f}mm"
+        "（要求 ≥2 段且合计 ≥30mm）"
+    )
     if len(segments) < 2 or total_segment_length < 0.03:
-        raise ValueError("面板边界直线长度不足")
+        fail("面板边界直线长度不足")
     direction_tolerance_cos = float(np.cos(np.radians(15.0)))
 
     def aligned_segment_support(
@@ -203,6 +247,10 @@ def fit_yolo_panel_rectangle(
             in_plane = axis_3d - float(axis_3d @ normal) * normal
             in_plane_length = float(np.linalg.norm(in_plane))
             if in_plane_length < 0.7:
+                dbg["墙轴投影"] = (
+                    f"投影长度 {in_plane_length:.2f} < 0.7，"
+                    "墙轴弃用 → 回退霍夫定向"
+                )
                 projected_axes = []
                 break
             projected_axes.append(
@@ -260,8 +308,12 @@ def fit_yolo_panel_rectangle(
         orientation_concentration = float(
             aligned_support / total_segment_length
         )
+        dbg["定向"] = (
+            f"{orientation_source} 集中度 {orientation_concentration:.2f}"
+            "（回退路径要求 ≥0.35）"
+        )
         if orientation_concentration < 0.35:
-            raise ValueError("面板边界方向不稳定")
+            fail("面板边界方向不稳定")
 
     def dense_extent(positions: np.ndarray) -> tuple[float, float]:
         """Trim sparse tails (for example mask bleed) after quantiles."""
@@ -305,6 +357,32 @@ def fit_yolo_panel_rectangle(
             max(0.004, threshold_m + cell_size),
             0.015,
         )
+    )
+    dbg.setdefault(
+        "定向",
+        f"{orientation_source} 集中度 {orientation_concentration:.2f}",
+    )
+    dbg["长短轴范围mm"] = (
+        f"长轴 [{long_min*1000:.0f}, {long_max*1000:.0f}]"
+        f" 短轴 [{short_min*1000:.0f}, {short_max*1000:.0f}]"
+        f" 找边容差 ±{offset_tolerance*1000:.1f}mm 平行容差 ±15°"
+    )
+    dbg["直线段明细"] = "; ".join(
+        (
+            lambda direction, midpoint, length: (
+                f"长{length*1000:.0f}mm"
+                f" 与长轴夹角{np.degrees(np.arccos(np.clip(abs(float(direction @ long_axis_2d)), 0, 1))):.0f}°"
+                f" 短向@{float(midpoint @ short_axis_2d)*1000:.0f}"
+                f" 长向@{float(midpoint @ long_axis_2d)*1000:.0f}"
+            )
+        )(
+            np.asarray(seg["direction"]),
+            np.asarray(seg["midpoint"]),
+            float(seg["length"]),
+        )
+        for seg in sorted(
+            segments, key=lambda item: -float(item["length"])
+        )[:24]
     )
 
     def supported_offset(
@@ -356,10 +434,17 @@ def fit_yolo_panel_rectangle(
     long_max, short_at_long_max = supported_offset(
         short_axis_2d, long_axis_2d, long_max
     )
+    dbg["四边支持mm"] = (
+        f"长边@短向{short_min*1000:.0f}: {long_at_short_min*1000:.0f}"
+        f"｜长边@短向{short_max*1000:.0f}: {long_at_short_max*1000:.0f}"
+        f"｜短边@长向{long_min*1000:.0f}: {short_at_long_min*1000:.0f}"
+        f"｜短边@长向{long_max*1000:.0f}: {short_at_long_max*1000:.0f}"
+        "（各取两侧较大者，需 ≥12mm）"
+    )
     if max(long_at_short_min, long_at_short_max) < 0.012:
-        raise ValueError("没有找到受点云支持的完整长边")
+        fail("没有找到受点云支持的完整长边")
     if max(short_at_long_min, short_at_long_max) < 0.012:
-        raise ValueError("没有找到受点云支持的完整短边")
+        fail("没有找到受点云支持的完整短边")
     selected_short = (
         short_min if long_at_short_min >= long_at_short_max else short_max
     )
@@ -392,6 +477,15 @@ def fit_yolo_panel_rectangle(
     short_axis_camera /= np.linalg.norm(short_axis_camera)
     long_length = float(abs(opposite_long - selected_long))
     short_length = float(abs(opposite_short - selected_short))
+    logger.info(
+        "拟合成功 %.0f×%.0fmm 长边支持 %.0fmm 短边支持 %.0fmm 定向 %s 集中度 %.2f",
+        long_length * 1000,
+        short_length * 1000,
+        max(long_at_short_min, long_at_short_max) * 1000,
+        max(short_at_long_min, short_at_long_max) * 1000,
+        orientation_source,
+        orientation_concentration,
+    )
     return {
         "available": True,
         "fit_method": "local-ransac-supported-orthogonal-rectangle",
@@ -582,6 +676,27 @@ def analyze_yolo_mask_panel(
         "xyxy": box.get("xyxy"),
         "used_polygon_mask": bool(box.get("polygon") is not None),
     }
+    candidate_summary = "；".join(
+        f"[{index}] {candidate.get('name')} conf={float(candidate.get('conf', 0)):.2f}"
+        f" 框{float(candidate['xyxy'][2]) - float(candidate['xyxy'][0]):.0f}"
+        f"×{float(candidate['xyxy'][3]) - float(candidate['xyxy'][1]):.0f}px"
+        f" poly{len(candidate.get('polygon') or [])}点"
+        for index, candidate in valid_boxes
+    )
+    logger.info(
+        "候选 %d 个：%s ｜ 选中[%d]（置信度最高） mask内点 %d → 参与拟合 %d（亮度过滤=%s）",
+        len(valid_boxes),
+        candidate_summary,
+        box_index,
+        int(mask_points.shape[0]) + int(removed_points.shape[0]),
+        int(mask_points.shape[0]),
+        (
+            f"剔除暗点 {color_filter['removed_point_count']}"
+            f"，亮度阈值 {color_filter.get('brightness_threshold', 0):.0f}"
+            if color_filter["enabled"]
+            else "未启用"
+        ),
+    )
     preferred_axes: tuple[Any, Any] | None = None
     if wall_plane is not None:
         wall_x = wall_plane.get("x_axis_camera")
@@ -600,6 +715,7 @@ def analyze_yolo_mask_panel(
         return {
             "available": False,
             "reason": str(exc),
+            "debug": getattr(exc, "debug", None),
             "mask_point_count": int(mask_points.shape[0]),
             "color_filter": color_filter,
             "classification_preview": classification_preview,

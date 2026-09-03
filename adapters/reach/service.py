@@ -33,6 +33,7 @@ def reach_status():
         "camera_only": state.camera_only,
         "robot_only": state.robot_only,
         "p_tool": state.p_tool,
+        "tcp_selection": state.tcp_selection,   # 18003 TCP 点（None=标定默认）
         "p_tool_wrist_m_by_marker": state.p_tool_by_marker,
         "p_tool_reference_marker": state.tool_reference_marker,
         "wrist_link": state.wrist_link,
