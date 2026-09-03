@@ -34,6 +34,11 @@ class DispatchDashboardTests(unittest.TestCase):
         self.assertIn('id="defaultPushForceCloseToRemote"', html)
         self.assertIn("first_round_offset_wall_mm_by_kind", html)
         self.assertIn("push_force_n_by_kind", html)
+        self.assertIn('class="modal-card preset-studio"', html)
+        self.assertIn('id="curveChart"', html)
+        self.assertIn('id="curveKeyframeBody"', html)
+        self.assertIn('id="presetModeKeyframes"', html)
+        self.assertIn("target_offset_preset", html)
         self.assertEqual(response.headers["cache-control"], "no-store, max-age=0")
         self.assertIn('cache: "no-store"', html)
 

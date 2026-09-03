@@ -229,6 +229,120 @@
   .preset-editor label { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; }
   .preset-editor input[type="number"] { width: 64px; }
   .preset-editor input[type="text"] { width: 190px; }
+  .modal-card.preset-studio {
+    width: min(1120px, calc(100vw - 32px)); height: min(790px, calc(100vh - 34px));
+    max-height: none; padding: 0; overflow: hidden; border-radius: 18px;
+    display: flex; flex-direction: column;
+  }
+  .studio-head {
+    padding: 19px 22px 16px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 16px;
+    background: linear-gradient(90deg, rgba(79,209,197,.06), transparent 48%);
+  }
+  .studio-head h3 { margin: 0; font-size: 17px; }
+  .studio-head-copy { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .studio-head .spacer { flex: 1; }
+  .studio-body {
+    min-height: 0; flex: 1; display: grid; grid-template-columns: 280px minmax(0, 1fr);
+  }
+  .preset-sidebar {
+    min-height: 0; padding: 14px; border-right: 1px solid var(--line);
+    background: rgba(5,16,29,.27); display: flex; flex-direction: column;
+  }
+  .sidebar-label {
+    color: var(--muted); font-size: 10px; font-weight: 750;
+    letter-spacing: .12em; text-transform: uppercase; margin: 2px 4px 9px;
+  }
+  .preset-card-list { min-height: 0; overflow: auto; display: grid; gap: 8px; align-content: start; }
+  .preset-card {
+    width: 100%; padding: 11px 12px; text-align: left; border-radius: 12px;
+    background: rgba(19,39,63,.55); border: 1px solid rgba(151,180,213,.16);
+  }
+  .preset-card.active {
+    border-color: rgba(79,209,197,.58); background: rgba(79,209,197,.09);
+    box-shadow: inset 3px 0 0 var(--cyan);
+  }
+  .preset-card-name { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+  .preset-card-summary {
+    color: var(--muted); font: 10.5px/1.45 ui-monospace, monospace;
+    margin-top: 5px; white-space: normal;
+  }
+  .mode-badge {
+    flex: 0 0 auto; padding: 3px 6px; border-radius: 999px; font-size: 9px;
+    color: #b7fff8; background: rgba(79,209,197,.12);
+    border: 1px solid rgba(79,209,197,.25);
+  }
+  .mode-badge.static { color: #c9dcf2; background: rgba(90,167,255,.1); border-color: rgba(90,167,255,.22); }
+  .default-tags { color: var(--amber); font-size: 9px; margin-top: 5px; }
+  .sidebar-new { width: 100%; margin-top: 10px; }
+  .preset-workbench { min-width: 0; min-height: 0; overflow: auto; padding: 18px 20px 20px; }
+  .editor-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .editor-toolbar input[type="text"] { width: min(330px, 45vw); }
+  .mode-switch {
+    display: inline-flex; padding: 3px; border: 1px solid var(--line);
+    background: rgba(5,16,29,.4); border-radius: 10px;
+  }
+  .mode-switch button { border: 0; background: transparent; padding: 7px 12px; }
+  .mode-switch button.active { color: #07111f; background: var(--cyan); }
+  .editor-toolbar .spacer { flex: 1; }
+  .editor-section {
+    margin-top: 15px; padding: 14px; border: 1px solid var(--line);
+    border-radius: 13px; background: rgba(5,16,29,.24);
+  }
+  .editor-section[hidden] { display: none; }
+  .static-offset-editor { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; min-height: 110px; }
+  .static-offset-editor label { color: var(--muted); }
+  .static-offset-editor input { width: 88px !important; margin-left: 5px; }
+  .curve-topline { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 9px; }
+  .curve-legend { display: flex; gap: 13px; margin-right: auto; color: var(--muted); font-size: 11px; }
+  .curve-legend span::before {
+    content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 3px;
+    margin-right: 5px; background: currentColor;
+  }
+  .axis-x { color: var(--blue); } .axis-y { color: var(--amber); } .axis-z { color: var(--cyan); }
+  .curve-preview { color: #d9eaff; font-size: 11px; }
+  .curve-preview select { padding: 7px 9px; margin: 0 4px; }
+  .chart-shell {
+    border: 1px solid rgba(151,180,213,.16); border-radius: 12px;
+    background: linear-gradient(180deg, rgba(13,28,47,.75), rgba(5,16,29,.5));
+    overflow: hidden;
+  }
+  #curveChart { width: 100%; height: 250px; display: block; cursor: crosshair; }
+  #curveChart .grid { stroke: rgba(151,180,213,.11); stroke-width: 1; }
+  #curveChart .grid.major { stroke: rgba(151,180,213,.2); }
+  #curveChart .zero { stroke: rgba(237,245,255,.3); stroke-width: 1.2; }
+  #curveChart .label { fill: #7890aa; font: 10px ui-monospace, monospace; }
+  #curveChart .line-x, #curveChart .line-y, #curveChart .line-z { fill: none; stroke-width: 2.4; }
+  #curveChart .line-x { stroke: var(--blue); } #curveChart .line-y { stroke: var(--amber); } #curveChart .line-z { stroke: var(--cyan); }
+  #curveChart .point-x { fill: var(--blue); } #curveChart .point-y { fill: var(--amber); } #curveChart .point-z { fill: var(--cyan); }
+  #curveChart .point { stroke: #0b1728; stroke-width: 2; }
+  .chart-hint { color: var(--muted); font-size: 10px; padding: 7px 10px; border-top: 1px solid var(--line); }
+  .keyframe-toolbar { display: flex; align-items: center; gap: 9px; margin: 12px 0 7px; }
+  .keyframe-toolbar strong { font-size: 12px; }
+  .keyframe-toolbar span { color: var(--muted); font-size: 10px; margin-right: auto; }
+  .keyframe-table-wrap { max-height: 220px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
+  .keyframe-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .keyframe-table th {
+    position: sticky; top: 0; z-index: 1; background: #13243a; color: var(--muted);
+    padding: 7px 8px; text-align: center; font-weight: 650;
+  }
+  .keyframe-table td { padding: 5px 7px; border-top: 1px solid rgba(151,180,213,.1); text-align: center; }
+  .keyframe-table select { padding: 7px 8px; width: 82px; }
+  .keyframe-table input { width: 76px !important; padding: 7px 5px; }
+  .keyframe-table button { padding: 6px 9px; }
+  .studio-foot {
+    padding: 13px 20px; border-top: 1px solid var(--line);
+    display: flex; align-items: center; gap: 10px; background: rgba(5,16,29,.3);
+  }
+  .studio-foot .hint { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+  .studio-foot .spacer { flex: 1; }
+  @media (max-width: 820px) {
+    .modal-card.preset-studio { width: calc(100vw - 16px); height: calc(100vh - 16px); }
+    .studio-body { grid-template-columns: 1fr; }
+    .preset-sidebar { max-height: 190px; border-right: 0; border-bottom: 1px solid var(--line); }
+    .preset-card-list { grid-template-columns: repeat(2, minmax(0,1fr)); }
+    #curveChart { height: 210px; }
+  }
   .prompt-panel {
     margin-top: 14px; padding: 18px 22px;
     border: 1px solid rgba(245, 189, 88, .55); background:
@@ -543,24 +657,77 @@
 </div>
 
 <div id="presetsModal" class="modal" hidden>
-  <div class="modal-card">
-    <h3>偏移配置管理</h3>
-    <p class="modal-note">命名的目的点微调量（墙面坐标系，mm，单轴限 ±100）。
-      算法算出目的点后叠加，不改变粉点 → 目的点的模型偏移。</p>
-    <table class="preset-table">
-      <thead><tr><th>配置名</th><th>右+</th><th>上+</th><th>入墙+</th><th></th></tr></thead>
-      <tbody id="presetTableBody"><tr><td colspan="5" class="muted">尚无配置</td></tr></tbody>
-    </table>
-    <div class="preset-editor">
-      <input id="presetName" type="text" maxlength="40" placeholder="配置名，如 右手偏移配置-1" />
-      <label>右+ <input id="presetX" type="number" min="-100" max="100" step="1" value="0" /></label>
-      <label>上+ <input id="presetZ" type="number" min="-100" max="100" step="1" value="0" /></label>
-      <label>入墙+ <input id="presetY" type="number" min="-100" max="100" step="1" value="0" /></label>
-      <button id="savePreset" class="primary">保存（同名覆盖）</button>
-    </div>
-    <div class="modal-buttons">
+  <div class="modal-card preset-studio">
+    <div class="studio-head">
+      <div>
+        <h3>距离偏移关键帧工作台</h3>
+        <div class="studio-head-copy">墙面坐标系 XYZ · 横轴为所选起手式距离 · 关键帧间逐轴线性过渡</div>
+      </div>
+      <span class="spacer"></span>
       <button id="closePresets">关闭</button>
+    </div>
+    <div class="studio-body">
+      <aside class="preset-sidebar">
+        <div class="sidebar-label">已保存配置</div>
+        <div id="presetCardList" class="preset-card-list"></div>
+        <button id="newPreset" class="sidebar-new">＋ 新建偏移配置</button>
+      </aside>
+      <section class="preset-workbench">
+        <div class="editor-toolbar">
+          <input id="presetName" type="text" maxlength="40" placeholder="配置名称" />
+          <div class="mode-switch" aria-label="偏移配置模式">
+            <button id="presetModeStatic" data-preset-mode="static" class="active">固定 XYZ</button>
+            <button id="presetModeKeyframes" data-preset-mode="keyframes">距离关键帧</button>
+          </div>
+          <span class="spacer"></span>
+          <button id="duplicatePreset">复制</button>
+          <button id="deletePreset" class="danger">删除</button>
+        </div>
+
+        <div id="staticEditorPane" class="editor-section">
+          <div class="static-offset-editor">
+            <label>右+ X(mm) <input id="presetX" type="number" min="-100" max="100" step="1" value="0" /></label>
+            <label>入墙+ Y(mm) <input id="presetY" type="number" min="-100" max="100" step="1" value="0" /></label>
+            <label>上+ Z(mm) <input id="presetZ" type="number" min="-100" max="100" step="1" value="0" /></label>
+          </div>
+          <p class="modal-note">固定模式在所有起手式距离使用同一组偏移，行为与旧配置完全相同。</p>
+        </div>
+
+        <div id="curveEditorPane" class="editor-section" hidden>
+          <div class="curve-topline">
+            <div class="curve-legend">
+              <span class="axis-x">X 右+</span>
+              <span class="axis-y">Y 入墙+</span>
+              <span class="axis-z">Z 上+</span>
+            </div>
+            <div class="curve-preview">
+              预览起手式
+              <select id="curvePreviewDistance"></select>
+              <strong id="curvePreviewText">—</strong>
+            </div>
+          </div>
+          <div class="chart-shell">
+            <svg id="curveChart" viewBox="0 0 760 250" preserveAspectRatio="none" role="img" aria-label="XYZ 距离偏移曲线"></svg>
+            <div class="chart-hint">点击图表可在最近的 0.01 m 档位新增关键帧；相同数值形成水平保持段，边界外保持首末帧数值。</div>
+          </div>
+          <div class="keyframe-toolbar">
+            <strong>关键帧</strong>
+            <span>距离对应起手式名称前缀，XYZ 单位为 mm</span>
+            <button id="addKeyframe">＋ 添加关键帧</button>
+          </div>
+          <div class="keyframe-table-wrap">
+            <table class="keyframe-table">
+              <thead><tr><th>起手式距离</th><th>X 右+</th><th>Y 入墙+</th><th>Z 上+</th><th></th></tr></thead>
+              <tbody id="curveKeyframeBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </div>
+    <div class="studio-foot">
       <span id="presetsModalHint" class="hint"></span>
+      <span class="spacer"></span>
+      <button id="savePreset" class="primary">保存配置</button>
     </div>
   </div>
 </div>
@@ -808,10 +975,21 @@ function renderDetails(data) {
   const pushForcePart = Number.isFinite(Number(data.push_force_n))
     ? `；推力 ${Number(data.push_force_n)} N${data.push_force_source ? `（${data.push_force_source}）` : ""}`
     : "";
-  $("detailOffset").textContent = !data.task_id ? "—"
-    : (offsetMm.some((value) => Number(value))
+  let baseOffsetPart;
+  if (data.offset_mode === "keyframes") {
+    const effective = data.effective_target_offset_wall_mm;
+    const interpolation = data.offset_interpolation;
+    baseOffsetPart = effective && interpolation
+      ? `曲线「${data.offset_preset_name}」@ 起手式 ${Number(interpolation.distance_m).toFixed(2)}m：`
+        + `右${effective[0].toFixed(1)} / 上${effective[2].toFixed(1)} / 入墙${effective[1].toFixed(1)} mm`
+      : `曲线「${data.offset_preset_name}」（等待选定起手式距离）`;
+  } else {
+    baseOffsetPart = offsetMm.some((value) => Number(value))
       ? `右${offsetMm[0]}mm / 上${offsetMm[2]}mm / 入墙${offsetMm[1]}mm（墙面系${offsetSource}）`
-      : "无") + firstOffsetPart + liftPart + pushForcePart;
+      : "无";
+  }
+  $("detailOffset").textContent = !data.task_id ? "—"
+    : baseOffsetPart + firstOffsetPart + liftPart + pushForcePart;
   $("reachState").textContent = `REACH ${data.reach_alive ? "ONLINE" : "OFFLINE"}`;
   $("reachState").style.color = data.reach_alive ? "var(--green)" : "var(--muted)";
 
@@ -1050,13 +1228,66 @@ let currentDefaults = {
     remote_to_close: 15,
   },
 };
+let offsetKeyframeDistance = { min: 0.43, max: 0.60, step: 0.01 };
+let manualCurvePresetName = "";
+let presetEditorMode = "static";
+let editingPresetOriginalName = "";
+let curveKeyframes = [];
 
 function presetByName(name) {
   return offsetPresets.find((preset) => preset.name === name) || null;
 }
 
+function isCurvePreset(preset) {
+  return !!preset && (preset.mode === "keyframes" || Array.isArray(preset.keyframes));
+}
+
 function offsetText(off) {
   return `右${off.x ?? 0} / 上${off.z ?? 0} / 入墙${off.y ?? 0} mm`;
+}
+
+function presetText(preset) {
+  if (!preset) return "不套偏移";
+  if (!isCurvePreset(preset)) return offsetText(preset.offset_mm || {});
+  const frames = preset.keyframes || [];
+  if (!frames.length) return "关键帧配置为空";
+  return `距离曲线 ${frames.length} 帧（${Number(frames[0].distance_m).toFixed(2)}–${Number(frames[frames.length - 1].distance_m).toFixed(2)} m）`;
+}
+
+function availableKeyframeDistances() {
+  const result = [];
+  const minTick = Math.round(offsetKeyframeDistance.min * 100);
+  const maxTick = Math.round(offsetKeyframeDistance.max * 100);
+  for (let tick = minTick; tick <= maxTick; tick += 1) result.push(tick / 100);
+  return result;
+}
+
+function normalizeCurveFrames(frames) {
+  return (frames || []).map((frame) => ({
+    distance_m: Math.round(Number(frame.distance_m) * 100) / 100,
+    offset_mm: {
+      x: Number(frame.offset_mm?.x) || 0,
+      y: Number(frame.offset_mm?.y) || 0,
+      z: Number(frame.offset_mm?.z) || 0,
+    },
+  })).sort((a, b) => a.distance_m - b.distance_m);
+}
+
+function interpolateCurveFrames(frames, distance) {
+  const sorted = normalizeCurveFrames(frames);
+  if (!sorted.length) return { x: 0, y: 0, z: 0 };
+  if (distance <= sorted[0].distance_m) return { ...sorted[0].offset_mm };
+  if (distance >= sorted[sorted.length - 1].distance_m) {
+    return { ...sorted[sorted.length - 1].offset_mm };
+  }
+  const rightIndex = sorted.findIndex((frame) => distance <= frame.distance_m);
+  const left = sorted[rightIndex - 1];
+  const right = sorted[rightIndex];
+  const ratio = (distance - left.distance_m) / (right.distance_m - left.distance_m);
+  return Object.fromEntries(["x", "y", "z"].map((axis) => [
+    axis,
+    left.offset_mm[axis] + (right.offset_mm[axis] - left.offset_mm[axis]) * ratio,
+  ]));
 }
 
 function currentManualKind() {
@@ -1099,7 +1330,8 @@ function fillPresetSelect(select, emptyLabel, selected) {
   const wanted = selected !== undefined ? selected : select.value;
   select.innerHTML = [`<option value="">${escapeHtml(emptyLabel)}</option>`]
     .concat(offsetPresets.map((preset) =>
-      `<option value="${escapeHtml(preset.name)}">${escapeHtml(preset.name)}</option>`))
+      `<option value="${escapeHtml(preset.name)}">`
+      + `${isCurvePreset(preset) ? "◆ " : ""}${escapeHtml(preset.name)}</option>`))
     .join("");
   select.value = wanted;
   if (select.value !== wanted) select.value = "";
@@ -1122,10 +1354,10 @@ function renderConfigSummary() {
     + ` ｜ 已存偏移配置 ${offsetPresets.length} 条`;
 }
 
-function renderPresetTable() {
-  const body = $("presetTableBody");
+function renderPresetCards() {
+  const body = $("presetCardList");
   if (!offsetPresets.length) {
-    body.innerHTML = '<tr><td colspan="5" class="muted">尚无配置，在下方新建</td></tr>';
+    body.innerHTML = '<div class="modal-note">尚无偏移配置，点击下方按钮新建。</div>';
     return;
   }
   body.innerHTML = offsetPresets.map((preset) => {
@@ -1134,10 +1366,15 @@ function renderPresetTable() {
       preset.name === byKind.remote_to_close ? "远→就默认" : "",
       preset.name === byKind.close_to_remote ? "就→远默认" : "",
     ].filter(Boolean);
-    return `<tr><td>${escapeHtml(preset.name)}${tags.length ? ` ★${tags.join("、")}` : ""}</td>`
-      + `<td>${preset.offset_mm.x}</td><td>${preset.offset_mm.z}</td><td>${preset.offset_mm.y}</td>`
-      + `<td><button data-edit="${escapeHtml(preset.name)}">编辑</button> `
-      + `<button data-del="${escapeHtml(preset.name)}" class="danger">删除</button></td></tr>`;
+    const active = preset.name === editingPresetOriginalName ? " active" : "";
+    const modeClass = isCurvePreset(preset) ? "" : " static";
+    const modeLabel = isCurvePreset(preset) ? "关键帧" : "固定";
+    return `<button class="preset-card${active}" data-edit="${escapeHtml(preset.name)}">`
+      + `<div class="preset-card-name"><span class="mode-badge${modeClass}">${modeLabel}</span>`
+      + `<strong>${escapeHtml(preset.name)}</strong></div>`
+      + `<div class="preset-card-summary">${escapeHtml(presetText(preset))}</div>`
+      + (tags.length ? `<div class="default-tags">★ ${tags.join(" · ")}</div>` : "")
+      + `</button>`;
   }).join("");
 }
 
@@ -1145,8 +1382,8 @@ function renderDefaultPresetPreview() {
   const rtlPreset = presetByName($("defaultPresetRemoteToClose").value);
   const ltrPreset = presetByName($("defaultPresetCloseToRemote").value);
   $("defaultPresetPreview").textContent =
-    `远→就：${rtlPreset ? offsetText(rtlPreset.offset_mm) : "不套偏移"}`
-    + ` ｜ 就→远：${ltrPreset ? offsetText(ltrPreset.offset_mm) : "不套偏移"}`;
+    `远→就：${presetText(rtlPreset)}`
+    + ` ｜ 就→远：${presetText(ltrPreset)}`;
 }
 
 async function loadDefaultsConfig() {
@@ -1156,6 +1393,8 @@ async function loadDefaultsConfig() {
     const data = await response.json();
     if (!data.ok) throw new Error(data.error || `HTTP ${response.status}`);
     offsetPresets = data.offset_presets || [];
+    offsetKeyframeDistance = data.offset_keyframe_distance
+      || { min: 0.43, max: 0.60, step: 0.01 };
     const wasFirstLoad = !defaultsLoadedOnce;
     const savedDefaults = data.defaults || {};
     const legacyPushForce = Number(savedDefaults.push_force_n ?? 15);
@@ -1199,7 +1438,7 @@ async function loadDefaultsConfig() {
       currentDefaults.offset_preset_by_kind.close_to_remote,
     );
     renderDefaultPresetPreview();
-    renderPresetTable();
+    renderPresetCards();
   } catch (error) {
     $("configSummary").textContent = `默认配置读取失败：${error.message || error}`;
   }
@@ -1215,11 +1454,29 @@ function closeModal(id) { $(id).hidden = true; }
 
 $("manualPreset").addEventListener("change", () => {
   const preset = presetByName($("manualPreset").value);
+  manualCurvePresetName = "";
   if (!preset) return;
+  if (isCurvePreset(preset)) {
+    manualCurvePresetName = preset.name;
+    const preview = interpolateCurveFrames(preset.keyframes, 0.50);
+    $("offsetX").value = Math.round(preview.x * 10) / 10;
+    $("offsetY").value = Math.round(preview.y * 10) / 10;
+    $("offsetZ").value = Math.round(preview.z * 10) / 10;
+    setHint(`已选择距离曲线「${preset.name}」；运行时按所选起手式距离插值`);
+    return;
+  }
   $("offsetX").value = preset.offset_mm.x;
   $("offsetY").value = preset.offset_mm.y;
   $("offsetZ").value = preset.offset_mm.z;
   setHint(`已填入偏移配置「${preset.name}」（仅本次，不改默认）`);
+});
+["offsetX", "offsetY", "offsetZ"].forEach((id) => {
+  $(id).addEventListener("input", () => {
+    if (!manualCurvePresetName) return;
+    manualCurvePresetName = "";
+    $("manualPreset").value = "";
+    setHint("已切换为手动固定 XYZ；不再使用距离曲线");
+  });
 });
 
 // ---- 弹窗一：修改默认 ----
@@ -1331,52 +1588,281 @@ $("learnFirstRoundDefault").addEventListener("click", async () => {
 });
 
 // ---- 弹窗二：偏移配置管理 ----
+function writeStaticPreset(offset) {
+  const value = offset || { x: 0, y: 0, z: 0 };
+  $("presetX").value = value.x ?? 0;
+  $("presetY").value = value.y ?? 0;
+  $("presetZ").value = value.z ?? 0;
+}
+
+function setPresetEditorMode(mode, convert = true) {
+  if (convert && mode === "keyframes" && !curveKeyframes.length) {
+    const offset = readOffsetInputs("presetX", "presetY", "presetZ");
+    curveKeyframes = [
+      { distance_m: offsetKeyframeDistance.min, offset_mm: { ...offset } },
+      { distance_m: offsetKeyframeDistance.max, offset_mm: { ...offset } },
+    ];
+  } else if (convert && mode === "static" && curveKeyframes.length) {
+    writeStaticPreset(interpolateCurveFrames(curveKeyframes, 0.50));
+  }
+  presetEditorMode = mode;
+  $("presetModeStatic").classList.toggle("active", mode === "static");
+  $("presetModeKeyframes").classList.toggle("active", mode === "keyframes");
+  $("staticEditorPane").hidden = mode !== "static";
+  $("curveEditorPane").hidden = mode !== "keyframes";
+  if (mode === "keyframes") renderCurveEditor();
+}
+
+function resetPresetEditor(mode = "keyframes") {
+  editingPresetOriginalName = "";
+  $("presetName").disabled = false;
+  $("presetName").value = "";
+  writeStaticPreset({ x: 0, y: 0, z: 0 });
+  curveKeyframes = [
+    { distance_m: offsetKeyframeDistance.min, offset_mm: { x: 0, y: 0, z: 0 } },
+    { distance_m: offsetKeyframeDistance.max, offset_mm: { x: 0, y: 0, z: 0 } },
+  ];
+  presetEditorMode = mode;
+  setPresetEditorMode(mode, false);
+  $("deletePreset").disabled = true;
+  $("duplicatePreset").disabled = true;
+  $("presetsModalHint").textContent = "新配置尚未保存";
+  renderPresetCards();
+}
+
+function loadPresetEditor(preset) {
+  if (!preset) return;
+  editingPresetOriginalName = preset.name;
+  $("presetName").disabled = true;
+  $("presetName").value = preset.name;
+  if (isCurvePreset(preset)) {
+    curveKeyframes = normalizeCurveFrames(preset.keyframes);
+    presetEditorMode = "keyframes";
+  } else {
+    writeStaticPreset(preset.offset_mm);
+    curveKeyframes = [];
+    presetEditorMode = "static";
+  }
+  setPresetEditorMode(presetEditorMode, false);
+  $("deletePreset").disabled = false;
+  $("duplicatePreset").disabled = false;
+  $("presetsModalHint").textContent = `正在编辑「${preset.name}」`;
+  renderPresetCards();
+}
+
+function distanceOptions(selected) {
+  return availableKeyframeDistances().map((distance) =>
+    `<option value="${distance.toFixed(2)}"${Math.abs(distance - selected) < 1e-6 ? " selected" : ""}>`
+    + `${distance.toFixed(2)} m</option>`
+  ).join("");
+}
+
+function renderCurveTable() {
+  const body = $("curveKeyframeBody");
+  if (!curveKeyframes.length) {
+    body.innerHTML = '<tr><td colspan="5" class="muted">至少添加一个关键帧</td></tr>';
+    return;
+  }
+  body.innerHTML = curveKeyframes.map((frame, index) =>
+    `<tr data-frame-index="${index}">`
+    + `<td><select data-frame-distance="${index}">${distanceOptions(frame.distance_m)}</select></td>`
+    + ["x", "y", "z"].map((axis) =>
+      `<td><input type="number" min="-100" max="100" step="1" `
+      + `data-frame-axis="${axis}" data-frame-index="${index}" value="${frame.offset_mm[axis]}" /></td>`
+    ).join("")
+    + `<td><button class="danger" data-frame-delete="${index}">删除</button></td></tr>`
+  ).join("");
+}
+
+function renderCurvePreview() {
+  const select = $("curvePreviewDistance");
+  const wanted = Number(select.value || 0.50);
+  select.innerHTML = distanceOptions(wanted);
+  if (!select.value) select.value = "0.50";
+  const distance = Number(select.value);
+  const offset = interpolateCurveFrames(curveKeyframes, distance);
+  $("curvePreviewText").textContent =
+    `X ${offset.x.toFixed(1)} / Y ${offset.y.toFixed(1)} / Z ${offset.z.toFixed(1)} mm`;
+}
+
+function renderCurveChart() {
+  const svg = $("curveChart");
+  const width = 760, height = 250;
+  const pad = { left: 48, right: 16, top: 13, bottom: 31 };
+  const innerW = width - pad.left - pad.right;
+  const innerH = height - pad.top - pad.bottom;
+  const minD = offsetKeyframeDistance.min;
+  const maxD = offsetKeyframeDistance.max;
+  const x = (distance) => pad.left + (distance - minD) / (maxD - minD) * innerW;
+  const y = (value) => pad.top + (100 - Math.max(-100, Math.min(100, value))) / 200 * innerH;
+  const parts = [];
+  availableKeyframeDistances().forEach((distance, index) => {
+    const major = index % 2 === 0;
+    parts.push(`<line class="grid${major ? " major" : ""}" x1="${x(distance)}" y1="${pad.top}" x2="${x(distance)}" y2="${height - pad.bottom}" />`);
+    if (major || distance === maxD) {
+      parts.push(`<text class="label" x="${x(distance)}" y="${height - 10}" text-anchor="middle">${distance.toFixed(2)}</text>`);
+    }
+  });
+  [-100, -50, 0, 50, 100].forEach((value) => {
+    parts.push(`<line class="${value === 0 ? "zero" : "grid major"}" x1="${pad.left}" y1="${y(value)}" x2="${width - pad.right}" y2="${y(value)}" />`);
+    parts.push(`<text class="label" x="${pad.left - 7}" y="${y(value) + 3}" text-anchor="end">${value}</text>`);
+  });
+  const frames = normalizeCurveFrames(curveKeyframes);
+  ["x", "y", "z"].forEach((axis) => {
+    const path = frames.map((frame, index) =>
+      `${index ? "L" : "M"} ${x(frame.distance_m).toFixed(2)} ${y(frame.offset_mm[axis]).toFixed(2)}`
+    ).join(" ");
+    if (path) parts.push(`<path class="line-${axis}" d="${path}" />`);
+    frames.forEach((frame) => {
+      parts.push(`<circle class="point point-${axis}" cx="${x(frame.distance_m)}" cy="${y(frame.offset_mm[axis])}" r="4.5" />`);
+    });
+  });
+  parts.push(`<text class="label" x="${width - pad.right}" y="${height - 10}" text-anchor="end">起手式距离 (m)</text>`);
+  svg.innerHTML = parts.join("");
+}
+
+function renderCurveEditor() {
+  curveKeyframes = normalizeCurveFrames(curveKeyframes);
+  renderCurveTable();
+  renderCurvePreview();
+  renderCurveChart();
+}
+
+function addCurveKeyframe(distance = null) {
+  const used = new Set(curveKeyframes.map((frame) => Math.round(frame.distance_m * 100)));
+  let target = distance;
+  if (target === null) {
+    target = availableKeyframeDistances().find((value) => !used.has(Math.round(value * 100)));
+  }
+  if (target === undefined || used.has(Math.round(target * 100))) {
+    $("presetsModalHint").textContent = "该起手式距离已有关键帧";
+    return;
+  }
+  const offset = interpolateCurveFrames(curveKeyframes, target);
+  curveKeyframes.push({ distance_m: target, offset_mm: offset });
+  renderCurveEditor();
+  $("curvePreviewDistance").value = target.toFixed(2);
+  renderCurvePreview();
+}
+
+function validatePresetEditor() {
+  const name = $("presetName").value.trim();
+  if (!name) return { error: "请填写配置名称" };
+  if (presetEditorMode === "static") {
+    return {
+      payload: {
+        name,
+        mode: "static",
+        offset_mm: readOffsetInputs("presetX", "presetY", "presetZ"),
+      },
+    };
+  }
+  if (!curveKeyframes.length) return { error: "距离曲线至少需要一个关键帧" };
+  const frames = normalizeCurveFrames(curveKeyframes);
+  const unique = new Set(frames.map((frame) => frame.distance_m.toFixed(2)));
+  if (unique.size !== frames.length) return { error: "关键帧距离不能重复" };
+  for (const frame of frames) {
+    if (frame.distance_m < offsetKeyframeDistance.min || frame.distance_m > offsetKeyframeDistance.max) {
+      return { error: `关键帧距离限 ${offsetKeyframeDistance.min.toFixed(2)}–${offsetKeyframeDistance.max.toFixed(2)} m` };
+    }
+    for (const axis of ["x", "y", "z"]) {
+      if (Math.abs(frame.offset_mm[axis]) > 100) return { error: `${axis.toUpperCase()} 偏移限 ±100 mm` };
+    }
+  }
+  return { payload: { name, mode: "keyframes", keyframes: frames } };
+}
+
+async function deletePresetByName(name) {
+  if (!name || !confirm(`确认删除偏移配置「${name}」？`)) return;
+  const data = await postJson("/config/offset-presets/delete", { name });
+  if (!data.ok) {
+    $("presetsModalHint").textContent = data.error || "删除失败";
+    return;
+  }
+  editingPresetOriginalName = "";
+  await loadDefaultsConfig();
+  resetPresetEditor("keyframes");
+  $("presetsModalHint").textContent = `配置「${name}」已删除`;
+}
+
 $("managePresets").addEventListener("click", () => {
-  renderPresetTable();
-  $("presetsModalHint").textContent = "";
+  if (offsetPresets.length) loadPresetEditor(offsetPresets[0]);
+  else resetPresetEditor("keyframes");
+  renderPresetCards();
   openModal("presetsModal");
 });
 $("closePresets").addEventListener("click", () => closeModal("presetsModal"));
-
-$("presetTableBody").addEventListener("click", async (event) => {
-  const target = event.target;
-  if (!(target instanceof HTMLElement)) return;
-  const editName = target.dataset.edit;
-  const delName = target.dataset.del;
-  if (editName) {
-    const preset = presetByName(editName);
-    if (!preset) return;
-    $("presetName").value = preset.name;
-    $("presetX").value = preset.offset_mm.x;
-    $("presetY").value = preset.offset_mm.y;
-    $("presetZ").value = preset.offset_mm.z;
-    $("presetsModalHint").textContent = `已载入「${preset.name}」，改完点保存（同名覆盖）`;
-  } else if (delName) {
-    if (!confirm(`确认删除偏移配置「${delName}」？`)) return;
-    const data = await postJson("/config/offset-presets/delete", { name: delName });
-    $("presetsModalHint").textContent = data.ok
-      ? `配置「${delName}」已删除` : (data.error || "删除失败");
-    if (data.ok) await loadDefaultsConfig();
-  }
+$("newPreset").addEventListener("click", () => resetPresetEditor("keyframes"));
+$("presetCardList").addEventListener("click", (event) => {
+  const target = event.target instanceof HTMLElement
+    ? event.target.closest("[data-edit]") : null;
+  if (target) loadPresetEditor(presetByName(target.dataset.edit));
 });
+document.querySelectorAll("[data-preset-mode]").forEach((button) => {
+  button.addEventListener("click", () => setPresetEditorMode(button.dataset.presetMode));
+});
+$("addKeyframe").addEventListener("click", () => addCurveKeyframe());
+$("curvePreviewDistance").addEventListener("change", renderCurvePreview);
+$("curveChart").addEventListener("click", (event) => {
+  const rect = $("curveChart").getBoundingClientRect();
+  const svgX = (event.clientX - rect.left) / rect.width * 760;
+  const ratio = Math.max(0, Math.min(1, (svgX - 48) / (760 - 48 - 16)));
+  const raw = offsetKeyframeDistance.min
+    + ratio * (offsetKeyframeDistance.max - offsetKeyframeDistance.min);
+  const distance = Math.round(raw * 100) / 100;
+  addCurveKeyframe(distance);
+});
+$("curveKeyframeBody").addEventListener("input", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) return;
+  const index = Number(target.dataset.frameIndex);
+  const axis = target.dataset.frameAxis;
+  if (!curveKeyframes[index] || !axis) return;
+  curveKeyframes[index].offset_mm[axis] = Number(target.value) || 0;
+  renderCurvePreview();
+  renderCurveChart();
+});
+$("curveKeyframeBody").addEventListener("change", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLSelectElement)) return;
+  const index = Number(target.dataset.frameDistance);
+  if (!curveKeyframes[index]) return;
+  curveKeyframes[index].distance_m = Number(target.value);
+  renderCurveEditor();
+});
+$("curveKeyframeBody").addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement) || target.dataset.frameDelete === undefined) return;
+  curveKeyframes.splice(Number(target.dataset.frameDelete), 1);
+  renderCurveEditor();
+});
+$("duplicatePreset").addEventListener("click", () => {
+  const sourceName = $("presetName").value.trim();
+  editingPresetOriginalName = "";
+  $("presetName").disabled = false;
+  $("presetName").value = `${sourceName}-副本`.slice(0, 40);
+  $("deletePreset").disabled = true;
+  $("duplicatePreset").disabled = true;
+  renderPresetCards();
+  $("presetsModalHint").textContent = "副本尚未保存，请修改名称后保存";
+});
+$("deletePreset").addEventListener("click", () => deletePresetByName(editingPresetOriginalName));
 
 $("savePreset").addEventListener("click", async () => {
-  const name = $("presetName").value.trim();
-  if (!name) {
-    $("presetsModalHint").textContent = "请先填配置名（如 右手偏移配置-1）";
+  const checked = validatePresetEditor();
+  if (checked.error) {
+    $("presetsModalHint").textContent = checked.error;
     return;
   }
-  const data = await postJson("/config/offset-presets", {
-    name,
-    offset_mm: {
-      x: readOffsetMm("presetX"),
-      y: readOffsetMm("presetY"),
-      z: readOffsetMm("presetZ"),
-    },
-  });
-  $("presetsModalHint").textContent = data.ok
-    ? `配置「${name}」已保存` : (data.error || "保存失败");
-  if (data.ok) await loadDefaultsConfig();
+  const data = await postJson("/config/offset-presets", checked.payload);
+  if (!data.ok) {
+    $("presetsModalHint").textContent = data.error || "保存失败";
+    return;
+  }
+  editingPresetOriginalName = checked.payload.name;
+  await loadDefaultsConfig();
+  loadPresetEditor(presetByName(editingPresetOriginalName));
+  $("presetsModalHint").textContent = `配置「${editingPresetOriginalName}」已保存`;
 });
 
 loadDefaultsConfig();
@@ -1395,23 +1881,27 @@ $("manualStart").addEventListener("click", async () => {
   const lift = { base: readLiftMm("liftBase"), step: readLiftMm("liftStep"), max: readLiftMm("liftMax") };
   const pushForce = readPushForce("pushForce");
   const mode = manual ? "每个主要步骤执行前都需要在本页确认" : "全自动执行（无每步确认）";
-  const offsetNote = (offset.x || offset.y || offset.z)
-    ? `\n目的点微调（墙面系）：右${offset.x}mm / 上${offset.z}mm / 入墙${offset.y}mm` : "";
+  const offsetNote = manualCurvePresetName
+    ? `\n目的点微调：距离曲线「${manualCurvePresetName}」（运行时按起手式距离插值）`
+    : ((offset.x || offset.y || offset.z)
+      ? `\n目的点微调（墙面系）：右${offset.x}mm / 上${offset.z}mm / 入墙${offset.y}mm`
+      : "");
   const firstOffsetNote = (firstOffset.x || firstOffset.y || firstOffset.z)
     ? `\n首轮额外偏置：右${firstOffset.x}mm / 上${firstOffset.z}mm / 入墙${firstOffset.y}mm`
     : "\n首轮额外偏置：无";
   if (!confirm(`确认启动拨闸流程？\n现场：${SITE_LABELS[site]}\n指令：${language}\n${mode}，最多 ${retries} 轮${offsetNote}${firstOffsetNote}\n拨点上抬：${liftText(lift)}\n拨动推力：${pushForce} N`)) return;
-  const data = await postJson("/task/flip",
-    {
-      language,
-      retries,
-      manual,
-      site,
-      target_offset_wall_mm: offset,
-      first_round_offset_wall_mm: firstOffset,
-      lift_mm: lift,
-      push_force_n: pushForce,
-    });
+  const taskBody = {
+    language,
+    retries,
+    manual,
+    site,
+    first_round_offset_wall_mm: firstOffset,
+    lift_mm: lift,
+    push_force_n: pushForce,
+  };
+  if (manualCurvePresetName) taskBody.target_offset_preset = manualCurvePresetName;
+  else taskBody.target_offset_wall_mm = offset;
+  const data = await postJson("/task/flip", taskBody);
   setHint(data.ok ? `任务已创建 ${data.task_id}` : (data.error || "启动失败"));
   poll();
 });

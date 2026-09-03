@@ -114,6 +114,52 @@ def resolve_flip_intent(site: str, kind: str | None = None) -> dict[str, str]:
     }
 
 
+def interpolate_offset_keyframes(
+    keyframes: list[dict[str, Any]],
+    distance_m: float,
+) -> tuple[tuple[float, float, float], dict[str, Any]]:
+    """Piecewise-linear XYZ interpolation with clamped outer boundaries."""
+    if not keyframes:
+        raise ValueError("距离偏移关键帧不能为空")
+    frames = sorted(keyframes, key=lambda item: float(item["distance_m"]))
+
+    def values(frame: dict[str, Any]) -> tuple[float, float, float]:
+        raw = frame["offset_wall_m"]
+        return tuple(float(raw[index]) for index in range(3))
+
+    distance = float(distance_m)
+    left = right = frames[0]
+    ratio = 0.0
+    if distance >= float(frames[-1]["distance_m"]):
+        left = right = frames[-1]
+    elif distance > float(frames[0]["distance_m"]):
+        for index in range(1, len(frames)):
+            candidate = frames[index]
+            if distance <= float(candidate["distance_m"]):
+                left = frames[index - 1]
+                right = candidate
+                left_d = float(left["distance_m"])
+                right_d = float(right["distance_m"])
+                ratio = (distance - left_d) / (right_d - left_d)
+                break
+
+    left_values = values(left)
+    right_values = values(right)
+    offset = tuple(
+        left_values[index]
+        + (right_values[index] - left_values[index]) * ratio
+        for index in range(3)
+    )
+    return offset, {
+        "mode": "keyframes",
+        "distance_m": distance,
+        "left_distance_m": float(left["distance_m"]),
+        "right_distance_m": float(right["distance_m"]),
+        "ratio": ratio,
+        "offset_wall_m": list(offset),
+    }
+
+
 class SwitchFlow:
     """一键开始 → … → 拨动完成 的整条流程。
 
@@ -169,6 +215,9 @@ class SwitchFlow:
                  # 目的点人工微调（墙面系，米）：算法算出目的点后再叠加，
                  # 不动"粉点→目的点"的模型偏移。x=沿墙向右 y=法向入墙 z=沿墙向上
                  target_offset_wall_m: tuple[float, float, float] = (0.0, 0.0, 0.0),
+                 # 按所选起手式距离逐轴线性插值；有值时覆盖上面的静态偏移。
+                 target_offset_keyframes: list[dict[str, Any]] | None = None,
+                 target_offset_preset_name: str = "",
                  # 仅第1轮在上述基础偏移之上额外叠加；第2轮起自动归零。
                  first_round_offset_wall_m: tuple[float, float, float] = (0.0, 0.0, 0.0)):
         self.client = client or ReachClient()
@@ -178,6 +227,17 @@ class SwitchFlow:
         self.target_offset_wall_m = tuple(
             float(v) for v in target_offset_wall_m
         )
+        self.target_offset_keyframes = [
+            {
+                "distance_m": float(frame["distance_m"]),
+                "offset_wall_m": tuple(
+                    float(value) for value in frame["offset_wall_m"]
+                ),
+            }
+            for frame in (target_offset_keyframes or [])
+        ]
+        self.target_offset_preset_name = str(target_offset_preset_name or "")
+        self._target_offset_interpolation: dict[str, Any] | None = None
         self.first_round_offset_wall_m = tuple(
             float(v) for v in first_round_offset_wall_m
         )
@@ -419,6 +479,7 @@ class SwitchFlow:
                 try:
                     pose = self.choose_opening_pose(distance_m)
                     self._current_pose = pose   # 重试轮插值回它配套的「终点」路点
+                    self._apply_offset_keyframes_for_pose(pose)
                     self._log(f"起手式: {pose}")
                     pose_detail = {
                         "起手式": pose["name"],
@@ -1080,6 +1141,36 @@ class SwitchFlow:
     # 再选数值最接近的已有档位；恰好位于两档中间时取较高档。
     POSE_MARGIN_M = 0.03
 
+    def _apply_offset_keyframes_for_pose(self, pose: dict) -> None:
+        """Resolve the task's base offset from the selected pose distance."""
+        if not self.target_offset_keyframes:
+            return
+        distance = float(pose["min_distance_m"])
+        offset, detail = interpolate_offset_keyframes(
+            self.target_offset_keyframes,
+            distance,
+        )
+        detail["preset_name"] = self.target_offset_preset_name
+        changed = detail != self._target_offset_interpolation
+        self.target_offset_wall_m = offset
+        self._target_offset_interpolation = detail
+        if changed:
+            left = detail["left_distance_m"]
+            right = detail["right_distance_m"]
+            ratio = detail["ratio"]
+            segment = (
+                f"{left:.2f} m 边界值"
+                if left == right
+                else f"{left:.2f}→{right:.2f} m，比例 {ratio:.2f}"
+            )
+            self._log(
+                f"距离偏移关键帧「{self.target_offset_preset_name}」："
+                f"按起手式 {distance:.2f} m（{segment}）→ "
+                f"右 {offset[0] * 1000:+.1f} / "
+                f"上 {offset[2] * 1000:+.1f} / "
+                f"入墙 {offset[1] * 1000:+.1f} mm"
+            )
+
     def choose_opening_pose(self, distance_m: float) -> dict:
         """5️⃣ 按距离选起手式（已定规则，自动选，不问确认台）。
 
@@ -1469,6 +1560,9 @@ class SwitchFlow:
                 "y": first_off[1] * 1000.0,
                 "z": first_off[2] * 1000.0,
             },
+            "offset_interpolation": getattr(
+                self, "_target_offset_interpolation", None
+            ),
             "flow_round": round_no,
             "approach_offset_m": self.approach_offset_m,
             "selection_source": tgt.get("selection_source") or "flow-auto",
@@ -1526,6 +1620,9 @@ class SwitchFlow:
             "round": round_no,
             "max_rounds": self.max_flip_rounds,
             "base_offset_wall_m": list(base_offset),
+            "offset_interpolation": getattr(
+                self, "_target_offset_interpolation", None
+            ),
             "first_round_offset_wall_m": list(first_offset),
             "effective_offset_wall_m": [
                 base_offset[index] + first_offset[index]

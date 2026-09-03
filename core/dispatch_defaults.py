@@ -29,6 +29,10 @@ OFFSET_LIMIT_MM = 100.0    # 单轴上限，与 /task/flip 的校验一致
 PRESET_NAME_MAX = 40
 LIFT_LIMIT_MM = 50.0       # 拨点上抬各项上限（首轮/每轮递增/封顶）
 PUSH_FORCE_LIMIT_N = 40.0  # 与 reach /execute 的推力钳位一致
+OFFSET_KEYFRAME_MIN_DISTANCE_M = 0.43
+OFFSET_KEYFRAME_MAX_DISTANCE_M = 0.60
+OFFSET_KEYFRAME_STEP_M = 0.01
+OFFSET_KEYFRAME_MAX_COUNT = 18
 
 # 拨点上抬（抵消重力下垂）出厂值：首轮 10 mm，每重试一轮 +10 mm，封顶 30 mm
 DEFAULT_LIFT_MM: dict[str, float] = {"base": 10.0, "step": 10.0, "max": 30.0}
@@ -37,7 +41,7 @@ FLIP_KINDS = ("close_to_remote", "remote_to_close")
 ZERO_OFFSET_MM: dict[str, float] = {"x": 0.0, "y": 0.0, "z": 0.0}
 
 DEFAULT_DISPATCH_DEFAULTS: dict[str, Any] = {
-    "schema_version": 5,
+    "schema_version": 6,
     "defaults": {
         "site": "factory",
         # 两个任务方向独立标定；"" = 不套偏移配置。
@@ -128,12 +132,69 @@ def validate_offset_mm(value: Any, name: str = "offset_mm") -> dict[str, float]:
     }
 
 
+def validate_offset_keyframes(
+    value: Any,
+    name: str = "keyframes",
+) -> list[dict[str, Any]]:
+    """Validate distance-indexed wall offsets and return sorted keyframes."""
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{name} 必须是至少含 1 项的数组")
+    if len(value) > OFFSET_KEYFRAME_MAX_COUNT:
+        raise ValueError(
+            f"{name} 最多 {OFFSET_KEYFRAME_MAX_COUNT} 个关键帧"
+        )
+    result: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for index, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            raise ValueError(f"{name}[{index}] 必须是 JSON object")
+        distance_raw = raw.get("distance_m")
+        try:
+            distance = float(distance_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{name}[{index}].distance_m 必须是数字（m）"
+            ) from exc
+        if not math.isfinite(distance):
+            raise ValueError(f"{name}[{index}].distance_m 必须是有限数字")
+        tick = round(distance / OFFSET_KEYFRAME_STEP_M)
+        snapped = tick * OFFSET_KEYFRAME_STEP_M
+        if abs(distance - snapped) > 1e-6:
+            raise ValueError(
+                f"{name}[{index}].distance_m 必须按 "
+                f"{OFFSET_KEYFRAME_STEP_M:.2f} m 对齐（收到 {distance_raw}）"
+            )
+        distance = round(snapped, 2)
+        if not (
+            OFFSET_KEYFRAME_MIN_DISTANCE_M
+            <= distance
+            <= OFFSET_KEYFRAME_MAX_DISTANCE_M
+        ):
+            raise ValueError(
+                f"{name}[{index}].distance_m 超范围：限 "
+                f"{OFFSET_KEYFRAME_MIN_DISTANCE_M:.2f}~"
+                f"{OFFSET_KEYFRAME_MAX_DISTANCE_M:.2f} m"
+            )
+        if tick in seen:
+            raise ValueError(f"{name} 存在重复距离 {distance:.2f} m")
+        seen.add(tick)
+        result.append({
+            "distance_m": distance,
+            "offset_mm": validate_offset_mm(
+                raw.get("offset_mm"),
+                f"{name}[{index}].offset_mm",
+            ),
+        })
+    result.sort(key=lambda item: item["distance_m"])
+    return result
+
+
 def validate_dispatch_defaults(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("默认配置必须是 JSON object")
     version = int(payload.get("schema_version", -1))
-    if version not in (1, 2, 3, 4, 5):
-        raise ValueError("默认配置 schema_version 必须为 1、2、3、4 或 5")
+    if version not in (1, 2, 3, 4, 5, 6):
+        raise ValueError("默认配置 schema_version 必须为 1、2、3、4、5 或 6")
 
     raw_presets = payload.get("offset_presets")
     if raw_presets is None:
@@ -155,12 +216,31 @@ def validate_dispatch_defaults(payload: Any) -> dict[str, Any]:
         if name in seen:
             raise ValueError(f"配置名「{name}」重复")
         seen.add(name)
-        presets.append({
-            "name": name,
-            "offset_mm": validate_offset_mm(
-                raw.get("offset_mm"), f"offset_presets[{index}].offset_mm"
-            ),
-        })
+        mode = str(raw.get("mode") or "").strip().lower()
+        if not mode:
+            mode = "keyframes" if raw.get("keyframes") is not None else "static"
+        if mode == "static":
+            presets.append({
+                "name": name,
+                "mode": "static",
+                "offset_mm": validate_offset_mm(
+                    raw.get("offset_mm"),
+                    f"offset_presets[{index}].offset_mm",
+                ),
+            })
+        elif mode == "keyframes":
+            presets.append({
+                "name": name,
+                "mode": "keyframes",
+                "keyframes": validate_offset_keyframes(
+                    raw.get("keyframes"),
+                    f"offset_presets[{index}].keyframes",
+                ),
+            })
+        else:
+            raise ValueError(
+                f"offset_presets[{index}].mode 只能是 static 或 keyframes"
+            )
 
     raw_defaults = payload.get("defaults")
     if not isinstance(raw_defaults, dict):
@@ -218,7 +298,7 @@ def validate_dispatch_defaults(payload: Any) -> dict[str, Any]:
     }
 
     return {
-        "schema_version": 5,
+        "schema_version": 6,
         "defaults": {
             "site": site,
             "offset_preset_by_kind": preset_by_kind,

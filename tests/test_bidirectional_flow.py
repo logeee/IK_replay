@@ -6,7 +6,12 @@ from unittest import mock
 
 from adapters.reach import execution as reach_execution
 from api import dispatch
-from api.flow import FlowError, SwitchFlow, resolve_flip_intent
+from api.flow import (
+    FlowError,
+    SwitchFlow,
+    interpolate_offset_keyframes,
+    resolve_flip_intent,
+)
 
 
 class _YoloSequence:
@@ -385,6 +390,55 @@ class FlipIntentTests(unittest.TestCase):
             {"x": 0.0, "y": 0.0, "z": 0.0},
         )
 
+    def test_offset_keyframes_hold_interpolate_and_clamp(self):
+        frames = [
+            {"distance_m": 0.43, "offset_wall_m": (0.01, 0.0, 0.005)},
+            {"distance_m": 0.50, "offset_wall_m": (0.01, 0.0, 0.005)},
+            {"distance_m": 0.60, "offset_wall_m": (0.03, 0.01, -0.005)},
+        ]
+
+        held, held_info = interpolate_offset_keyframes(frames, 0.47)
+        middle, middle_info = interpolate_offset_keyframes(frames, 0.55)
+        low, low_info = interpolate_offset_keyframes(frames, 0.40)
+        high, high_info = interpolate_offset_keyframes(frames, 0.70)
+
+        self.assertEqual(held, (0.01, 0.0, 0.005))
+        self.assertAlmostEqual(held_info["ratio"], 4 / 7)
+        self.assertAlmostEqual(middle[0], 0.02)
+        self.assertAlmostEqual(middle[1], 0.005)
+        self.assertAlmostEqual(middle[2], 0.0)
+        self.assertAlmostEqual(middle_info["ratio"], 0.5)
+        self.assertEqual(low, (0.01, 0.0, 0.005))
+        self.assertEqual(low_info["left_distance_m"], 0.43)
+        self.assertEqual(low_info["right_distance_m"], 0.43)
+        self.assertEqual(high, (0.03, 0.01, -0.005))
+        self.assertEqual(high_info["left_distance_m"], 0.60)
+        self.assertEqual(high_info["right_distance_m"], 0.60)
+
+    def test_curve_uses_selected_opening_pose_distance(self):
+        flow = SwitchFlow(
+            client=mock.Mock(),
+            target_offset_keyframes=[
+                {"distance_m": 0.50, "offset_wall_m": (0.01, 0.0, 0.0)},
+                {"distance_m": 0.60, "offset_wall_m": (0.03, 0.0, 0.0)},
+            ],
+            target_offset_preset_name="测试曲线",
+        )
+        flow._log = mock.Mock()
+        flow._measured_distance_m = 0.53
+
+        flow._apply_offset_keyframes_for_pose({"min_distance_m": 0.50})
+
+        self.assertEqual(flow.target_offset_wall_m, (0.01, 0.0, 0.0))
+        self.assertEqual(
+            flow._target_offset_interpolation["distance_m"],
+            0.50,
+        )
+        self.assertEqual(
+            flow._target_offset_interpolation["preset_name"],
+            "测试曲线",
+        )
+
     def test_cabinet_axis_direction_mirrors_x_but_keeps_downward_tilt(self):
         plane = {
             "left_root": [-1.0, 0.0, 0.0],
@@ -500,6 +554,38 @@ class FactoryDispatchTests(unittest.TestCase):
         self.assertEqual(explicit, (1.0, 2.0, 3.0))
         self.assertEqual(source, "请求指定")
 
+    def test_distance_keyframe_preset_is_resolved_by_direction(self):
+        defaults = {
+            "defaults": {
+                "offset_preset_by_kind": {
+                    "remote_to_close": "左拨曲线",
+                    "close_to_remote": "",
+                },
+            },
+            "offset_presets": [{
+                "name": "左拨曲线",
+                "mode": "keyframes",
+                "keyframes": [
+                    {"distance_m": 0.43,
+                     "offset_mm": {"x": 10, "y": 0, "z": 2}},
+                    {"distance_m": 0.60,
+                     "offset_mm": {"x": 30, "y": 5, "z": 8}},
+                ],
+            }],
+        }
+
+        spec = dispatch._resolve_offset_spec(
+            None,
+            defaults,
+            "remote_to_close",
+        )
+
+        self.assertEqual(spec["mode"], "keyframes")
+        self.assertEqual(spec["preset_name"], "左拨曲线")
+        self.assertEqual(spec["offset_mm"], (0.0, 0.0, 0.0))
+        self.assertEqual(len(spec["keyframes"]), 2)
+        self.assertIn("远方→就地", spec["source"])
+
     def test_push_force_uses_saved_default_and_explicit_request_wins(self):
         defaults = {
             "defaults": {
@@ -535,7 +621,7 @@ class FactoryDispatchTests(unittest.TestCase):
 
     def test_factory_close_to_remote_task_reaches_worker(self):
         defaults = {
-            "schema_version": 5,
+            "schema_version": 6,
             "defaults": {
                 "site": "factory",
                 "offset_preset_by_kind": {

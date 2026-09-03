@@ -1,5 +1,5 @@
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "defaults": {
     "site": "factory",
     "offset_preset_by_kind": {
@@ -31,6 +31,7 @@
   "offset_presets": [
     {
       "name": "向右-降低10cm后",
+      "mode": "static",
       "offset_mm": {
         "x": 60.0,
         "y": 0.0,
@@ -39,6 +40,7 @@
     },
     {
       "name": "摔手后",
+      "mode": "static",
       "offset_mm": {
         "x": 20.0,
         "y": 15.0,
