@@ -598,6 +598,123 @@ class PointCloudBackendTest(unittest.TestCase):
         )
         self.assertEqual(record_meta["flow_round"], 1)
 
+    def _confirm_capture_without_auto_target(self, frame_id):
+        """冻结一个 2×2 快照（不跑自动定位），返回 capture 元数据。"""
+        bgr = np.full((2, 2, 3), [10, 20, 30], dtype=np.uint8)
+        ok, jpeg = cv2.imencode(".jpg", bgr)
+        self.assertTrue(ok)
+        snapshot = {
+            "jpeg": jpeg.tobytes(),
+            "depth_mm": np.full((2, 2), 1000, dtype=np.float32),
+            "intrinsics": (100.0, 100.0, 0.5, 0.5),
+            "metadata": {"frame_id": frame_id},
+            "T_cam2root": np.eye(4).tolist(),
+        }
+        with mock.patch.object(
+            pointcloud_viewer, "_fetch_rgbd_snapshot", return_value=snapshot
+        ):
+            return pointcloud_viewer.capture({"stride": 1})
+
+    def test_confirm_without_auto_target_computes_wall_frame(self):
+        """没跑过自动定位的选点要现场补算柜面坐标系，且同帧只算一次。"""
+        metadata = self._confirm_capture_without_auto_target("no-auto-1")
+        upstream = mock.Mock()
+        upstream.ok = True
+        upstream.json.return_value = {
+            "ok": True,
+            "p_root": [0.0, 0.0, 1.0],
+            "p_torso": [0.0, 0.0, 1.0],
+        }
+        wall = {
+            "origin_camera_m": [0.0, 0.0, 1.0],
+            "x_axis_camera": [1.0, 0.0, 0.0],
+            "y_axis_camera": [0.0, 0.0, 1.0],
+            "z_axis_camera": [0.0, -1.0, 0.0],
+            "axis_estimation": "p0-nearest-boundary-line",
+        }
+        body = {
+            "p_camera": [0.0, 0.0, 1.0],
+            "surface_reference_camera": [0.0, 0.0, 1.0],
+            "pixel": [1, 1],
+            "approach_offset_m": 0.0,
+        }
+        with mock.patch.object(
+            pointcloud_viewer._http, "post", return_value=upstream
+        ) as post, mock.patch.object(
+            pointcloud_viewer,
+            "fit_surface_plane",
+            return_value={
+                "center_cam": [0.0, 0.0, 1.0],
+                "normal_cam": [0.0, 0.0, -1.0],
+                "rms_mm": 1.0,
+                "points": 500,
+                "radius_m": 0.12,
+            },
+        ), mock.patch(
+            "api.cabinet_wall_frame.build_wall_coordinate_frame",
+            return_value=wall,
+        ) as build_wall:
+            confirmed = pointcloud_viewer.confirm_pointcloud_target(
+                metadata["capture_id"], dict(body)
+            )
+            again = pointcloud_viewer.confirm_pointcloud_target(
+                metadata["capture_id"], dict(body)
+            )
+
+        self.assertTrue(confirmed["ok"])
+        self.assertTrue(again["ok"])
+        build_wall.assert_called_once()  # 第二次选点直接用缓存
+        sent = post.call_args_list[0].kwargs["json"]
+        self.assertEqual(sent["plane"]["x_axis_camera"], [1.0, 0.0, 0.0])
+        self.assertEqual(sent["plane"]["z_axis_camera"], [0.0, -1.0, 0.0])
+        self.assertEqual(sent["plane"]["axis_source"], "wall_coordinate_x")
+
+    def test_confirm_keeps_fallback_axes_when_wall_frame_fails(self):
+        """柜面系拟合失败时选点照常走兜底轴，失败结果也要缓存。"""
+        metadata = self._confirm_capture_without_auto_target("no-auto-2")
+        upstream = mock.Mock()
+        upstream.ok = True
+        upstream.json.return_value = {
+            "ok": True,
+            "p_root": [0.0, 0.0, 1.0],
+            "p_torso": [0.0, 0.0, 1.0],
+        }
+        body = {
+            "p_camera": [0.0, 0.0, 1.0],
+            "surface_reference_camera": [0.0, 0.0, 1.0],
+            "pixel": [1, 1],
+            "approach_offset_m": 0.0,
+        }
+        with mock.patch.object(
+            pointcloud_viewer._http, "post", return_value=upstream
+        ) as post, mock.patch.object(
+            pointcloud_viewer,
+            "fit_surface_plane",
+            return_value={
+                "center_cam": [0.0, 0.0, 1.0],
+                "normal_cam": [0.0, 0.0, -1.0],
+                "rms_mm": 1.0,
+                "points": 500,
+                "radius_m": 0.12,
+            },
+        ), mock.patch(
+            "api.cabinet_wall_frame.build_wall_coordinate_frame",
+            side_effect=ValueError("柜面点不足"),
+        ) as build_wall:
+            confirmed = pointcloud_viewer.confirm_pointcloud_target(
+                metadata["capture_id"], dict(body)
+            )
+            again = pointcloud_viewer.confirm_pointcloud_target(
+                metadata["capture_id"], dict(body)
+            )
+
+        self.assertTrue(confirmed["ok"])
+        self.assertTrue(again["ok"])
+        build_wall.assert_called_once()  # 失败也缓存，不反复重算
+        sent = post.call_args_list[0].kwargs["json"]
+        self.assertNotIn("x_axis_camera", sent["plane"])
+        self.assertNotIn("axis_source", sent["plane"])
+
     def test_auto_target_uses_frozen_capture_and_caches_result(self):
         bgr = np.full((2, 2, 3), [10, 20, 30], dtype=np.uint8)
         ok, jpeg = cv2.imencode(".jpg", bgr)

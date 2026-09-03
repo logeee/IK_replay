@@ -220,6 +220,11 @@ async function initReach() {
     twistPreviewOnly: document.getElementById("reachTwistPreviewOnly"),
     twistCW: document.getElementById("reachTwistCWBtn"),
     twistCCW: document.getElementById("reachTwistCCWBtn"),
+    twistPushLen: document.getElementById("reachTwistPushLen"),
+    twistPushL: document.getElementById("reachTwistPushLBtn"),
+    twistPushR: document.getElementById("reachTwistPushRBtn"),
+    twistAxisFrame: document.getElementById("reachTwistAxisFrame"),
+    twistDownDeg: document.getElementById("reachTwistDownDeg"),
     stepMode: document.getElementById("reachStepMode"),
     collisionCheck: document.getElementById("reachCollisionCheck"),
     scopeAll: document.getElementById("reachScopeAll"),
@@ -364,6 +369,27 @@ async function initReach() {
   });
   d.twistCW.addEventListener("click", () => twistReach("cw"));
   d.twistCCW.addEventListener("click", () => twistReach("ccw"));
+  d.twistPushL.addEventListener("click", () => twistModalPush(+1));
+  d.twistPushR.addEventListener("click", () => twistModalPush(-1));
+  // 坐标系选择对横移/拨动/扭转全局生效（含暂停弹窗的继续横移），跨刷新
+  // 记住——柜面拟合有问题时切"老方法"应急。
+  d.twistAxisFrame.value =
+    localStorage.getItem("reachAxisFrame") === "legacy" ? "legacy" : "wall";
+  d.twistAxisFrame.addEventListener("change", () => {
+    localStorage.setItem("reachAxisFrame", d.twistAxisFrame.value);
+    reachMsg(useLegacyAxes()
+      ? "已切换到老方法坐标系（世界竖直×法向）"
+      : "已切换到柜面坐标系（柜面 X/Z 轴）", "success");
+  });
+  const savedDownDeg = Number(localStorage.getItem("reachSidestepDownDeg"));
+  if (Number.isFinite(savedDownDeg) && localStorage.getItem("reachSidestepDownDeg") !== null) {
+    d.twistDownDeg.value = String(savedDownDeg);
+  }
+  d.twistDownDeg.addEventListener("change", () => {
+    localStorage.setItem("reachSidestepDownDeg", String(sidestepDownDeg()));
+    reachMsg(`横移下压角 = ${sidestepDownDeg()}°（0=纯水平，对所有横移生效）`,
+             "success");
+  });
   d.fsBtn.addEventListener("click", () => openReachFullscreen());
   d.pointcloudBtn.addEventListener("click", () => {
     const url = new URL(window.location.href);
@@ -440,10 +466,43 @@ async function startReachPickSync() {
   try {
     const latest = await fetchJson("/api/reach/latest_pick");
     reach.pickRevision = Number(latest.revision || 0);
+    // 页面（重新）加载时恢复服务器上已有的选点平面。横移/拨动依赖
+    // reach.plane，旧逻辑只记版本号不取数据——刷新一次页面，横移按钮
+    // 就"存在但没反应"（!reach.plane 静默早退），必须重新取点才能救回
+    if (latest?.available && latest.plane && !reach.plane) {
+      reach.plane = latest.plane;
+      reach.lastPick = latest;
+      if (Array.isArray(latest.p_root_surface)) {
+        visualizeSurfacePlane(latest);
+      }
+    }
   } catch (error) {
     console.warn(`初始化跨浏览器选点同步失败: ${error.message}`);
   }
   scheduleReachPickSync();
+}
+
+// 平面兜底恢复：前端 reach.plane 丢失（刷新/竞态覆盖）时从服务器取回。
+// 服务器 state.plane 自上次取点起一直在，前端状态丢了不该让横移失效。
+async function ensureReachPlane() {
+  if (reach.plane) {
+    return true;
+  }
+  try {
+    const latest = await fetchJson("/api/reach/latest_pick");
+    if (latest?.available && latest.plane) {
+      reach.plane = latest.plane;
+      if (!reach.lastPick) {
+        reach.lastPick = latest;
+      }
+      if (Array.isArray(latest.p_root_surface)) {
+        visualizeSurfacePlane(latest);
+      }
+      reachMsg("已从服务器恢复表面平面（沿用上次取点的拟合结果）", "success");
+      return true;
+    }
+  } catch { /* 按无平面处理 */ }
+  return false;
 }
 
 async function pollReachPick() {
@@ -1015,23 +1074,80 @@ async function appendSidestepPreview(panel, stepCm) {
   }
 }
 
-// 语义点云沿柜面 ±X 横移并向柜面 -Z 偏 15°；旧链路保留向下倾 2°。
-const SIDESTEP_TILT_DEG = 2;
+// 横移在水平方向上叠加的向下偏角，默认 15°；实际值可在"旋转/拨动"弹窗
+// 配置（对所有横移和两种坐标系生效，0=纯水平）。
 const WALL_SIDESTEP_DOWN_DEG = 15;
 
+function sidestepDownDeg() {
+  const raw = reach.dom.twistDownDeg?.value;
+  if (raw === "" || raw == null) {
+    return WALL_SIDESTEP_DOWN_DEG;   // 输入被清空时回默认，避免静默变 0°
+  }
+  const v = Number(raw);
+  return Number.isFinite(v)
+    ? Math.min(60, Math.max(0, v)) : WALL_SIDESTEP_DOWN_DEG;
+}
+
+// 坐标系选择：柜面坐标系(wall) / 老方法(legacy)。弹窗里的下拉全局生效，
+// 柜面拟合有问题时切 legacy——横移/扭转全部改用"世界竖直×法向"现叉的轴。
+function useLegacyAxes() {
+  return reach.dom.twistAxisFrame?.value === "legacy";
+}
+
+function axisFrameKey() {
+  return useLegacyAxes() ? "legacy" : "wall";
+}
+
+// 老方法水平轴（指向画面左）：世界竖直 × 面向(−法向)，再投影回柜面内。
+// 只依赖局部平面法向、完全绕开柜面 X/Z 轴。注意不能拿 plane.left_root
+// 充当老轴：柜面系选点时它=柜面 X 取反，柜面轴坏了它跟着坏，必须由法向现叉。
+// 代价：躯干倾斜时横移可能带上下漂（柜面系当初就是为治这个引入的）。
+function legacyLeftAxis() {
+  const n = reach.plane?.normal_root;
+  if (!Array.isArray(n) || n.length !== 3) {
+    return null;
+  }
+  const facing = [-n[0], -n[1], -n[2]];
+  let left = [-facing[1], facing[0], 0];   // 世界Z × 面向
+  const flat = Math.hypot(left[0], left[1], left[2]);
+  if (flat < 1e-3) {
+    return null;   // 法向几乎竖直（面朝天），叉不出水平轴
+  }
+  left = left.map((v) => v / flat);
+  const dot = left[0] * n[0] + left[1] * n[1] + left[2] * n[2];
+  left = left.map((v, i) => v - dot * n[i]);   // 投影进柜面
+  const len = Math.hypot(left[0], left[1], left[2]);
+  return len < 1e-6 ? null : left.map((v) => v / len);
+}
+
 function sidestepDirection(sign) {
-  const right = reach.plane.right_root;
-  if (Array.isArray(right) && right.length === 3) {
-    const wallUp = reach.plane.wall_up_root;
-    if (!Array.isArray(wallUp) || wallUp.length !== 3) {
-      throw new Error("柜面坐标系缺少 Z 轴，无法计算向下偏移");
+  if (useLegacyAxes()) {
+    const l = legacyLeftAxis();
+    if (!l) {
+      throw new Error("老方法坐标系需要平面法向（当前平面缺法向或法向几乎竖直）");
     }
-    const t = (WALL_SIDESTEP_DOWN_DEG * Math.PI) / 180;
-    // X 正=右、Z 正=上；左右两种横移均叠加 -Z 方向 15°。
+    // 下压角与柜面链路共用弹窗配置，只是"下"取世界竖直而非柜面内 -Z；
+    // 模长略偏 1 没关系，后端 plan_cartesian 会归一化。
+    const t = (sidestepDownDeg() * Math.PI) / 180;
+    const c = Math.cos(t);
+    const s = Math.sin(t);
+    return [l[0] * sign * c, l[1] * sign * c, l[2] * sign * c - s];
+  }
+  const right = reach.plane.right_root;
+  const wallUp = reach.plane.wall_up_root;
+  // 完整柜面坐标系（X=右、Z=上 都在，来自 7005 选点附带的柜面拟合）才走
+  // 15° 下倾的新链路。注意后端在兜底水平轴(normal_cross_up)时也会填
+  // right_root、只有 wall_up_root 为 null——之前只判 right 有没有，兜底
+  // 选点必然误入本分支抛"缺少 Z 轴"，左移直接失败；两轴齐全才算柜面系。
+  if (Array.isArray(right) && right.length === 3
+      && Array.isArray(wallUp) && wallUp.length === 3) {
+    const t = (sidestepDownDeg() * Math.PI) / 180;
+    // X 正=右、Z 正=上；左右两种横移均叠加 -Z 方向的下压角（弹窗可配）。
     return right.map((value, i) =>
       -value * sign * Math.cos(t) - wallUp[i] * Math.sin(t));
   }
-  const t = (SIDESTEP_TILT_DEG * Math.PI) / 180;
+  // 兜底分支（柜面系模式但选点没带柜面轴）：同样用可配下压角
+  const t = (sidestepDownDeg() * Math.PI) / 180;
   const l = reach.plane.left_root;
   const c = Math.cos(t);
   const s = Math.sin(t);
@@ -1067,12 +1183,33 @@ async function refreshSidesteps() {
 function matchSidestepRecording(stepCm, joints) {
   // 柜面坐标系可提供准确的水平 X 轴时必须重新做笛卡尔规划。旧关节增量
   // 在不同起点不是刚体平移，正是“右移变右上”的来源，不能覆盖柜面轴。
-  if (reach.plane?.horizontal_axis_source === "wall_coordinate_x") {
+  // 用户切到老方法坐标系时视同老链路，放行回放。
+  if (reach.plane?.horizontal_axis_source === "wall_coordinate_x"
+      && !useLegacyAxes()) {
     return null;
   }
   const rec = (reach.sidesteps || []).find((r) => Number(r.step_cm) === stepCm);
   if (!rec?.waypoints?.length) {
     return null;
+  }
+  // 方向一致性：录制里存了当时的 direction_root，与"现在这套坐标系+下压
+  // 角"算出的方向差超过 3° 就不回放、改现算——坐标系或角度调过后不会
+  // 误用旧方向的轨迹。没存方向的老录制一律现算。
+  try {
+    const want = sidestepDirection(Math.sign(stepCm));
+    const dir = rec.direction_root;
+    if (!Array.isArray(dir) || dir.length !== 3) {
+      return null;
+    }
+    const nw = Math.hypot(want[0], want[1], want[2]);
+    const nd = Math.hypot(dir[0], dir[1], dir[2]);
+    const cos = (want[0] * dir[0] + want[1] * dir[1] + want[2] * dir[2])
+      / (nw * nd);
+    if (cos < Math.cos((3 * Math.PI) / 180)) {
+      return null;
+    }
+  } catch {
+    return null;   // 方向都算不出来（如老方法缺法向），交给现算去报错
   }
   // 防呆一（已停用）：当前平面法向与录制时夹角 >10° 说明没正视电柜，不回放
   // if (reach.plane) {
@@ -1131,7 +1268,8 @@ async function sidestepReach(stepCm, options = {}) {
   }
   const step = stepCm / 100;
   const dirName = stepCm > 0 ? "左" : "右";
-  reachMsg(`${dirName}移 ${(Math.abs(step) * 100).toFixed(0)}cm 规划中…`);
+  reachMsg(`${dirName}移 ${(Math.abs(step) * 100).toFixed(0)}cm 规划中…`
+           + (useLegacyAxes() ? "（老方法轴）" : ""));
 
   // 起点 = 真机当前关节（读不到就用面板当前值，纯模拟联调用）
   let joints = readJointInputs(panel);
@@ -1156,7 +1294,11 @@ async function sidestepReach(stepCm, options = {}) {
   }
   const cache = reach.sideCache;
   reach.sideCache = null;
-  if (!seg && cache && cache.stepCm === stepCm) {
+  // frame/角度键防串台：预取后在弹窗里切了坐标系或下压角，方向已不同，
+  // 缓存作废改现算
+  if (!seg && cache && cache.stepCm === stepCm
+      && cache.frame === axisFrameKey()
+      && cache.downDeg === sidestepDownDeg()) {
     const drift = Math.max(...Object.keys(cache.joints)
       .map((k) => Math.abs(Number(joints[k] ?? 0) - Number(cache.joints[k]))));
     if (drift < 0.02) {
@@ -1185,12 +1327,14 @@ async function sidestepReach(stepCm, options = {}) {
     reachMsg(`${dirName}移轨迹有碰撞，已禁止执行`, "error");
     return;
   }
-  if (!seg.replayed && reach.plane?.horizontal_axis_source !== "wall_coordinate_x") {
+  if (!seg.replayed && (useLegacyAxes()
+      || reach.plane?.horizontal_axis_source !== "wall_coordinate_x")) {
     saveSidestepRecording(stepCm, seg);   // 落盘录制：下次同工况免 IK 直接回放
   }
-  if (!st.armed) {
+  if (options.previewOnly || !st.armed) {
     replay(panel);
-    reachMsg(`${dirName}移已预演（未接管手臂，无法真机执行）`, "success");
+    const why = options.previewOnly ? "仅预演，不动真机" : "未接管手臂，无法真机执行";
+    reachMsg(`${dirName}移已预演（${why}）`, "success");
     return;
   }
   const pushN = Math.max(0, Number(reach.dom.pushForce?.value || 0));
@@ -1283,6 +1427,23 @@ function twistDirLabel(deg) {
   return names[idx];
 }
 
+// 弹窗里的横移拨动：同 sidestepReach 链路（录制回放/缓存/现算 + 推力），
+// 但入口不依赖"主段到位"暂停弹窗——随时可触发。sign +1=左拨 −1=右拨。
+async function twistModalPush(sign) {
+  const d = reach.dom;
+  const raw = Math.abs(Number(d.twistPushLen.value || 0));
+  if (!raw) {
+    reachMsg("拨动距离(cm)为 0，没有可执行的动作", "error");
+    return;
+  }
+  d.twistModal.classList.add("hidden");   // 收起弹窗，露出三维视图
+  if (!(await ensureReachPlane())) {
+    reachMsg("还没有表面平面（服务器也没有），先取一次点再拨动", "error");
+    return;
+  }
+  await sidestepReach(sign * raw, { previewOnly: d.twistPreviewOnly.checked });
+}
+
 // twist: "cw"=左扭(顺时针) / "ccw"=右扭(逆时针)，机器人视角面向柜面
 async function twistReach(twist) {
   const st = reach.status;
@@ -1301,8 +1462,21 @@ async function twistReach(twist) {
   // 45°）；右扭自动水平镜像为 180°−方位（135→45，即右上 45°）
   const dirInput = Number(d.twistDir.value || 135);
   const centerDeg = twist === "cw" ? dirInput : 180 - dirInput;
-  const centerLabel = `${twistDirLabel(centerDeg)}${(((centerDeg % 360) + 360) % 360)}°`;
   d.twistModal.classList.add("hidden");   // 收起弹窗，露出三维视图看预演
+  // 老方法坐标系：把旋转轴显式换成柜面法向，后端 _arc_basis 就会用
+  // "世界竖直"推面内(右,上)基，完全绕开柜面 X/Z 轴（柜面拟合异常时用）。
+  const legacy = useLegacyAxes();
+  if (legacy && !reach.plane && !(await ensureReachPlane())) {
+    reachMsg("老方法坐标系需要柜面法向（服务器也没有平面），先取一次点", "error");
+    return;
+  }
+  const legacyAxis = legacy ? reach.plane?.normal_root : null;
+  if (legacy && !(Array.isArray(legacyAxis) && legacyAxis.length === 3)) {
+    reachMsg("老方法坐标系需要平面法向，当前平面数据缺 normal_root", "error");
+    return;
+  }
+  const centerLabel = `${twistDirLabel(centerDeg)}${(((centerDeg % 360) + 360) % 360)}°`
+    + (legacy ? "·老方法轴" : "");
   reachMsg(`${name} ${angle}°（中心 ${centerLabel}）规划中…`);
 
   // 起点 = 真机当前关节（读不到就用面板当前值，纯模拟联调用）
@@ -1334,6 +1508,7 @@ async function twistReach(twist) {
         center_offset_deg: centerDeg,
         center_offset_cm: Number(d.twistDist.value || 0),
         check_collision: reachCollisionOn(),
+        ...(legacyAxis ? { axis_root: legacyAxis } : {}),
       }),
     });
   } catch (error) {
@@ -2553,7 +2728,10 @@ function showStepNext() {
 async function prefetchSidestep() {
   reach.sideCache = null;
   const stepCm = Number(reach.dom.stepLen.value || 0);
-  if (!stepCm || !reach.plane || !reach.status?.joints_available) {
+  if (!stepCm || !reach.status?.joints_available) {
+    return;
+  }
+  if (!reach.plane && !(await ensureReachPlane())) {
     return;
   }
   let joints = null;
@@ -2573,7 +2751,8 @@ async function prefetchSidestep() {
   }
   try {
     const seg = await planCartesianSidestep(joints, stepCm);
-    reach.sideCache = { stepCm, joints, seg };
+    reach.sideCache = { stepCm, joints, seg,
+                        frame: axisFrameKey(), downDeg: sidestepDownDeg() };
   } catch { /* 预取失败就退回点击时现算 */ }
 }
 
@@ -2605,8 +2784,8 @@ async function stepNextSidestep(flip = false) {
     return;
   }
   const stepCm = flip ? -raw : raw;
-  if (!reach.plane) {
-    reachMsg("还没有拟合出表面平面，无法横移", "error");
+  if (!(await ensureReachPlane())) {
+    reachMsg("还没有拟合出表面平面（服务器也没有），先取一次点", "error");
     return;
   }
   setStepNextBusy(true);

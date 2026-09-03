@@ -65,6 +65,7 @@ _box_padding_ratio = 0.1
 _model_lock = threading.Lock()
 _capture_lock = threading.Lock()
 _auto_target_lock = threading.Lock()
+_wall_plane_lock = threading.Lock()
 _capture_progress_lock = threading.Lock()
 _capture_progress: dict[str, dict[str, Any]] = {}
 
@@ -85,6 +86,7 @@ class Capture:
     wall_plane: dict[str, Any] | None = None
     panel_fit: dict[str, Any] | None = None
     auto_target: dict[str, Any] | None = None
+    wall_plane_error: str | None = None
 
 
 _latest: Capture | None = None
@@ -804,26 +806,124 @@ def datetime_now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S")
 
 
-@app.post("/api/pointcloud/auto-target/{capture_id}")
-def auto_target(capture_id: str):
-    """Use the frozen RGB-D frame to predict point 1 or point 3 in memory."""
-    capture_value = _capture_by_id(capture_id)
-    if capture_value is None:
-        return JSONResponse(
-            {"ok": False, "error": "快照不存在或已被新快照替换"},
-            status_code=404,
-        )
-    with _auto_target_lock:
-        if capture_value.auto_target is not None:
-            return capture_value.auto_target
-        started = time.perf_counter()
-        timings: dict[str, float] = {}
-        try:
-            from .cabinet_panel_fit import analyze_yolo_mask_panel
-            from .cabinet_target_finder import predict_target
-            from .cabinet_wall_frame import build_wall_coordinate_frame
+# 每次 auto-target 的结果叠加图（mask/拟合矩形/中心/目标点/墙轴），
+# 成功失败都存，用于直接目视核对「结果对不对」，与日志逐段数据配套。
+PANEL_DEBUG_DIR = ROOT / "data" / "panel_fit_debug"
+PANEL_DEBUG_KEEP = 200
 
-            wall_started = time.perf_counter()
+
+def _save_panel_debug_image(
+    capture_value,
+    panel_fit: dict | None,
+    prediction: dict | None,
+    wall_plane: dict | None,
+    error_text: str | None = None,
+) -> None:
+    try:
+        image = capture_value.bgr.copy()
+        boxes = capture_value.boxes or []
+        best_index = -1
+        if boxes:
+            best_index = max(
+                range(len(boxes)),
+                key=lambda i: float(boxes[i].get("conf", 0.0)),
+            )
+        for index, box in enumerate(boxes):
+            main = index == best_index
+            color = (0, 200, 255) if main else (120, 120, 120)
+            x1, y1, x2, y2 = [int(round(v)) for v in box["xyxy"]]
+            cv2.rectangle(image, (x1, y1), (x2, y2), color, 2 if main else 1)
+            cv2.putText(
+                image,
+                f"[{index}] {float(box.get('conf', 0)):.2f}",
+                (x1, max(18, y1 - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2,
+            )
+            if box.get("polygon"):
+                pts = np.asarray(box["polygon"], np.int32).reshape(-1, 1, 2)
+                cv2.polylines(
+                    image, [pts], True,
+                    (0, 0, 255) if main else (100, 100, 100), 2,
+                )
+        intrinsics = capture_value.intrinsics
+
+        def px(p3d) -> tuple[int, int] | None:
+            return _project_pixel(intrinsics, np.asarray(p3d, float))
+
+        if panel_fit and panel_fit.get("available"):
+            corners = [
+                px(c) for c in panel_fit["rectangle_corners_camera_m"]
+            ]
+            if all(c is not None for c in corners):
+                cv2.polylines(
+                    image,
+                    [np.asarray(corners, np.int32).reshape(-1, 1, 2)],
+                    True, (60, 220, 60), 2,
+                )
+            center = px(panel_fit["rectangle_center_camera_m"])
+            if center:
+                cv2.circle(image, center, 6, (60, 220, 60), -1)
+            if wall_plane is not None and center:
+                axis_end = px(
+                    np.asarray(panel_fit["rectangle_center_camera_m"], float)
+                    + 0.05 * np.asarray(wall_plane["x_axis_camera"], float)
+                )
+                if axis_end:
+                    cv2.arrowedLine(
+                        image, center, axis_end, (255, 200, 0), 2,
+                        tipLength=0.25,
+                    )
+        if prediction and prediction.get("target_camera_m"):
+            target = px(prediction["target_camera_m"])
+            if target:
+                cv2.drawMarker(
+                    image, target, (255, 0, 255),
+                    cv2.MARKER_CROSS, 26, 3,
+                )
+                cv2.putText(
+                    image,
+                    f"slot {prediction.get('target_point_slot')}",
+                    (target[0] + 12, target[1] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2,
+                )
+        status = "ok" if error_text is None else "fail"
+        cv2.rectangle(
+            image, (0, 0), (image.shape[1] - 1, image.shape[0] - 1),
+            (60, 220, 60) if status == "ok" else (0, 0, 255), 6,
+        )
+        PANEL_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        name = (
+            f"{time.strftime('%Y%m%d_%H%M%S')}_"
+            f"{capture_value.capture_id[:8]}_{status}.jpg"
+        )
+        cv2.imwrite(str(PANEL_DEBUG_DIR / name), image,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        stale = sorted(PANEL_DEBUG_DIR.glob("*.jpg"))[:-PANEL_DEBUG_KEEP]
+        for old in stale:
+            old.unlink(missing_ok=True)
+        print(f"[pointcloud] 面板拟合叠加图: data/panel_fit_debug/{name}",
+              flush=True)
+    except Exception as debug_exc:  # 诊断图失败不影响主流程
+        print(f"[pointcloud] 面板拟合叠加图保存失败: {debug_exc}", flush=True)
+
+
+def _ensure_wall_plane(capture_value: Capture) -> dict[str, Any]:
+    """返回快照的柜面坐标系；没有就补算一次并缓存（失败也记住原因）。
+
+    柜面系原先只在"自动定位"整链成功后才落缓存：没点过自动定位、或柜面
+    拟合成功但 YOLO 面板拟合失败，选点都拿不到柜面 X/Z 轴，横移方向只能
+    退化成"世界竖直×法向"兜底（躯干倾斜会把方向带歪）。这里把柜面拟合
+    独立出来供选点/自动定位共用，同一帧最多算一次。
+    """
+    with _wall_plane_lock:
+        if capture_value.wall_plane is not None:
+            return capture_value.wall_plane
+        if capture_value.wall_plane_error is not None:
+            raise ValueError(capture_value.wall_plane_error)
+        from .cabinet_wall_frame import build_wall_coordinate_frame
+
+        started = time.perf_counter()
+        try:
             wall_cloud = build_pointcloud(
                 capture_value.depth_mm,
                 capture_value.bgr,
@@ -845,6 +945,44 @@ def auto_target(capture_id: str):
                 min_plane_points=300,
                 plane_analysis_max_points=200_000,
             )
+        except (TypeError, ValueError, np.linalg.LinAlgError) as exc:
+            capture_value.wall_plane_error = str(exc)
+            print(f"[pointcloud] 柜面坐标系拟合失败: {exc}", flush=True)
+            raise
+        capture_value.wall_plane = wall_plane
+        print(
+            "[pointcloud] 柜面坐标系已缓存: X轴来源="
+            f"{wall_plane.get('axis_estimation')}, 耗时 "
+            f"{(time.perf_counter() - started) * 1000.0:.0f} ms",
+            flush=True,
+        )
+        return wall_plane
+
+
+@app.post("/api/pointcloud/auto-target/{capture_id}")
+def auto_target(capture_id: str):
+    """Use the frozen RGB-D frame to predict point 1 or point 3 in memory."""
+    capture_value = _capture_by_id(capture_id)
+    if capture_value is None:
+        return JSONResponse(
+            {"ok": False, "error": "快照不存在或已被新快照替换"},
+            status_code=404,
+        )
+    with _auto_target_lock:
+        if capture_value.auto_target is not None:
+            return capture_value.auto_target
+        started = time.perf_counter()
+        timings: dict[str, float] = {}
+        wall_plane = None
+        panel_fit = None
+        prediction = None
+        try:
+            from .cabinet_panel_fit import analyze_yolo_mask_panel
+            from .cabinet_target_finder import predict_target
+
+            wall_started = time.perf_counter()
+            # 选点若先补算过柜面系，这里直接复用缓存，反之亦然。
+            wall_plane = _ensure_wall_plane(capture_value)
             timings["wall"] = round(
                 (time.perf_counter() - wall_started) * 1000.0, 1
             )
@@ -860,11 +998,22 @@ def auto_target(capture_id: str):
                 (time.perf_counter() - panel_started) * 1000.0, 1
             )
             if not panel_fit.get("available"):
+                fit_debug = panel_fit.get("debug") or {}
+                key_hints = "；".join(
+                    f"{key}：{fit_debug[key]}"
+                    for key in ("定向", "四边支持mm")
+                    if key in fit_debug
+                )
                 raise ValueError(
                     "YOLO Mask 面板拟合失败"
                     + (
                         f"：{panel_fit.get('reason')}"
                         if panel_fit.get("reason")
+                        else ""
+                    )
+                    + (
+                        f"（{key_hints}；逐段明细见 pointcloud_viewer.log）"
+                        if key_hints
                         else ""
                     )
                 )
@@ -892,7 +1041,14 @@ def auto_target(capture_id: str):
                 "panel_fit": panel_fit,
                 "timings_ms": timings,
             }
+            _save_panel_debug_image(
+                capture_value, panel_fit, prediction, wall_plane
+            )
         except (TypeError, ValueError, np.linalg.LinAlgError) as exc:
+            _save_panel_debug_image(
+                capture_value, panel_fit, prediction, wall_plane,
+                error_text=str(exc),
+            )
             return JSONResponse(
                 {
                     "ok": False,
@@ -908,6 +1064,10 @@ def auto_target(capture_id: str):
                 status_code=422,
             )
         except Exception as exc:
+            _save_panel_debug_image(
+                capture_value, panel_fit, prediction, wall_plane,
+                error_text=str(exc),
+            )
             return JSONResponse(
                 {
                     "ok": False,
@@ -998,6 +1158,21 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
         # 负责接近法向，但横移轴直接沿用柜面 X，避免用世界 Z×法向推导时
         # 受躯干倾斜影响而把“右移”算成右上。
         wall_axes = (capture_value.auto_target or {}).get("wall_axes_camera")
+        if plane is not None and not wall_axes:
+            # 快照还没有柜面系（没跑过自动定位，或它在 YOLO 阶段失败）时
+            # 现场补算一次并缓存；拟合不出来才保持“世界竖直×法向”兜底轴。
+            try:
+                wall_value = _ensure_wall_plane(capture_value)
+                wall_axes = [
+                    wall_value["x_axis_camera"],
+                    wall_value["y_axis_camera"],
+                    wall_value["z_axis_camera"],
+                ]
+            except (TypeError, ValueError, np.linalg.LinAlgError) as exc:
+                print(
+                    f"[pointcloud] 选点补算柜面坐标系失败，用兜底轴: {exc}",
+                    flush=True,
+                )
         if plane is not None and isinstance(wall_axes, list) and wall_axes:
             wall_x = np.asarray(wall_axes[0], dtype=float).reshape(3)
             wall_x_norm = float(np.linalg.norm(wall_x))

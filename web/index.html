@@ -141,7 +141,7 @@
                 <button id="reachScanBtn" type="button">扫描障碍</button>
                 <button id="reachClearObsBtn" type="button" disabled>清除障碍</button>
                 <button id="reachTwistOpenBtn" type="button"
-                        title="捏住旋钮把手后的定点扭转测试：左扭/右扭参数与预演/执行">旋转测试…</button>
+                        title="定点扭转（左扭/右扭）与横移拨动（左拨/右拨）的测试面板，随时可用">旋转/拨动…</button>
               </div>
               <div class="reach-control-group">
                 <div class="reach-control-row">
@@ -235,7 +235,7 @@
              role="dialog" aria-modal="true" aria-labelledby="reachTwistTitle">
           <div class="reach-library-card">
             <div class="reach-library-header">
-              <strong id="reachTwistTitle">旋转测试（定点扭转）</strong>
+              <strong id="reachTwistTitle">旋转 / 拨动测试</strong>
               <button id="reachTwistCloseBtn" type="button" aria-label="关闭">×</button>
             </div>
             <div class="reach-library-fields">
@@ -259,6 +259,18 @@
                   <option value="free">全臂·自由（对照）</option>
                 </select>
               </label>
+              <label title="柜面坐标系：横移沿柜面 X 轴、扭转的右/上基取柜面轴（依赖 7005 柜面拟合质量）；老方法：现场用『世界竖直×柜面法向』叉出轴。对左移/右移/左拨/右拨/扭转全部生效，选择跨刷新记住——柜面拟合有问题时切老方法应急">
+                <span>坐标系</span>
+                <select id="reachTwistAxisFrame">
+                  <option value="wall" selected>柜面坐标系（新）</option>
+                  <option value="legacy">老方法（竖直×法向）</option>
+                </select>
+              </label>
+              <label title="横移方向在水平横移的基础上向下偏这个角度，对所有横移生效（左移/右移/左拨/右拨，两种坐标系通用）：柜面系的『下』=柜面内 -Z，老方法的『下』=世界竖直向下。0 = 纯水平横移；跨刷新记住">
+                <span>横移下压角(°)</span>
+                <input id="reachTwistDownDeg" type="number" step="1" min="0"
+                       max="45" value="15" />
+              </label>
             </div>
             <div class="reach-toggles" style="margin-top: 10px;">
               <label class="reach-stepmode" title="手朝向跟着圆弧转同样角度（捏死把手时应勾选）；不勾=纯拨动，只有位置沿弧走">
@@ -280,6 +292,22 @@
                       title="顺时针（机器人视角面向柜面），旋转中心在捏合点左上方">左扭 ↻</button>
               <button id="reachTwistCCWBtn" type="button" class="primary"
                       title="逆时针（机器人视角面向柜面），旋转中心在捏合点右上方（方位自动镜像）">右扭 ↺</button>
+            </div>
+            <div class="reach-library-hint" style="margin-top: 14px;">
+              拨动（推）：沿柜面横移并加推力，随时可用（不必等"主段到位"暂停弹窗）。
+              推力(N)/保持(s)沿用主面板参数；前端平面丢失时自动从服务器恢复。
+            </div>
+            <div class="reach-library-actions" style="margin-top: 8px;">
+              <label style="display: inline-flex; align-items: center; gap: 6px;
+                            margin-right: auto; font-size: 12px; color: #43596d;">
+                拨动距离(cm)
+                <input id="reachTwistPushLen" type="number" step="1" min="0"
+                       value="10" style="width: 72px;" />
+              </label>
+              <button id="reachTwistPushLBtn" type="button"
+                      title="沿柜面向画面左侧横移拨动（同『继续横移』链路：录制回放/预取缓存/现算 IK + 推力前馈）">左拨 ←</button>
+              <button id="reachTwistPushRBtn" type="button"
+                      title="沿柜面向画面右侧横移拨动（距离符号取反，与左拨完全对称）">右拨 →</button>
             </div>
           </div>
         </div>
@@ -307,6 +335,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=101"></script>
+    <script type="module" src="/web/main.js?v=106"></script>
   </body>
 </html>
