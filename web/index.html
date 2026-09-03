@@ -65,22 +65,6 @@
                         title="从当前姿态直接运动到固定路点「起手点测试」"
                         disabled>▶ 到达起手点测试</button>
               </div>
-              <div class="reach-control-group">
-                <div class="reach-control-row">
-                  <span>经由路点</span>
-                  <select id="reachWaypointSel" class="reach-waypoint-sel">
-                    <option value="">（直达）</option>
-                  </select>
-                  <button id="reachAddViaBtn" type="button" title="加入经由队列">＋ 加入</button>
-                </div>
-                <div class="reach-control-row">
-                  <span>结束位点</span>
-                  <select id="reachEndSel" class="reach-waypoint-sel">
-                    <option value="">（不收回）</option>
-                  </select>
-                </div>
-              </div>
-              <div id="reachViaList" class="reach-via-list hidden"></div>
               <div class="reach-control-group reach-sequence-group">
                 <div class="reach-sequence-main">
                   <span>动作序列</span>
@@ -141,6 +125,22 @@
                 <button id="reachScanBtn" type="button">扫描障碍</button>
                 <button id="reachClearObsBtn" type="button" disabled>清除障碍</button>
               </div>
+              <div class="reach-control-group">
+                <div class="reach-control-row">
+                  <span>经由路点</span>
+                  <select id="reachWaypointSel" class="reach-waypoint-sel">
+                    <option value="">（直达）</option>
+                  </select>
+                  <button id="reachAddViaBtn" type="button" title="加入经由队列">＋ 加入</button>
+                </div>
+                <div class="reach-control-row">
+                  <span>结束位点</span>
+                  <select id="reachEndSel" class="reach-waypoint-sel">
+                    <option value="">（不收回）</option>
+                  </select>
+                </div>
+              </div>
+              <div id="reachViaList" class="reach-via-list hidden"></div>
               <div class="reach-toggles">
                 <label class="reach-stepmode" title="主段到位后暂停，横移/收回需手动点击才继续">
                   <input id="reachStepMode" type="checkbox" />

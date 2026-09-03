@@ -124,7 +124,10 @@ app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(WEB_DIR / "index.html")
+    # 首页禁缓存：css/js 靠 ?v= 版本号强刷，HTML 本身没有版本号，被浏览器
+    # 缓存后会出现「改了布局但页面还是旧的」（每次仅一次轻量 revalidate）
+    return FileResponse(WEB_DIR / "index.html",
+                        headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/favicon.ico")

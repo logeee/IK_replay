@@ -488,12 +488,14 @@ def main() -> int:
     # （手选 ∪ 推导终点）。列表接口默认只回集合内 + 本组合自己录的新文件；
     # 页面可用「显示全池」看全部。修改认领后重启 18001 生效。
     if active_combo:
-        arm = str(active_combo["arm"])
-        hand_id = str(active_combo["hand_id"])
+        # 注意别复用上面的 arm 变量：它是 "right"/"left"（侧别），被 arm_factory
+        # 闭包晚绑定引用；组合里的是链名 "right_arm"，覆盖后接管会拼出 right_arm_arm。
+        combo_arm = str(active_combo["arm"])
+        combo_hand_id = str(active_combo["hand_id"])
         sequence_pool = capability_snapshot.get("sequence_pool") or []
         visible_sequences: set[str] = set()
         visible_waypoints: set[str] = set()
-        for cap in enabled_capabilities(capability_registry, arm, hand_id):
+        for cap in enabled_capabilities(capability_registry, combo_arm, combo_hand_id):
             visible_sequences.update(
                 claimed_sequence_names(capability_registry, cap["id"]))
             visible_waypoints.update(claimed_waypoint_names(
