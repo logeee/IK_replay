@@ -200,8 +200,13 @@ running_pid() {
 stop_server() {
     local pid
     if ! pid=$(running_pid); then
-        echo "[能力配置] 没有找到端口 $PORT 上由本脚本启动的服务"
-        return
+        # pid 文件丢了（如上次启动健康检查超时）也要能收编孤儿进程
+        pid=$(pgrep -f "tools/capability_server\.py --port $PORT" | head -1)
+        if ! pid_alive "$pid"; then
+            echo "[能力配置] 没有找到端口 $PORT 上由本脚本启动的服务"
+            return
+        fi
+        echo "[能力配置] pid 文件缺失，按启动命令行找到孤儿进程 ${pid}"
     fi
     kill "$pid"
     for _ in {1..20}; do
@@ -262,13 +267,15 @@ else
     echo "[能力配置] 正在构建配置页面…"
     (cd "$WEB_DIR" && npm run build)
 
-    nohup "$FASTAPI_PY" tools/capability_server.py --port "$PORT" \
+    # -u：无缓冲输出，否则 print 堆在块缓冲里日志一直是 0 字节
+    nohup "$FASTAPI_PY" -u tools/capability_server.py --port "$PORT" \
         >>"$LOG_FILE" 2>&1 &
     pid=$!
     echo "$pid" >"$PID_FILE"
 
+    # 机器忙时 Python 导入可能超过 5s，窗口放宽到约 20s
     ready=false
-    for _ in {1..20}; do
+    for _ in {1..40}; do
         if ! kill -0 "$pid" 2>/dev/null; then
             break
         fi
@@ -277,9 +284,13 @@ else
             ready=true
             break
         fi
-        sleep 0.25
+        sleep 0.5
     done
     if [[ "$ready" != true ]]; then
+        # 决不留孤儿：超时视为失败，把刚拉起的进程一并收掉
+        kill "$pid" 2>/dev/null || true
+        sleep 0.5
+        kill -9 "$pid" 2>/dev/null || true
         rm -f "$PID_FILE"
         echo "[能力配置] 启动失败，请查看 $LOG_FILE"
         tail -n 20 "$LOG_FILE" 2>/dev/null || true

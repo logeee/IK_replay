@@ -24,6 +24,30 @@ from .state import _read_joints, router, state
 # --------------- 中间路点（录制 / 落盘 / 复用） ---------------
 
 
+def _visible_by_claims(data: dict, allowed: set | None) -> bool:
+    """认领可见性（18000 配置）：认领集合内可见；本组合自己录的也可见
+    （来源戳匹配——新录的还没进启动快照，不能刚存完就"消失"）。"""
+    if allowed is None:
+        return True
+    if str(data.get("name") or "") in allowed:
+        return True
+    combo = data.get("recorded_combo")
+    active = state.active_combo
+    return (isinstance(combo, dict) and bool(active)
+            and combo.get("arm") == active.get("arm")
+            and combo.get("hand_id") == active.get("hand_id"))
+
+
+def _recorded_combo_stamp() -> dict | None:
+    """当前激活组合的来源戳（camera-only 等无组合场景为 None）。"""
+    if not state.active_combo:
+        return None
+    return {
+        "arm": state.active_combo.get("arm"),
+        "hand_id": state.active_combo.get("hand_id"),
+    }
+
+
 def _safe_waypoint_file(filename: str) -> Path | None:
     """防路径穿越：只允许目录内的 *.json 纯文件名。"""
     if not filename.endswith(".json") or "/" in filename or "\\" in filename or ".." in filename:
@@ -47,8 +71,20 @@ def _load_waypoints() -> list[dict]:
 
 
 @router.get("/waypoints")
-def reach_waypoints():
-    return {"waypoints": _load_waypoints()}
+def reach_waypoints(scope: str = ""):
+    """位点列表。默认按认领可见性过滤（激活组合已启用能力的生效位点 +
+    本组合自己录的）；?scope=all 看全池。"""
+    items = _load_waypoints()
+    if scope == "all":
+        visible = items
+    else:
+        visible = [w for w in items
+                   if _visible_by_claims(w, state.visible_waypoints)]
+    return {"waypoints": visible, "total": len(items),
+            "hidden": len(items) - len(visible),
+            "filtered": len(visible) != len(items) or (
+                scope != "all" and state.visible_waypoints is not None),
+            "combo": state.active_combo}
 
 
 @router.post("/waypoints")
@@ -74,6 +110,10 @@ def reach_record_waypoint(body: dict):
         "named_joints": dict(zip(state.joint_names, q)),
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
+    combo = _recorded_combo_stamp()
+    if combo:
+        # 来源戳：认领可见性下，自己录的位点即刻可见（无需先认领）
+        item["recorded_combo"] = combo
     state.waypoints_dir.mkdir(parents=True, exist_ok=True)
     path = state.waypoints_dir / f"{name}_{stamp}.json"
     path.write_text(json.dumps(item, ensure_ascii=False, indent=2))
@@ -102,19 +142,29 @@ def _safe_sequence_file(filename: str) -> Path | None:
 
 
 @router.get("/sequences")
-def reach_sequences():
-    if state.sequences_dir is None or not state.sequences_dir.is_dir():
-        return {"sequences": []}
+def reach_sequences(scope: str = ""):
+    """动作序列列表。默认按认领可见性过滤（激活组合已启用能力认领的动作
+    + 本组合自己录的）；?scope=all 看全池。"""
     items = []
-    for path in sorted(state.sequences_dir.glob("*.json"),
-                       key=lambda p: p.stat().st_mtime, reverse=True):
-        try:
-            data = json.loads(path.read_text())
-            data["file"] = path.name
-            items.append(data)
-        except (json.JSONDecodeError, OSError):
-            continue
-    return {"sequences": items}
+    if state.sequences_dir is not None and state.sequences_dir.is_dir():
+        for path in sorted(state.sequences_dir.glob("*.json"),
+                           key=lambda p: p.stat().st_mtime, reverse=True):
+            try:
+                data = json.loads(path.read_text())
+                data["file"] = path.name
+                items.append(data)
+            except (json.JSONDecodeError, OSError):
+                continue
+    if scope == "all":
+        visible = items
+    else:
+        visible = [s for s in items
+                   if _visible_by_claims(s, state.visible_sequences)]
+    return {"sequences": visible, "total": len(items),
+            "hidden": len(items) - len(visible),
+            "filtered": len(visible) != len(items) or (
+                scope != "all" and state.visible_sequences is not None),
+            "combo": state.active_combo}
 
 
 @router.post("/sequences")
@@ -141,13 +191,11 @@ def reach_save_sequence(body: dict):
         "waypoints": [str(f) for f in files],
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
-    if state.active_combo:
+    combo = _recorded_combo_stamp()
+    if combo:
         # 来源戳：这条动作是哪个「臂+手型号」组合在位时录的（进公共池后
-        # 18000 页面按它显示出处）
-        item["recorded_combo"] = {
-            "arm": state.active_combo.get("arm"),
-            "hand_id": state.active_combo.get("hand_id"),
-        }
+        # 18000 页面按它显示出处；认领可见性下自己录的即刻可见）
+        item["recorded_combo"] = combo
     state.sequences_dir.mkdir(parents=True, exist_ok=True)
     path = state.sequences_dir / f"{name}_{time.strftime('%Y%m%d_%H%M%S')}.json"
     path.write_text(json.dumps(item, ensure_ascii=False, indent=2))

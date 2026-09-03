@@ -21,9 +21,18 @@ class SequenceClaimTests(unittest.TestCase):
         registry = self._with_claims([{
             "capability_id": "cap-rtl-flick",
             "names": ["b-起手式", "a-起手式", "b-起手式", "", None],
+            "waypoint_names": ["点2", "点1", "点2", ""],
         }])
         self.assertEqual(registry["sequence_claims"][0]["names"],
                          ["a-起手式", "b-起手式"])
+        self.assertEqual(registry["sequence_claims"][0]["waypoint_names"],
+                         ["点1", "点2"])
+
+    def test_waypoint_names_defaults_to_empty(self):
+        registry = self._with_claims([{
+            "capability_id": "cap-rtl-flick", "names": ["a"],
+        }])
+        self.assertEqual(registry["sequence_claims"][0]["waypoint_names"], [])
 
     def test_claim_with_unknown_capability_rejected(self):
         with self.assertRaisesRegex(ValueError, "不存在的能力条目"):
@@ -114,10 +123,35 @@ class SequenceClaimTests(unittest.TestCase):
             [])
 
 
+class EndpointDerivationTests(unittest.TestCase):
+    """终点位点推导：与 api/flow.py 运行时规则一致。"""
+
+    def test_from_last_waypoint_file_strips_stamp(self):
+        self.assertEqual(
+            reg.derive_endpoint_name(
+                "0.49-起手式新", "0.49-起手式新终点_20260822_031632.json"),
+            "0.49-起手式新终点")
+
+    def test_naming_fallback_left_family(self):
+        self.assertEqual(reg.derive_endpoint_name("0.49-左-起手式"),
+                         "0.49-左-终点")
+
+    def test_naming_fallback_default_family(self):
+        self.assertEqual(reg.derive_endpoint_name("0.49-起手式新"),
+                         "0.49-起手式新终点")
+
+
 class SequencePoolTests(unittest.TestCase):
     @staticmethod
     def _write_sequence(root: Path, filename: str, payload: dict):
         directory = root / "data" / "sequences"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / filename).write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    @staticmethod
+    def _write_waypoint(root: Path, filename: str, payload: dict):
+        directory = root / "data" / "waypoints"
         directory.mkdir(parents=True, exist_ok=True)
         (directory / filename).write_text(
             json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -160,6 +194,55 @@ class SequencePoolTests(unittest.TestCase):
             pool = reg.sequence_pool(root)
             self.assertEqual([entry["name"] for entry in pool], ["无名动作"])
 
+    def test_pool_entry_carries_endpoint_from_last_waypoint(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_sequence(root, "0.50-起手式新_20260822_031632.json", {
+                "name": "0.50-起手式新",
+                "created_at": "2026-08-22 03:16:32",
+                "waypoints": ["中间点_20260822_031000.json",
+                              "0.50-起手式新终点_20260822_031632.json"],
+            })
+            entry = reg.sequence_pool(root)[0]
+            self.assertEqual(entry["endpoint_name"], "0.50-起手式新终点")
+
+    def test_waypoint_pool_groups_by_name(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_waypoint(root, "录制点位1_20260726_151627.json", {
+                "name": "录制点位1", "chain_id": "right_arm",
+                "created_at": "2026-07-26 15:16:27",
+            })
+            self._write_waypoint(root, "录制点位1_20260901_000000.json", {
+                "name": "录制点位1", "chain_id": "right_arm",
+                "created_at": "2026-09-01 00:00:00",
+            })
+            pool = reg.waypoint_pool(root)
+            self.assertEqual(len(pool), 1)
+            self.assertEqual(pool[0]["files"], 2)
+            self.assertEqual(pool[0]["latest_file"],
+                             "录制点位1_20260901_000000.json")
+
+    def test_claimed_waypoints_union_manual_and_derived(self):
+        seed = reg.seed_registry()
+        seed["sequence_claims"] = [{
+            "capability_id": "cap-rtl-flick",
+            "names": ["0.50-起手式新", "孤儿动作"],
+            "waypoint_names": ["录制点位1", "起手点测试"],
+        }]
+        registry = reg.validate_registry(seed)
+        pool = [{"name": "0.50-起手式新",
+                 "endpoint_name": "0.50-起手式新终点"}]
+        effective = reg.claimed_waypoint_names(registry, "cap-rtl-flick",
+                                               pool)
+        # 手选 ∪ 池内推导终点 ∪ 池外起手式的命名兜底终点
+        self.assertEqual(effective, sorted([
+            "录制点位1", "起手点测试", "0.50-起手式新终点", "孤儿动作终点",
+        ]))
+        # 没有认领记录 → 空
+        self.assertEqual(
+            reg.claimed_waypoint_names(registry, "cap-ltr-flick", pool), [])
+
     def test_migration_from_missing_key_routes_pool_by_pattern(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -192,6 +275,10 @@ class SequencePoolTests(unittest.TestCase):
             all_claimed = {n for c in registry["sequence_claims"]
                            for n in c["names"]}
             self.assertNotIn("0.44避障起手式", all_claimed)
+            # flick 条目预置流程必需公共位点
+            for claim in registry["sequence_claims"]:
+                self.assertEqual(claim["waypoint_names"],
+                                 sorted(reg.FLOW_REQUIRED_WAYPOINTS))
             # 已是新格式 → 不再迁移（清空认领也不会被重新填回）
             self.assertFalse(reg.migrate_sequence_claims(path, root))
 
@@ -214,6 +301,26 @@ class SequencePoolTests(unittest.TestCase):
             self.assertEqual(
                 reg.claimed_sequence_names(registry, "cap-ltr-flick"),
                 ["0.48-左-起手式"])
+
+    def test_migration_adds_waypoint_field_to_capability_format(self):
+        """条目级但缺 waypoint_names 的中间格式 → 只补位点字段。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "capability_registry.json"
+            legacy = reg.seed_registry()
+            legacy["sequence_claims"] = [
+                {"capability_id": "cap-rtl-flick",
+                 "names": ["0.50-起手式新"]},   # 无 waypoint_names 键
+            ]
+            path.write_text(json.dumps(legacy, ensure_ascii=False),
+                            encoding="utf-8")
+            self.assertTrue(reg.migrate_sequence_claims(path, root))
+            registry = reg.load_registry(path)
+            claim = registry["sequence_claims"][0]
+            self.assertEqual(claim["names"], ["0.50-起手式新"])   # 认领保留
+            self.assertEqual(claim["waypoint_names"],
+                             sorted(reg.FLOW_REQUIRED_WAYPOINTS))
+            self.assertFalse(reg.migrate_sequence_claims(path, root))
 
     def test_migration_skips_new_format(self):
         with tempfile.TemporaryDirectory() as temporary:

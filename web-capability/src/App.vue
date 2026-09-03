@@ -104,11 +104,15 @@ async function applyActive(arm: string, handId: string) {
   );
 }
 
-async function saveSequenceClaims(capabilityId: string, names: string[]) {
+async function saveSequenceClaims(
+  capabilityId: string,
+  names: string[],
+  waypointNames: string[],
+) {
   await mutate(
     "/api/capability/sequence-claims",
-    { capability_id: capabilityId, names },
-    "起手式认领已保存（重启 17001 生效）",
+    { capability_id: capabilityId, names, waypoint_names: waypointNames },
+    "起手式与位点认领已保存（重启 17001 生效）",
   );
 }
 

@@ -205,6 +205,8 @@ async function initReach() {
     pushHold: document.getElementById("reachPushHold"),
     stepMode: document.getElementById("reachStepMode"),
     collisionCheck: document.getElementById("reachCollisionCheck"),
+    scopeAll: document.getElementById("reachScopeAll"),
+    scopeAllLabel: document.getElementById("reachScopeAllLabel"),
     stepNext: document.getElementById("reachStepNext"),
     nextSide: document.getElementById("reachNextSideBtn"),
     nextSideR: document.getElementById("reachNextSideRBtn"),
@@ -263,6 +265,15 @@ async function initReach() {
     e.stopPropagation();
     toggleHandMove();
   }, true);
+  // 认领可见性（18000 配置）：默认只看激活组合认领的；开关切到全池
+  if (d.scopeAll) {
+    d.scopeAll.checked = localStorage.getItem("reachScopeAll") === "1";
+    d.scopeAll.addEventListener("change", async () => {
+      localStorage.setItem("reachScopeAll", d.scopeAll.checked ? "1" : "0");
+      await refreshWaypoints();
+      await refreshSequences();
+    });
+  }
   d.record.addEventListener("click", () => recordWaypoint());
   d.delWp.addEventListener("click", () => deleteWaypoint());
   d.addVia.addEventListener("click", () => addViaWaypoint());
@@ -1499,14 +1510,34 @@ function updateReachLibraryTriggerLabels() {
 
 // ---- 动作序列：一组路点按序回放（纯关节插值，无 IK），存盘后一键调用 ----
 
+// 认领可见性：默认按 18000 认领过滤，开关切全池
+function claimScopeQuery() {
+  return reach.dom?.scopeAll?.checked ? "?scope=all" : "";
+}
+
+function updateClaimScopeLabel() {
+  const label = reach.dom?.scopeAllLabel;
+  if (!label) return;
+  const hidden = (reach.hiddenSequences || 0) + (reach.hiddenWaypoints || 0);
+  if (reach.dom?.scopeAll?.checked) {
+    label.textContent = "显示全池（已含未认领）";
+  } else {
+    label.textContent = hidden > 0
+      ? `显示全池（另有 ${hidden} 个未认领）`
+      : "显示全池（含未认领）";
+  }
+}
+
 async function refreshSequences() {
   let data;
   try {
-    data = await fetchJson("/api/reach/sequences");
+    data = await fetchJson("/api/reach/sequences" + claimScopeQuery());
   } catch {
     return;
   }
   reach.sequences = data.sequences || [];
+  reach.hiddenSequences = data.hidden || 0;
+  updateClaimScopeLabel();
   const sel = reach.dom.seqSel;
   const prev = sel.value;
   sel.innerHTML = `<option value="">（未选择）</option>` + reach.sequences
@@ -1788,12 +1819,11 @@ function combineCollisionSummaries(a, b) {
   };
 }
 
-// 法兰盘、TCP 和标定得到的手部颜色关键点都挂在腕 link 下，随 FK/预演一起动。
+// 法兰盘挂在腕 link 下，随 FK/预演一起动。
+// （指尖颜色关键点 / TCP 白点 / 手部碰撞胶囊已按需求移除，不再可视化。）
 function showFlangeDebug() {
   const chainId = reach.status?.chain_id;
   const pTool = reach.status?.p_tool;
-  const handMarkers = reach.status?.p_tool_wrist_m_by_marker || {};
-  const referenceMarker = reach.status?.p_tool_reference_marker;
   const panel = state.panels[chainId];
   if (!panel || !pTool) {
     return;
@@ -1836,71 +1866,8 @@ function showFlangeDebug() {
   ring.position.copy(flangeLocal);
   group.add(disc, ring);
 
-  const markerColors = {
-    blue: 0x1687ff,
-    brown: 0x8b4513,
-    gold: 0xffd700,
-    gray: 0xb0b0b0,
-    green: 0x26c95c,
-    orange: 0xff8c00,
-    pink: 0xff69b4,
-    purple: 0x9b59ff,
-    red: 0xff3030,
-  };
-  const tcpVec = new THREE.Vector3(...pTool);
-  let referenceIsTcp = false;
-  for (const [markerId, xyz] of Object.entries(handMarkers)) {
-    if (!Array.isArray(xyz) || xyz.length !== 3) {
-      continue;
-    }
-    const point = new THREE.Vector3(...xyz);
-    const isReference = markerId === referenceMarker;
-    if (isReference && point.distanceTo(tcpVec) < 1e-6) {
-      referenceIsTcp = true;
-    }
-    const dot = new THREE.Mesh(
-      new THREE.SphereGeometry(0.009, 18, 12),
-      new THREE.MeshBasicMaterial({
-        color: markerColors[markerId] ?? 0xffffff,
-        depthTest: false,
-      }),
-    );
-    dot.position.copy(point);
-    dot.renderOrder = 20;
-    group.add(dot);
-  }
-
-  // TCP 不与颜色关键点重合时（当前为红蓝中点），单独画一个稍大的白点。
-  if (!referenceIsTcp) {
-    const tcp = new THREE.Mesh(
-      new THREE.SphereGeometry(0.013, 20, 14),
-      new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false }),
-    );
-    tcp.position.copy(tcpVec);
-    group.add(tcp);
-  }
-
-  // hand 碰撞胶囊（TCP 向法兰盘平面的垂足 → TCP，半径同 h2.yaml 里的 0.04）：常驻显示
-  // 垂足：把 TCP 沿平面法线（腕系 +x）投影到法兰平面上
-  const foot = tcpVec.clone().sub(
-    normal.clone().multiplyScalar(tcpVec.clone().sub(flangeLocal).dot(normal)));
-  const axis = tcpVec.clone().sub(foot);
-  const capMat = new THREE.MeshStandardMaterial({
-    color: 0x30343a, transparent: true, opacity: 0.45, roughness: 0.6,
-  });
-  const capRadius = 0.04;
-  const shaft = new THREE.Mesh(
-    new THREE.CylinderGeometry(capRadius, capRadius, Math.max(axis.length(), 1e-4), 20, 1, true), capMat);
-  shaft.position.copy(foot).lerp(tcpVec, 0.5);
-  shaft.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis.clone().normalize());
-  const capA = new THREE.Mesh(new THREE.SphereGeometry(capRadius, 18, 12), capMat);
-  capA.position.copy(foot);
-  const capB = new THREE.Mesh(new THREE.SphereGeometry(capRadius, 18, 12), capMat);
-  capB.position.copy(tcpVec);
-  group.add(shaft, capA, capB);
-
   wristGroup.add(group);
-  publishRenderState("法兰/TCP 调试");
+  publishRenderState("法兰盘调试");
 }
 
 // ---- 中间路点：卸力摆位 → 录制落盘 → 规划时经由 ----
@@ -1908,11 +1875,13 @@ function showFlangeDebug() {
 async function refreshWaypoints() {
   let data;
   try {
-    data = await fetchJson("/api/reach/waypoints");
+    data = await fetchJson("/api/reach/waypoints" + claimScopeQuery());
   } catch {
     return;
   }
   reach.waypoints = data.waypoints || [];
+  reach.hiddenWaypoints = data.hidden || 0;
+  updateClaimScopeLabel();
   const regularWaypoints = ordinaryWaypoints();
   const fill = (sel, placeholder) => {
     const prev = sel.value;

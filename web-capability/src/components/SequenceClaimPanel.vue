@@ -5,7 +5,7 @@ import { DEFAULT_POSE_PATTERNS, DIRECTION_LABELS } from "../lib/api";
 
 const props = defineProps<{ payload: Payload; busy: boolean }>();
 const emit = defineEmits<{
-  save: [capabilityId: string, names: string[]];
+  save: [capabilityId: string, names: string[], waypointNames: string[]];
 }>();
 
 const capabilities = computed(() => props.payload.registry.capabilities);
@@ -70,28 +70,40 @@ function hitsPattern(name: string): boolean {
 }
 
 /** 该条目已保存的认领（注册表里的权威值） */
-const savedNames = computed<string[]>(
+const savedClaim = computed(
   () =>
     props.payload.registry.sequence_claims.find(
       (c) => c.capability_id === capabilityId.value,
-    )?.names ?? [],
+    ) ?? null,
+);
+const savedNames = computed<string[]>(() => savedClaim.value?.names ?? []);
+const savedWaypoints = computed<string[]>(
+  () => savedClaim.value?.waypoint_names ?? [],
 );
 
 /** 勾选草稿：切条目 / 数据刷新时重置为已保存值 */
 const selected = ref<string[]>([]);
+const selectedWaypoints = ref<string[]>([]);
 watch(
-  [savedNames, capabilityId],
+  [savedClaim, capabilityId],
   () => {
     selected.value = [...savedNames.value];
+    selectedWaypoints.value = [...savedWaypoints.value];
   },
   { immediate: true },
 );
 
-const dirty = computed(() => {
-  const a = [...selected.value].sort();
-  const b = [...savedNames.value].sort();
-  return a.length !== b.length || a.some((v, i) => v !== b[i]);
-});
+function sameSet(a: string[], b: string[]): boolean {
+  const x = [...a].sort();
+  const y = [...b].sort();
+  return x.length === y.length && x.every((v, i) => v === y[i]);
+}
+
+const dirty = computed(
+  () =>
+    !sameSet(selected.value, savedNames.value) ||
+    !sameSet(selectedWaypoints.value, savedWaypoints.value),
+);
 
 /** 已认领但池中无文件的名字（文件被删/改名后残留），也要能取消 */
 const orphanNames = computed(() =>
@@ -121,16 +133,44 @@ function selectMatched() {
 function clearAll() {
   selected.value = [];
 }
+
+// ---------- 位点：终点自动推导 + 其余手选 ----------
+
+/** 草稿已勾选起手式的推导终点（起手式选了，终点位点自动带上） */
+const derivedEndpoints = computed<string[]>(() => {
+  const endpoints = new Set<string>();
+  for (const name of selected.value) {
+    const entry = props.payload.sequence_pool.find((e) => e.name === name);
+    if (entry?.endpoint_name) endpoints.add(entry.endpoint_name);
+  }
+  return [...endpoints].sort();
+});
+
+function waypointExists(name: string): boolean {
+  return props.payload.waypoint_pool.some((w) => w.name === name);
+}
+
+/** 可手选的位点 = 池子里除去当前草稿的推导终点 */
+const pickableWaypoints = computed(() =>
+  props.payload.waypoint_pool.filter(
+    (w) => !derivedEndpoints.value.includes(w.name),
+  ),
+);
+
+/** 手选里已无文件的残留位点，也要能取消 */
+const orphanWaypoints = computed(() =>
+  savedWaypoints.value.filter((name) => !waypointExists(name)),
+);
 </script>
 
 <template>
   <section class="card">
-    <h2>起手式认领 <span class="lvl-tag">按能力条目 · 公共动作池</span></h2>
+    <h2>起手式与位点认领 <span class="lvl-tag">按能力条目 · 公共池</span></h2>
     <p class="sub">
-      data/sequences 是全组合共享的动作池；认领挂在能力条目（任务+方式）上
-      ——拨和扭各认各的，互不影响（严格：没认领 = 该条目选档时不可用）。
-      18001 录制新序列会按动作名命中的正则自动认领给对应条目。保存后重启
-      17001 生效。
+      data/sequences（动作）与 data/waypoints（位点）是全组合共享的公共池；
+      认领挂在能力条目（任务+方式）上——拨和扭各认各的（严格：没认领 =
+      该条目不可用）。起手式选了，配套终点位点自动带上；其余位点手动挑选。
+      18001 录制新序列会按正则自动认领给对应条目。保存后重启 17001 生效。
     </p>
     <div class="controls">
       <label class="field grow">能力条目
@@ -141,14 +181,15 @@ function clearAll() {
         </select>
       </label>
       <span class="badge plain off">
-        已勾选 {{ selected.length }} / 池中 {{ payload.sequence_pool.length }}
+        起手式 {{ selected.length }} / {{ payload.sequence_pool.length }}
+        ｜位点 手选 {{ selectedWaypoints.length }} + 终点 {{ derivedEndpoints.length }}
       </span>
       <span class="spacer"></span>
       <button class="btn sm ghost" :disabled="busy" @click="selectMatched">
         全选命中正则的
       </button>
       <button class="btn sm ghost" :disabled="busy" @click="clearAll">
-        清空
+        清空起手式
       </button>
     </div>
     <p v-if="currentCap" class="dim pattern-line">
@@ -157,6 +198,7 @@ function clearAll() {
       <span class="mono">{{ effectivePattern || "（未配置，不参与自动认领）" }}</span>
     </p>
 
+    <h3 class="group-title">起手式（动作序列）</h3>
     <ul v-if="payload.sequence_pool.length || orphanNames.length" class="pool">
       <li v-for="entry in payload.sequence_pool" :key="entry.name" class="row">
         <label class="pick">
@@ -190,11 +232,62 @@ function clearAll() {
     </ul>
     <p v-else class="dim empty">动作池是空的——先在 18001 页面录制序列。</p>
 
+    <h3 class="group-title">位点（路点）</h3>
+    <div v-if="derivedEndpoints.length" class="endpoint-strip">
+      <span class="dim">终点位点自动带上：</span>
+      <span
+        v-for="name in derivedEndpoints"
+        :key="`ep-${name}`"
+        class="tag ep"
+        :class="{ missing: !waypointExists(name) }"
+      >
+        {{ name }}<template v-if="!waypointExists(name)">（缺录制！）</template>
+      </span>
+    </div>
+    <p v-else class="dim endpoint-strip">
+      尚未勾选起手式，暂无自动终点位点。
+    </p>
+    <ul v-if="pickableWaypoints.length || orphanWaypoints.length" class="pool">
+      <li v-for="wp in pickableWaypoints" :key="`wp-${wp.name}`" class="row">
+        <label class="pick">
+          <input
+            v-model="selectedWaypoints"
+            type="checkbox"
+            :value="wp.name"
+          />
+          <span class="mono name">{{ wp.name }}</span>
+        </label>
+        <span class="tags">
+          <span v-if="wp.files > 1" class="tag">×{{ wp.files }} 次录制</span>
+          <span v-if="wp.latest_created_at" class="tag">
+            最近 {{ wp.latest_created_at }}
+          </span>
+        </span>
+      </li>
+      <li
+        v-for="name in orphanWaypoints"
+        :key="`wp-orphan-${name}`"
+        class="row orphan"
+      >
+        <label class="pick">
+          <input
+            v-model="selectedWaypoints"
+            type="checkbox"
+            :value="name"
+          />
+          <span class="mono name">{{ name }}</span>
+        </label>
+        <span class="tags">
+          <span class="tag warn">池中无文件（已删除或改名）</span>
+        </span>
+      </li>
+    </ul>
+
     <div class="foot">
       <button
         class="btn primary"
         :disabled="busy || !dirty || !capabilityId"
-        @click="emit('save', capabilityId, [...selected])"
+        @click="emit('save', capabilityId, [...selected], [...selectedWaypoints])"
       >
         {{ dirty ? "保存认领" : "认领无改动" }}
       </button>
@@ -226,6 +319,32 @@ function clearAll() {
 .pattern-line {
   font-size: 12px;
   margin: 0 0 12px;
+}
+
+.group-title {
+  margin: 14px 0 8px;
+  font-size: 13.5px;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.endpoint-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  margin: 0 0 10px;
+}
+
+.tag.ep {
+  color: #7de3d0;
+  border-color: rgba(86, 217, 197, 0.4);
+}
+
+.tag.ep.missing {
+  color: #ffb4b4;
+  border-color: rgba(255, 130, 130, 0.45);
 }
 
 .pool {

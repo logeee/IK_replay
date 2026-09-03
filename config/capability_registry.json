@@ -2,7 +2,7 @@
   "schema_version": 1,
   "active": {
     "arm": "right_arm",
-    "hand_id": "yinshi-1-right"
+    "hand_id": "qiangnao-1-right"
   },
   "hands": [
     {
@@ -91,6 +91,27 @@
       },
       "enabled": true,
       "notes": "真机已验证（工厂柜）"
+    },
+    {
+      "id": "cap-795f2feb",
+      "arm": "right_arm",
+      "hand_id": "qiangnao-1-right",
+      "task": {
+        "name": "旋钮右到左",
+        "direction": "cw",
+        "sites": [
+          "factory",
+          "lab"
+        ]
+      },
+      "method": "twist",
+      "method_params": {},
+      "assets": {
+        "pose_pattern": "",
+        "endpoint_pattern": ""
+      },
+      "enabled": true,
+      "notes": ""
     }
   ],
   "sequence_claims": [
@@ -115,6 +136,10 @@
         "0.58-左-起手式",
         "0.59-左-起手式",
         "0.60-左-起手式"
+      ],
+      "waypoint_names": [
+        "录制点位1",
+        "起手点测试"
       ]
     },
     {
@@ -138,6 +163,19 @@
         "0.58-起手式新",
         "0.59-起手式新",
         "0.60-起手式新"
+      ],
+      "waypoint_names": [
+        "录制点位1",
+        "起手点测试"
+      ]
+    },
+    {
+      "capability_id": "cap-795f2feb",
+      "names": [
+        "0.45-起手式新"
+      ],
+      "waypoint_names": [
+        "起手点测试"
       ]
     }
   ]

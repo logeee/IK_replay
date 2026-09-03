@@ -273,5 +273,38 @@ class SequenceClaimFilterTests(unittest.TestCase):
                          "0.50-起手式新")
 
 
+class WaypointClaimGateTests(unittest.TestCase):
+    """位点认领门禁：生效集合外的位点插值直接拒绝。"""
+
+    def test_unclaimed_waypoint_rejected_with_hint(self):
+        flow = SwitchFlow(client=mock.Mock(), site="factory",
+                          flip_kind="remote_to_close",
+                          claimed_waypoint_names=["录制点位1"])
+        with self.assertRaises(FlowError) as ctx:
+            flow._interp_to_waypoint("未认领位点", "测试")
+        self.assertIn("生效位点", str(ctx.exception))
+
+    def test_claimed_waypoint_passes_gate(self):
+        client = mock.Mock()
+        client.waypoints.return_value = {"waypoints": []}
+        flow = SwitchFlow(client=client, site="factory",
+                          flip_kind="remote_to_close",
+                          claimed_waypoint_names=["录制点位1"])
+        with self.assertRaises(FlowError) as ctx:
+            flow._interp_to_waypoint("录制点位1", "测试")
+        # 过了认领门禁，报的是"找不到路点"（18001 没录）而非认领错误
+        self.assertIn("找不到路点", str(ctx.exception))
+
+    def test_none_set_skips_gate(self):
+        client = mock.Mock()
+        client.waypoints.return_value = {"waypoints": []}
+        flow = SwitchFlow(client=client, site="factory",
+                          flip_kind="remote_to_close",
+                          claimed_waypoint_names=None)
+        with self.assertRaises(FlowError) as ctx:
+            flow._interp_to_waypoint("任意位点", "测试")
+        self.assertIn("找不到路点", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -15,14 +15,16 @@ config/hand_eye/{arm}__{hand_id}/handeye3d_result.json。
 - POST /api/capability/active              切换激活组合（17001/18001 重启后生效）
 - POST /api/capability/calibrations        登记标定（source_path 复制入库 或
                                            content 直接上传 JSON 内容）
-- POST /api/capability/sequence-claims     整组保存某能力条目认领的动作名
+- POST /api/capability/sequence-claims     整组保存某能力条目的认领
+                                           （起手式动作名 + 手选位点名）
 - POST /api/capability/sequence-claims/add 录制上报（臂+手+动作名）：按各
                                            条目起手式正则自动路由认领，幂等
 - /                                        托管 web-capability/dist 构建产物（若已构建）
 
-公共动作池 = data/sequences（18001 录制落盘）；认领挂在能力条目上——拨
-和扭是不同条目，各认各的起手式互不影响。GET registry 的 payload 附
-sequence_pool（按动作名聚合的池子清单，含最近录制时间与来源组合）。
+公共动作池 = data/sequences，位点池 = data/waypoints（都由 18001 录制落
+盘）；认领挂在能力条目上——拨和扭是不同条目，各认各的互不影响。终点位
+点不落库：认领了起手式即自动推导其配套终点；其余位点手选。GET registry
+的 payload 附 sequence_pool / waypoint_pool（按名聚合，含最近录制时间）。
 """
 from __future__ import annotations
 
@@ -79,6 +81,7 @@ def _registry_payload(registry: dict[str, Any]) -> dict[str, Any]:
         "registry": registry,
         "calibrations": calibrations,
         "sequence_pool": reg.sequence_pool(ROOT),
+        "waypoint_pool": reg.waypoint_pool(ROOT),
         "meta": {
             "arms": list(reg.ARMS),
             "arm_labels": reg.ARM_LABELS,
@@ -259,7 +262,12 @@ async def calibrations_register(request: Request):
 
 @app.post("/api/capability/sequence-claims")
 async def sequence_claims_set(request: Request):
-    """整组保存某能力条目认领的动作名（body: {capability_id, names: [...]})。"""
+    """整组保存某能力条目的认领。
+
+    body: {capability_id, names: [...], waypoint_names: [...]}。
+    names=起手式动作名；waypoint_names=手选的非终点位点（终点位点不落库，
+    由已认领起手式自动推导）。缺省字段保留原值。
+    """
     body = await _json_body(request)
     capability_id = str(body.get("capability_id") or "").strip()
     with _lock:
@@ -267,8 +275,16 @@ async def sequence_claims_set(request: Request):
         if not any(c["id"] == capability_id
                    for c in registry["capabilities"]):
             return _error(f"能力条目「{capability_id}」不存在", 404)
-        entry = {"capability_id": capability_id,
-                 "names": body.get("names") or []}
+        previous = next((c for c in registry["sequence_claims"]
+                         if c["capability_id"] == capability_id), None)
+        entry = {
+            "capability_id": capability_id,
+            "names": (body["names"] if "names" in body
+                      else (previous or {}).get("names") or []),
+            "waypoint_names": (
+                body["waypoint_names"] if "waypoint_names" in body
+                else (previous or {}).get("waypoint_names") or []),
+        }
         others = [c for c in registry["sequence_claims"]
                   if c["capability_id"] != capability_id]
         registry["sequence_claims"] = others + [entry]

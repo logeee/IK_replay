@@ -33,11 +33,12 @@ export interface ActiveCombo {
   hand_id: string;
 }
 
-/** 某能力条目认领的起手式动作名（严格：没认领的动作该条目不可用；
- *  拨/扭是不同条目，各认各的） */
+/** 某能力条目的认领（严格：没认领的该条目不可用；拨/扭是不同条目，
+ *  各认各的）。waypoint_names 只存手选位点；终点位点由已认领起手式推导 */
 export interface SequenceClaim {
   capability_id: string;
   names: string[];
+  waypoint_names: string[];
 }
 
 /** 公共动作池条目（data/sequences 按动作名聚合；同名多文件=多次录制） */
@@ -48,6 +49,17 @@ export interface SequencePoolEntry {
   latest_created_at: string;
   chain_id: string | null;
   recorded_combo: { arm?: string; hand_id?: string } | null;
+  /** 配套终点位点名（由序列最后一个路点推导，与运行时规则一致） */
+  endpoint_name: string;
+}
+
+/** 位点池条目（data/waypoints 按位点名聚合） */
+export interface WaypointPoolEntry {
+  name: string;
+  files: number;
+  latest_file: string;
+  latest_created_at: string;
+  chain_id: string | null;
 }
 
 export interface Registry {
@@ -103,6 +115,7 @@ export interface Payload {
   registry: Registry;
   calibrations: CalibInfo[];
   sequence_pool: SequencePoolEntry[];
+  waypoint_pool: WaypointPoolEntry[];
   meta: Meta;
 }
 

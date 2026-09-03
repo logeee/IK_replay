@@ -48,6 +48,11 @@ BUILTIN_POSE_PATTERNS: dict[str, str] = {
     "rtl": r"^\s*(\d+(?:\.\d+)?)-起手式新\s*$",
     "ltr": r"^\s*(\d+(?:\.\d+)?)-左-起手式\s*$",
 }
+# 位点池：18001 录制的单个路点（相对项目根）
+WAYPOINTS_SUBDIR = Path("data") / "waypoints"
+# flick 流程固定要用的两个公共位点（api/flow.py 的起手式起点 + 回落点）；
+# 迁移时给存量 flick 条目预置，新条目由用户在页面自行挑选
+FLOW_REQUIRED_WAYPOINTS: tuple[str, ...] = ("录制点位1", "起手点测试")
 
 # 种子迁移时尝试从旧的固定路径复制标定（只在机器人本机存在）
 LEGACY_CALIB_SOURCE = ("/home/robot/yx/project/calib/hand_eye_3D/"
@@ -351,17 +356,26 @@ def _validate_sequence_claim(raw: Any, index: int,
         raise ValueError(
             f"sequence_claims[{index}].capability_id "
             f"指向不存在的能力条目「{capability_id}」")
-    names_raw = raw.get("names")
-    if names_raw is None:
-        names_raw = []
-    if not isinstance(names_raw, list):
-        raise ValueError(f"sequence_claims[{index}].names 必须是数组")
-    names: list[str] = []
-    for name in names_raw:
-        clean = str(name or "").strip()
-        if clean and clean not in names:
-            names.append(clean)
-    return {"capability_id": capability_id, "names": sorted(names)}
+    def _clean_names(key: str) -> list[str]:
+        values = raw.get(key)
+        if values is None:
+            values = []
+        if not isinstance(values, list):
+            raise ValueError(f"sequence_claims[{index}].{key} 必须是数组")
+        cleaned: list[str] = []
+        for value in values:
+            text = str(value or "").strip()
+            if text and text not in cleaned:
+                cleaned.append(text)
+        return sorted(cleaned)
+
+    return {
+        "capability_id": capability_id,
+        # 认领的起手式动作名
+        "names": _clean_names("names"),
+        # 手选的非终点位点名（终点位点不落库：由已认领起手式自动推导）
+        "waypoint_names": _clean_names("waypoint_names"),
+    }
 
 
 def validate_registry(payload: Any) -> dict[str, Any]:
@@ -687,11 +701,29 @@ def route_sequence_claim(registry: dict[str, Any], arm: str, hand_id: str,
     return matched
 
 
+def derive_endpoint_name(sequence_name: str,
+                         last_waypoint_file: str | None = None) -> str:
+    """起手式配套终点位点名，与 api/flow.py 的运行时规则一致。
+
+    优先用序列最后一个路点文件名去掉时间戳（choose_opening_pose 同款）；
+    序列不含路点时按命名规则兜底（_pose_endpoint_name 同款）：
+    「X-左-起手式」→「X-左-终点」，其余 →「X…终点」。
+    """
+    if last_waypoint_file:
+        return re.sub(r"_\d{8}_\d{6}\.json$", "", str(last_waypoint_file))
+    name = str(sequence_name or "").strip()
+    if not name:
+        return ""
+    if re.match(BUILTIN_POSE_PATTERNS["ltr"], name):
+        return re.sub(r"-起手式$", "-终点", name)
+    return f"{name}终点"
+
+
 def sequence_pool(root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
     """扫描公共动作池（data/sequences），按动作名聚合。
 
     同名多时间戳文件视为同一动作的多次录制，取 created_at 最新的一份的
-    元数据（chain_id / recorded_combo）。文件损坏跳过。
+    元数据（chain_id / recorded_combo / endpoint_name）。文件损坏跳过。
     """
     sequences_dir = Path(root) / SEQUENCES_SUBDIR
     if not sequences_dir.is_dir():
@@ -714,6 +746,7 @@ def sequence_pool(root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "latest_created_at": "",
             "chain_id": None,
             "recorded_combo": None,
+            "endpoint_name": "",
         })
         entry["files"] += 1
         created = str(data.get("created_at") or "")
@@ -723,7 +756,66 @@ def sequence_pool(root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             entry["chain_id"] = data.get("chain_id")
             combo = data.get("recorded_combo")
             entry["recorded_combo"] = combo if isinstance(combo, dict) else None
+            waypoints = data.get("waypoints") or []
+            entry["endpoint_name"] = derive_endpoint_name(
+                name, str(waypoints[-1]) if waypoints else None)
     return sorted(by_name.values(), key=lambda item: item["name"])
+
+
+def waypoint_pool(root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
+    """扫描位点池（data/waypoints），按位点名聚合（同名=多次录制）。"""
+    waypoints_dir = Path(root) / WAYPOINTS_SUBDIR
+    if not waypoints_dir.is_dir():
+        return []
+    by_name: dict[str, dict[str, Any]] = {}
+    for path in sorted(waypoints_dir.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        name = str(data.get("name") or "").strip()
+        if not name:
+            name = SEQUENCE_STAMP_RE.sub("", path.stem)
+        entry = by_name.setdefault(name, {
+            "name": name,
+            "files": 0,
+            "latest_file": "",
+            "latest_created_at": "",
+            "chain_id": None,
+        })
+        entry["files"] += 1
+        created = str(data.get("created_at") or "")
+        if created >= entry["latest_created_at"]:
+            entry["latest_created_at"] = created
+            entry["latest_file"] = path.name
+            entry["chain_id"] = data.get("chain_id")
+    return sorted(by_name.values(), key=lambda item: item["name"])
+
+
+def claimed_waypoint_names(registry: dict[str, Any], capability_id: str,
+                           pool: list[dict[str, Any]]) -> list[str]:
+    """条目生效的位点集合 = 手选位点 ∪ 已认领起手式的推导终点。
+
+    pool 传 sequence_pool()（或 18000 payload 里的 sequence_pool）；
+    已认领但不在池中的起手式按命名规则兜底推导，保证运行时超集。
+    """
+    claim = next((c for c in registry.get("sequence_claims") or []
+                  if c["capability_id"] == capability_id), None)
+    if claim is None:
+        return []
+    endpoint_by_name = {
+        str(entry.get("name") or ""): str(entry.get("endpoint_name") or "")
+        for entry in pool
+    }
+    effective: set[str] = set(claim.get("waypoint_names") or [])
+    for sequence_name in claim.get("names") or []:
+        endpoint = (endpoint_by_name.get(sequence_name)
+                    or derive_endpoint_name(sequence_name))
+        if endpoint:
+            effective.add(endpoint)
+    return sorted(effective)
 
 
 def migrate_sequence_claims(
@@ -748,10 +840,29 @@ def migrate_sequence_claims(
     if not isinstance(raw, dict):
         return False
     raw_claims = raw.get("sequence_claims")
-    if isinstance(raw_claims, list) and all(
-            isinstance(c, dict) and "capability_id" in c
-            for c in raw_claims):
-        return False   # 已是新格式（含空列表）
+    is_capability_format = isinstance(raw_claims, list) and all(
+        isinstance(c, dict) and "capability_id" in c
+        for c in raw_claims)
+    if is_capability_format and all(
+            "waypoint_names" in c for c in raw_claims):
+        return False   # 已是最新格式（含空列表）
+
+    if is_capability_format:
+        # 只差位点字段：flick 条目预置流程必需公共位点，其余从空开始
+        registry = load_registry(registry_path)
+        method_by_id = {c["id"]: c["method"]
+                        for c in registry["capabilities"]}
+        for claim in registry["sequence_claims"]:
+            raw_entry = next(
+                (c for c in raw_claims
+                 if c.get("capability_id") == claim["capability_id"]), {})
+            if ("waypoint_names" not in raw_entry
+                    and method_by_id.get(claim["capability_id"]) == "flick"):
+                claim["waypoint_names"] = sorted(
+                    set(claim["waypoint_names"])
+                    | set(FLOW_REQUIRED_WAYPOINTS))
+        save_registry(registry, registry_path)
+        return True
 
     # 组合 → 存量动作名
     combo_names: dict[tuple[str, str], list[str]] = {}
@@ -780,8 +891,12 @@ def migrate_sequence_claims(
                 bucket = routed.setdefault(cap_id, [])
                 if name not in bucket:
                     bucket.append(name)
+    method_by_id = {c["id"]: c["method"] for c in registry["capabilities"]}
     registry["sequence_claims"] = [
-        {"capability_id": cap_id, "names": names}
+        {"capability_id": cap_id, "names": names,
+         # flick 条目预置流程必需公共位点（起手式起点 + 回落点）
+         "waypoint_names": (list(FLOW_REQUIRED_WAYPOINTS)
+                            if method_by_id.get(cap_id) == "flick" else [])}
         for cap_id, names in routed.items()
     ]
     save_registry(registry, registry_path)

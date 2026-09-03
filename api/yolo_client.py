@@ -20,7 +20,7 @@ class YoloClient:
         include_image: bool = False,
         include_wrist: bool = False,
     ) -> dict:
-        """{"ok": True, "scene": "就地"|"远方"|None, "conf": ..., "boxes": [...]}
+        """{"ok": True, "scene": "远方就地左"|"远方就地右"|None, "conf": ..., "boxes": [...]}
 
         include_image=True 时返回体多 jpeg_b64（头部判定帧）；
         include_wrist=True 时再附带右腕核验帧，仅供横移拨动前留档。

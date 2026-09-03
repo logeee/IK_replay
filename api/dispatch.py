@@ -117,6 +117,7 @@ from core.capability_registry import (
     calibration_info,
     capability_for,
     claimed_sequence_names,
+    claimed_waypoint_names,
     find_hand,
 )
 from core.dispatch_defaults import (
@@ -209,6 +210,7 @@ def _count_finished_task_locked(task: dict) -> None:
 # 缓存为 None（只会出现在测试注入或未经 main 的导入路径）时按旧的
 # SITE_SUPPORTED_KINDS / --calib 行为走。
 _capability_registry_cache: dict[str, Any] | None = None
+_capability_sequence_pool: list[dict[str, Any]] = []   # 快照里的动作池（推导终点位点用）
 _capability_registry_loaded = False
 
 
@@ -576,20 +578,26 @@ def _run_task(task: dict) -> None:
                 f"横移 {params['sidestep_cm']:g}cm、推力 "
                 f"{params['push_force_n']:g}N、保持 {params['push_hold_s']:g}s、"
                 f"下倾 {params['down_deg']:g}°")
-        # 起手式认领（18000 配置，严格）：只允许本次解析出的能力条目认领
-        # 过的动作参与选档——拨/扭各认各的，互不污染。没解析出条目时为
+        # 起手式/位点认领（18000 配置，严格）：只允许本次解析出的能力条目
+        # 认领过的动作参与选档，插值只准去生效位点（= 手选位点 ∪ 已认领起
+        # 手式的推导终点）——拨/扭各认各的，互不污染。没解析出条目时为
         # None（flow 按旧行为不过滤）。
         registry = _capability_registry()
         claimed_names: list[str] | None = None
+        claimed_waypoints: list[str] | None = None
         if capability is not None and registry is not None:
             claimed_names = claimed_sequence_names(registry,
                                                    capability["id"])
+            claimed_waypoints = claimed_waypoint_names(
+                registry, capability["id"], _capability_sequence_pool)
             task["log"].append(
-                f"起手式认领：条目 {capability['id']} 共认领 "
-                f"{len(claimed_names)} 个动作")
+                f"认领：条目 {capability['id']} 起手式 "
+                f"{len(claimed_names)} 个、生效位点 "
+                f"{len(claimed_waypoints)} 个")
         flow = SwitchFlow(client=ReachClient(_args.reach_base),
                           console=console, yolo=yolo,
                           claimed_pose_names=claimed_names,
+                          claimed_waypoint_names=claimed_waypoints,
                           **capability_kwargs,
                           coarse_target_deg=coarse["target_deg"],
                           coarse_accept_min_deg=coarse["accept_min_deg"],
@@ -1917,13 +1925,15 @@ def main() -> None:
 
     # 启动拜访 18000：拉取能力注册表快照，拿不到就拒绝启动（启动脚本
     # prepare.sh 负责先把 18000 拉起来）。快照进程内一直用到退出，重启生效。
-    global _capability_registry_cache, _capability_registry_loaded
+    global _capability_registry_cache, _capability_sequence_pool, \
+        _capability_registry_loaded
     try:
         snapshot = fetch_snapshot(_args.capability_url)
     except CapabilityUnavailable as exc:
         print(f"[dispatch] 启动拜访 18000 失败：{exc}")
         raise SystemExit(1)
     _capability_registry_cache = snapshot["registry"]
+    _capability_sequence_pool = list(snapshot.get("sequence_pool") or [])
     _capability_registry_loaded = True
 
     print(f"[dispatch] 调度服务已启动（常驻属正常）: http://{_lan_ip()}:{_args.port}/")

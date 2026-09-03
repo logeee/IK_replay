@@ -246,7 +246,12 @@ def main() -> int:
         describe_active,
         fetch_snapshot,
     )
-    from core.capability_registry import calib_abs_path
+    from core.capability_registry import (
+        calib_abs_path,
+        claimed_sequence_names,
+        claimed_waypoint_names,
+        enabled_capabilities,
+    )
 
     # 启动拜访 18000：HTTP 拉取注册表快照，拿不到就拒绝启动（不再直接读
     # config/capability_registry.json——那是 18000 的存储）。
@@ -479,6 +484,25 @@ def main() -> int:
     reach.state.active_combo = dict(active_combo) if active_combo else None
     reach.state.capability_url = (
         args.capability_url or DEFAULT_CAPABILITY_URL).rstrip("/")
+    # 认领可见性（启动快照冻结）：激活组合已启用能力认领的动作 + 生效位点
+    # （手选 ∪ 推导终点）。列表接口默认只回集合内 + 本组合自己录的新文件；
+    # 页面可用「显示全池」看全部。修改认领后重启 18001 生效。
+    if active_combo:
+        arm = str(active_combo["arm"])
+        hand_id = str(active_combo["hand_id"])
+        sequence_pool = capability_snapshot.get("sequence_pool") or []
+        visible_sequences: set[str] = set()
+        visible_waypoints: set[str] = set()
+        for cap in enabled_capabilities(capability_registry, arm, hand_id):
+            visible_sequences.update(
+                claimed_sequence_names(capability_registry, cap["id"]))
+            visible_waypoints.update(claimed_waypoint_names(
+                capability_registry, cap["id"], sequence_pool))
+        reach.state.visible_sequences = visible_sequences
+        reach.state.visible_waypoints = visible_waypoints
+        print(f"[reach] 认领可见性: 起手式 {len(visible_sequences)} 个、"
+              f"位点 {len(visible_waypoints)} 个（激活组合已启用能力；"
+              "列表接口 ?scope=all 看全池）")
     if settle_trim != "off":
         print(f"[reach] 落点修正 = {settle_trim}"
               f"（settle 段闭环，死区 0.003 rad，偏置钳位 ±0.03 rad）")

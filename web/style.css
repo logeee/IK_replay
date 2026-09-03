@@ -1034,17 +1034,21 @@ button:disabled {
 }
 
 .reach-toggles {
+  /* 竖排左对齐：右栏较窄，横排必换行且参差；一行一个开关最稳 */
   display: flex;
-  align-items: center;
-  gap: 16px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
 }
 
 .reach-stepmode {
   display: inline-flex;
+  /* 全局 label 是竖排（表单字段样式），这里必须显式横排 */
+  flex-direction: row;
   align-items: center;
   gap: 6px;
   font-size: 12px;
+  font-weight: 400;
   color: #43596d;
   cursor: pointer;
   user-select: none;

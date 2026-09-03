@@ -218,6 +218,9 @@ class SwitchFlow:
                  # 激活组合认领的动作名集合（18000 配置）。None=不过滤（注册表
                  # 不可用的兜底路径）；集合（含空集）=严格按认领过滤选档。
                  claimed_pose_names: set[str] | list[str] | None = None,
+                 # 生效位点集合（= 手选位点 ∪ 已认领起手式的推导终点，18000
+                 # 配置）。None=不校验；集合=插值只准去这些已录位点。
+                 claimed_waypoint_names: set[str] | list[str] | None = None,
                  lift_m: float = 0.02,             # 规划中段抬高 2cm（防刮底）
                  endpoint_speed_rad_s: float = 0.3,  # 插值回「终点」路点的关节限速
                  max_flip_rounds: int = 3,         # 拨动失败回到 5️⃣ 的最大轮数
@@ -305,6 +308,10 @@ class SwitchFlow:
         self.claimed_pose_names = (
             None if claimed_pose_names is None
             else {str(name) for name in claimed_pose_names}
+        )
+        self.claimed_waypoint_names = (
+            None if claimed_waypoint_names is None
+            else {str(name) for name in claimed_waypoint_names}
         )
         self.lift_m = lift_m
         self.endpoint_speed_rad_s = endpoint_speed_rad_s
@@ -1036,6 +1043,14 @@ class SwitchFlow:
         only_if_beyond_rad > 0 时，当前已在目标附近（最大关节差 ≤ 该值）
         就跳过不动。
         """
+        # 位点认领（18000 配置，严格）：生效集合外的位点不准去
+        if (self.claimed_waypoint_names is not None
+                and wp_name not in self.claimed_waypoint_names):
+            raise FlowError(
+                ErrorCode.EXEC_FAILED,
+                f"{tag} 位点「{wp_name}」不在当前能力条目的生效位点里"
+                "——到 18000 配置页勾选（或认领对应起手式）后重启 17001",
+            )
         wps = self.client.waypoints().get("waypoints") or []
         target = next((w for w in wps if str(w.get("name")) == wp_name), None)
         if target is None:

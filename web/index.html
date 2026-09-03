@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>双臂 IK 调试回放台</title>
-    <link rel="stylesheet" href="/web/style.css?v=64" />
+    <link rel="stylesheet" href="/web/style.css?v=66" />
     <script type="importmap">
       {
         "imports": {
@@ -65,39 +65,6 @@
                         title="从当前姿态直接运动到固定路点「起手点测试」"
                         disabled>▶ 到达起手点测试</button>
               </div>
-            </div>
-            <div class="reach-side">
-              <div id="reachInfo" class="reach-info">在左侧相机画面中点击目标</div>
-              <div class="reach-offset-row">
-                <label class="reach-offset">
-                  <span>接近偏移(m)</span>
-                  <input id="reachOffset" type="number" step="0.005" min="-0.05" value="0" />
-                </label>
-                <label class="reach-offset">
-                  <span>时长(s)</span>
-                  <input id="reachDuration" type="number" step="1" min="1" value="6" />
-                </label>
-                <label class="reach-offset">
-                  <span>左移(cm)</span>
-                  <input id="reachStepLen" type="number" step="1" value="10" />
-                </label>
-                <label class="reach-offset">
-                  <span>推力(N)</span>
-                  <input id="reachPushForce" type="number" step="1" min="0" max="40" value="15" />
-                </label>
-                <label class="reach-offset" title="横移指令到达终点后继续保持满推力的时间；0 表示立即进入渐进撤力">
-                  <span>保持(s)</span>
-                  <input id="reachPushHold" type="number" step="0.1" min="0" max="5" value="1.5" />
-                </label>
-                <label class="reach-offset" title="仅左侧规划：平移段多抬这么高，进给段从上前方斜切入目标——抵消运动中1~3cm的跟踪下垂，目标贴着障碍下表面时不会从下面钻进去刮底。0 关闭">
-                  <span>中段抬高(cm)</span>
-                  <input id="reachLiftCm" type="number" step="0.5" min="0" value="2" />
-                </label>
-              </div>
-              <div class="reach-actions">
-                <button id="reachScanBtn" type="button">扫描障碍</button>
-                <button id="reachClearObsBtn" type="button" disabled>清除障碍</button>
-              </div>
               <div class="reach-control-group">
                 <div class="reach-control-row">
                   <span>经由路点</span>
@@ -141,10 +108,47 @@
                 <button id="reachRecordBtn" type="button" disabled>录制路点</button>
                 <button id="reachDelWpBtn" type="button" disabled>删路点</button>
               </div>
+            </div>
+            <div class="reach-side">
+              <div id="reachInfo" class="reach-info">在左侧相机画面中点击目标</div>
+              <div class="reach-offset-row">
+                <label class="reach-offset">
+                  <span>接近偏移(m)</span>
+                  <input id="reachOffset" type="number" step="0.005" min="-0.05" value="0" />
+                </label>
+                <label class="reach-offset">
+                  <span>时长(s)</span>
+                  <input id="reachDuration" type="number" step="1" min="1" value="6" />
+                </label>
+                <label class="reach-offset">
+                  <span>左移(cm)</span>
+                  <input id="reachStepLen" type="number" step="1" value="10" />
+                </label>
+                <label class="reach-offset">
+                  <span>推力(N)</span>
+                  <input id="reachPushForce" type="number" step="1" min="0" max="40" value="15" />
+                </label>
+                <label class="reach-offset" title="横移指令到达终点后继续保持满推力的时间；0 表示立即进入渐进撤力">
+                  <span>保持(s)</span>
+                  <input id="reachPushHold" type="number" step="0.1" min="0" max="5" value="1.5" />
+                </label>
+                <label class="reach-offset" title="仅左侧规划：平移段多抬这么高，进给段从上前方斜切入目标——抵消运动中1~3cm的跟踪下垂，目标贴着障碍下表面时不会从下面钻进去刮底。0 关闭">
+                  <span>中段抬高(cm)</span>
+                  <input id="reachLiftCm" type="number" step="0.5" min="0" value="2" />
+                </label>
+              </div>
+              <div class="reach-actions">
+                <button id="reachScanBtn" type="button">扫描障碍</button>
+                <button id="reachClearObsBtn" type="button" disabled>清除障碍</button>
+              </div>
               <div class="reach-toggles">
                 <label class="reach-stepmode" title="主段到位后暂停，横移/收回需手动点击才继续">
                   <input id="reachStepMode" type="checkbox" />
                   <span>分段模式（到位后暂停）</span>
+                </label>
+                <label class="reach-stepmode" title="18000 认领可见性：默认只显示激活组合已启用能力认领的动作/位点（以及本组合自己录的）；勾选后显示公共池全部内容">
+                  <input id="reachScopeAll" type="checkbox" />
+                  <span id="reachScopeAllLabel">显示全池（含未认领）</span>
                 </label>
                 <label class="reach-stepmode" title="对取点各段做逐帧碰撞检查（较慢）；左侧规划直线撞障时自动改用 RRT 绕障路径，绕不过去才禁止执行。默认关闭">
                   <input id="reachCollisionCheck" type="checkbox" />
@@ -232,6 +236,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=94"></script>
+    <script type="module" src="/web/main.js?v=95"></script>
   </body>
 </html>

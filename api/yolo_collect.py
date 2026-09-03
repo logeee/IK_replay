@@ -29,7 +29,7 @@
                 "xyxy": [x1, y1, x2, y2]}, ...],
      "clicks": [{"u": 1206, "v": 638, "box_index": 0,
                  "au": 0.48, "av": 0.71}, ...],   # au/av = 点在框内的归一化位置
-     "model": "Xuanniu.pt"}
+     "model": "Xuanniu_D.pt"}
 """
 
 from __future__ import annotations

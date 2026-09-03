@@ -81,6 +81,11 @@ class ReachState:
         # 并自动认领给该组合；camera-only 模式可能为 None）
         self.active_combo: dict | None = None
         self.capability_url: str = ""
+        # 认领可见性（18000 配置，启动快照冻结）：激活组合已启用能力认领
+        # 的动作/生效位点。None=不过滤（camera-only 等无组合场景）；列表
+        # 接口默认只回集合内 + 本组合自己录的，?scope=all 看全池。
+        self.visible_sequences: set[str] | None = None
+        self.visible_waypoints: set[str] | None = None
         # 执行线程状态
         self.exec_lock = threading.Lock()
         self.exec_thread: threading.Thread | None = None
