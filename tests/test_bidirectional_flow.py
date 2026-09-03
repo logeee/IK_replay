@@ -12,6 +12,7 @@ from api.flow import (
     interpolate_offset_keyframes,
     resolve_flip_intent,
 )
+from core.capability_registry import seed_registry
 
 
 class _YoloSequence:
@@ -511,9 +512,14 @@ class FlipIntentTests(unittest.TestCase):
 
 class FactoryDispatchTests(unittest.TestCase):
     def test_factory_accepts_both_directions(self):
-        self.assertTrue(dispatch._kind_supported("factory", "remote_to_close"))
-        self.assertTrue(dispatch._kind_supported("factory", "close_to_remote"))
-        self.assertFalse(dispatch._kind_supported("lab", "remote_to_close"))
+        with mock.patch.object(
+            dispatch,
+            "_capability_registry",
+            return_value=seed_registry(),
+        ):
+            self.assertTrue(dispatch._kind_supported("factory", "remote_to_close"))
+            self.assertTrue(dispatch._kind_supported("factory", "close_to_remote"))
+            self.assertFalse(dispatch._kind_supported("lab", "remote_to_close"))
 
     def test_direction_specific_default_offsets_are_resolved(self):
         defaults = {
@@ -650,6 +656,11 @@ class FactoryDispatchTests(unittest.TestCase):
             with (
                 mock.patch.object(dispatch, "_current_defaults",
                                   return_value=defaults),
+                mock.patch.object(
+                    dispatch,
+                    "_capability_registry",
+                    return_value=seed_registry(),
+                ),
                 mock.patch.object(dispatch.threading, "Thread") as thread,
             ):
                 result = dispatch.task_submit({

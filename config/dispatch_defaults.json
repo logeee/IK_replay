@@ -4,7 +4,7 @@
     "site": "factory",
     "offset_preset_by_kind": {
       "close_to_remote": "向右-降低10cm后",
-      "remote_to_close": "右到左-关键帧"
+      "remote_to_close": "摔手后"
     },
     "first_round_offset_wall_mm_by_kind": {
       "close_to_remote": {
@@ -25,7 +25,7 @@
     },
     "push_force_n_by_kind": {
       "close_to_remote": 15.0,
-      "remote_to_close": 25.0
+      "remote_to_close": 15.0
     }
   },
   "offset_presets": [
@@ -44,7 +44,7 @@
       "offset_mm": {
         "x": 20.0,
         "y": 15.0,
-        "z": 7.0
+        "z": -5.0
       }
     },
     {
