@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>灵巧手配置（18003）</title>
+  <script type="importmap">
+    { "imports": { "three": "/web/vendor/three.module.js" } }
+  </script>
+  <style>
+    :root { --line: #d2dce4; --ink: #1d2a38; --sub: #43596d; --accent: #147d7e; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 0; height: 100vh; overflow: hidden;
+      font: 14px/1.5 "PingFang SC", "Noto Sans CJK SC", sans-serif;
+      background: #eef2f6; color: var(--ink);
+    }
+    .layout { display: flex; height: 100vh; gap: 0; }
+    .pane3d {
+      flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column;
+      padding: 14px 0 14px 14px;
+    }
+    .pane3d-head {
+      display: flex; align-items: center; gap: 12px; padding: 0 2px 8px;
+    }
+    .pane3d-head strong { font-size: 15px; }
+    #view3d {
+      flex: 1; min-height: 0; border-radius: 10px; background: #141b23;
+      position: relative; overflow: hidden; cursor: grab;
+      border: 1px solid var(--line);
+    }
+    .side {
+      width: 470px; flex: 0 0 470px; overflow-y: auto; padding: 14px;
+    }
+    .card {
+      margin: 0 0 14px; padding: 14px 16px;
+      background: #fff; border: 1px solid var(--line); border-radius: 10px;
+      box-shadow: 0 4px 14px rgba(17, 31, 46, 0.06);
+    }
+    @media (max-width: 920px) {
+      body { height: auto; overflow: auto; }
+      .layout { flex-direction: column; height: auto; }
+      .pane3d { padding: 14px; }
+      #view3d { height: 46vh; flex: none; }
+      .side { width: auto; flex: auto; overflow: visible; }
+    }
+    h1 { margin: 0 0 4px; font-size: 18px; }
+    .sub { color: var(--sub); font-size: 12px; }
+    .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #b9c7d3; }
+    .dot.on { background: #1f9d55; }
+    .dot.err { background: #c0392b; }
+    button {
+      min-height: 30px; padding: 4px 14px; border: 1px solid rgba(20,31,45,.18);
+      border-radius: 6px; background: #fff; font-size: 13px; font-weight: 600;
+      cursor: pointer; white-space: nowrap;
+    }
+    button:hover:not(:disabled) { background: #eef3f6; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.primary:hover:not(:disabled) { background: #0f6b6c; }
+    button.danger { color: #b3362a; border-color: #e0b4ae; }
+    .joint { display: grid; grid-template-columns: 88px 1fr 56px; align-items: center; gap: 10px; margin: 7px 0; }
+    .joint span { color: var(--sub); font-size: 13px; white-space: nowrap; }
+    .joint input[type=range] { width: 100%; accent-color: var(--accent); }
+    .joint .val { text-align: right; font-variant-numeric: tabular-nums; }
+    .live { color: var(--sub); font-size: 12px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+    .tools { margin-top: 10px; }
+    .tools input[type=number] { width: 74px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; }
+    .tools input[type=text] { flex: 1; min-width: 140px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; }
+    label.chk { display: inline-flex; align-items: center; gap: 6px; color: var(--sub); font-size: 13px; cursor: pointer; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 6px 8px; border-bottom: 1px solid #e7edf2; text-align: left; }
+    th { color: var(--sub); font-weight: 600; font-size: 12px; }
+    td .pos { color: var(--sub); font-size: 12px; font-variant-numeric: tabular-nums; }
+    td.ops { white-space: nowrap; text-align: right; }
+    td.ops button { min-height: 26px; padding: 2px 10px; font-size: 12px; margin-left: 6px; }
+    .badge { padding: 1px 8px; border-radius: 8px; background: #e4ecf2; color: var(--sub); font-size: 12px; }
+    #msg { min-height: 18px; font-size: 13px; margin-top: 8px; }
+    #msg.ok { color: #1f7a43; }
+    #msg.err { color: #b3362a; }
+    .empty { color: #8296a8; font-size: 13px; padding: 10px 0; }
+  </style>
+</head>
+<body>
+  <div class="layout">
+
+  <section class="pane3d">
+    <div class="pane3d-head">
+      <strong>三维视图</strong>
+      <span class="sub">拖动旋转 · 滚轮缩放 · 右键平移</span>
+      <span style="flex:1"></span>
+      <label class="chk" title="打开：模型跟随 18089 实时手位；关闭：跟随滑条（摆姿态更直观）">
+        <input id="followLive" type="checkbox" checked /> 跟随实际手位
+      </label>
+    </div>
+    <div id="view3d">
+      <div id="view3dMsg" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#8296a8;font-size:13px;pointer-events:none">三维模型加载中…</div>
+      <div id="view3dHint" style="position:absolute;left:10px;bottom:8px;color:#68798a;font-size:12px;pointer-events:none;z-index:2">按 R 后点击模型：设置旋转中心</div>
+    </div>
+  </section>
+
+  <section class="side">
+
+  <div class="card">
+    <h1>灵巧手配置</h1>
+    <div class="sub" id="comboLine">加载中…</div>
+    <div class="row" style="margin-top:10px">
+      <span class="dot" id="connDot"></span>
+      <span id="connText">状态获取中…</span>
+      <span style="flex:1"></span>
+      <button id="connectBtn">连接</button>
+      <button id="disconnectBtn" class="danger">断开</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <strong>关节调姿</strong>
+      <span class="sub">0 = 张开 · 1 = 全弯（18089 归一化）</span>
+    </div>
+    <div id="joints" style="margin-top:8px"></div>
+    <div class="live" id="liveLine">实际手位：-</div>
+    <div class="row tools">
+      <button id="readBtn" title="把实际手位读进滑条">读取当前手位</button>
+      <button id="sendBtn" class="primary" title="把滑条位置下发到手">发送到手</button>
+      <label>时长(ms) <input id="durInput" type="number" value="500" min="50" max="5000" step="50" /></label>
+      <label class="chk" title="拖动滑条时即时下发（挑姿态更直观）">
+        <input id="liveSend" type="checkbox" /> 拖动实时发送
+      </label>
+    </div>
+    <div class="row tools">
+      <input id="nameInput" type="text" placeholder="姿态名，如：旋钮-预抓取" />
+      <button id="saveBtn" class="primary">保存姿态</button>
+    </div>
+    <div id="msg"></div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <strong>姿态库</strong>
+      <span class="sub">保存于 IK 项目 data/hand_poses/ · 18001 起手点测试可选用</span>
+    </div>
+    <div id="posesBox" style="margin-top:8px"><div class="empty">加载中…</div></div>
+  </div>
+
+  </section>
+  </div>
+
+<script>
+const JOINT_LABELS = ["拇指弯曲", "拇指旋转", "食指", "中指", "无名指", "小指"];
+const $ = (id) => document.getElementById(id);
+let info = null;
+let livePositions = null;
+let liveSendTimer = null;
+
+async function fetchJson(url, options) {
+  const response = await fetch(url, options);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.ok === false) {
+    throw new Error(body.error || `HTTP ${response.status}`);
+  }
+  return body;
+}
+
+function msg(text, ok) {
+  const el = $("msg");
+  el.textContent = text || "";
+  el.className = ok ? "ok" : "err";
+}
+
+function sliderValues() {
+  return JOINT_LABELS.map((_, i) => parseFloat($(`j${i}`).value));
+}
+
+function setSliders(positions) {
+  positions.slice(0, JOINT_LABELS.length).forEach((value, i) => {
+    $(`j${i}`).value = value;
+    $(`v${i}`).textContent = Number(value).toFixed(2);
+  });
+}
+
+function buildJoints() {
+  $("joints").innerHTML = JOINT_LABELS.map((label, i) => `
+    <div class="joint">
+      <span>${label}</span>
+      <input id="j${i}" type="range" min="0" max="1" step="0.01" value="0" />
+      <span class="val" id="v${i}">0.00</span>
+    </div>`).join("");
+  JOINT_LABELS.forEach((_, i) => {
+    $(`j${i}`).addEventListener("input", () => {
+      $(`v${i}`).textContent = parseFloat($(`j${i}`).value).toFixed(2);
+      if ($("liveSend").checked) {
+        clearTimeout(liveSendTimer);
+        liveSendTimer = setTimeout(() => sendCommand(true), 90);
+      }
+    });
+  });
+}
+
+async function sendCommand(continuous) {
+  try {
+    await fetchJson("/api/hand/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        positions: sliderValues(),
+        duration_ms: parseInt($("durInput").value, 10) || 500,
+        continuous: Boolean(continuous),
+      }),
+    });
+    if (!continuous) msg("已发送", true);
+  } catch (error) {
+    msg(`发送失败：${error.message}`, false);
+  }
+}
+
+async function refreshState() {
+  try {
+    const st = await fetchJson("/api/hand/state");
+    const hand = (st.hands || {})[info?.side] || {};
+    const connected = Boolean(st.connected);
+    const online = Boolean(hand.online);
+    $("connDot").className = "dot" + (connected && online ? " on" : connected ? "" : " err");
+    $("connText").textContent = connected
+      ? `已连接 ${st.device_id || ""}（${st.transport || "-"}）` + (online ? "" : " · 本侧离线")
+      : "未连接";
+    if (Array.isArray(hand.positions)) {
+      livePositions = hand.positions;
+      $("liveLine").textContent = "实际手位：" +
+        hand.positions.map((v) => Number(v).toFixed(2)).join("  ");
+    } else {
+      livePositions = null;
+      $("liveLine").textContent = "实际手位：-";
+    }
+  } catch (error) {
+    $("connDot").className = "dot err";
+    $("connText").textContent = error.message;
+    livePositions = null;
+  }
+}
+
+function posesRow(pose) {
+  const mismatch = info && (pose.device_id !== info.device_id || pose.side !== info.side);
+  const positions = (pose.positions || []).map((v) => Number(v).toFixed(2)).join(" ");
+  return `<tr>
+    <td>${pose.name}${mismatch ? ' <span class="badge">设备不符</span>' : ""}</td>
+    <td class="pos">${positions}</td>
+    <td class="pos">${pose.created_at || "-"}</td>
+    <td class="ops">
+      <button data-op="load" data-file="${pose.file}">载入</button>
+      <button data-op="send" data-file="${pose.file}" class="primary">发送</button>
+      <button data-op="del" data-file="${pose.file}" class="danger">删除</button>
+    </td>
+  </tr>`;
+}
+
+let posesCache = [];
+
+async function refreshPoses() {
+  try {
+    const body = await fetchJson("/api/hand/poses");
+    posesCache = body.poses || [];
+    $("posesBox").innerHTML = posesCache.length
+      ? `<table><tr><th>名称</th><th>positions</th><th>保存时间</th><th></th></tr>` +
+        posesCache.map(posesRow).join("") + "</table>"
+      : `<div class="empty">还没有保存的姿态——调好滑条起个名字保存即可</div>`;
+  } catch (error) {
+    $("posesBox").innerHTML = `<div class="empty">${error.message}</div>`;
+  }
+}
+
+$("posesBox").addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-op]");
+  if (!button) return;
+  const pose = posesCache.find((item) => item.file === button.dataset.file);
+  if (!pose) return;
+  if (button.dataset.op === "load") {
+    setSliders(pose.positions || []);
+    msg(`已载入「${pose.name}」到滑条（未发送）`, true);
+  } else if (button.dataset.op === "send") {
+    setSliders(pose.positions || []);
+    await sendCommand(false);
+  } else if (button.dataset.op === "del") {
+    if (!window.confirm(`删除姿态「${pose.name}」？`)) return;
+    try {
+      await fetchJson("/api/hand/poses/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file: pose.file }),
+      });
+      msg(`已删除「${pose.name}」`, true);
+      await refreshPoses();
+    } catch (error) {
+      msg(`删除失败：${error.message}`, false);
+    }
+  }
+});
+
+$("connectBtn").addEventListener("click", async () => {
+  $("connectBtn").disabled = true;
+  try {
+    await fetchJson("/api/hand/connect", { method: "POST" });
+    msg("已连接", true);
+  } catch (error) {
+    msg(`连接失败：${error.message}`, false);
+  } finally {
+    $("connectBtn").disabled = false;
+    refreshState();
+  }
+});
+
+$("disconnectBtn").addEventListener("click", async () => {
+  if (!window.confirm("断开 18089 当前设备？")) return;
+  try {
+    await fetchJson("/api/hand/disconnect", { method: "POST" });
+    msg("已断开", true);
+  } catch (error) {
+    msg(`断开失败：${error.message}`, false);
+  }
+  refreshState();
+});
+
+$("readBtn").addEventListener("click", () => {
+  if (!livePositions) {
+    msg("拿不到实际手位（未连接或本侧离线）", false);
+    return;
+  }
+  setSliders(livePositions);
+  msg("已读取实际手位到滑条", true);
+});
+
+$("sendBtn").addEventListener("click", () => sendCommand(false));
+
+$("saveBtn").addEventListener("click", async () => {
+  const name = $("nameInput").value.trim();
+  if (!name) {
+    msg("先给姿态起个名字", false);
+    return;
+  }
+  try {
+    await fetchJson("/api/hand/poses", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, positions: sliderValues() }),
+    });
+    msg(`已保存「${name}」`, true);
+    $("nameInput").value = "";
+    await refreshPoses();
+  } catch (error) {
+    msg(`保存失败：${error.message}`, false);
+  }
+});
+
+// 三维视图钩子：跟随实际手位（默认）或跟随滑条
+window.__renderPositions = () => {
+  const follow = $("followLive")?.checked;
+  if (follow && livePositions) return livePositions;
+  return sliderValues();
+};
+
+(async function init() {
+  buildJoints();
+  try {
+    info = await fetchJson("/api/hand/info");
+    window.__handInfo = info;
+    $("comboLine").textContent =
+      `激活组合：${info.hand_name}（${info.device_id} · ${info.side}） · 18089：${info.service_url}`;
+  } catch (error) {
+    $("comboLine").textContent = `18000 信息获取失败：${error.message}`;
+  }
+  await refreshState();
+  await refreshPoses();
+  setInterval(refreshState, 500);
+})();
+</script>
+
+<script type="module">
+// ---- 灵巧手三维视图：URDF + STL（与 18001 同一套解析思路的精简版） ----
+import * as THREE from "three";
+import { STLLoader } from "/web/vendor/STLLoader.js";
+import { OrbitControls } from "/web/vendor/OrbitControls.js";
+
+const box = document.getElementById("view3d");
+const msgEl = document.getElementById("view3dMsg");
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+box.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x141b23);
+const camera = new THREE.PerspectiveCamera(38, 1, 0.01, 10);
+camera.position.set(0.26, 0.2, 0.26);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.target.set(0, 0.05, 0);
+
+scene.add(new THREE.HemisphereLight(0xf2f6fa, 0x2a3340, 1.0));
+const keyLight = new THREE.DirectionalLight(0xffffff, 1.4);
+keyLight.position.set(0.5, 0.8, 0.6);
+scene.add(keyLight);
+const grid = new THREE.GridHelper(0.5, 10, 0x35414f, 0x232d38);
+scene.add(grid);
+
+// URDF Z-up → three Y-up
+const handRoot = new THREE.Group();
+handRoot.rotation.x = -Math.PI / 2;
+scene.add(handRoot);
+
+const jointNodes = new Map();
+const mimics = new Map();
+let preview = null;
+let side = "right";
+let lastApplied = "";
+
+const parseVec = (value, fallback) => {
+  if (!value) return fallback;
+  const parts = value.trim().split(/\s+/).map(Number);
+  return parts.length === 3 && parts.every(Number.isFinite) ? parts : fallback;
+};
+
+function applyOrigin(object, originEl) {
+  const xyz = parseVec(originEl?.getAttribute("xyz"), [0, 0, 0]);
+  const rpy = parseVec(originEl?.getAttribute("rpy"), [0, 0, 0]);
+  object.position.set(xyz[0], xyz[1], xyz[2]);
+  object.rotation.order = "ZYX";
+  object.rotation.set(rpy[0], rpy[1], rpy[2]);
+}
+
+function meshUrl(filename, baseUrl) {
+  if (!filename) return "";
+  if (/^https?:\/\//.test(filename) || filename.startsWith("/")) return filename;
+  const clean = filename
+    .replace(/^package:\/\/[^/]+\//, "")
+    .replace(/^file:\/\//, "")
+    .replace(/^\.\//, "");
+  return baseUrl + clean.split("/").map(encodeURIComponent).join("/");
+}
+
+async function loadModel(model) {
+  const text = await (await fetch(model.urdf_url)).text();
+  const xml = new DOMParser().parseFromString(text, "application/xml");
+  if (xml.querySelector("parsererror")) throw new Error("URDF 解析失败");
+
+  const stl = new STLLoader();
+  const linkGroups = new Map();
+  const jointsByParent = new Map();
+  const childLinks = new Set();
+  const meshJobs = [];
+
+  for (const linkEl of xml.querySelectorAll("link")) {
+    const name = linkEl.getAttribute("name");
+    if (!name) continue;
+    const group = new THREE.Group();
+    linkGroups.set(name, group);
+    for (const visualEl of linkEl.querySelectorAll("visual")) {
+      const meshEl = visualEl.querySelector("geometry > mesh");
+      if (!meshEl) continue;
+      const holder = new THREE.Group();
+      applyOrigin(holder, visualEl.querySelector("origin"));
+      const rgba = (visualEl.querySelector("material > color")?.getAttribute("rgba") || "")
+        .trim().split(/\s+/).map(Number);
+      const color = rgba.length === 4
+        ? new THREE.Color(rgba[0], rgba[1], rgba[2])
+        : new THREE.Color(0.72, 0.76, 0.8);
+      const material = new THREE.MeshStandardMaterial({
+        color, roughness: 0.65, metalness: 0.08,
+      });
+      const scale = parseVec(meshEl.getAttribute("scale"), [1, 1, 1]);
+      meshJobs.push(
+        stl.loadAsync(meshUrl(meshEl.getAttribute("filename"), model.mesh_base_url))
+          .then((geometry) => {
+            geometry.computeVertexNormals();
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.scale.set(scale[0], scale[1], scale[2]);
+            holder.add(mesh);
+          })
+          .catch((error) => console.warn("STL 加载失败", error)),
+      );
+      group.add(holder);
+    }
+  }
+
+  for (const jointEl of xml.querySelectorAll("joint")) {
+    const parent = jointEl.querySelector("parent")?.getAttribute("link");
+    const child = jointEl.querySelector("child")?.getAttribute("link");
+    const name = jointEl.getAttribute("name");
+    if (!parent || !child || !name) continue;
+    const mimicEl = jointEl.querySelector("mimic");
+    if (mimicEl?.getAttribute("joint")) {
+      mimics.set(name, {
+        source: mimicEl.getAttribute("joint"),
+        multiplier: Number(mimicEl.getAttribute("multiplier") ?? 1),
+        offset: Number(mimicEl.getAttribute("offset") ?? 0),
+      });
+    }
+    childLinks.add(child);
+    if (!jointsByParent.has(parent)) jointsByParent.set(parent, []);
+    jointsByParent.get(parent).push({
+      name,
+      type: jointEl.getAttribute("type") || "fixed",
+      child,
+      axis: new THREE.Vector3(
+        ...parseVec(jointEl.querySelector("axis")?.getAttribute("xyz"), [0, 0, 1]),
+      ).normalize(),
+      originEl: jointEl.querySelector("origin"),
+    });
+  }
+
+  const rootLink = [...linkGroups.keys()].find((name) => !childLinks.has(name));
+  if (!rootLink) throw new Error("URDF 没有 root link");
+  (function attach(parentName) {
+    const parentGroup = linkGroups.get(parentName);
+    for (const joint of jointsByParent.get(parentName) || []) {
+      const originGroup = new THREE.Group();
+      applyOrigin(originGroup, joint.originEl);
+      const motionGroup = new THREE.Group();
+      originGroup.add(motionGroup);
+      motionGroup.add(linkGroups.get(joint.child));
+      parentGroup.add(originGroup);
+      jointNodes.set(joint.name, { ...joint, motionGroup });
+      attach(joint.child);
+    }
+  })(rootLink);
+
+  handRoot.add(linkGroups.get(rootLink));
+  await Promise.all(meshJobs);
+
+  // 居中取景：按固定姿态算，确定性、不受当下实时手位影响。
+  // 全张开姿态定视距/地面；半握姿态的中心落在手掌上——旋转围绕它才顺手。
+  applyPositions(new Array(6).fill(0));
+  handRoot.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(handRoot);
+  applyPositions(new Array(6).fill(0.5));
+  handRoot.updateMatrixWorld(true);
+  const midBounds = new THREE.Box3().setFromObject(handRoot);
+  if (!bounds.isEmpty() && !midBounds.isEmpty()) {
+    const target = midBounds.getCenter(new THREE.Vector3());
+    controls.target.copy(target);
+    const size = bounds.getSize(new THREE.Vector3()).length();
+    // 前上方机位：手指展开方向横贯画面，最直观
+    camera.position.copy(target.clone().add(
+      new THREE.Vector3(size * 0.35, size * 0.75, size * 1.45)));
+    grid.position.y = bounds.min.y - 0.01;
+  }
+  lastApplied = "";
+  controls.update();
+  renderer.render(scene, camera);
+  msgEl.style.display = "none";
+}
+
+function findJoint(suffix) {
+  const prefix = preview?.side_prefix?.[side];
+  const expected = prefix ? `${prefix}_${suffix}` : suffix;
+  if (jointNodes.has(expected)) return expected;
+  for (const name of jointNodes.keys()) {
+    if (name === suffix || name.endsWith(`_${suffix}`)) return name;
+  }
+  return null;
+}
+
+function applyPositions(positions) {
+  if (!preview || !jointNodes.size) return;
+  const values = new Map();
+  for (const mapping of preview.joints || []) {
+    const normalized = Number(positions[Number(mapping.index)]);
+    if (!Number.isFinite(normalized)) continue;
+    const t = Math.min(1, Math.max(0, normalized));
+    for (const target of mapping.targets || []) {
+      const jointName = findJoint(target.suffix);
+      if (!jointName) continue;
+      const lower = Number(target.lower || 0);
+      const upper = Number(target.upper || 0);
+      values.set(jointName, lower + t * (upper - lower));
+    }
+  }
+  for (let pass = 0; pass < mimics.size; pass += 1) {
+    let changed = false;
+    for (const [name, mimic] of mimics.entries()) {
+      if (values.has(name) || !values.has(mimic.source)) continue;
+      values.set(name, values.get(mimic.source) * mimic.multiplier + mimic.offset);
+      changed = true;
+    }
+    if (!changed) break;
+  }
+  for (const [name, node] of jointNodes.entries()) {
+    const value = values.get(name) ?? 0;
+    node.motionGroup.position.set(0, 0, 0);
+    node.motionGroup.quaternion.identity();
+    if (node.type === "revolute" || node.type === "continuous") {
+      node.motionGroup.quaternion.setFromAxisAngle(node.axis, value);
+    } else if (node.type === "prismatic") {
+      node.motionGroup.position.copy(node.axis).multiplyScalar(value);
+    }
+  }
+}
+
+function resize() {
+  const width = box.clientWidth;
+  const height = box.clientHeight;
+  if (!width || !height) return;
+  // 注意要让 three 同步设置 canvas 的 CSS 尺寸（默认行为）。
+  // 之前传了 updateStyle=false，高 DPI 屏上画布比容器大 dpr 倍、
+  // 右下被裁掉——旋转中心看着就"跑到右下角"，点击拾取也整体偏移。
+  renderer.setSize(width, height);
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(box);
+resize();
+
+// ---- 按 R 后点击模型：把点击到的 mesh 点设为旋转中心 ----
+const hintEl = document.getElementById("view3dHint");
+const raycaster = new THREE.Raycaster();
+let pickMode = false;
+let pivotShownAt = 0;
+const pivotMarker = new THREE.Mesh(
+  new THREE.SphereGeometry(0.0045, 16, 12),
+  new THREE.MeshBasicMaterial({ color: 0xff9d4d }),
+);
+pivotMarker.visible = false;
+scene.add(pivotMarker);
+
+function setPickMode(on) {
+  pickMode = on;
+  box.style.cursor = on ? "crosshair" : "grab";
+  hintEl.textContent = on
+    ? "点击模型上的点 → 旋转中心（Esc 取消）"
+    : "按 R 后点击模型：设置旋转中心";
+  hintEl.style.color = on ? "#ffb066" : "#68798a";
+}
+
+window.addEventListener("keydown", (event) => {
+  const tag = event.target?.tagName || "";
+  if (/INPUT|TEXTAREA|SELECT/.test(tag)) return;
+  if (event.key === "r" || event.key === "R") setPickMode(!pickMode);
+  else if (event.key === "Escape" && pickMode) setPickMode(false);
+});
+
+let pointerDownAt = null;
+renderer.domElement.addEventListener("pointerdown", (event) => {
+  pointerDownAt = [event.clientX, event.clientY];
+});
+renderer.domElement.addEventListener("pointerup", (event) => {
+  const down = pointerDownAt;
+  pointerDownAt = null;
+  if (!pickMode || !down) return;
+  if (Math.hypot(event.clientX - down[0], event.clientY - down[1]) > 5) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  raycaster.setFromCamera(new THREE.Vector2(
+    ((event.clientX - rect.left) / rect.width) * 2 - 1,
+    -((event.clientY - rect.top) / rect.height) * 2 + 1,
+  ), camera);
+  const hit = raycaster.intersectObject(handRoot, true)[0];
+  if (!hit) return;  // 没点到模型，继续等
+  controls.target.copy(hit.point);
+  pivotMarker.position.copy(hit.point);
+  pivotMarker.visible = true;
+  pivotShownAt = performance.now();
+  setPickMode(false);
+});
+// 测试钩子
+window.__view3d = {
+  pick: () => pickMode,
+  target: () => controls.target.toArray(),
+};
+
+// 等经典脚本拿到 /api/hand/info 再加载模型
+const waitInfo = setInterval(() => {
+  const model = window.__handInfo?.model;
+  if (window.__handInfo && !model) {
+    clearInterval(waitInfo);
+    msgEl.textContent = "该设备没有内置三维模型映射";
+    return;
+  }
+  if (!model) return;
+  clearInterval(waitInfo);
+  preview = model.preview;
+  side = window.__handInfo.side || "right";
+  loadModel(model).catch((error) => {
+    msgEl.textContent = `三维模型加载失败：${error.message}`;
+    msgEl.style.display = "flex";
+  });
+}, 150);
+
+(function animate() {
+  requestAnimationFrame(animate);
+  const positions = window.__renderPositions ? window.__renderPositions() : null;
+  if (Array.isArray(positions)) {
+    const key = positions.map((v) => Number(v).toFixed(3)).join(",");
+    if (key !== lastApplied) {
+      lastApplied = key;
+      applyPositions(positions);
+    }
+  }
+  if (pivotMarker.visible && performance.now() - pivotShownAt > 1600) {
+    pivotMarker.visible = false;  // 橙点提示 1.6 秒后隐藏
+  }
+  controls.update();
+  renderer.render(scene, camera);
+})();
+</script>
+</body>
+</html>

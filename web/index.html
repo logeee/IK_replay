@@ -62,8 +62,16 @@
                           title="从当前姿态直接运动到选中路点（关节插值，无 IK）">▶ 前往</button>
                 </div>
                 <button id="reachStartTestBtn" type="button" class="reach-start-test-btn"
-                        title="从当前姿态直接运动到固定路点「起手点测试」"
+                        title="从当前姿态直接运动到固定路点「起手点测试」；下方选了灵巧手位则同时下发"
                         disabled>▶ 到达起手点测试</button>
+                <div class="reach-goto-actions">
+                  <select id="reachHandPoseSel"
+                          title="18003 姿态库（data/hand_poses）里保存的手位；起手点测试时同步执行">
+                    <option value="">（灵巧手位：不动）</option>
+                  </select>
+                  <button id="reachHandPoseBtn" type="button"
+                          title="立即把选中手位发给灵巧手（手臂运动中也可随时调）">▶ 手位</button>
+                </div>
               </div>
               <div class="reach-control-group reach-sequence-group">
                 <div class="reach-sequence-main">
@@ -236,6 +244,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=96"></script>
+    <script type="module" src="/web/main.js?v=97"></script>
   </body>
 </html>

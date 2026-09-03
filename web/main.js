@@ -191,6 +191,8 @@ async function initReach() {
     gotoPick: document.getElementById("reachGotoPickBtn"),
     gotoBtn: document.getElementById("reachGotoBtn"),
     startTest: document.getElementById("reachStartTestBtn"),
+    handPoseSel: document.getElementById("reachHandPoseSel"),
+    handPoseBtn: document.getElementById("reachHandPoseBtn"),
     seqSel: document.getElementById("reachSeqSel"),
     seqPick: document.getElementById("reachSeqPickBtn"),
     seqRun: document.getElementById("reachSeqRunBtn"),
@@ -279,6 +281,9 @@ async function initReach() {
   d.addVia.addEventListener("click", () => addViaWaypoint());
   d.gotoPick.addEventListener("click", () => openReachLibrary("waypoint"));
   d.startTest.addEventListener("click", () => gotoStartTestWaypoint());
+  // 灵巧手位：18003 姿态库；焦点时刷新列表，▶ 立即执行（运动中也可调）
+  d.handPoseSel.addEventListener("focus", () => refreshHandPoses());
+  d.handPoseBtn.addEventListener("click", () => executeHandPose());
   d.seqPick.addEventListener("click", () => openReachLibrary("sequence"));
   d.libraryGroup.addEventListener("change", () => populateReachLibraryItems());
   d.libraryItem.addEventListener("change", () => updateReachLibraryHint());
@@ -353,6 +358,7 @@ async function initReach() {
   await refreshObstacles();
   await refreshWaypoints();
   await refreshSequences();
+  await refreshHandPoses();
   await refreshSidesteps();
   await syncReachJointsOnStartup();
   showFlangeDebug();
@@ -1273,21 +1279,71 @@ function ordinaryWaypoints() {
   );
 }
 
+// ---- 灵巧手位：18003 姿态库（data/hand_poses）选择 + 执行 ----
+
+async function refreshHandPoses() {
+  let data;
+  try {
+    data = await fetchJson("/api/reach/hand/poses");
+  } catch {
+    return;
+  }
+  reach.handPoses = data.poses || [];
+  const sel = reach.dom.handPoseSel;
+  const prev = sel.value;
+  sel.innerHTML = `<option value="">（灵巧手位：不动）</option>` + reach.handPoses
+    .map((p) => `<option value="${p.file}">${p.name}</option>`)
+    .join("");
+  if ([...sel.options].some((o) => o.value === prev)) {
+    sel.value = prev;
+  }
+  reach.dom.handPoseBtn.disabled = !reach.handPoses.length;
+}
+
+async function executeHandPose(silent) {
+  const file = reach.dom.handPoseSel.value;
+  if (!file) {
+    if (!silent) reachMsg("先在下拉框选一个灵巧手位", "error");
+    return false;
+  }
+  const pose = (reach.handPoses || []).find((p) => p.file === file);
+  try {
+    await fetchJson("/api/reach/hand/pose", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file }),
+    });
+    if (!silent) reachMsg(`灵巧手已执行「${pose?.name || file}」`, "success");
+    return true;
+  } catch (error) {
+    reachMsg(`灵巧手位执行失败：${error.message}`, "error");
+    return false;
+  }
+}
+
 async function gotoStartTestWaypoint() {
   const wp = startTestWaypoint();
   if (!wp) {
     reachMsg(`没有找到固定路点「${START_TEST_WAYPOINT_NAME}」`, "error");
     return;
   }
+  const poseFile = reach.dom.handPoseSel.value;
+  const pose = (reach.handPoses || []).find((p) => p.file === poseFile);
   if (reach.status.armed
       && !window.confirm(
         `确认真机运动到路点「${START_TEST_WAYPOINT_NAME}」？\n` +
-        "（从当前姿态关节插值直达）",
+        "（从当前姿态关节插值直达）" +
+        (pose ? `\n灵巧手同时执行手位「${pose.name}」` : ""),
       )) {
     return;
   }
   reach.dom.startTest.disabled = true;
   try {
+    // 手与臂并行：手位走 18089 HTTP，与手臂运动互不阻塞。
+    // 未接管时手臂只是预演，不真发手位。
+    if (pose && reach.status.armed) {
+      executeHandPose(true);
+    }
     await moveToWaypoint(wp, {
       verb: `到达「${START_TEST_WAYPOINT_NAME}」`,
       label: `前往:${START_TEST_WAYPOINT_NAME}`,

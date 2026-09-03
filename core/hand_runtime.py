@@ -452,6 +452,44 @@ class HandRuntime:
                     "error": str(error or "18089 拒绝连接")}
         return {**base, "ok": True}
 
+    def command(self, positions: list[float],
+                duration_ms: int = 500) -> dict[str, Any]:
+        """向 18089 下发归一化关节位置（0=张开）。
+
+        HTTP 指令在 18089 里是 manual 源，被视觉控制占用时返回 409，
+        这里只透传错误。手臂运动期间也可随时调用（走 HTTP，与 DDS 无关）。
+        """
+        base = {
+            "device_id": self.config.device_id,
+            "side": self.config.side,
+            "hand_name": self.config.hand_name,
+        }
+        url = urljoin(self.config.service_url, "api/command")
+        payload = {
+            "side": self.config.side,
+            "positions": [float(value) for value in positions],
+            "duration_ms": int(duration_ms),
+        }
+        try:
+            body = self.post_json(
+                url, payload, self.connect_timeout_s, self.verify_tls)
+        except HTTPError as exc:
+            try:
+                detail = json.loads(exc.read().decode("utf-8", errors="replace"))
+                message = str(detail.get("error") or f"HTTP {exc.code}")
+            except (ValueError, OSError):
+                message = f"HTTP {exc.code}"
+            return {**base, "ok": False, "error": f"18089: {message}"}
+        except OSError as exc:
+            return {**base, "ok": False, "error": f"18089 不可达: {exc}"}
+        except ValueError as exc:
+            return {**base, "ok": False, "error": f"18089 返回非 JSON: {exc}"}
+        if not isinstance(body, dict) or body.get("ok") is False:
+            error = (body or {}).get("error") if isinstance(body, dict) else None
+            return {**base, "ok": False,
+                    "error": str(error or "18089 拒绝指令")}
+        return {**base, "ok": True}
+
     def asset_path(self, relative_path: str) -> Path:
         root = self.config.assets_root
         path = (root / relative_path).resolve()
@@ -501,3 +539,14 @@ def hand_connect() -> dict[str, Any]:
         return {"ok": False, "enabled": False,
                 "error": "当前组合未绑定 18089 灵巧手"}
     return {"enabled": True, **runtime.connect()}
+
+
+def hand_command(positions: list[float],
+                 duration_ms: int = 500) -> dict[str, Any]:
+    """向激活组合的灵巧手下发姿态（手臂运动中也可调用）。"""
+    with _runtime_lock:
+        runtime = _runtime
+    if runtime is None:
+        return {"ok": False, "enabled": False,
+                "error": "当前组合未绑定 18089 灵巧手"}
+    return {"enabled": True, **runtime.command(positions, duration_ms)}
