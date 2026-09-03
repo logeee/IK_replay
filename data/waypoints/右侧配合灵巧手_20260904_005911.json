@@ -1,0 +1,18 @@
+{
+  "name": "右侧配合灵巧手",
+  "chain_id": "right_arm",
+  "named_joints": {
+    "right_shoulder_pitch_joint": -0.6434026956558228,
+    "right_shoulder_roll_joint": -0.05155014619231224,
+    "right_shoulder_yaw_joint": 0.09303953498601913,
+    "right_elbow_joint": -0.19077089428901672,
+    "right_wrist_roll_joint": 0.18107564747333527,
+    "right_wrist_pitch_joint": -0.3859999179840088,
+    "right_wrist_yaw_joint": -0.13990384340286255
+  },
+  "created_at": "2026-09-04 00:59:11",
+  "recorded_combo": {
+    "arm": "right_arm",
+    "hand_id": "qiangnao-1-right"
+  }
+}

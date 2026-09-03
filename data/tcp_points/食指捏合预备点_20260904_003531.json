@@ -1,0 +1,14 @@
+{
+  "name": "食指捏合预备点",
+  "hand_id": "qiangnao-1-right",
+  "xyz_hand": [
+    -0.0495,
+    -0.1059,
+    -0.0235
+  ],
+  "created_at": "2026-09-04 00:35:31",
+  "recorded_combo": {
+    "arm": "right_arm",
+    "hand_id": "qiangnao-1-right"
+  }
+}
