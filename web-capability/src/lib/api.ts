@@ -5,6 +5,8 @@ export interface Hand {
   name: string;
   design_side: "left" | "right";
   tool_out_mm: number;
+  hand_web_device_id: string;
+  tcp_point_id: string;
   notes: string;
 }
 

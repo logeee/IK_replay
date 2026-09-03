@@ -20,12 +20,15 @@ REACH_BASE="http://127.0.0.1:$REACH_PORT"
 YOLO_BASE="http://127.0.0.1:$YOLO_PORT"
 NETWORK_INTERFACE=${NETWORK_INTERFACE:-enp86s0}
 CAMERA_HOST=${CAMERA_HOST:-127.0.0.1}
-HAND_EYE_CALIB=${HAND_EYE_CALIB:-/home/robot/yx/project/calib/hand_eye_3D/handeye3d_data/biaoding/handeye3d_result.json}
-TOOL_OUT_MM=${TOOL_OUT_MM:-0}
+# 默认留空：由 reach_server 严格读取 18000 当前激活臂+手型号的归档。
+# 仅调试其他标定时通过环境变量显式覆盖。
+HAND_EYE_CALIB=${HAND_EYE_CALIB:-}
+TOOL_OUT_MM=${TOOL_OUT_MM:-}
 POINTCLOUD_MODEL=${POINTCLOUD_MODEL:-models/Xuanniu.pt}
 POINTCLOUD_CONF=${POINTCLOUD_CONF:-0.25}
 YOLO_MODEL=${YOLO_MODEL:-$POINTCLOUD_MODEL}
 YOLO_CONF=${YOLO_CONF:-$POINTCLOUD_CONF}
+REQUIRE_YOLO_MODEL=${REQUIRE_YOLO_MODEL:-0}
 
 LOG_DIR=logs/service
 REACH_LOG="$LOG_DIR/pointcloud_reach.log"
@@ -152,13 +155,29 @@ if [[ ! -x "$PYTHON" ]]; then
     echo "[启动失败] Python 不存在或不可执行: $PYTHON"
     exit 1
 fi
-if [[ ! -f "$HAND_EYE_CALIB" ]]; then
+if [[ -n "$HAND_EYE_CALIB" && ! -f "$HAND_EYE_CALIB" ]]; then
     echo "[启动失败] 手眼标定文件不存在: $HAND_EYE_CALIB"
     exit 1
 fi
+yolo_degraded=0
+pointcloud_degraded=0
 if [[ ! -f "$YOLO_MODEL" ]]; then
-    echo "[启动失败] YOLO 模型不存在: $YOLO_MODEL"
-    exit 1
+    yolo_degraded=1
+fi
+if [[ ! -f "$POINTCLOUD_MODEL" ]]; then
+    pointcloud_degraded=1
+fi
+if (( yolo_degraded || pointcloud_degraded )); then
+    if [[ "$REQUIRE_YOLO_MODEL" == "1" ]]; then
+        echo "[启动失败] YOLO 模型不存在（REQUIRE_YOLO_MODEL=1）"
+        (( yolo_degraded )) && echo "  7004: $YOLO_MODEL"
+        (( pointcloud_degraded )) && echo "  7005: $POINTCLOUD_MODEL"
+        exit 1
+    fi
+    (( yolo_degraded )) && \
+        echo "[启动警告] 7004 YOLO 模型不存在: $YOLO_MODEL（核验接口降级）"
+    (( pointcloud_degraded )) && \
+        echo "[启动警告] 7005 YOLO 模型不存在: $POINTCLOUD_MODEL（保留手动点云选点）"
 fi
 
 started_reach=0
@@ -168,14 +187,17 @@ elif port_in_use "$REACH_PORT"; then
     echo "[启动失败] 端口 $REACH_PORT 已被其他服务占用，但 Reach 状态接口不可达"
     exit 1
 else
-    nohup env PYTHONUNBUFFERED=1 "$PYTHON" reach_server.py \
-        --port "$REACH_PORT" \
-        --camera-source zmq \
-        --camera-host "$CAMERA_HOST" \
-        --network-interface "$NETWORK_INTERFACE" \
-        --calib "$HAND_EYE_CALIB" \
-        --tool-out-mm "$TOOL_OUT_MM" \
-        --yolo-base "$YOLO_BASE" \
+    reach_args=(
+        reach_server.py
+        --port "$REACH_PORT"
+        --camera-source zmq
+        --camera-host "$CAMERA_HOST"
+        --network-interface "$NETWORK_INTERFACE"
+        --yolo-base "$YOLO_BASE"
+    )
+    [[ -n "$HAND_EYE_CALIB" ]] && reach_args+=(--calib "$HAND_EYE_CALIB")
+    [[ -n "$TOOL_OUT_MM" ]] && reach_args+=(--tool-out-mm "$TOOL_OUT_MM")
+    nohup env PYTHONUNBUFFERED=1 "$PYTHON" "${reach_args[@]}" \
         >>"$REACH_LOG" 2>&1 &
     reach_pid=$!
     echo "$reach_pid" >"$REACH_PID_FILE"
@@ -259,6 +281,10 @@ fi
 IP=$(ip route get 8.8.8.8 2>/dev/null | awk \
     '{for (i=1; i<=NF; i++) if ($i=="src") {print $(i+1); exit}}')
 echo
-echo "YOLO 核验服务:  $YOLO_BASE/"
+if (( yolo_degraded )); then
+    echo "YOLO 核验服务:  $YOLO_BASE/（未加载模型）"
+else
+    echo "YOLO 核验服务:  $YOLO_BASE/"
+fi
 echo "点云选点页面: http://${IP:-127.0.0.1}:$POINTCLOUD_PORT/"
 echo "停止本脚本启动的服务: $0 stop"

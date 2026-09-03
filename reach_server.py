@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import json
 import socket
 import struct
 import sys
@@ -44,13 +45,10 @@ HAND_EYE_3D_ROOT = Path("/home/robot/yx/project/calib/hand_eye_3D")
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(HAND_EYE_3D_ROOT))
 
-# 当前机器人使用 2026-08-18 多标记联合标定；TCP 取红蓝中点，
-# 再沿腕系 +x 外移 15 mm。
-DEFAULT_CALIB = (HAND_EYE_3D_ROOT / "handeye3d_data" / "biaoding"
-                 / "handeye3d_result.json")
 DEFAULT_RGBD_CALIB = PROJECT_ROOT / "config" / "camera" / "orbbec_rgbd_calibration.json"
 DEFAULT_CAMERA_CONFIG_CACHE = PROJECT_ROOT / "config" / "camera" / "teleimager_config_cache.json"
 DEFAULT_GRAVITY_PROFILES = PROJECT_ROOT / "config" / "gravity_compensation.json"
+DEFAULT_HAND_ASSETS_ROOT = Path("/home/robot/eai-teleop-studio/assets")
 
 
 def _browser_urls(host: str, port: int) -> list[str]:
@@ -75,6 +73,38 @@ def _browser_urls(host: str, port: int) -> list[str]:
     return [f"http://{address}:{port}/" for address in sorted(addresses)]
 
 
+def _validate_camera_identity(
+    calibration: dict,
+    camera_info: dict,
+) -> None:
+    """Refuse to apply a camera extrinsic to another physical RGB-D stream."""
+    if camera_info.get("source") == "mock":
+        return
+    expected = calibration.get("camera") or calibration.get("mount_calib_camera")
+    if not isinstance(expected, dict):
+        raise ValueError("组合标定缺少 camera 身份信息，无法校验外参对应相机")
+    expected_serial = str(expected.get("serial") or "")
+    actual_serial = str(camera_info.get("serial") or "")
+    if not expected_serial or not actual_serial:
+        raise ValueError(
+            f"相机序列号不完整（标定={expected_serial or '缺失'}，"
+            f"运行={actual_serial or '缺失'}）")
+    if expected_serial != actual_serial:
+        raise ValueError(
+            f"标定相机序列号 {expected_serial} 与运行相机 {actual_serial} 不一致")
+    for field in ("width", "height"):
+        expected_value = expected.get(field)
+        actual_value = camera_info.get(field)
+        if (
+            expected_value is not None
+            and actual_value is not None
+            and int(expected_value) != int(actual_value)
+        ):
+            raise ValueError(
+                f"标定相机 {field}={expected_value} 与运行相机 "
+                f"{field}={actual_value} 不一致")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="IK replay viewer + click-to-reach adapter")
     parser.add_argument("--host", default="0.0.0.0")
@@ -82,8 +112,34 @@ def main() -> int:
 
     parser.add_argument("--robot", default="h2", help="使用的机器人配置（默认 h2）")
     parser.add_argument("--chain", default="right_arm", help="执行链（默认 right_arm）")
-    parser.add_argument("--calib", type=Path, default=DEFAULT_CALIB,
-                        help="hand_eye_3D 的 handeye3d_result.json 路径")
+    parser.add_argument(
+        "--calib",
+        type=Path,
+        default=None,
+        help="组合标定路径；默认严格使用 18000 当前激活臂+手型号的归档",
+    )
+    parser.add_argument(
+        "--capability-url",
+        default=None,
+        help="18000 能力中心地址（启动拜访，必须可达；默认 http://127.0.0.1:18000）",
+    )
+    parser.add_argument(
+        "--hand-service-url",
+        default="https://127.0.0.1:18089",
+        help="灵巧手控制/状态服务地址",
+    )
+    parser.add_argument(
+        "--hand-assets-root",
+        type=Path,
+        default=DEFAULT_HAND_ASSETS_ROOT,
+        help="18089 所用 URDF/STL 的 assets 目录",
+    )
+    parser.add_argument(
+        "--hand-service-verify-tls",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="校验 18089 HTTPS 证书（本机自签名证书默认不校验）",
+    )
     runtime_mode = parser.add_mutually_exclusive_group()
     runtime_mode.add_argument(
         "--camera-only",
@@ -162,9 +218,9 @@ def main() -> int:
                         help="临时覆盖版本中的卸力重力前馈开关：手臂近似失重、"
                              "推到哪停哪，录路点省力得多（默认开）。补过头会缓慢上飘，"
                              "用 --no-arm-grav-in-float 关闭")
-    parser.add_argument("--tool-out-mm", type=float, default=15.0,
+    parser.add_argument("--tool-out-mm", type=float, default=None,
                         help="TCP 沿法兰盘法线（腕系 +x）向外的附加偏移，毫米。"
-                             "当前默认在红蓝中点基础上向外 15 mm")
+                             "默认读取 18000 当前手型号配置")
     parser.add_argument("--arm-imu-gravity", action=argparse.BooleanOptionalAction,
                         default=None,
                         help="临时覆盖版本中的 IMU 重力方向修正开关（躯干前倾/后仰时更准）。"
@@ -183,6 +239,38 @@ def main() -> int:
 
     settle_trim = ("discrete" if args.settle_trim_discrete
                    else "continuous" if args.settle_trim_continuous else "off")
+
+    from core.capability_client import CapabilityUnavailable, describe_active, fetch_snapshot
+    from core.capability_registry import calib_abs_path
+
+    # 启动拜访 18000：HTTP 拉取注册表快照，拿不到就拒绝启动（不再直接读
+    # config/capability_registry.json——那是 18000 的存储）。
+    try:
+        capability_snapshot = fetch_snapshot(args.capability_url)
+    except CapabilityUnavailable as exc:
+        print(f"[reach] 启动拜访 18000 失败：{exc}")
+        return 1
+    capability_registry = capability_snapshot["registry"]
+    print(f"[reach] 18000 {describe_active(capability_snapshot)}")
+    active_combo = capability_registry.get("active") or {}
+    active_hand = next(
+        (
+            hand for hand in capability_registry.get("hands", [])
+            if hand.get("id") == active_combo.get("hand_id")
+        ),
+        None,
+    )
+    if not args.camera_only:
+        if not active_combo or active_hand is None:
+            print("[reach] 18000 尚未配置有效的 active.arm + active.hand_id")
+            return 1
+        if args.calib is None:
+            args.calib = calib_abs_path(
+                str(active_combo["arm"]), str(active_combo["hand_id"]))
+        if args.tool_out_mm is None:
+            args.tool_out_mm = float(active_hand.get("tool_out_mm", 0.0))
+    elif args.tool_out_mm is None:
+        args.tool_out_mm = 0.0
 
     from core.gravity_profiles import active_profile, load_registry, validate_parameters
 
@@ -249,6 +337,38 @@ def main() -> int:
         return 1
     robot_model = app_module.robots[args.robot]
 
+    from core.hand_runtime import (
+        HandRuntime,
+        build_hand_runtime_config,
+        configure_hand_runtime,
+    )
+
+    hand_runtime = None
+    configure_hand_runtime(None)
+    if not args.camera_only:
+        try:
+            calibration = json.loads(args.calib.read_text(encoding="utf-8"))
+            hand_config = build_hand_runtime_config(
+                registry=capability_registry,
+                calibration=calibration,
+                chain_id=args.chain,
+                expected_wrist_link=robot_model.end_link(args.chain),
+                service_url=args.hand_service_url,
+                assets_root=args.hand_assets_root,
+            )
+            if hand_config is not None:
+                if not hand_config.assets_root.is_dir():
+                    raise ValueError(
+                        f"18089 灵巧手模型目录不存在: {hand_config.assets_root}")
+                hand_runtime = HandRuntime(
+                    hand_config,
+                    verify_tls=args.hand_service_verify_tls,
+                )
+                configure_hand_runtime(hand_runtime)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"[reach] 灵巧手配置/标定一致性检查失败: {exc}")
+            return 1
+
     camera = None
     wrist_camera = None
     if not args.robot_only:
@@ -269,8 +389,16 @@ def main() -> int:
             from backend.camera import make_camera  # hand_eye_3D
 
             camera = make_camera(args.camera_source, serial=args.camera_serial)
-        camera.start()
-        print(f"[reach] camera = {args.camera_source}: {camera.info()}")
+        try:
+            camera.start()
+            camera_info = camera.info()
+            if not args.camera_only:
+                _validate_camera_identity(calibration, camera_info)
+        except Exception as exc:
+            camera.stop()
+            print(f"[reach] 相机外参与运行设备一致性检查失败: {exc}")
+            return 1
+        print(f"[reach] camera = {args.camera_source}: {camera_info}")
 
     arm = "right" if args.chain == "right_arm" else "left"
     if not args.robot_only and args.camera_source == "zmq" and args.wrist_camera:
@@ -350,6 +478,7 @@ def main() -> int:
 
         allowed_preview_paths = {
             "/api/reach/status",
+            "/api/reach/hand",
             "/api/reach/stream",
             "/api/reach/wrist_snapshot",
             "/api/reach/perpendicular",
@@ -375,6 +504,20 @@ def main() -> int:
     app_module.app.include_router(reach.router)
     print(f"[reach] calib = {reach.state.calib_meta}")
     print(f"[reach] p_tool(TCP) = {reach.state.p_tool}")
+    if hand_runtime is not None:
+        hand_status = hand_runtime.snapshot()
+        hand_service = hand_status["service"]
+        print(
+            f"[reach] 灵巧手 = {hand_status['hand_id']} / "
+            f"{hand_service['expected_device_id']}，安装到 "
+            f"{hand_status['wrist_link']}")
+        print(
+            f"[reach] T_wrist2hand = {hand_status['T_wrist2hand']}")
+        print(
+            f"[reach] 18089 = "
+            f"{'已连接' if hand_service['connected'] else hand_service['error']}")
+    else:
+        print("[reach] 灵巧手 = 18000 当前手型号未绑定 18089 设备，不加载")
     print(f"[reach] 真机执行能力 = {'可用（由页面「接管手臂」触发）' if arm_factory else '不可用'}")
     print(f"[reach] 执行诊断日志 = {reach.state.log_dir}/reach_<日期>.jsonl（每段动作一行）")
     print("[reach] 浏览器访问地址:")

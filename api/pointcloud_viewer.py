@@ -26,6 +26,13 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 
+from core.capability_client import (
+    DEFAULT_CAPABILITY_URL,
+    CapabilityUnavailable,
+    describe_active,
+    fetch_snapshot,
+)
+
 from .pointcloud_core import (
     PointCloud,
     build_pointcloud,
@@ -48,8 +55,10 @@ app.mount("/web", StaticFiles(directory=WEB_DIR), name="pointcloud-web")
 _http = requests.Session()
 _http.trust_env = False
 _reach_base = "http://127.0.0.1:18001"
+_capability_snapshot: dict[str, Any] | None = None   # 启动拜访 18000 的注册表快照
 _model = None
 _model_name = ""
+_model_error = ""
 _names: dict[int, str] = {}
 _default_conf = 0.25
 _box_padding_ratio = 0.1
@@ -269,11 +278,17 @@ def status():
     return {
         "ok": True,
         "model": _model_name,
+        "model_available": _model is not None,
+        "model_error": _model_error or None,
         "names": _names,
         "conf": _default_conf,
         "reach_base": _reach_base,
         "latest_capture_id": latest_id,
-        "semantic_mode": "yolo_instance_mask_fallback_box",
+        "semantic_mode": (
+            "yolo_instance_mask_fallback_box"
+            if _model is not None
+            else "manual_pointcloud_no_yolo"
+        ),
     }
 
 
@@ -333,27 +348,40 @@ def capture(body: dict | None = None):
         snapshot.get("distortion", []),
         dtype=np.float64,
     ).reshape(-1)
+    inference_enabled = _model is not None
     _set_capture_progress(
         operation_id,
         3,
-        f"3/7 彩色图像已解码（{timings['jpeg_decode']:.1f} ms），运行 YOLO…",
+        (
+            f"3/7 彩色图像已解码（{timings['jpeg_decode']:.1f} ms），运行 YOLO…"
+            if inference_enabled
+            else "3/7 未配置 YOLO 模型，跳过语义识别…"
+        ),
     )
     stage_started = time.perf_counter()
-    try:
-        boxes = _infer(bgr, conf)
-    except Exception as exc:
-        _set_capture_progress(
-            operation_id, 3, f"3/7 YOLO 失败：{exc}", done=True, error=True
-        )
-        return JSONResponse(
-            {"ok": False, "error": f"YOLO 推理失败: {exc}"},
-            status_code=500,
-        )
+    if inference_enabled:
+        try:
+            boxes = _infer(bgr, conf)
+        except Exception as exc:
+            _set_capture_progress(
+                operation_id, 3, f"3/7 YOLO 失败：{exc}", done=True, error=True
+            )
+            return JSONResponse(
+                {"ok": False, "error": f"YOLO 推理失败: {exc}"},
+                status_code=500,
+            )
+    else:
+        boxes = []
     timings["yolo"] = round((time.perf_counter() - stage_started) * 1000.0, 1)
     _set_capture_progress(
         operation_id,
         4,
-        f"4/7 YOLO 完成（{timings['yolo']:.1f} ms，{len(boxes)} 个目标），生成三维点云…",
+        (
+            f"4/7 YOLO 完成（{timings['yolo']:.1f} ms，{len(boxes)} 个目标），"
+            "生成三维点云…"
+            if inference_enabled
+            else "4/7 无 YOLO 语义，生成可手动选点的三维点云…"
+        ),
     )
     stage_started = time.perf_counter()
     try:
@@ -418,6 +446,8 @@ def capture(body: dict | None = None):
         "z_max_m": z_max_m,
         "conf": conf,
         "model": _model_name,
+        "model_available": inference_enabled,
+        "model_error": _model_error or None,
         "names": _names,
         "boxes": boxes,
         "semantic_clusters": clusters,
@@ -1216,7 +1246,8 @@ def _lan_ip() -> str:
 
 
 def main() -> None:
-    global _reach_base, _model, _model_name, _names, _default_conf
+    global _reach_base, _model, _model_name, _model_error, _names, _default_conf
+    global _capability_snapshot
     import uvicorn
 
     parser = argparse.ArgumentParser(description="RGB/YOLO语义点云查看器（7005）")
@@ -1225,22 +1256,40 @@ def main() -> None:
     parser.add_argument("--reach-base", default="http://127.0.0.1:18001")
     parser.add_argument("--model", default="models/Xuanniu.pt")
     parser.add_argument("--conf", type=float, default=0.25)
+    parser.add_argument("--capability-url", default=DEFAULT_CAPABILITY_URL,
+                        help="18000 能力中心地址（启动拜访，必须可达）")
     args = parser.parse_args()
     _reach_base = args.reach_base.rstrip("/")
     _default_conf = args.conf
 
-    from ultralytics import YOLO
+    # 启动拜访 18000：确认能力中心可达并留存快照（后续按配置区分行为用）。
+    try:
+        _capability_snapshot = fetch_snapshot(args.capability_url)
+    except CapabilityUnavailable as exc:
+        print(f"[pointcloud] 启动拜访 18000 失败：{exc}")
+        raise SystemExit(1)
+    print(f"[pointcloud] 18000 {describe_active(_capability_snapshot)}")
 
-    started = time.perf_counter()
-    _model = YOLO(args.model)
-    _model_name = Path(args.model).name
-    _names = {int(key): str(value) for key, value in (_model.names or {}).items()}
-    _model.predict(np.zeros((720, 1280, 3), dtype=np.uint8),
-                   conf=_default_conf, verbose=False)
-    print(
-        f"[pointcloud] 模型 {_model_name} 加载+预热完成"
-        f"（{time.perf_counter() - started:.1f}s），类别: {_names}"
-    )
+    model_path = Path(args.model)
+    _model_name = model_path.name
+    if model_path.is_file():
+        _model_error = ""
+        from ultralytics import YOLO
+
+        started = time.perf_counter()
+        _model = YOLO(str(model_path))
+        _names = {int(key): str(value) for key, value in (_model.names or {}).items()}
+        _model.predict(np.zeros((720, 1280, 3), dtype=np.uint8),
+                       conf=_default_conf, verbose=False)
+        print(
+            f"[pointcloud] 模型 {_model_name} 加载+预热完成"
+            f"（{time.perf_counter() - started:.1f}s），类别: {_names}"
+        )
+    else:
+        _model = None
+        _names = {}
+        _model_error = f"YOLO 模型不存在: {model_path}"
+        print(f"[pointcloud] ⚠ {_model_error}；以无语义手动选点模式启动")
     print(f"[pointcloud] RGB-D 来源: {_reach_base}/api/reach/rgbd_snapshot")
     print(f"[pointcloud] 浏览器打开: http://{_lan_ip()}:{args.port}/")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")

@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "solved_at": "2026-09-03T18:15:03",
+  "robot_id": "h2",
+  "arm": "right_arm",
+  "hand_id": "qiangnao-1-right",
+  "hand_label": "强脑-右-1",
+  "hand_base_link": "base_link",
+  "eye": "left",
+  "base_link": "torso_link",
+  "tip_link": "right_wrist_yaw_link",
+  "wrist_link": "right_wrist_yaw_link",
+  "method": "park",
+  "num_samples": 20,
+  "num_inliers": 12,
+  "inlier_indices": [
+    3,
+    4,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18
+  ],
+  "camera": {
+    "registry_id": "camera-1",
+    "name": "Orbbec Gemini 335",
+    "serial": "CP0T263000BE",
+    "width": 1920,
+    "height": 1080
+  },
+  "T_cam2base": [
+    [0.02879387565185726, -0.04714300236767688, 0.9984730592523303, 0.06963406908528419],
+    [-0.9995005699183863, 0.01165314614573773, 0.02937371133728094, 0.019742707677149224],
+    [-0.013020117425170064, -0.9988201747625377, -0.04678391849308369, 0.6525636941316227],
+    [0.0, 0.0, 0.0, 1.0]
+  ],
+  "R_cam2base": [
+    [0.02879387565185726, -0.04714300236767688, 0.9984730592523303],
+    [-0.9995005699183863, 0.01165314614573773, 0.02937371133728094],
+    [-0.013020117425170064, -0.9988201747625377, -0.04678391849308369]
+  ],
+  "t_cam2base_m": [
+    0.06963406908528419,
+    0.019742707677149224,
+    0.6525636941316227
+  ],
+  "residual_translation_mm": {
+    "mean": 3.8278311232147195,
+    "max": 6.513538292943706
+  },
+  "residual_rotation_deg": {
+    "mean": 0.4091467753607321,
+    "max": 0.6631442969551069
+  },
+  "T_wrist2hand": [
+    [0.12840182594430444, -0.9914986755757128, -0.021055816910670593, 0.09547605014144875],
+    [-0.989755822939874, -0.12945470039274146, 0.06020707186733296, -0.012421033465335287],
+    [-0.0624210064864477, 0.013109419431566554, -0.9979638074957359, -0.0002799943433920882],
+    [0.0, 0.0, 0.0, 1.0]
+  ],
+  "tcp_points_wrist_m": [
+    {
+      "id": "tip:right_thumb_tip",
+      "label": "拇指指尖",
+      "link": "right_thumb_tip",
+      "p_wrist_m": [0.13694693145081974, -0.0019843528735948987, 0.1108894791406938]
+    },
+    {
+      "id": "tip:right_index_tip",
+      "label": "食指指尖",
+      "link": "right_index_tip",
+      "p_wrist_m": [0.2332621529543353, 0.023950256171800084, 0.032367713061570054]
+    },
+    {
+      "id": "tip:right_middle_tip",
+      "label": "中指指尖",
+      "link": "right_middle_tip",
+      "p_wrist_m": [0.24721652634304905, 0.027516039139249, 0.010595011845610843]
+    },
+    {
+      "id": "tip:right_ring_tip",
+      "label": "无名指指尖",
+      "link": "right_ring_tip",
+      "p_wrist_m": [0.2433923669158781, 0.02794847979958373, -0.012235454466044786]
+    },
+    {
+      "id": "tip:right_pinky_tip",
+      "label": "小指指尖",
+      "link": "right_pinky_tip",
+      "p_wrist_m": [0.2260422889130083, 0.026211035134474404, -0.03324339885366953]
+    }
+  ],
+  "p_tool_reference": "tip:right_index_tip",
+  "p_tool_wrist_m": [
+    0.2332621529543353,
+    0.023950256171800084,
+    0.032367713061570054
+  ],
+  "p_tool_wrist_m_by_marker": {
+    "tip:right_thumb_tip": [0.13694693145081974, -0.0019843528735948987, 0.1108894791406938],
+    "tip:right_index_tip": [0.2332621529543353, 0.023950256171800084, 0.032367713061570054],
+    "tip:right_middle_tip": [0.24721652634304905, 0.027516039139249, 0.010595011845610843],
+    "tip:right_ring_tip": [0.2433923669158781, 0.02794847979958373, -0.012235454466044786],
+    "tip:right_pinky_tip": [0.2260422889130083, 0.026211035134474404, -0.03324339885366953]
+  },
+  "mount_residual_mm": {
+    "count": 71,
+    "rms": 9.686433098242723,
+    "mean": 9.140151143980404,
+    "median": 9.792007466278845,
+    "max": 15.502181962957891,
+    "p95": 14.11062551227623
+  },
+  "mount_solved_at": "2026-09-03T18:15:03",
+  "active_combo": {
+    "arm": "right_arm",
+    "hand_id": "qiangnao-1-right"
+  },
+  "source_files": {
+    "handeye3d_result_mount": "/home/robot/yx/project/calib/hand_eye_3D/handeye3d_data/biaoding/handeye3d_result_mount.json",
+    "camera_extrinsic": "/home/robot/yx/project/calib/hand_eye_2D/handeye_data/20260902_170106/handeye_result_left.json",
+    "mount_result": "/home/robot/yx/project/calib/hand_eye_3D/handeye3d_data/biaoding/mount_result.json",
+    "intrinsics": "/home/robot/yx/project/calib/hand_eye_2D/handeye_data/20260902_170106/camera_intrinsics.json"
+  }
+}

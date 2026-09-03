@@ -535,6 +535,28 @@ button:disabled {
   color: #b3362a;
 }
 
+.reach-badge.hand {
+  max-width: 230px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reach-badge.hand.online {
+  background: #e1f4e8;
+  color: #1c7243;
+}
+
+.reach-badge.hand.warn {
+  background: #fff1d6;
+  color: #8a5b00;
+}
+
+.reach-badge.hand.error {
+  background: #fbe9e7;
+  color: #a5342b;
+}
+
 .reach-body {
   display: flex;
   align-items: flex-start;

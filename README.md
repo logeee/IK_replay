@@ -132,6 +132,31 @@ all robot-coordinate, planning, and execution endpoints:
 python reach_server.py --camera-only --camera-host 127.0.0.1
 ```
 
+## Dexterous hand in the 18001 viewer
+
+The 18001 viewer resolves the hand from the 18000 capability registry; it does
+not choose a hand model independently. Each hand entry binds
+`hand_web_device_id` (for example `brainco_revo2`) and `tcp_point_id`. The
+active combination's merged 7015 result must be archived at:
+
+```text
+config/hand_eye/<arm>__<hand_id>/handeye3d_result.json
+```
+
+At startup, `reach_server.py` rejects arm, hand, design-side, wrist-link, or TCP
+feature-point mismatches. It also checks the physical camera serial and color
+profile before applying `T_cam2base`. It attaches the 18089 URDF to the robot
+wrist with `T_wrist2hand`, then reads normalized finger positions from the
+HTTPS 18089 status API. URDF/STL files are proxied through 18001, so the browser
+does not need to trust the 18089 self-signed certificate or enable cross-origin
+access. The bridge is read-only and sends no hand commands.
+
+`GET /api/reach/hand` exposes the resolved combination, transform, model, and
+connection status. If 18089 is running but the hand is disconnected, the
+calibrated model still appears in its zero pose and the page marks it as
+static. Changes to the 18000 active combination take effect after restarting
+18001.
+
 When `--sample-dir` is used, the exporter also saves the same frame before and
 after SDK `AlignFilter`. Compare that reference with the SDK-free implementation:
 
@@ -149,6 +174,7 @@ python tools/compare_rgbd_alignment.py \
 - `POST /api/ik/solve`
 - `POST /api/trajectory/plan`
 - `POST /api/collision/check`
+- `GET /api/reach/hand`
 - `POST /api/demo/solve_and_plan`
 - `POST /api/demo/plan` legacy-compatible alias for the original position-IK demo flow
 

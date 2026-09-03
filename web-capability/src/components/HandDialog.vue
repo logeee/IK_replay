@@ -14,6 +14,8 @@ const form = reactive({
   name: props.hand?.name ?? "",
   design_side: props.hand?.design_side ?? "right",
   tool_out_mm: props.hand?.tool_out_mm ?? 15,
+  hand_web_device_id: props.hand?.hand_web_device_id ?? "",
+  tcp_point_id: props.hand?.tcp_point_id ?? "",
   notes: props.hand?.notes ?? "",
 });
 
@@ -46,6 +48,20 @@ function submit() {
       </label>
       <label class="field">TCP 外移 tool_out_mm
         <input v-model.number="form.tool_out_mm" type="number" step="0.1" />
+      </label>
+      <label class="field">18089 设备
+        <select v-model="form.hand_web_device_id">
+          <option value="">未绑定（不显示实时手模型）</option>
+          <option value="brainco_revo2">强脑 Revo2</option>
+          <option value="inspire_dfx">因时 DFX</option>
+          <option value="inspire_ftp">因时 FTP</option>
+        </select>
+      </label>
+      <label class="field">标定 TCP 特征点
+        <input
+          v-model.trim="form.tcp_point_id"
+          placeholder="tip:right_index_tip"
+        />
       </label>
       <label class="field full">备注
         <input v-model.trim="form.notes" />

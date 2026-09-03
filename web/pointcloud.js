@@ -299,8 +299,17 @@ function setPanelCenterMarker(point) {
 
 function updateAutoTargetButton() {
   const button = $("autoTarget");
-  button.disabled = !captureMeta || capturePending || selectionPending || autoTargetPending;
-  button.textContent = autoTargetPending ? "算法找点中…" : "算法找点1/3（Tab）";
+  const modelUnavailable = captureMeta?.model_available === false;
+  button.disabled = (
+    !captureMeta
+    || modelUnavailable
+    || capturePending
+    || selectionPending
+    || autoTargetPending
+  );
+  button.textContent = modelUnavailable
+    ? "算法找点（需 YOLO）"
+    : (autoTargetPending ? "算法找点中…" : "算法找点1/3（Tab）");
 }
 
 function setColorMode(mode) {
@@ -467,7 +476,7 @@ function renderCaptureInfo(meta) {
     `耗时: ${meta.capture_ms.toFixed(1)} ms`,
     timingText ? `分步: ${timingText}` : null,
     `源帧: ${meta.source?.frame_id ?? "?"}`,
-    `模型: ${meta.model}`,
+    `模型: ${meta.model_available === false ? "未加载（手动选点模式）" : meta.model}`,
   ].filter(Boolean).join("<br>");
 }
 
@@ -745,6 +754,10 @@ function setSelection(
 async function autoTarget() {
   if (!captureMeta || capturePending) {
     setStatus("请先点击“拍一下”生成点云", "error");
+    return;
+  }
+  if (captureMeta.model_available === false) {
+    setStatus("未加载 YOLO 模型，请在 RGB 或点云中手动选点", "error");
     return;
   }
   if (autoTargetPending || selectionPending) {
@@ -1178,7 +1191,12 @@ async function initialize() {
       throw new Error(value.error || `HTTP ${response.status}`);
     }
     if (!value.latest_capture_id) {
-      setStatus(`服务就绪 · ${value.model || "模型加载中"}`);
+      setStatus(
+        value.model_available === false
+          ? "服务就绪 · 无 YOLO，使用手动点云选点"
+          : `服务就绪 · ${value.model || "模型加载中"}`,
+        value.model_available === false ? "error" : "",
+      );
       return;
     }
     setStatus("正在恢复最近一次冻结点云…");

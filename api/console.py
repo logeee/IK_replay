@@ -37,6 +37,13 @@ import requests
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
+from core.capability_client import (
+    DEFAULT_CAPABILITY_URL,
+    CapabilityUnavailable,
+    describe_active,
+    fetch_snapshot,
+)
+
 app = FastAPI(title="flow-console")
 
 # 只连本机 reach_server，绝不走系统代理——终端里设了坏代理也不受影响
@@ -46,6 +53,7 @@ _http.trust_env = False
 _cond = threading.Condition()
 _questions: dict[str, dict[str, Any]] = {}   # id → 问题（含 answer）
 _reach_base = "http://127.0.0.1:8001"        # 相机流的上游（服务器端代理）
+_capability_snapshot: dict[str, Any] | None = None   # 启动拜访 18000 的注册表快照
 
 
 @app.get("/cam")
@@ -339,7 +347,7 @@ def _lan_ip() -> str:
 
 
 def main() -> None:
-    global _reach_base
+    global _reach_base, _capability_snapshot
     import uvicorn
 
     parser = argparse.ArgumentParser(description="流程人工确认台（7002）")
@@ -347,8 +355,19 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=7002)
     parser.add_argument("--reach-base", default="http://127.0.0.1:8001",
                         help="reach_server 地址（相机流经确认台服务器端代理）")
+    parser.add_argument("--capability-url", default=DEFAULT_CAPABILITY_URL,
+                        help="18000 能力中心地址（启动拜访，必须可达）")
     args = parser.parse_args()
     _reach_base = args.reach_base.rstrip("/")
+
+    # 启动拜访 18000：确认能力中心可达并留存快照（后续按配置区分行为用）。
+    try:
+        _capability_snapshot = fetch_snapshot(args.capability_url)
+    except CapabilityUnavailable as exc:
+        print(f"[console] 启动拜访 18000 失败：{exc}")
+        raise SystemExit(1)
+    print(f"[console] 18000 {describe_active(_capability_snapshot)}")
+
     print(f"[console] 确认台已启动（这个进程会一直挂着，属正常）")
     print(f"[console] 浏览器打开: http://{_lan_ip()}:{args.port}/")
     print(f"[console] 相机流上游: {_reach_base}/api/reach/stream")

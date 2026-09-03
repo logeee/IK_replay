@@ -84,6 +84,7 @@ class SpawnReachTests(_RegistryTestCase):
             camera_rgbd_calib="/tmp/rgbd.json", network_interface="lo",
             calib="/legacy/handeye3d_result.json", tool_out_mm=15.0,
             yolo="http://127.0.0.1:7004", camera_port=None,
+            capability_url="http://127.0.0.1:18000",
         )
         info = {"status": calib_status,
                 "path": reg.calib_rel_path("right_arm", "yinshi-1-right"),
@@ -96,6 +97,9 @@ class SpawnReachTests(_RegistryTestCase):
                 mock.patch.object(dispatch, "ROOT", Path(temporary)),
                 mock.patch.object(dispatch, "calibration_info",
                                   return_value=info),
+                # 拉起前的 18000 可达预检查（真实现会发 HTTP，测试里短路掉）
+                mock.patch.object(dispatch, "fetch_snapshot",
+                                  return_value={"ok": True}),
                 mock.patch.object(dispatch.subprocess, "Popen") as popen,
             ):
                 dispatch._spawn_reach(task)
@@ -124,6 +128,27 @@ class SpawnReachTests(_RegistryTestCase):
         self.assertEqual(cmd[cmd.index("--chain") + 1], "right_arm")
         self.assertEqual(cmd[cmd.index("--calib") + 1],
                          "/legacy/handeye3d_result.json")
+
+    def test_spawn_forwards_capability_url_to_reach(self):
+        cmd, _task = self._spawn(reg.seed_registry(), calib_status="ready")
+        self.assertEqual(cmd[cmd.index("--capability-url") + 1],
+                         "http://127.0.0.1:18000")
+
+    def test_spawn_fails_fast_when_capability_center_down(self):
+        from core.capability_client import CapabilityUnavailable
+
+        _install_registry(reg.seed_registry())
+        args = Namespace(capability_url="http://127.0.0.1:18000")
+        with (
+            mock.patch.object(dispatch, "_args", args),
+            mock.patch.object(
+                dispatch, "fetch_snapshot",
+                side_effect=CapabilityUnavailable("模拟 18000 挂掉")),
+            mock.patch.object(dispatch.subprocess, "Popen") as popen,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "18000"):
+                dispatch._spawn_reach({"log": []})
+        popen.assert_not_called()
 
 
 class FlowCapabilityParamTests(unittest.TestCase):

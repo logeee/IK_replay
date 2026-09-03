@@ -94,6 +94,8 @@ def seed_registry() -> dict[str, Any]:
             "name": "因时-右-1",
             "design_side": "right",
             "tool_out_mm": 15.0,
+            "hand_web_device_id": "inspire_dfx",
+            "tcp_point_id": "tip:R_index_tip",
             "notes": "",
         }],
         "calibrations": [{
@@ -219,6 +221,11 @@ def _validate_hand(raw: Any, index: int) -> dict[str, Any]:
         raise ValueError(
             f"hands[{index}].design_side 只能是 right / left（收到 "
             f"{raw.get('design_side')!r}）")
+    hand_web_device_id = str(raw.get("hand_web_device_id") or "").strip()
+    if hand_web_device_id and not ID_RE.fullmatch(hand_web_device_id):
+        raise ValueError(
+            f"hands[{index}].hand_web_device_id 只能含小写字母、数字、_、-")
+    tcp_point_id = str(raw.get("tcp_point_id") or "").strip()
     return {
         "id": _clean_id(raw.get("id"), f"hands[{index}].id", "hand"),
         "name": _clean_name(raw.get("name"), f"hands[{index}].name"),
@@ -226,6 +233,8 @@ def _validate_hand(raw: Any, index: int) -> dict[str, Any]:
         "tool_out_mm": _clean_number(
             raw.get("tool_out_mm", 15.0),
             f"hands[{index}].tool_out_mm", 0.0, 100.0),
+        "hand_web_device_id": hand_web_device_id,
+        "tcp_point_id": tcp_point_id,
         "notes": str(raw.get("notes") or "").strip(),
     }
 

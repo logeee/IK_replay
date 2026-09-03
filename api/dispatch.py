@@ -104,14 +104,18 @@ from fastapi.responses import FileResponse, JSONResponse
 from copy import deepcopy
 
 from core.alignment_config import load_alignment_config
+from core.capability_client import (
+    DEFAULT_CAPABILITY_URL,
+    CapabilityUnavailable,
+    describe_active,
+    fetch_snapshot,
+)
 from core.capability_registry import (
     ARM_LABELS,
     IMPLEMENTED_METHODS,
     calibration_info,
     capability_for,
-    ensure_registry,
     find_hand,
-    load_registry,
 )
 from core.dispatch_defaults import (
     DEFAULT_DISPATCH_DEFAULTS,
@@ -195,23 +199,16 @@ def _count_finished_task_locked(task: dict) -> None:
 
 # ---------------------------------------------------- 能力注册表（18000 配置）
 
-# 四级能力注册表在进程启动时读一次（改配置后重启 17001 生效，不热切换）。
-# 读失败时置 None → 按旧的 SITE_SUPPORTED_KINDS / --calib 行为走，不拦任务。
+# 四级能力注册表快照：main() 启动拜访 18000 经 HTTP 拉取后写入（拉不到
+# 直接拒绝启动）；改 18000 配置后重启 17001 生效，不热切换。本服务不再
+# 直接读 config/capability_registry.json——那是 18000 的存储。
+# 缓存为 None（只会出现在测试注入或未经 main 的导入路径）时按旧的
+# SITE_SUPPORTED_KINDS / --calib 行为走。
 _capability_registry_cache: dict[str, Any] | None = None
 _capability_registry_loaded = False
 
 
 def _capability_registry() -> dict[str, Any] | None:
-    global _capability_registry_cache, _capability_registry_loaded
-    if not _capability_registry_loaded:
-        _capability_registry_loaded = True
-        try:
-            # 只读加载（文件不存在返回内存种子）；落盘种子由 main() 的
-            # ensure_registry 负责，避免测试/工具导入时产生写文件副作用。
-            _capability_registry_cache = load_registry()
-        except Exception as exc:
-            print(f"[dispatch] 能力注册表读取失败，按旧行为走: {exc}")
-            _capability_registry_cache = None
     return _capability_registry_cache
 
 
@@ -266,6 +263,13 @@ def _spawn_reach(task: dict) -> None:
     执行链 / 手眼标定 / TCP 外移优先取能力注册表的激活组合（18000 配置）；
     注册表不可用或标定待补时回退命令行参数并在任务日志里说明。
     """
+    # reach_server 启动时自己也要拜访 18000；这里先确认可达，让 18000 挂掉
+    # 的错误直接落在任务日志里，而不是等 reach 起不来再翻它的日志。
+    try:
+        fetch_snapshot(_args.capability_url, attempts=1)
+    except CapabilityUnavailable as exc:
+        raise RuntimeError(f"18000 能力中心不可达，无法拉起 reach_server：{exc}")
+
     log_dir = ROOT / "logs" / "reach"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"dispatch_reach_{datetime.now():%Y%m%d_%H%M%S}.log"
@@ -301,6 +305,7 @@ def _spawn_reach(task: dict) -> None:
         "--calib", calib,
         "--tool-out-mm", str(tool_out_mm),
         "--yolo-base", _args.yolo,
+        "--capability-url", _args.capability_url,
     ]
     if _args.camera_port is not None:
         cmd.extend(["--camera-port", str(_args.camera_port)])
@@ -1885,21 +1890,25 @@ def main() -> None:
                         help="7005 语义点云服务地址（取点算法）")
     parser.add_argument("--no-pointcloud", action="store_true",
                         help="不用点云算法取点，退回 YOLO 框偏移法")
+    parser.add_argument("--capability-url", default=DEFAULT_CAPABILITY_URL,
+                        help="18000 能力中心地址（启动拜访，必须可达）")
     _args = parser.parse_args()
     _args.reach_base = _args.reach_base.rstrip("/")
 
-    print(f"[dispatch] 调度服务已启动（常驻属正常）: http://{_lan_ip()}:{_args.port}/")
+    # 启动拜访 18000：拉取能力注册表快照，拿不到就拒绝启动（启动脚本
+    # prepare.sh 负责先把 18000 拉起来）。快照进程内一直用到退出，重启生效。
+    global _capability_registry_cache, _capability_registry_loaded
     try:
-        ensure_registry()   # 首次运行落盘种子并尽力归档标定
-    except Exception as exc:
-        print(f"[dispatch] 能力注册表初始化失败: {exc}")
-    ctx = _active_arm_context()   # 启动时读一次能力注册表（重启生效）
-    if ctx is not None:
-        print(f"[dispatch] 能力激活组合: {ARM_LABELS.get(ctx['arm'], ctx['arm'])}"
-              f" + {ctx['hand_name']}（标定 {ctx['calib_status']}）"
-              f"；可接任务由 18000 注册表推导")
-    else:
-        print("[dispatch] 能力注册表不可用，按旧的硬编码支持表与 --calib 走")
+        snapshot = fetch_snapshot(_args.capability_url)
+    except CapabilityUnavailable as exc:
+        print(f"[dispatch] 启动拜访 18000 失败：{exc}")
+        raise SystemExit(1)
+    _capability_registry_cache = snapshot["registry"]
+    _capability_registry_loaded = True
+
+    print(f"[dispatch] 调度服务已启动（常驻属正常）: http://{_lan_ip()}:{_args.port}/")
+    print(f"[dispatch] 18000 {describe_active(snapshot)}"
+          "；可接任务由 18000 注册表推导")
     print(f"[dispatch] 外部触发: POST /task/flip （body 带 language）→ 轮询 GET /task/status")
     print(f"[dispatch] reach_server 按需拉起: {sys.executable} reach_server.py "
           f"--port {_args.reach_port} --camera-source zmq "

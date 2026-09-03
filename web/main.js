@@ -31,6 +31,12 @@ const state = {
   jointNodes: new Map(),
   robotMaterials: [],
   robotJointState: {},
+  handGroup: null,
+  handJointNodes: new Map(),
+  handMimics: new Map(),
+  handMaterials: [],
+  handModelKey: null,
+  handPreview: null,
   panels: {},
   sceneOffset: new THREE.Vector3(),
   activeTargetPanelId: null,
@@ -103,7 +109,12 @@ async function init() {
   resize();
   window.addEventListener("resize", resize);
   new ResizeObserver(resize).observe(dom.viewport);
-  dom.robotSelect.addEventListener("change", () => loadRobotData(dom.robotSelect.value));
+  dom.robotSelect.addEventListener("change", async () => {
+    await loadRobotData(dom.robotSelect.value);
+    if (reach.status) {
+      await refreshDexterousHand({ forceModelReload: true });
+    }
+  });
   dom.resetViewButton.addEventListener("click", () => resetView("手动视角复位"));
   dom.targetMoveButton.addEventListener("click", () => setTargetControlMode("translate"));
   dom.targetRotateButton.addEventListener("click", () => setTargetControlMode("rotate"));
@@ -134,6 +145,8 @@ const reach = {
   pickRevision: 0,  // 18001 最近选点版本，供不同电脑上的浏览器同步
   pickSyncTimer: null,
   pickSyncApplying: false,
+  handPollTimer: null,
+  handPollBusy: false,
 };
 const START_TEST_WAYPOINT_NAME = "起手点测试";
 
@@ -156,6 +169,7 @@ async function initReach() {
     panel: document.getElementById("reachPanel"),
     body: document.getElementById("reachBody"),
     badge: document.getElementById("reachBadge"),
+    handBadge: document.getElementById("reachHandBadge"),
     collapse: document.getElementById("reachCollapseBtn"),
     video: document.getElementById("reachVideo"),
     mark: document.getElementById("reachMark"),
@@ -331,6 +345,8 @@ async function initReach() {
   await refreshSidesteps();
   await syncReachJointsOnStartup();
   showFlangeDebug();
+  await refreshDexterousHand({ forceModelReload: true });
+  scheduleDexterousHandPoll();
   updateReachArmUi();
   refreshReachDiag();
   const rms = status.calib?.rms_mm;
@@ -3155,6 +3171,7 @@ async function loadRobot(urdfUrl) {
     throw new Error("URDF 解析失败");
   }
 
+  clearDexterousHand();
   if (state.robotGroup) {
     scene.remove(state.robotGroup);
   }
@@ -3249,6 +3266,282 @@ async function loadRobot(urdfUrl) {
       attachChildren(joint.child);
     }
   }
+}
+
+function clearDexterousHand() {
+  if (state.handGroup) {
+    state.handGroup.removeFromParent();
+    state.handGroup.traverse((object) => {
+      if (object.isMesh) {
+        object.geometry?.dispose();
+      }
+    });
+  }
+  for (const material of state.handMaterials) {
+    material.dispose();
+  }
+  state.handGroup = null;
+  state.handJointNodes = new Map();
+  state.handMimics = new Map();
+  state.handMaterials = [];
+  state.handModelKey = null;
+  state.handPreview = null;
+}
+
+async function loadDexterousHand(snapshot) {
+  const wristGroup = state.linkGroups.get(snapshot.wrist_link);
+  if (!wristGroup) {
+    throw new Error(`机器人 URDF 不含标定腕部 link ${snapshot.wrist_link}`);
+  }
+  const urdfText = await fetchText(snapshot.model.urdf_url);
+  const xml = new DOMParser().parseFromString(urdfText, "application/xml");
+  if (xml.querySelector("parsererror")) {
+    throw new Error("灵巧手 URDF 解析失败");
+  }
+
+  clearDexterousHand();
+  const linkGroups = new Map();
+  const jointNodes = new Map();
+  const mimics = new Map();
+  const jointsByParent = new Map();
+  const childLinks = new Set();
+  const materials = [];
+  const meshTasks = [];
+  const stlLoader = new STLLoader();
+
+  for (const linkEl of xml.querySelectorAll("link")) {
+    const linkName = linkEl.getAttribute("name");
+    if (!linkName) continue;
+    const group = new THREE.Group();
+    group.name = `dexterous_hand_${linkName}`;
+    linkGroups.set(linkName, group);
+    for (const visualEl of linkEl.querySelectorAll("visual")) {
+      const meshEl = visualEl.querySelector("geometry > mesh");
+      if (!meshEl) continue;
+      const visualGroup = new THREE.Group();
+      applyOrigin(visualGroup, parseOrigin(visualEl.querySelector("origin")));
+      const material = materialFromVisual(visualEl);
+      materials.push(material);
+      const filename = meshEl.getAttribute("filename");
+      const scale = parseVector(meshEl.getAttribute("scale"), [1, 1, 1]);
+      meshTasks.push(() => stlLoader
+        .loadAsync(handMeshUrl(filename, snapshot.model.mesh_base_url))
+        .then((geometry) => {
+          geometry.computeVertexNormals();
+          const mesh = new THREE.Mesh(geometry, material);
+          mesh.scale.set(scale[0], scale[1], scale[2]);
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+          visualGroup.add(mesh);
+        })
+        .catch((error) => console.warn(`加载灵巧手 mesh 失败: ${filename}`, error)));
+      group.add(visualGroup);
+    }
+  }
+
+  for (const jointEl of xml.querySelectorAll("joint")) {
+    const parent = jointEl.querySelector("parent")?.getAttribute("link");
+    const child = jointEl.querySelector("child")?.getAttribute("link");
+    if (!parent || !child) continue;
+    const joint = {
+      name: jointEl.getAttribute("name"),
+      type: jointEl.getAttribute("type") || "fixed",
+      parent,
+      child,
+      axis: new THREE.Vector3(
+        ...parseVector(jointEl.querySelector("axis")?.getAttribute("xyz"), [0, 0, 1]),
+      ).normalize(),
+      origin: parseOrigin(jointEl.querySelector("origin")),
+    };
+    if (!joint.name) continue;
+    const mimicEl = jointEl.querySelector("mimic");
+    if (mimicEl?.getAttribute("joint")) {
+      mimics.set(joint.name, {
+        source: mimicEl.getAttribute("joint"),
+        multiplier: Number(mimicEl.getAttribute("multiplier") ?? 1),
+        offset: Number(mimicEl.getAttribute("offset") ?? 0),
+      });
+    }
+    childLinks.add(child);
+    if (!jointsByParent.has(parent)) {
+      jointsByParent.set(parent, []);
+    }
+    jointsByParent.get(parent).push(joint);
+  }
+
+  const rootLink = [...linkGroups.keys()].find((name) => !childLinks.has(name));
+  if (!rootLink) {
+    throw new Error("灵巧手 URDF 没有 root link");
+  }
+  const handGroup = new THREE.Group();
+  handGroup.name = `dexterous_hand_${snapshot.hand_id}`;
+  handGroup.matrixAutoUpdate = false;
+  handGroup.matrix.set(...snapshot.T_wrist2hand.flat());
+  handGroup.add(linkGroups.get(rootLink));
+  attachChildren(rootLink);
+  wristGroup.add(handGroup);
+  await runLimited(meshTasks, 4);
+
+  state.handGroup = handGroup;
+  state.handJointNodes = jointNodes;
+  state.handMimics = mimics;
+  state.handMaterials = materials;
+  state.handModelKey = snapshot.model.key;
+  state.handPreview = snapshot.model.preview;
+  applyDexterousHandPositions(snapshot);
+  state.robotGroup?.updateMatrixWorld(true);
+  publishRenderState("灵巧手模型已加载");
+
+  function attachChildren(parentLinkName) {
+    const parentGroup = linkGroups.get(parentLinkName);
+    for (const joint of jointsByParent.get(parentLinkName) || []) {
+      const originGroup = new THREE.Group();
+      originGroup.name = `dexterous_hand_${joint.name}_origin`;
+      applyOrigin(originGroup, joint.origin);
+      const motionGroup = new THREE.Group();
+      motionGroup.name = `dexterous_hand_${joint.name}_motion`;
+      originGroup.add(motionGroup);
+      motionGroup.add(linkGroups.get(joint.child));
+      parentGroup.add(originGroup);
+      jointNodes.set(joint.name, { ...joint, motionGroup });
+      attachChildren(joint.child);
+    }
+  }
+}
+
+function handMeshUrl(filename, baseUrl) {
+  if (!filename) return "";
+  if (/^https?:\/\//.test(filename) || filename.startsWith("/")) {
+    return filename;
+  }
+  const clean = filename
+    .replace(/^package:\/\/[^/]+\//, "")
+    .replace(/^file:\/\//, "")
+    .replace(/^\.\//, "");
+  return `${baseUrl}${clean.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+function applyDexterousHandPositions(snapshot) {
+  if (!state.handGroup) return;
+  const positions = Array.isArray(snapshot.positions) ? snapshot.positions : [];
+  const jointValues = new Map();
+  const preview = snapshot.model?.preview || state.handPreview || {};
+  for (const mapping of preview.joints || []) {
+    const normalized = Number(positions[Number(mapping.index)]);
+    if (!Number.isFinite(normalized)) continue;
+    for (const target of mapping.targets || []) {
+      const jointName = findHandJoint(target.suffix, preview, snapshot.side);
+      if (!jointName) continue;
+      const lower = Number(target.lower || 0);
+      const upper = Number(target.upper || 0);
+      jointValues.set(jointName, lower + clamp(normalized, 0, 1) * (upper - lower));
+    }
+  }
+
+  for (let pass = 0; pass < state.handMimics.size; pass += 1) {
+    let changed = false;
+    for (const [name, mimic] of state.handMimics.entries()) {
+      if (jointValues.has(name) || !jointValues.has(mimic.source)) continue;
+      jointValues.set(
+        name,
+        jointValues.get(mimic.source) * mimic.multiplier + mimic.offset,
+      );
+      changed = true;
+    }
+    if (!changed) break;
+  }
+
+  for (const [name, node] of state.handJointNodes.entries()) {
+    const value = jointValues.get(name) ?? 0;
+    node.motionGroup.position.set(0, 0, 0);
+    node.motionGroup.quaternion.identity();
+    if (node.type === "revolute" || node.type === "continuous") {
+      node.motionGroup.quaternion.setFromAxisAngle(node.axis, value);
+    } else if (node.type === "prismatic") {
+      node.motionGroup.position.copy(node.axis).multiplyScalar(value);
+    }
+  }
+}
+
+function findHandJoint(suffix, preview, side) {
+  if (!suffix) return null;
+  const prefix = preview.side_prefix?.[side];
+  const expected = prefix ? `${prefix}_${suffix}` : suffix;
+  if (state.handJointNodes.has(expected)) return expected;
+  return [...state.handJointNodes.keys()].find(
+    (name) => name === suffix || name.endsWith(`_${suffix}`),
+  ) || null;
+}
+
+function updateDexterousHandBadge(snapshot, error = null) {
+  const badge = reach.dom?.handBadge;
+  if (!badge) return;
+  badge.className = "reach-badge hand";
+  if (error) {
+    badge.textContent = "灵巧手：加载失败";
+    badge.title = error.message || String(error);
+    badge.classList.add("error");
+    return;
+  }
+  if (!snapshot?.enabled) {
+    badge.textContent = "灵巧手：18000 未绑定";
+    badge.title = "当前手型号没有 hand_web_device_id";
+    badge.classList.add("warn");
+    return;
+  }
+  const service = snapshot.service || {};
+  if (service.connected && service.compatible && snapshot.positions) {
+    badge.textContent = `灵巧手：${snapshot.hand_name} 实时`;
+    badge.classList.add("online");
+  } else if (service.compatible) {
+    badge.textContent = `灵巧手：${snapshot.hand_name} 静态`;
+    badge.classList.add("warn");
+  } else {
+    badge.textContent = `灵巧手：${snapshot.hand_name} 数据不匹配`;
+    badge.classList.add("error");
+  }
+  badge.title = [
+    `18000: ${snapshot.arm} + ${snapshot.hand_id}`,
+    `7015: ${snapshot.wrist_link} → ${snapshot.hand_id}`,
+    `18089: ${service.actual_device_id || "不可用"}`,
+    service.error || "",
+  ].filter(Boolean).join("\n");
+}
+
+async function refreshDexterousHand({ forceModelReload = false } = {}) {
+  if (reach.handPollBusy) return;
+  reach.handPollBusy = true;
+  try {
+    const snapshot = await fetchJson("/api/reach/hand");
+    if (!snapshot.enabled) {
+      clearDexterousHand();
+      updateDexterousHandBadge(snapshot);
+      return;
+    }
+    if (
+      forceModelReload
+      || !state.handGroup
+      || state.handModelKey !== snapshot.model?.key
+    ) {
+      await loadDexterousHand(snapshot);
+    } else {
+      applyDexterousHandPositions(snapshot);
+    }
+    updateDexterousHandBadge(snapshot);
+  } catch (error) {
+    console.warn("刷新灵巧手状态失败", error);
+    updateDexterousHandBadge(null, error);
+  } finally {
+    reach.handPollBusy = false;
+  }
+}
+
+function scheduleDexterousHandPoll(delayMs = 300) {
+  window.clearTimeout(reach.handPollTimer);
+  reach.handPollTimer = window.setTimeout(async () => {
+    await refreshDexterousHand();
+    scheduleDexterousHandPoll();
+  }, delayMs);
 }
 
 function attachViewerFrames(metadata) {
@@ -3890,6 +4183,11 @@ function publishRenderState(stage) {
       meshCount,
       lineCount,
       joints: state.jointNodes.size,
+      hand: state.handGroup ? {
+        modelKey: state.handModelKey,
+        joints: state.handJointNodes.size,
+        attached: true,
+      } : null,
       chains: Object.fromEntries(
         Object.values(state.panels).map((panel) => [
           panel.chainId,

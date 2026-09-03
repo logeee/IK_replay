@@ -311,10 +311,12 @@ class PointCloudBackendTest(unittest.TestCase):
     def setUp(self):
         self.old_model = pointcloud_viewer._model
         self.old_model_name = pointcloud_viewer._model_name
+        self.old_model_error = pointcloud_viewer._model_error
         self.old_names = pointcloud_viewer._names
         self.old_latest = pointcloud_viewer._latest
         pointcloud_viewer._model = _FakeModel()
         pointcloud_viewer._model_name = "fake.pt"
+        pointcloud_viewer._model_error = ""
         pointcloud_viewer._names = {2: "target"}
         pointcloud_viewer._latest = None
         pointcloud_viewer._capture_progress.clear()
@@ -331,6 +333,7 @@ class PointCloudBackendTest(unittest.TestCase):
     def tearDown(self):
         pointcloud_viewer._model = self.old_model
         pointcloud_viewer._model_name = self.old_model_name
+        pointcloud_viewer._model_error = self.old_model_error
         pointcloud_viewer._names = self.old_names
         pointcloud_viewer._latest = self.old_latest
         pointcloud_viewer._capture_progress.clear()
@@ -386,6 +389,35 @@ class PointCloudBackendTest(unittest.TestCase):
         self.assertFalse(progress["error"])
         self.assertEqual(progress["step"], 5)
         self.assertIn("后端完成", progress["message"])
+
+    def test_capture_without_yolo_keeps_manual_pointcloud_available(self):
+        bgr = np.full((2, 2, 3), [10, 20, 30], dtype=np.uint8)
+        ok, jpeg = cv2.imencode(".jpg", bgr)
+        self.assertTrue(ok)
+        pointcloud_viewer._model = None
+        pointcloud_viewer._model_name = "missing.pt"
+        pointcloud_viewer._model_error = "YOLO 模型不存在: missing.pt"
+        with mock.patch.object(
+            pointcloud_viewer,
+            "_fetch_rgbd_snapshot",
+            return_value={
+                "jpeg": jpeg.tobytes(),
+                "depth_mm": np.full((2, 2), 1000, dtype=np.float32),
+                "intrinsics": (100.0, 100.0, 0.5, 0.5),
+                "metadata": {"frame_id": "manual-no-yolo"},
+                "T_cam2root": None,
+            },
+        ):
+            metadata = pointcloud_viewer.capture({"stride": 1})
+
+        self.assertTrue(metadata["ok"])
+        self.assertFalse(metadata["model_available"])
+        self.assertEqual(metadata["boxes"], [])
+        self.assertEqual(metadata["point_count"], 4)
+        self.assertEqual(
+            pointcloud_viewer.status()["semantic_mode"],
+            "manual_pointcloud_no_yolo",
+        )
 
     def test_inference_exports_instance_mask_polygon(self):
         class FakeMasks:

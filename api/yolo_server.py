@@ -31,6 +31,13 @@ import requests
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from core.capability_client import (
+    DEFAULT_CAPABILITY_URL,
+    CapabilityUnavailable,
+    describe_active,
+    fetch_snapshot,
+)
+
 app = FastAPI(title="yolo-server")
 
 # 只连本机 reach_server，绝不走系统代理——终端里设了坏代理也不受影响
@@ -38,8 +45,10 @@ _http = requests.Session()
 _http.trust_env = False
 
 _reach_base = "http://127.0.0.1:8001"
+_capability_snapshot = None   # 启动拜访 18000 的注册表快照
 _model = None
 _model_name = ""
+_model_error = ""
 _names: dict[int, str] = {}
 _conf = 0.25
 _lock = threading.Lock()   # ultralytics 推理不保证线程安全，串行化
@@ -87,6 +96,8 @@ def _grab_wrist_jpeg(timeout_s: float = 3.0) -> bytes:
 
 
 def _infer_jpeg(jpeg: bytes, conf: float | None = None) -> list[dict]:
+    if _model is None:
+        raise RuntimeError(_model_error or "YOLO 模型尚未加载")
     import numpy as np
 
     import cv2
@@ -109,6 +120,8 @@ def _infer_jpeg(jpeg: bytes, conf: float | None = None) -> list[dict]:
 
 
 def _grab_and_infer(conf: float | None = None, keep_jpeg: bool = False) -> dict:
+    if _model is None:
+        return {"ok": False, "error": _model_error or "YOLO 模型尚未加载"}
     try:
         jpeg = _grab_jpeg()
     except Exception as exc:
@@ -125,8 +138,15 @@ def _grab_and_infer(conf: float | None = None, keep_jpeg: bool = False) -> dict:
 
 @app.get("/api/yolo/status")
 def status():
-    return {"ok": True, "model": _model_name, "names": _names, "conf": _conf,
-            "reach_base": _reach_base}
+    return {
+        "ok": True,
+        "model": _model_name,
+        "model_available": _model is not None,
+        "model_error": _model_error or None,
+        "names": _names,
+        "conf": _conf,
+        "reach_base": _reach_base,
+    }
 
 
 @app.post("/api/yolo/infer")
@@ -186,7 +206,8 @@ def _lan_ip() -> str:
 
 
 def main() -> None:
-    global _reach_base, _model, _model_name, _names, _conf
+    global _reach_base, _model, _model_name, _model_error, _names, _conf
+    global _capability_snapshot
     import uvicorn
 
     parser = argparse.ArgumentParser(description="YOLO 常驻推理服务（7004）")
@@ -196,23 +217,43 @@ def main() -> None:
     parser.add_argument("--model", default="models/Xuanniu.pt",
                         help="YOLO .pt 模型路径")
     parser.add_argument("--conf", type=float, default=0.25, help="置信度阈值")
+    parser.add_argument("--capability-url", default=DEFAULT_CAPABILITY_URL,
+                        help="18000 能力中心地址（启动拜访，必须可达）")
     args = parser.parse_args()
     _reach_base = args.reach_base.rstrip("/")
     _conf = args.conf
 
-    from ultralytics import YOLO
-    t0 = time.perf_counter()
-    _model = YOLO(args.model)
-    _model_name = Path(args.model).name
-    _names = {int(k): str(v) for k, v in (_model.names or {}).items()}
-    # 预热：首次推理比后续慢约 1s，启动时垫掉，别让流程第一问吃这个延迟
-    import numpy as np
-    _model.predict(np.zeros((720, 1280, 3), np.uint8), conf=_conf, verbose=False)
-    print(f"[yolo] 模型 {_model_name} 加载+预热完成"
-          f"（{time.perf_counter() - t0:.1f}s），类别: {_names}")
-    missing = [c for c in SCENE_CLASSES if c not in _names.values()]
-    if missing:
-        print(f"[yolo] ⚠ 模型没有场景类别 {missing}，/scene 会永远返回 null")
+    # 启动拜访 18000：确认能力中心可达并留存快照（后续按配置区分行为用）。
+    try:
+        _capability_snapshot = fetch_snapshot(args.capability_url)
+    except CapabilityUnavailable as exc:
+        print(f"[yolo] 启动拜访 18000 失败：{exc}")
+        raise SystemExit(1)
+    print(f"[yolo] 18000 {describe_active(_capability_snapshot)}")
+
+    model_path = Path(args.model)
+    _model_name = model_path.name
+    if model_path.is_file():
+        _model_error = ""
+        from ultralytics import YOLO
+
+        t0 = time.perf_counter()
+        _model = YOLO(str(model_path))
+        _names = {int(k): str(v) for k, v in (_model.names or {}).items()}
+        # 预热：首次推理比后续慢约 1s，启动时垫掉，别让流程第一问吃这个延迟
+        import numpy as np
+        _model.predict(np.zeros((720, 1280, 3), np.uint8),
+                       conf=_conf, verbose=False)
+        print(f"[yolo] 模型 {_model_name} 加载+预热完成"
+              f"（{time.perf_counter() - t0:.1f}s），类别: {_names}")
+        missing = [c for c in SCENE_CLASSES if c not in _names.values()]
+        if missing:
+            print(f"[yolo] ⚠ 模型没有场景类别 {missing}，/scene 会永远返回 null")
+    else:
+        _model = None
+        _names = {}
+        _model_error = f"YOLO 模型不存在: {model_path}"
+        print(f"[yolo] ⚠ {_model_error}；服务以禁用推理模式启动")
 
     print(f"[yolo] 服务已启动（常驻属正常）: http://{_lan_ip()}:{args.port}/")
     print(f"[yolo] 抓帧来源: {_reach_base}/api/reach/stream")

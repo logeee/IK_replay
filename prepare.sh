@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 拨闸服务预备脚本：一次拉起所有常驻服务，可重复执行（已在跑的自动跳过）。
 #
+#   能力   18000  能力配置中心（最先拉起；所有服务启动时都要拜访它）
 #   调度   17001  外部触发入口（按需自动开/关 18001 reach_server）
 #   YOLO    7004  常驻推理
 #   点云    7005  冻结 RGB-D、双视图选点与三维微调
@@ -69,6 +70,12 @@ start_one() {   # 用法: start_one 名字 端口 日志文件 命令...
     echo "[$name] 启动中 pid=$! 日志=$LOG_DIR/$log"
 }
 
+# ---- 能力中心 18000：先于一切服务（各服务启动时都要拜访它，拿不到会拒绝启动） ----
+if ! ./capability.sh; then
+    echo "[prepare] ✘ 18000 能力中心拉起失败，中止（所有服务启动都依赖它）" >&2
+    exit 1
+fi
+
 start_one "调度 " 17001 dispatch.log "$FASTAPI_PY" -m api.dispatch \
     --reach-base "$REACH_BASE" \
     --reach-port "$REACH_PORT" \
@@ -96,6 +103,7 @@ check() {   # 用法: check 名字 URL
     fi
 }
 echo "== 自检 =="
+check "能力   18000" "http://127.0.0.1:18000/api/capability/registry"
 check "调度   17001" "http://127.0.0.1:17001/task/status"
 check "YOLO   7004"  "http://127.0.0.1:7004/api/yolo/status"
 check "点云   7005"  "http://127.0.0.1:7005/api/pointcloud/status"

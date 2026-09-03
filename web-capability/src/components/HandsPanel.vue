@@ -23,6 +23,9 @@ const emit = defineEmits<{
             {{ h.name }}
             <span class="tag">设计侧 {{ SIDE_LABELS[h.design_side] }}</span>
             <span class="tag">TCP 外移 {{ h.tool_out_mm }}mm</span>
+            <span v-if="h.hand_web_device_id" class="tag">
+              18089 {{ h.hand_web_device_id }}
+            </span>
           </div>
           <div class="meta">
             <span class="mono dim">{{ h.id }}</span>
