@@ -16,6 +16,7 @@ from core.dispatch_defaults import (
     save_dispatch_defaults,
     validate_dispatch_defaults,
     validate_lift_mm,
+    validate_offset_keyframes,
     validate_offset_mm,
     validate_push_force_n,
 )
@@ -23,7 +24,7 @@ from core.dispatch_defaults import (
 
 def _config(**overrides):
     payload = {
-        "schema_version": 5,
+        "schema_version": 6,
         "defaults": {
             "site": "factory",
             "offset_preset_by_kind": {
@@ -92,6 +93,7 @@ class DispatchDefaultsTest(unittest.TestCase):
             },
         )
         preset = find_offset_preset(loaded, "右手偏移配置-1")
+        self.assertEqual(preset["mode"], "static")
         self.assertEqual(preset["offset_mm"], {"x": 6.0, "y": -2.0, "z": -4.0})
         # 缺省轴按 0 补齐
         self.assertEqual(find_offset_preset(loaded, "备用")["offset_mm"],
@@ -142,7 +144,7 @@ class DispatchDefaultsTest(unittest.TestCase):
                 {"name": "旧配置", "offset_mm": {"x": 3}},
             ],
         })
-        self.assertEqual(migrated["schema_version"], 5)
+        self.assertEqual(migrated["schema_version"], 6)
         self.assertEqual(
             migrated["defaults"]["offset_preset_by_kind"],
             {"close_to_remote": "旧配置", "remote_to_close": "旧配置"},
@@ -183,6 +185,62 @@ class DispatchDefaultsTest(unittest.TestCase):
                          {"x": 0.0, "y": 0.0, "z": 0.0})
         self.assertEqual(validate_offset_mm({"y": 3.5}),
                          {"x": 0.0, "y": 3.5, "z": 0.0})
+
+    def test_keyframe_preset_roundtrip_sorts_and_normalizes(self):
+        payload = _config(
+            defaults={
+                "site": "factory",
+                "offset_preset_by_kind": {
+                    "close_to_remote": "距离曲线",
+                    "remote_to_close": "",
+                },
+            },
+            offset_presets=[{
+                "name": "距离曲线",
+                "mode": "keyframes",
+                "keyframes": [
+                    {"distance_m": 0.60,
+                     "offset_mm": {"x": 30, "y": 6, "z": -4}},
+                    {"distance_m": 0.43,
+                     "offset_mm": {"x": 10}},
+                    {"distance_m": 0.50,
+                     "offset_mm": {"x": 10}},
+                ],
+            }],
+        )
+
+        saved = save_dispatch_defaults(payload, self.path)
+        curve = saved["offset_presets"][0]
+
+        self.assertEqual(curve["mode"], "keyframes")
+        self.assertEqual(
+            [frame["distance_m"] for frame in curve["keyframes"]],
+            [0.43, 0.50, 0.60],
+        )
+        self.assertEqual(
+            curve["keyframes"][0]["offset_mm"],
+            {"x": 10.0, "y": 0.0, "z": 0.0},
+        )
+        self.assertEqual(load_dispatch_defaults(self.path), saved)
+
+    def test_keyframe_validation_rejects_bad_distance_and_duplicates(self):
+        with self.assertRaisesRegex(ValueError, "0.01 m 对齐"):
+            validate_offset_keyframes([
+                {"distance_m": 0.435, "offset_mm": {}},
+            ])
+        with self.assertRaisesRegex(ValueError, "重复距离"):
+            validate_offset_keyframes([
+                {"distance_m": 0.50, "offset_mm": {}},
+                {"distance_m": 0.50, "offset_mm": {"x": 1}},
+            ])
+        with self.assertRaisesRegex(ValueError, "超范围"):
+            validate_offset_keyframes([
+                {"distance_m": 0.61, "offset_mm": {}},
+            ])
+        with self.assertRaisesRegex(ValueError, "超范围"):
+            validate_offset_keyframes([
+                {"distance_m": 0.50, "offset_mm": {"z": 101}},
+            ])
 
     def test_lift_mm_defaults_and_roundtrip(self):
         # 缺省 / 缺键都按出厂值补齐

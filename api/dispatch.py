@@ -37,6 +37,9 @@
                                 # 可选，目的点人工微调（墙面系，mm，单轴限 ±100）：
                                 # x=沿墙向右 y=法向入墙 z=沿墙向上。叠加在 7005
                                 # 点云算法算出的目的点上，不动粉点→目的点的模型偏移
+                                # 也可改传 "target_offset_preset": "配置名"，
+                                # 运行时按所选起手式距离应用静态值或关键帧曲线；
+                                # target_offset_wall_mm 与它同时出现时，显式 XYZ 优先
                                 "lift_mm": {"base":10,"step":10,"max":30},
                                 # 可选，拨点上抬（抵消重力下垂，mm，各项 0~50）：
                                 # 首轮抬 base，每重试一轮加 step，合计封顶 max。
@@ -105,10 +108,14 @@ from core.dispatch_defaults import (
     DEFAULT_DISPATCH_DEFAULTS,
     DEFAULT_LIFT_MM,
     DEFAULT_PUSH_FORCE_N,
+    OFFSET_KEYFRAME_MAX_DISTANCE_M,
+    OFFSET_KEYFRAME_MIN_DISTANCE_M,
+    OFFSET_KEYFRAME_STEP_M,
     find_offset_preset,
     load_dispatch_defaults,
     save_dispatch_defaults,
     validate_lift_mm,
+    validate_offset_keyframes,
     validate_offset_mm,
     validate_push_force_n,
 )
@@ -476,6 +483,21 @@ def _run_task(task: dict) -> None:
                               v / 1000.0 for v in
                               (task.get("target_offset_wall_mm")
                                or [0.0, 0.0, 0.0])),
+                          target_offset_keyframes=[
+                              {
+                                  "distance_m": frame["distance_m"],
+                                  "offset_wall_m": [
+                                      frame["offset_mm"][axis] / 1000.0
+                                      for axis in ("x", "y", "z")
+                                  ],
+                              }
+                              for frame in (
+                                  task.get("target_offset_keyframes") or []
+                              )
+                          ],
+                          target_offset_preset_name=(
+                              task.get("offset_preset_name") or ""
+                          ),
                           first_round_offset_wall_m=tuple(
                               v / 1000.0 for v in
                               (task.get("first_round_offset_wall_mm")
@@ -875,24 +897,70 @@ def _resolve_push_force(
     )
 
 
+def _resolve_offset_spec(
+    body: dict | None, defaults: dict, kind: str
+) -> dict[str, Any]:
+    """Resolve a static offset or a named distance-keyframe preset."""
+    raw = (body or {}).get("target_offset_wall_mm")
+    if raw is not None:
+        return {
+            "mode": "static",
+            "offset_mm": _parse_target_offset(raw),
+            "keyframes": [],
+            "preset_name": "",
+            "source": "请求指定",
+        }
+
+    requested_preset = str(
+        (body or {}).get("target_offset_preset") or ""
+    ).strip()
+    if requested_preset:
+        name = requested_preset
+        source_prefix = "请求指定偏移配置"
+    else:
+        by_kind = defaults["defaults"].get("offset_preset_by_kind") or {}
+        name = by_kind.get(kind) or ""
+        source_prefix = "默认偏移配置"
+    preset = find_offset_preset(defaults, name) if name else None
+    if preset is None:
+        if requested_preset:
+            raise ValueError(f"没有偏移配置「{requested_preset}」")
+        return {
+            "mode": "static",
+            "offset_mm": (0.0, 0.0, 0.0),
+            "keyframes": [],
+            "preset_name": "",
+            "source": "无（默认配置未选偏移）",
+        }
+    mode = preset.get("mode") or (
+        "keyframes" if preset.get("keyframes") is not None else "static"
+    )
+    pre, post = CHECK_KIND_STATES[kind]
+    source = f"「{pre}→{post}」{source_prefix}「{name}」"
+    if mode == "keyframes":
+        return {
+            "mode": "keyframes",
+            "offset_mm": (0.0, 0.0, 0.0),
+            "keyframes": deepcopy(preset.get("keyframes") or []),
+            "preset_name": name,
+            "source": source,
+        }
+    off = preset["offset_mm"]
+    return {
+        "mode": "static",
+        "offset_mm": (off["x"], off["y"], off["z"]),
+        "keyframes": [],
+        "preset_name": name,
+        "source": source,
+    }
+
+
 def _resolve_offset(
     body: dict | None, defaults: dict, kind: str
 ) -> tuple[tuple[float, float, float], str]:
-    """目的点微调判定：请求显式给了用请求的，否则套默认偏移配置。"""
-    raw = (body or {}).get("target_offset_wall_mm")
-    if raw is not None:
-        return _parse_target_offset(raw), "请求指定"
-    by_kind = defaults["defaults"].get("offset_preset_by_kind") or {}
-    name = by_kind.get(kind) or ""
-    preset = find_offset_preset(defaults, name) if name else None
-    if preset is None:
-        return (0.0, 0.0, 0.0), "无（默认配置未选偏移）"
-    off = preset["offset_mm"]
-    pre, post = CHECK_KIND_STATES[kind]
-    return (
-        (off["x"], off["y"], off["z"]),
-        f"「{pre}→{post}」默认偏移配置「{name}」",
-    )
+    """Compatibility wrapper for callers that only need a static tuple."""
+    spec = _resolve_offset_spec(body, defaults, kind)
+    return spec["offset_mm"], spec["source"]
 
 
 def _resolve_first_round_offset(
@@ -982,7 +1050,10 @@ def task_submit(body: dict | None = None):
             status_code=422)
     intent = resolve_flip_intent(site, kind)
     try:
-        offset_mm, offset_source = _resolve_offset(body, defaults, kind)
+        offset_spec = _resolve_offset_spec(body, defaults, kind)
+        offset_mm = offset_spec["offset_mm"]
+        offset_source = offset_spec["source"]
+        offset_keyframes = offset_spec["keyframes"]
         first_offset_mm, first_offset_source = _resolve_first_round_offset(
             body, defaults, kind
         )
@@ -992,18 +1063,32 @@ def task_submit(body: dict | None = None):
             defaults,
             kind,
         )
-        first_total_mm = tuple(
-            offset_mm[index] + first_offset_mm[index]
-            for index in range(3)
-        )
-        for index, axis in enumerate(("右", "入墙", "上")):
-            if abs(first_total_mm[index]) > TARGET_OFFSET_LIMIT_MM:
-                raise ValueError(
-                    f"首轮{axis}方向合计偏置超范围：单轴限 "
-                    f"±{TARGET_OFFSET_LIMIT_MM:g} mm"
-                    f"（基础 {offset_mm[index]:g} + 首轮额外 "
-                    f"{first_offset_mm[index]:g} = {first_total_mm[index]:g}）"
-                )
+        offsets_to_check = [
+            (offset_mm, None)
+        ] if not offset_keyframes else [
+            (
+                tuple(frame["offset_mm"][axis] for axis in ("x", "y", "z")),
+                frame["distance_m"],
+            )
+            for frame in offset_keyframes
+        ]
+        for base_mm, distance in offsets_to_check:
+            first_total_mm = tuple(
+                base_mm[index] + first_offset_mm[index]
+                for index in range(3)
+            )
+            for index, axis in enumerate(("右", "入墙", "上")):
+                if abs(first_total_mm[index]) > TARGET_OFFSET_LIMIT_MM:
+                    distance_note = (
+                        f"（关键帧 {distance:.2f} m）" if distance is not None
+                        else ""
+                    )
+                    raise ValueError(
+                        f"首轮{axis}方向合计偏置超范围{distance_note}：单轴限 "
+                        f"±{TARGET_OFFSET_LIMIT_MM:g} mm"
+                        f"（基础 {base_mm[index]:g} + 首轮额外 "
+                        f"{first_offset_mm[index]:g} = {first_total_mm[index]:g}）"
+                    )
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
 
@@ -1024,6 +1109,11 @@ def task_submit(body: dict | None = None):
         offset_note = (f"，目的点微调 右{offset_mm[0]:+g}/上{offset_mm[2]:+g}"
                        f"/入墙{offset_mm[1]:+g} mm（{offset_source}）"
                        if any(offset_mm) else "")
+        if offset_keyframes:
+            offset_note = (
+                f"，距离偏移关键帧「{offset_spec['preset_name']}」"
+                f"（{len(offset_keyframes)} 帧，{offset_source}）"
+            )
         first_offset_note = (
             f"，首轮额外偏置 右{first_offset_mm[0]:+g}/"
             f"上{first_offset_mm[2]:+g}/入墙{first_offset_mm[1]:+g} mm"
@@ -1043,6 +1133,9 @@ def task_submit(body: dict | None = None):
                  "flip_from": intent["flip_from"], "flip_to": intent["flip_to"],
                  "prompt": None, "gate": None,
                  "target_offset_wall_mm": list(offset_mm),
+                 "target_offset_keyframes": deepcopy(offset_keyframes),
+                 "offset_mode": offset_spec["mode"],
+                 "offset_preset_name": offset_spec["preset_name"],
                  "offset_source": offset_source,
                  "first_round_offset_wall_mm": list(first_offset_mm),
                  "first_round_offset_source": first_offset_source,
@@ -1108,6 +1201,21 @@ def task_status():
             "flip_from": t.get("flip_from"), "flip_to": t.get("flip_to"),
             "target_offset_wall_mm": t.get("target_offset_wall_mm")
                                      or [0.0, 0.0, 0.0],
+            "target_offset_keyframes": deepcopy(
+                t.get("target_offset_keyframes") or []
+            ),
+            "offset_mode": t.get("offset_mode") or "static",
+            "offset_preset_name": t.get("offset_preset_name") or "",
+            "effective_target_offset_wall_mm": (
+                [
+                    value * 1000.0
+                    for value in flow.target_offset_wall_m
+                ]
+                if flow is not None else None
+            ),
+            "offset_interpolation": deepcopy(
+                getattr(flow, "_target_offset_interpolation", None)
+            ),
             "offset_source": t.get("offset_source") or "",
             "first_round_offset_wall_mm":
                 t.get("first_round_offset_wall_mm") or [0.0, 0.0, 0.0],
@@ -1188,6 +1296,11 @@ def config_defaults_get():
         "defaults": defaults,
         "site_labels": SITE_LABELS,
         "offset_limit_mm": TARGET_OFFSET_LIMIT_MM,
+        "offset_keyframe_distance": {
+            "min": OFFSET_KEYFRAME_MIN_DISTANCE_M,
+            "max": OFFSET_KEYFRAME_MAX_DISTANCE_M,
+            "step": OFFSET_KEYFRAME_STEP_M,
+        },
     }
     return JSONResponse(
         content,
@@ -1240,21 +1353,34 @@ def config_defaults_set(body: dict | None = None):
 
 @app.post("/config/offset-presets")
 def config_preset_upsert(body: dict | None = None):
-    """新建/覆盖命名偏移配置。Body: {"name": "右手偏移配置-1",
-    "offset_mm": {"x":右,"y":入墙,"z":上}}（mm，单轴限 ±100）"""
+    """Create or replace a static or distance-keyframe offset preset."""
     body = body or {}
     name = str(body.get("name") or "").strip()
     if not name:
         return JSONResponse({"ok": False, "error": "配置名不能为空"},
                             status_code=422)
+    mode = str(body.get("mode") or "static").strip().lower()
     try:
-        offset = validate_offset_mm(body.get("offset_mm"))
+        if mode == "keyframes":
+            preset = {
+                "name": name,
+                "mode": "keyframes",
+                "keyframes": validate_offset_keyframes(body.get("keyframes")),
+            }
+        elif mode == "static":
+            preset = {
+                "name": name,
+                "mode": "static",
+                "offset_mm": validate_offset_mm(body.get("offset_mm")),
+            }
+        else:
+            raise ValueError("mode 只能是 static 或 keyframes")
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
     cfg = _current_defaults()
     cfg["offset_presets"] = (
         [p for p in cfg["offset_presets"] if p["name"] != name]
-        + [{"name": name, "offset_mm": offset}])
+        + [preset])
     try:
         saved = save_dispatch_defaults(cfg)
     except ValueError as exc:

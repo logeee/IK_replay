@@ -252,6 +252,15 @@ class WristEvidenceTest(unittest.TestCase):
             flow.lift_m = 0.02
             flow.approach_offset_m = 0.0
             flow.target_offset_wall_m = (0.025, 0.01, -0.02)
+            flow._target_offset_interpolation = {
+                "mode": "keyframes",
+                "preset_name": "测试曲线",
+                "distance_m": 0.49,
+                "left_distance_m": 0.43,
+                "right_distance_m": 0.50,
+                "ratio": 6 / 7,
+                "offset_wall_m": [0.025, 0.01, -0.02],
+            }
             flow.first_round_offset_wall_m = (0.0, 0.015, 0.0)
             flow._log = mock.Mock()
 
@@ -275,6 +284,14 @@ class WristEvidenceTest(unittest.TestCase):
             self.assertEqual(context["target_lift_m"], 0.02)
             self.assertEqual(
                 context["base_offset_wall_m"], [0.025, 0.01, -0.02]
+            )
+            self.assertEqual(
+                context["offset_interpolation"]["preset_name"],
+                "测试曲线",
+            )
+            self.assertEqual(
+                context["offset_interpolation"]["distance_m"],
+                0.49,
             )
             self.assertEqual(
                 context["first_round_offset_wall_m"], [0.0, 0.0, 0.0]
