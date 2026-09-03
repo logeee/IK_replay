@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from core import capability_registry as reg
 from core.capability_client import (
     CapabilityUnavailable,
+    claim_sequence,
     describe_active,
     fetch_snapshot,
 )
@@ -34,17 +35,27 @@ class _Server:
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
-            def do_GET(self):   # noqa: N802
+            def _reply(self):
                 self.send_response(outer.status)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(outer.body)
+
+            def do_GET(self):   # noqa: N802
+                self._reply()
+
+            def do_POST(self):   # noqa: N802
+                length = int(self.headers.get("Content-Length") or 0)
+                outer.last_post = json.loads(
+                    self.rfile.read(length).decode("utf-8") or "{}")
+                self._reply()
 
             def log_message(self, *_):
                 pass
 
         self.body = body
         self.status = status
+        self.last_post: dict | None = None
         self.httpd = HTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(
             target=self.httpd.serve_forever, daemon=True)
@@ -94,6 +105,39 @@ class FetchSnapshotTests(unittest.TestCase):
         self.addCleanup(server.close)
         with self.assertRaises(CapabilityUnavailable):
             fetch_snapshot(server.url, attempts=1)
+
+
+class ClaimSequenceTests(unittest.TestCase):
+    def test_claim_posts_combo_and_name(self):
+        server = _Server(json.dumps({
+            "ok": True, "claimed_to": [
+                {"capability_id": "cap-cw-twist", "label": "扭旋钮·twist",
+                 "already_claimed": False},
+            ],
+        }).encode())
+        self.addCleanup(server.close)
+        result = claim_sequence(server.url, "right_arm", "qiangnao-1-right",
+                                "扭旋钮-起手式")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["claimed_to"][0]["capability_id"],
+                         "cap-cw-twist")
+        self.assertEqual(server.last_post, {
+            "arm": "right_arm", "hand_id": "qiangnao-1-right",
+            "name": "扭旋钮-起手式",
+        })
+
+    def test_rejection_maps_error_message(self):
+        server = _Server(json.dumps({
+            "ok": False, "error": "手型号「ghost」不存在",
+        }).encode(), status=404)
+        self.addCleanup(server.close)
+        with self.assertRaisesRegex(CapabilityUnavailable, "ghost"):
+            claim_sequence(server.url, "right_arm", "ghost", "x")
+
+    def test_unreachable_raises(self):
+        with self.assertRaises(CapabilityUnavailable):
+            claim_sequence("http://127.0.0.1:1", "right_arm",
+                           "qiangnao-1-right", "x", timeout_s=0.5)
 
 
 class DescribeActiveTests(unittest.TestCase):

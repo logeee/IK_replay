@@ -1254,7 +1254,7 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=7005)
     parser.add_argument("--reach-base", default="http://127.0.0.1:18001")
-    parser.add_argument("--model", default="models/Xuanniu.pt")
+    parser.add_argument("--model", default="models/Xuanniu_D.pt")
     parser.add_argument("--conf", type=float, default=0.25)
     parser.add_argument("--capability-url", default=DEFAULT_CAPABILITY_URL,
                         help="18000 能力中心地址（启动拜访，必须可达）")

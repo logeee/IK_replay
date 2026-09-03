@@ -84,10 +84,10 @@ start_one "调度 " 17001 dispatch.log "$FASTAPI_PY" -m api.dispatch \
     --tool-out-mm 15
 start_one "YOLO " 7004 yolo_server.log "$FASTAPI_PY" -m api.yolo_server \
     --reach-base "$REACH_BASE" \
-    --model models/Xuanniu.pt
+    --model models/Xuanniu_D.pt
 start_one "点云 " 7005 pointcloud_viewer.log "$FASTAPI_PY" -m api.pointcloud_viewer \
     --reach-base "$REACH_BASE" \
-    --model models/Xuanniu.pt \
+    --model models/Xuanniu_D.pt \
     --conf 0.25
 start_one "确认台" 7002 console.log "$FASTAPI_PY" -m api.console \
     --reach-base "$REACH_BASE"

@@ -467,7 +467,7 @@
   <section class="panel manual-bar">
     <div class="bar-row">
       <span class="bar-title">手动触发</span>
-      <select id="manualSite" title="工厂柜支持远方→就地向左拨，以及就地→远方向右拨">
+      <select id="manualSite" title="方向由指令唯一决定：远方→就地向左拨、就地→远方向右拨；现场只影响该柜已验证的动作">
         <option value="factory">工厂柜（支持双向）</option>
         <option value="lab">实验室柜</option>
       </select>
@@ -611,8 +611,8 @@
       手动触发栏始终按填写的显式参数执行，不受影响。</p>
     <label class="modal-field">默认现场
       <select id="defaultSite">
-        <option value="factory">工厂柜（印刷相反，支持双向）</option>
-        <option value="lab">实验室柜（就地 → 远方）</option>
+        <option value="factory">工厂柜（支持双向）</option>
+        <option value="lab">实验室柜（远方 → 就地）</option>
       </select>
     </label>
     <label class="modal-field">远方 → 就地默认偏移（向左拨）
@@ -953,7 +953,7 @@ function renderStats(data) {
   $("startedAt").textContent = stats.started_at ? `启动于 ${stats.started_at.replace("T", " ")}` : "启动时间 —";
 }
 
-const SITE_LABELS = { lab: "实验室柜", factory: "工厂柜（印刷相反）" };
+const SITE_LABELS = { lab: "实验室柜", factory: "工厂柜" };
 
 function renderDetails(data) {
   $("detailId").textContent = data.task_id || "—";
@@ -1167,8 +1167,8 @@ function renderManual(data) {
 // 工厂柜双向开放；实验室柜反向动作尚未现场验收。
 const SITE_LANGUAGE_OPTIONS = {
   lab: [
-    { value: "Change the switch from close to remote", label: "就地 → 远方（向左拨）" },
-    { value: "Change the switch from remote to close", label: "远方 → 就地（此柜不支持）", disabled: true },
+    { value: "Change the switch from remote to close", label: "远方 → 就地（向左拨）" },
+    { value: "Change the switch from close to remote", label: "就地 → 远方（此柜未验证）", disabled: true },
   ],
   factory: [
     { value: "Change the switch from remote to close", label: "远方 → 就地（向左拨）" },

@@ -11,6 +11,7 @@ from api.cabinet_panel_fit import (
 from api.cabinet_target_finder import predict_target
 from api.cabinet_wall_frame import build_wall_coordinate_frame
 from api.pointcloud_core import PointCloud
+from api.switch_states import SCENE_LEFT, SCENE_RIGHT
 
 
 class CabinetTargetFinderTest(unittest.TestCase):
@@ -32,30 +33,32 @@ class CabinetTargetFinderTest(unittest.TestCase):
             "rms_m": 0.001,
         }
 
-    def test_remote_generates_point_one(self):
-        prediction = predict_target(self.panel_fit("远方"), self.wall_plane())
+    def test_switch_right_generates_point_one(self):
+        prediction = predict_target(
+            self.panel_fit(SCENE_RIGHT), self.wall_plane()
+        )
 
         self.assertEqual(prediction["model_version"], "0.2.0-s")
         self.assertEqual(prediction["target_point_slot"], 1)
-        self.assertEqual(prediction["matched_detection_name"], "远方")
+        self.assertEqual(prediction["matched_detection_name"], SCENE_RIGHT)
         np.testing.assert_allclose(
             prediction["offset_wall_m"],
             [0.04793951829, 0.00586060655, -0.01953248751],
             atol=1e-12,
         )
 
-    def test_local_generates_mirrored_point_three(self):
-        remote = predict_target(self.panel_fit("远方"), self.wall_plane())
-        local = predict_target(self.panel_fit("就地"), self.wall_plane())
+    def test_switch_left_generates_mirrored_point_three(self):
+        right = predict_target(self.panel_fit(SCENE_RIGHT), self.wall_plane())
+        left = predict_target(self.panel_fit(SCENE_LEFT), self.wall_plane())
 
-        self.assertEqual(local["target_point_slot"], 3)
-        self.assertEqual(local["matched_detection_name"], "就地")
+        self.assertEqual(left["target_point_slot"], 3)
+        self.assertEqual(left["matched_detection_name"], SCENE_LEFT)
         self.assertAlmostEqual(
-            local["offset_wall_m"][0], -remote["offset_wall_m"][0]
+            left["offset_wall_m"][0], -right["offset_wall_m"][0]
         )
         np.testing.assert_allclose(
-            local["offset_wall_m"][1:],
-            remote["offset_wall_m"][1:],
+            left["offset_wall_m"][1:],
+            right["offset_wall_m"][1:],
             atol=1e-12,
         )
 
@@ -203,7 +206,7 @@ class CabinetGeometryTest(unittest.TestCase):
             },
             {
                 "cls": 1,
-                "name": "远方",
+                "name": SCENE_RIGHT,
                 "conf": 0.95,
                 "xyxy": [95, 95, 205, 170],
                 "polygon": [
@@ -224,7 +227,7 @@ class CabinetGeometryTest(unittest.TestCase):
 
         self.assertTrue(fitted["available"])
         self.assertEqual(fitted["detection"]["box_index"], 1)
-        self.assertEqual(fitted["detection"]["name"], "远方")
+        self.assertEqual(fitted["detection"]["name"], SCENE_RIGHT)
         self.assertTrue(fitted["detection"]["used_polygon_mask"])
         self.assertGreater(fitted["mask_point_count"], 6_000)
 
@@ -237,7 +240,7 @@ class CabinetGeometryTest(unittest.TestCase):
             self.pointcloud(points, pixels),
             [
                 {
-                    "name": "远方",
+                    "name": SCENE_RIGHT,
                     "conf": 0.9,
                     "xyxy": [0, 0, 30, 30],
                 }

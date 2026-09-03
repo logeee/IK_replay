@@ -21,6 +21,7 @@ from api.pointcloud_core import (
     point_from_pixel,
 )
 from api import pointcloud_viewer
+from api.switch_states import SCENE_LEFT, SCENE_RIGHT
 from adapters.reach import perception
 
 
@@ -469,8 +470,8 @@ class PointCloudBackendTest(unittest.TestCase):
         saved = pointcloud_viewer.save_scene_mismatch_training_sample(
             capture["capture_id"],
             {
-                "observed_scene": "就地",
-                "expected_scene": "远方",
+                "observed_scene": SCENE_LEFT,
+                "expected_scene": SCENE_RIGHT,
                 "site": "factory",
                 "attempt": 1,
             },
@@ -480,8 +481,8 @@ class PointCloudBackendTest(unittest.TestCase):
         self.assertEqual(Path(saved["image"]).read_bytes(), jpeg.tobytes())
         label = json.loads(Path(saved["label"]).read_text(encoding="utf-8"))
         self.assertEqual(label["reason"], "scene_mismatch")
-        self.assertEqual(label["observed_scene"], "就地")
-        self.assertEqual(label["expected_scene"], "远方")
+        self.assertEqual(label["observed_scene"], SCENE_LEFT)
+        self.assertEqual(label["expected_scene"], SCENE_RIGHT)
         self.assertEqual(label["capture_id"], capture["capture_id"])
         self.assertEqual(label["capture"]["source"]["frame_id"], "mismatch-frame")
 
@@ -554,7 +555,7 @@ class PointCloudBackendTest(unittest.TestCase):
                     "selection_source": "target-finder/0.2.0-s",
                     "model_version": "0.2.0-s",
                     "target_point_slot": 1,
-                    "matched_detection_name": "远方",
+                    "matched_detection_name": SCENE_RIGHT,
                 },
             )
         self.assertTrue(confirmed["ok"])
@@ -569,7 +570,7 @@ class PointCloudBackendTest(unittest.TestCase):
         self.assertEqual(sent["selection_source"], "target-finder/0.2.0-s")
         self.assertEqual(sent["model_version"], "0.2.0-s")
         self.assertEqual(sent["target_point_slot"], 1)
-        self.assertEqual(sent["matched_detection_name"], "远方")
+        self.assertEqual(sent["matched_detection_name"], SCENE_RIGHT)
         self.assertEqual(sent["plane"]["x_axis_camera"], [1.0, 0.0, 0.0])
         self.assertEqual(sent["plane"]["z_axis_camera"], [0.0, -1.0, 0.0])
         self.assertEqual(sent["plane"]["axis_source"], "wall_coordinate_x")
@@ -623,13 +624,13 @@ class PointCloudBackendTest(unittest.TestCase):
         panel = {
             "available": True,
             "rectangle_center_camera_m": [0.0, 0.0, 1.0],
-            "detection": {"name": "远方", "conf": 0.9},
+            "detection": {"name": SCENE_RIGHT, "conf": 0.9},
         }
         prediction = {
             "model_version": "0.2.0-s",
             "selection_source": "target-finder/0.2.0-s",
             "target_point_slot": 1,
-            "matched_detection_name": "远方",
+            "matched_detection_name": SCENE_RIGHT,
             "target_camera_m": [0.05, 0.0, 1.0],
             "target_wall_m": [0.05, 0.0, 0.0],
             "offset_wall_m": [0.05, 0.0, 0.0],
@@ -739,7 +740,7 @@ class ReachPointCloudConfirmationTest(unittest.TestCase):
                     "selection_source": "target-finder/0.2.0-s",
                     "model_version": "0.2.0-s",
                     "target_point_slot": 3,
-                    "matched_detection_name": "就地",
+                    "matched_detection_name": SCENE_LEFT,
                     "plane": {
                         "center_cam": [0.0, 0.0, 1.0],
                         "normal_cam": [0.0, 0.0, -1.0],
@@ -780,7 +781,7 @@ class ReachPointCloudConfirmationTest(unittest.TestCase):
             )
             self.assertEqual(state.pick_context["model_version"], "0.2.0-s")
             self.assertEqual(state.pick_context["target_point_slot"], 3)
-            self.assertEqual(state.pick_context["matched_detection_name"], "就地")
+            self.assertEqual(state.pick_context["matched_detection_name"], SCENE_LEFT)
             self.assertEqual(result["target_point_slot"], 3)
             np.testing.assert_allclose(state.pick_target_root, result["p_root"])
             latest = perception.latest_pick()

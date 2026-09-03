@@ -141,11 +141,44 @@ def reach_save_sequence(body: dict):
         "waypoints": [str(f) for f in files],
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
+    if state.active_combo:
+        # 来源戳：这条动作是哪个「臂+手型号」组合在位时录的（进公共池后
+        # 18000 页面按它显示出处）
+        item["recorded_combo"] = {
+            "arm": state.active_combo.get("arm"),
+            "hand_id": state.active_combo.get("hand_id"),
+        }
     state.sequences_dir.mkdir(parents=True, exist_ok=True)
     path = state.sequences_dir / f"{name}_{time.strftime('%Y%m%d_%H%M%S')}.json"
     path.write_text(json.dumps(item, ensure_ascii=False, indent=2))
     item["file"] = path.name
-    return {"ok": True, "sequence": item}
+    # 新动作进公共池后上报 18000 自动认领：按动作名命中录制组合下哪些
+    # 能力条目的起手式正则就归谁（拨/扭互不污染）。失败不影响保存，
+    # 可到 18000 配置页手动认领。
+    claim: dict | None = None
+    if state.active_combo:
+        from core.capability_client import CapabilityUnavailable, claim_sequence
+
+        arm = str(state.active_combo.get("arm") or "")
+        hand_id = str(state.active_combo.get("hand_id") or "")
+        try:
+            result = claim_sequence(
+                state.capability_url or None, arm, hand_id, name)
+            targets = result.get("claimed_to") or []
+            claim = {"ok": True, "claimed_to": targets}
+            if targets:
+                labels = "、".join(
+                    str(t.get("label") or t.get("capability_id") or "?")
+                    for t in targets)
+                print(f"[reach] 序列「{name}」已入公共池，自动认领给：{labels}")
+            else:
+                print(f"[reach] 序列「{name}」已入公共池，但没命中 "
+                      f"{arm}+{hand_id} 任何条目的起手式正则——"
+                      "留池，可到 18000 页面手动认领")
+        except CapabilityUnavailable as exc:
+            claim = {"ok": False, "error": str(exc)}
+            print(f"[reach] ⚠ 序列「{name}」自动认领失败：{exc}")
+    return {"ok": True, "sequence": item, "claim": claim}
 
 
 SEQ_REPLAY_DRIFT_RAD = 0.5   # 起点漂移超过它才重新规划（正常复用不会触发）

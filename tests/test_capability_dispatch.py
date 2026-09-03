@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from api import dispatch
-from api.flow import SwitchFlow
+from api.flow import ErrorCode, FlowError, SwitchFlow
 from core import capability_registry as reg
 
 
@@ -61,17 +61,21 @@ class KindSupportTests(_RegistryTestCase):
 
     def test_registry_unavailable_falls_back_to_legacy_table(self):
         _install_registry(None)
-        self.assertTrue(dispatch._kind_supported("lab", "close_to_remote"))
-        self.assertFalse(dispatch._kind_supported("lab", "remote_to_close"))
+        self.assertTrue(dispatch._kind_supported("lab", "remote_to_close"))
+        self.assertFalse(dispatch._kind_supported("lab", "close_to_remote"))
 
-    def test_capability_for_kind_maps_site_semantics_to_direction(self):
+    def test_capability_for_kind_maps_kind_to_direction(self):
         _install_registry(reg.seed_registry())
-        # 工厂柜：远方→就地 = 向左拨（rtl）
+        # 方向由 kind 唯一决定：远方→就地 = 向左拨（rtl），任何现场一致
         cap = dispatch._capability_for_kind("factory", "remote_to_close")
         self.assertEqual(cap["task"]["direction"], "rtl")
-        # 实验室柜：就地→远方 = 向左拨（rtl）
-        cap = dispatch._capability_for_kind("lab", "close_to_remote")
+        cap = dispatch._capability_for_kind("lab", "remote_to_close")
         self.assertEqual(cap["task"]["direction"], "rtl")
+        # 就地→远方 = 向右拨（ltr）只在工厂柜验证过 → lab 查不到能力
+        cap = dispatch._capability_for_kind("factory", "close_to_remote")
+        self.assertEqual(cap["task"]["direction"], "ltr")
+        self.assertIsNone(
+            dispatch._capability_for_kind("lab", "close_to_remote"))
 
 
 class SpawnReachTests(_RegistryTestCase):
@@ -226,6 +230,45 @@ class FlowCapabilityParamTests(unittest.TestCase):
         ]}
         flow = SwitchFlow(client=client, site="factory",
                           flip_kind="remote_to_close")
+        self.assertEqual(flow.choose_opening_pose(0.53)["name"],
+                         "0.50-起手式新")
+
+
+class SequenceClaimFilterTests(unittest.TestCase):
+    """起手式认领（18000 配置）在选档时的严格过滤。"""
+
+    @staticmethod
+    def _client():
+        client = mock.Mock()
+        client.sequences.return_value = {"sequences": [
+            {"name": "0.50-起手式新",
+             "file": "0.50-起手式新_20260822_031632.json", "waypoints": []},
+            {"name": "0.53-起手式新",
+             "file": "0.53-起手式新_20260822_031632.json", "waypoints": []},
+        ]}
+        return client
+
+    def test_unclaimed_pose_excluded_from_gear_choice(self):
+        flow = SwitchFlow(client=self._client(), site="factory",
+                          flip_kind="remote_to_close",
+                          claimed_pose_names=["0.53-起手式新"])
+        # 按距离本应选 0.50 档，但它未被认领 → 落到已认领的 0.53 档
+        self.assertEqual(flow.choose_opening_pose(0.53)["name"],
+                         "0.53-起手式新")
+
+    def test_nothing_claimed_fails_with_claim_hint(self):
+        flow = SwitchFlow(client=self._client(), site="factory",
+                          flip_kind="remote_to_close",
+                          claimed_pose_names=[])
+        with self.assertRaises(FlowError) as ctx:
+            flow.choose_opening_pose(0.53)
+        self.assertEqual(ctx.exception.code, ErrorCode.POSE_UNAVAILABLE)
+        self.assertIn("认领", str(ctx.exception))
+
+    def test_none_claims_keeps_legacy_unfiltered_behavior(self):
+        flow = SwitchFlow(client=self._client(), site="factory",
+                          flip_kind="remote_to_close",
+                          claimed_pose_names=None)
         self.assertEqual(flow.choose_opening_pose(0.53)["name"],
                          "0.50-起手式新")
 

@@ -12,12 +12,12 @@
     · 相机帧（jpg，存 models/samples/images/）
     · 采集时刻的 distance_m / yaw_err_deg / pitch_err_deg（问 reach_server
       的 /perpendicular，和对中用的是同一套测量）
-    · YOLO 框（默认加载 models/Xuanniu.pt；也可用 --model 指定其他模型）
+    · YOLO 框（默认加载 models/Xuanniu_D.pt；也可用 --model 指定其他模型）
     · 点击的真实目标点（可多个；保存时自动关联包含它的框）
 
 启动：
-    /home/robot/miniconda3/envs/yolo/bin/python -m api.yolo_collect \
-        --model models/Xuanniu.pt --conf 0.25
+    /home/robot/miniconda3/envs/fastapi/bin/python -m api.yolo_collect \
+        --model models/Xuanniu_D.pt --conf 0.25
 
 网页：http://<机器人IP>:7003/
 
@@ -55,7 +55,7 @@ _http.trust_env = False
 
 _reach_base = "http://127.0.0.1:8001"
 _samples_dir = Path(__file__).resolve().parent.parent / "models" / "samples"
-_default_model = Path(__file__).resolve().parent.parent / "models" / "Xuanniu.pt"
+_default_model = Path(__file__).resolve().parent.parent / "models" / "Xuanniu_D.pt"
 _model = None          # ultralytics.YOLO 实例（可选）
 _model_name = ""
 _model_conf = 0.25

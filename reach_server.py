@@ -240,7 +240,12 @@ def main() -> int:
     settle_trim = ("discrete" if args.settle_trim_discrete
                    else "continuous" if args.settle_trim_continuous else "off")
 
-    from core.capability_client import CapabilityUnavailable, describe_active, fetch_snapshot
+    from core.capability_client import (
+        DEFAULT_CAPABILITY_URL,
+        CapabilityUnavailable,
+        describe_active,
+        fetch_snapshot,
+    )
     from core.capability_registry import calib_abs_path
 
     # 启动拜访 18000：HTTP 拉取注册表快照，拿不到就拒绝启动（不再直接读
@@ -470,6 +475,10 @@ def main() -> int:
         gravity_profile=gravity_profile_meta,
         settle_trim=settle_trim,
     )
+    # 录制新序列时盖「来源组合」戳并自动认领给它（camera-only 时无组合）
+    reach.state.active_combo = dict(active_combo) if active_combo else None
+    reach.state.capability_url = (
+        args.capability_url or DEFAULT_CAPABILITY_URL).rstrip("/")
     if settle_trim != "off":
         print(f"[reach] 落点修正 = {settle_trim}"
               f"（settle 段闭环，死区 0.003 rad，偏置钳位 ±0.03 rad）")

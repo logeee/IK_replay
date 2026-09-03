@@ -1,7 +1,7 @@
 # 开关拨动作业 API 使用说明
 
 > 面向作业平台的对接文档。
-> 版本：v5（2026-08-28，工厂柜支持就地/远方双向拨动）　维护人：机器人侧
+> 版本：v6（2026-09-03，视觉切换为物理指向识别，方向由指令唯一决定）　维护人：机器人侧
 
 ## 1. 这个服务做什么
 
@@ -80,9 +80,9 @@ Content-Type: application/json
        {"item": "左腿俯仰#0", "q_deg": 1.2, "range_deg": [-6.0, 6.0], "passed": true},
        {"item": "距离", "distance_m": 0.5, "range_m": [0.44, 0.55], "passed": true}],
      "passed": true, "message": "5 电机全部在限内，距离 0.500 m"},
-    {"step": 4, "name": "YOLO 状态与居中", "scene": "就地", "conf": 0.86,
+    {"step": 4, "name": "YOLO 状态与居中", "scene": "远方就地左", "conf": 0.86,
      "cx_ratio": 0.469, "passed": true,
-     "message": "「就地」框中心在画宽 46.9% 处（要求 20%~80%）"}
+     "message": "「远方就地左」框中心在画宽 46.9% 处（要求 20%~80%）"}
   ],
   "camera_kept": true,      // 见下方说明，调用方一般无需关心
   "duration_s": 16.2,
@@ -133,8 +133,8 @@ Content-Type: application/json
 
 | language | 作业 | 当前支持情况 |
 |----------|------|--------------|
-| `Change the switch from close to remote` | 就地 → 远方 | ✅ 工厂柜向右拨；实验室柜向左拨 |
-| `Change the switch from remote to close` | 远方 → 就地 | ✅ 工厂柜向左拨；实验室柜暂未开放 |
+| `Change the switch from close to remote` | 就地 → 远方（向右拨，任何现场一致） | ✅ 工厂柜；实验室柜暂未开放 |
+| `Change the switch from remote to close` | 远方 → 就地（向左拨，任何现场一致） | ✅ 工厂柜、实验室柜 |
 
 工厂柜两个方向完全共用流程参数：横移距离 10cm、推力 15N，并沿柜面
 `-Z` 下偏 15°。区别只有起止状态、点云目标类别、横移左右符号，以及各方向

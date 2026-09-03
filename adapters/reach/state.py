@@ -77,6 +77,10 @@ class ReachState:
         self.waypoints_dir: Path | None = None     # 中间路点落盘目录（每个路点一个 json）
         self.sequences_dir: Path | None = None     # 动作序列落盘目录（路点文件名的有序列表）
         self.sidesteps_dir: Path | None = None     # 横移录制落盘目录（免 IK 回放）
+        # 18000 能力中心：启动快照的激活组合与地址（录制新序列时盖来源戳
+        # 并自动认领给该组合；camera-only 模式可能为 None）
+        self.active_combo: dict | None = None
+        self.capability_url: str = ""
         # 执行线程状态
         self.exec_lock = threading.Lock()
         self.exec_thread: threading.Thread | None = None

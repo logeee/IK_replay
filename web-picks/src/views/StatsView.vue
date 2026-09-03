@@ -26,6 +26,10 @@ const wallChart = ref<HTMLDivElement>();
 const charts: echarts.ECharts[] = [];
 
 const NAME_COLORS: Record<string, string> = {
+  // 新模型（Xuanniu_D.pt）按开关物理指向分类
+  远方就地右: "#f2b84b",
+  远方就地左: "#5ad46f",
+  // 旧模型类别，历史记录仍会出现
   远方: "#f2b84b",
   就地: "#5ad46f",
 };

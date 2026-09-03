@@ -30,8 +30,8 @@
 用法（reach_server 需已在运行）：
 
   终端 A：python -m api.console          # 7002 人工确认台（fastapi 环境）
-  终端 B：/home/robot/miniconda3/envs/yolo/bin/python -m api.yolo_server \\
-              --model models/Xuanniu.pt   # 7004 YOLO 常驻推理
+  终端 B：/home/robot/miniconda3/envs/fastapi/bin/python -m api.yolo_server \\
+              --model models/Xuanniu_D.pt  # 7004 YOLO 常驻推理
   浏览器：http://<机器人IP>:7002/         # 常驻相机画面 + 问题卡片
   终端 C：python -m api                  # 跑全流程（fastapi 环境）
 

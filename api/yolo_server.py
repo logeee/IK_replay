@@ -4,20 +4,22 @@
 本来就没法同进程；模型加载+预热约 2s、常驻内存约 1GB，开机拉起一次，
 流程 API / 采集台 / 前端都通过 HTTP 问它。
 
-模型类别（Xuanniu.pt）: 0=就地 1=远方 2=分闸 3=0 4=合闸
+模型类别（Xuanniu_D.pt）: 0=远方就地左 1=远方就地右
+（模型只认开关的物理指向，不读印刷文字，任何现场识别结果一致）
 
-对流程的意义：本服务只报告真实印刷状态「就地/远方」，起止状态由任务
-language 决定。开始前识别到任务目标状态则无需拨；识别到拨前状态才执行；
-拨后识别到目标状态才算成功。
+对流程的意义：本服务只报告开关当前的物理指向「左/右」，起止指向由任务
+language 决定。开始前识别到任务目标指向则无需拨；识别到拨前指向才执行；
+拨后识别到目标指向才算成功。
 
-启动（yolo 环境）：
-    /home/robot/miniconda3/envs/yolo/bin/python -m api.yolo_server \
-        --model models/Xuanniu.pt --conf 0.25
+启动（需装有 ultralytics 的环境）：
+    /home/robot/miniconda3/envs/fastapi/bin/python -m api.yolo_server \
+        --model models/Xuanniu_D.pt --conf 0.25
 
 接口：
     GET  /api/yolo/status   模型名/类别表/阈值（也当健康检查用）
     POST /api/yolo/infer    从 reach_server 抓一帧推理，返回全部框
-    GET  /api/yolo/scene    抓帧推理后归类：就地 / 远方 / null（没识别到）
+    GET  /api/yolo/scene    抓帧推理后归类：远方就地左 / 远方就地右 /
+                            null（没识别到）
 """
 
 from __future__ import annotations
@@ -38,6 +40,8 @@ from core.capability_client import (
     fetch_snapshot,
 )
 
+from .switch_states import SCENE_CLASSES
+
 app = FastAPI(title="yolo-server")
 
 # 只连本机 reach_server，绝不走系统代理——终端里设了坏代理也不受影响
@@ -52,8 +56,6 @@ _model_error = ""
 _names: dict[int, str] = {}
 _conf = 0.25
 _lock = threading.Lock()   # ultralytics 推理不保证线程安全，串行化
-
-SCENE_CLASSES = ("就地", "远方")
 
 
 def _grab_jpeg(timeout_s: float = 5.0) -> bytes:
@@ -164,9 +166,10 @@ def scene(
     include_image: bool = False,
     include_wrist: bool = False,
 ):
-    """就地/远方归类：取两类框里置信度最高的那个定调。
+    """开关指向归类：取左/右两类框里置信度最高的那个定调。
 
-    返回 {"ok": true, "scene": "就地"|"远方"|null, "conf": ..., "boxes": [...]}
+    返回 {"ok": true, "scene": "远方就地左"|"远方就地右"|null,
+          "conf": ..., "boxes": [...]}
     scene=null 表示画面里没识别到这两类（调用方转人工或报错）。
     include_image=true 时返回体多一个 jpeg_b64——就是本次判定用的头部帧。
     include_wrist=true 时再取一帧右腕 JPEG，只用于横移拨动前留档。
@@ -214,7 +217,7 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=7004)
     parser.add_argument("--reach-base", default="http://127.0.0.1:8001")
-    parser.add_argument("--model", default="models/Xuanniu.pt",
+    parser.add_argument("--model", default="models/Xuanniu_D.pt",
                         help="YOLO .pt 模型路径")
     parser.add_argument("--conf", type=float, default=0.25, help="置信度阈值")
     parser.add_argument("--capability-url", default=DEFAULT_CAPABILITY_URL,

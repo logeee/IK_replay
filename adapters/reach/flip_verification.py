@@ -6,23 +6,20 @@ import time
 from typing import Any
 
 from api.flip_evidence import save_flip_evidence, valid_record_name
+from api.switch_states import SCENE_CLASSES, opposite_scene
 from api.yolo_client import YoloClient
 
 from .state import state
 
 
-SCENES = ("就地", "远方")
+SCENES = SCENE_CLASSES   # 开关物理指向类别（远方就地左/右）
 YOLO_ATTEMPTS = 3
 YOLO_RETRY_WAIT_S = 0.6
 VERIFY_SETTLE_S = 1.5
 
 
 def _opposite(scene: str | None) -> str | None:
-    if scene == "就地":
-        return "远方"
-    if scene == "远方":
-        return "就地"
-    return None
+    return opposite_scene(scene)
 
 
 def _scene_with_retries(
@@ -100,7 +97,7 @@ def capture_manual_before(spec: dict[str, Any]) -> dict[str, Any]:
     flip_from = result.get("scene") if result.get("scene") in SCENES else hint
     flip_to = _opposite(flip_from)
     if not flip_from or not flip_to:
-        error = "拨动前 YOLO 未识别到「就地/远方」，无法确定目标状态"
+        error = "拨动前 YOLO 未识别到开关指向（左/右），无法确定目标状态"
         return {
             "ok": False,
             "record": record,

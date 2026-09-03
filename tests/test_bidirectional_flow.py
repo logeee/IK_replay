@@ -12,6 +12,7 @@ from api.flow import (
     interpolate_offset_keyframes,
     resolve_flip_intent,
 )
+from api.switch_states import SCENE_LEFT, SCENE_RIGHT
 from core.capability_registry import seed_registry
 
 
@@ -31,11 +32,11 @@ class FlipIntentTests(unittest.TestCase):
 
         self.assertEqual(
             (left["flip_from"], left["flip_to"], left["direction"]),
-            ("远方", "就地", "rtl"),
+            (SCENE_RIGHT, SCENE_LEFT, "rtl"),
         )
         self.assertEqual(
             (right["flip_from"], right["flip_to"], right["direction"]),
-            ("就地", "远方", "ltr"),
+            (SCENE_LEFT, SCENE_RIGHT, "ltr"),
         )
 
     def test_factory_constructor_applies_direction_to_distance_sign(self):
@@ -302,7 +303,7 @@ class FlipIntentTests(unittest.TestCase):
         }
         pointcloud.auto_target.return_value = {
             "ok": True,
-            "matched_detection_name": "就地",
+            "matched_detection_name": SCENE_LEFT,
             "target_point_slot": 1,
             "panel_center_wall_m": [0.0, 0.0, 0.0],
             "target_wall_m": [0.01, 0.02, 0.03],
@@ -322,12 +323,12 @@ class FlipIntentTests(unittest.TestCase):
         picked, error = flow._pointcloud_pick_once(1)
 
         self.assertIsNone(picked)
-        self.assertIn("「就地」", error)
+        self.assertIn(f"「{SCENE_LEFT}」", error)
         pointcloud.save_scene_mismatch.assert_called_once_with(
             "capture-mismatch",
             {
-                "observed_scene": "就地",
-                "expected_scene": "远方",
+                "observed_scene": SCENE_LEFT,
+                "expected_scene": SCENE_RIGHT,
                 "site": "factory",
                 "flip_kind": "remote_to_close",
                 "direction": "rtl",
@@ -344,7 +345,7 @@ class FlipIntentTests(unittest.TestCase):
         ]
         pointcloud.auto_target.return_value = {
             "ok": True,
-            "matched_detection_name": "远方",
+            "matched_detection_name": SCENE_RIGHT,
             "target_point_slot": 1,
             "panel_center_wall_m": [0.0, 0.0, 0.0],
             "target_wall_m": [0.01, 0.02, 0.03],
@@ -467,13 +468,13 @@ class FlipIntentTests(unittest.TestCase):
     def test_detect_scene_uses_requested_target_and_direction(self):
         already_done = SwitchFlow(
             client=mock.Mock(),
-            yolo=_YoloSequence("远方"),
+            yolo=_YoloSequence(SCENE_RIGHT),
             site="factory",
             flip_kind="close_to_remote",
         )
         needs_flip = SwitchFlow(
             client=mock.Mock(),
-            yolo=_YoloSequence("就地"),
+            yolo=_YoloSequence(SCENE_LEFT),
             site="factory",
             flip_kind="close_to_remote",
         )
@@ -486,7 +487,7 @@ class FlipIntentTests(unittest.TestCase):
     def test_verify_flip_accepts_requested_target(self):
         flow = SwitchFlow(
             client=mock.Mock(),
-            yolo=_YoloSequence("远方"),
+            yolo=_YoloSequence(SCENE_RIGHT),
             site="factory",
             flip_kind="close_to_remote",
         )
@@ -499,7 +500,7 @@ class FlipIntentTests(unittest.TestCase):
     def test_verify_flip_rejects_source_state_after_second_look(self):
         flow = SwitchFlow(
             client=mock.Mock(),
-            yolo=_YoloSequence("就地", "就地"),
+            yolo=_YoloSequence(SCENE_LEFT, SCENE_LEFT),
             site="factory",
             flip_kind="close_to_remote",
         )
@@ -519,7 +520,9 @@ class FactoryDispatchTests(unittest.TestCase):
         ):
             self.assertTrue(dispatch._kind_supported("factory", "remote_to_close"))
             self.assertTrue(dispatch._kind_supported("factory", "close_to_remote"))
-            self.assertFalse(dispatch._kind_supported("lab", "remote_to_close"))
+            # 实验室柜只验证过向左拨（rtl）= 远方→就地；向右拨未验证
+            self.assertTrue(dispatch._kind_supported("lab", "remote_to_close"))
+            self.assertFalse(dispatch._kind_supported("lab", "close_to_remote"))
 
     def test_direction_specific_default_offsets_are_resolved(self):
         defaults = {
@@ -669,8 +672,8 @@ class FactoryDispatchTests(unittest.TestCase):
                 })
             self.assertTrue(result["ok"])
             self.assertEqual(dispatch._task["direction"], "ltr")
-            self.assertEqual(dispatch._task["flip_from"], "就地")
-            self.assertEqual(dispatch._task["flip_to"], "远方")
+            self.assertEqual(dispatch._task["flip_from"], SCENE_LEFT)
+            self.assertEqual(dispatch._task["flip_to"], SCENE_RIGHT)
             self.assertEqual(
                 dispatch._task["first_round_offset_wall_mm"],
                 [0.0, 7.0, 0.0],

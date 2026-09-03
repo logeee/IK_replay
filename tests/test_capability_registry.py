@@ -8,6 +8,223 @@ from pathlib import Path
 from core import capability_registry as reg
 
 
+class SequenceClaimTests(unittest.TestCase):
+    """认领挂在能力条目上：拨/扭各认各的，seed 自带 cap-rtl-flick /
+    cap-ltr-flick 两个条目。"""
+
+    def _with_claims(self, claims):
+        seed = reg.seed_registry()
+        seed["sequence_claims"] = claims
+        return reg.validate_registry(seed)
+
+    def test_claims_normalized_deduped_sorted(self):
+        registry = self._with_claims([{
+            "capability_id": "cap-rtl-flick",
+            "names": ["b-起手式", "a-起手式", "b-起手式", "", None],
+        }])
+        self.assertEqual(registry["sequence_claims"][0]["names"],
+                         ["a-起手式", "b-起手式"])
+
+    def test_claim_with_unknown_capability_rejected(self):
+        with self.assertRaisesRegex(ValueError, "不存在的能力条目"):
+            self._with_claims([{"capability_id": "cap-ghost", "names": []}])
+
+    def test_duplicate_claim_capability_rejected(self):
+        with self.assertRaisesRegex(ValueError, "认领条目重复"):
+            self._with_claims([
+                {"capability_id": "cap-rtl-flick", "names": []},
+                {"capability_id": "cap-rtl-flick", "names": ["x"]},
+            ])
+
+    def test_claimed_names_helper_absent_capability_is_empty(self):
+        registry = self._with_claims([{
+            "capability_id": "cap-rtl-flick", "names": ["a-起手式"],
+        }])
+        self.assertEqual(
+            reg.claimed_sequence_names(registry, "cap-rtl-flick"),
+            ["a-起手式"])
+        # 严格语义：没有认领记录 = 空（一个都不能用）
+        self.assertEqual(
+            reg.claimed_sequence_names(registry, "cap-ltr-flick"), [])
+
+    def test_effective_pattern_prefers_capability_own(self):
+        registry = reg.validate_registry(reg.seed_registry())
+        rtl = next(c for c in registry["capabilities"]
+                   if c["id"] == "cap-rtl-flick")
+        # seed 自配了正则 → 用自己的
+        self.assertEqual(reg.effective_pose_pattern(rtl),
+                         rtl["assets"]["pose_pattern"])
+        # 清掉自配 → 按方向落回内置
+        rtl["assets"]["pose_pattern"] = ""
+        self.assertEqual(reg.effective_pose_pattern(rtl),
+                         reg.BUILTIN_POSE_PATTERNS["rtl"])
+        # cw/ccw 没有内置 → None
+        rtl["task"]["direction"] = "cw"
+        self.assertIsNone(reg.effective_pose_pattern(rtl))
+
+    def test_route_claim_separates_flick_families(self):
+        registry = reg.validate_registry(reg.seed_registry())
+        self.assertEqual(
+            reg.route_sequence_claim(registry, "right_arm",
+                                     "yinshi-1-right", "0.50-起手式新"),
+            ["cap-rtl-flick"])
+        self.assertEqual(
+            reg.route_sequence_claim(registry, "right_arm",
+                                     "yinshi-1-right", "0.50-左-起手式"),
+            ["cap-ltr-flick"])
+        # 扭命名不命中任何拨条目 → 留池
+        self.assertEqual(
+            reg.route_sequence_claim(registry, "right_arm",
+                                     "yinshi-1-right", "0.50-扭-起手式"),
+            [])
+        # 别的组合下没有条目 → 不路由
+        self.assertEqual(
+            reg.route_sequence_claim(registry, "left_arm",
+                                     "yinshi-1-right", "0.50-起手式新"),
+            [])
+
+    def test_route_claim_matches_twist_capability_pattern(self):
+        seed = reg.seed_registry()
+        seed["hands"].append({
+            "id": "qiangnao-1-right", "name": "强脑-右-1",
+            "design_side": "right", "tool_out_mm": 12.0, "notes": "",
+        })
+        seed["capabilities"].append({
+            "id": "cap-cw-twist", "arm": "right_arm",
+            "hand_id": "qiangnao-1-right",
+            "task": {"name": "扭旋钮", "direction": "cw",
+                     "sites": ["lab"]},
+            "method": "twist", "method_params": {},
+            "assets": {
+                "pose_pattern": r"^\s*(\d+(?:\.\d+)?)-扭-起手式\s*$",
+                "endpoint_pattern": "",
+            },
+            "enabled": False, "notes": "",
+        })
+        registry = reg.validate_registry(seed)
+        # 扭命名只归扭条目（停用也算，录制时临时停用不丢认领）
+        self.assertEqual(
+            reg.route_sequence_claim(registry, "right_arm",
+                                     "qiangnao-1-right", "0.50-扭-起手式"),
+            ["cap-cw-twist"])
+        # 拨命名在强脑组合下没有条目 → 不路由
+        self.assertEqual(
+            reg.route_sequence_claim(registry, "right_arm",
+                                     "qiangnao-1-right", "0.50-起手式新"),
+            [])
+
+
+class SequencePoolTests(unittest.TestCase):
+    @staticmethod
+    def _write_sequence(root: Path, filename: str, payload: dict):
+        directory = root / "data" / "sequences"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / filename).write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    def test_pool_groups_by_name_with_latest_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_sequence(root, "0.50-起手式新_20260822_031632.json", {
+                "name": "0.50-起手式新", "chain_id": "right_arm",
+                "created_at": "2026-08-22 03:16:32",
+            })
+            self._write_sequence(root, "0.50-起手式新_20260901_100000.json", {
+                "name": "0.50-起手式新", "chain_id": "right_arm",
+                "created_at": "2026-09-01 10:00:00",
+                "recorded_combo": {"arm": "right_arm",
+                                   "hand_id": "qiangnao-1-right"},
+            })
+            self._write_sequence(root, "扭旋钮-起手式_20260903_000000.json", {
+                "name": "扭旋钮-起手式",
+                "created_at": "2026-09-03 00:00:00",
+            })
+            (root / "data" / "sequences" / "bad.json").write_text(
+                "{oops", encoding="utf-8")
+            pool = reg.sequence_pool(root)
+            self.assertEqual([entry["name"] for entry in pool],
+                             sorted(["0.50-起手式新", "扭旋钮-起手式"]))
+            merged = next(entry for entry in pool
+                          if entry["name"] == "0.50-起手式新")
+            self.assertEqual(merged["files"], 2)
+            self.assertEqual(merged["latest_file"],
+                             "0.50-起手式新_20260901_100000.json")
+            self.assertEqual(merged["recorded_combo"],
+                             {"arm": "right_arm",
+                              "hand_id": "qiangnao-1-right"})
+
+    def test_pool_name_falls_back_to_stem_without_stamp(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_sequence(root, "无名动作_20260101_000000.json", {})
+            pool = reg.sequence_pool(root)
+            self.assertEqual([entry["name"] for entry in pool], ["无名动作"])
+
+    def test_migration_from_missing_key_routes_pool_by_pattern(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "capability_registry.json"
+            legacy = reg.seed_registry()
+            legacy.pop("sequence_claims")   # 模拟最早期文件：还没有该键
+            path.write_text(json.dumps(legacy, ensure_ascii=False),
+                            encoding="utf-8")
+            self._write_sequence(root, "0.50-起手式新_20260822_031632.json", {
+                "name": "0.50-起手式新",
+                "created_at": "2026-08-22 03:16:32",
+            })
+            self._write_sequence(root, "0.48-左-起手式_20260826_144000.json", {
+                "name": "0.48-左-起手式",
+                "created_at": "2026-08-26 14:40:00",
+            })
+            self._write_sequence(root, "0.44避障起手式_20260730_180703.json", {
+                "name": "0.44避障起手式",
+                "created_at": "2026-07-30 18:07:03",
+            })
+            self.assertTrue(reg.migrate_sequence_claims(path, root))
+            registry = reg.load_registry(path)
+            # 按正则拆到条目：起手式新→rtl、左-起手式→ltr、避障遗留→无人认领
+            self.assertEqual(
+                reg.claimed_sequence_names(registry, "cap-rtl-flick"),
+                ["0.50-起手式新"])
+            self.assertEqual(
+                reg.claimed_sequence_names(registry, "cap-ltr-flick"),
+                ["0.48-左-起手式"])
+            all_claimed = {n for c in registry["sequence_claims"]
+                           for n in c["names"]}
+            self.assertNotIn("0.44避障起手式", all_claimed)
+            # 已是新格式 → 不再迁移（清空认领也不会被重新填回）
+            self.assertFalse(reg.migrate_sequence_claims(path, root))
+
+    def test_migration_converts_combo_format_to_capability(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "capability_registry.json"
+            legacy = reg.seed_registry()
+            legacy["sequence_claims"] = [{   # 组合级旧格式
+                "arm": "right_arm", "hand_id": "yinshi-1-right",
+                "names": ["0.50-起手式新", "0.48-左-起手式", "孤儿动作"],
+            }]
+            path.write_text(json.dumps(legacy, ensure_ascii=False),
+                            encoding="utf-8")
+            self.assertTrue(reg.migrate_sequence_claims(path, root))
+            registry = reg.load_registry(path)
+            self.assertEqual(
+                reg.claimed_sequence_names(registry, "cap-rtl-flick"),
+                ["0.50-起手式新"])
+            self.assertEqual(
+                reg.claimed_sequence_names(registry, "cap-ltr-flick"),
+                ["0.48-左-起手式"])
+
+    def test_migration_skips_new_format(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "capability_registry.json"
+            reg.save_registry(reg.seed_registry(), path)   # 含空 claims 键
+            self.assertFalse(reg.migrate_sequence_claims(path, root))
+            registry = reg.load_registry(path)
+            self.assertEqual(registry["sequence_claims"], [])
+
+
 class SeedAndPersistenceTests(unittest.TestCase):
     def test_seed_contains_two_verified_capabilities(self):
         seed = reg.seed_registry()

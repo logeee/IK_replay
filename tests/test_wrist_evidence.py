@@ -12,15 +12,17 @@ from fastapi.responses import Response
 from adapters.reach import flip_verification, perception
 from api import yolo_server
 from api.flow import SwitchFlow
+from api.switch_states import SCENE_LEFT, SCENE_RIGHT
 
 
 class WristEvidenceTest(unittest.TestCase):
     def test_manual_path_captures_before_and_verifies_after(self):
         yolo = mock.Mock()
         yolo.scene.side_effect = [
-            {"ok": True, "scene": "就地", "jpeg_b64": "head", "wrist_jpeg_b64": "wrist"},
-            {"ok": True, "scene": "就地", "jpeg_b64": "after-1"},
-            {"ok": True, "scene": "远方", "jpeg_b64": "after-2"},
+            {"ok": True, "scene": SCENE_LEFT, "jpeg_b64": "head",
+             "wrist_jpeg_b64": "wrist"},
+            {"ok": True, "scene": SCENE_LEFT, "jpeg_b64": "after-1"},
+            {"ok": True, "scene": SCENE_RIGHT, "jpeg_b64": "after-2"},
         ]
         with (
             mock.patch.object(flip_verification, "YoloClient", return_value=yolo),
@@ -37,8 +39,8 @@ class WristEvidenceTest(unittest.TestCase):
             after = flip_verification.verify_manual_after(before)
 
         self.assertTrue(before["ok"])
-        self.assertEqual(before["flip_from"], "就地")
-        self.assertEqual(before["flip_to"], "远方")
+        self.assertEqual(before["flip_from"], SCENE_LEFT)
+        self.assertEqual(before["flip_to"], SCENE_RIGHT)
         self.assertTrue(after["ok"])
         self.assertTrue(after["success"])
         self.assertEqual(save.call_args_list[0].args[1], "before")
@@ -48,9 +50,9 @@ class WristEvidenceTest(unittest.TestCase):
     def test_manual_reverse_path_records_remote_to_close(self):
         yolo = mock.Mock()
         yolo.scene.side_effect = [
-            {"ok": True, "scene": "远方", "jpeg_b64": "head",
+            {"ok": True, "scene": SCENE_RIGHT, "jpeg_b64": "head",
              "wrist_jpeg_b64": "wrist"},
-            {"ok": True, "scene": "就地", "jpeg_b64": "after"},
+            {"ok": True, "scene": SCENE_LEFT, "jpeg_b64": "after"},
         ]
         with (
             mock.patch.object(flip_verification, "YoloClient", return_value=yolo),
@@ -66,11 +68,14 @@ class WristEvidenceTest(unittest.TestCase):
             after = flip_verification.verify_manual_after(before)
 
         self.assertEqual(
-            (before["flip_from"], before["flip_to"]), ("远方", "就地")
+            (before["flip_from"], before["flip_to"]),
+            (SCENE_RIGHT, SCENE_LEFT),
         )
         self.assertTrue(after["success"])
-        self.assertEqual(save.call_args_list[0].kwargs["flip_from"], "远方")
-        self.assertEqual(save.call_args_list[1].kwargs["flip_to"], "就地")
+        self.assertEqual(
+            save.call_args_list[0].kwargs["flip_from"], SCENE_RIGHT
+        )
+        self.assertEqual(save.call_args_list[1].kwargs["flip_to"], SCENE_LEFT)
 
     def test_manual_failures_are_persisted_for_history_viewer(self):
         yolo = mock.Mock()
@@ -90,7 +95,7 @@ class WristEvidenceTest(unittest.TestCase):
             result = flip_verification.capture_manual_before(
                 {
                     "record": "20260828_120000_1234abcd",
-                    "flip_from": "就地",
+                    "flip_from": SCENE_LEFT,
                 }
             )
 
@@ -120,8 +125,8 @@ class WristEvidenceTest(unittest.TestCase):
             result = flip_verification.verify_manual_after(
                 {
                     "record": "20260828_120000_1234abcd",
-                    "flip_from": "就地",
-                    "flip_to": "远方",
+                    "flip_from": SCENE_LEFT,
+                    "flip_to": SCENE_RIGHT,
                 }
             )
 
@@ -180,14 +185,14 @@ class WristEvidenceTest(unittest.TestCase):
             flow._PICK_HISTORY_DIR = root
             flow._last_pick_record = record
             flow._last_flip_round = 2
-            flow.flip_from = "就地"
-            flow.flip_to = "远方"
+            flow.flip_from = SCENE_LEFT
+            flow.flip_to = SCENE_RIGHT
             flow._log = mock.Mock()
 
             flow._save_flip_evidence(
                 "before",
                 {
-                    "scene": "就地",
+                    "scene": SCENE_LEFT,
                     "conf": 0.91,
                     "boxes": [],
                     "jpeg_b64": base64.b64encode(b"head-jpeg").decode(),
@@ -215,7 +220,7 @@ class WristEvidenceTest(unittest.TestCase):
             flow._save_flip_evidence(
                 "after",
                 {
-                    "scene": "远方",
+                    "scene": SCENE_RIGHT,
                     "jpeg_b64": base64.b64encode(b"head-after").decode(),
                     "wrist_jpeg_b64": base64.b64encode(b"must-not-save").decode(),
                 },

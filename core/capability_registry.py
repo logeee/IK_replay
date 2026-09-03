@@ -10,6 +10,13 @@
 
 手眼标定按「臂 + 手型号」组合归档：config/hand_eye/{arm}__{hand_id}/
 handeye3d_result.json。一二级组合相同则共用同一份标定。
+
+起手式认领（sequence_claims）：data/sequences 是全组合共享的公共动作池，
+认领挂在**能力条目**（臂+手+任务+方式）上——拨和扭是不同条目，各认各的
+起手式，互不影响；未认领的动作在该条目选档时不可用（严格模式）。18001
+录制新序列时上报（臂+手+动作名），18000 拿动作名匹配该组合各条目的起手
+式正则（条目没配就用方向内置正则），命中谁自动认领给谁；谁都不命中就留
+池待手动认领。历史存量在首次迁移时按正则拆给 右臂+因时-右-1 的条目。
 """
 from __future__ import annotations
 
@@ -29,6 +36,18 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "config" / "capability_registry.json"
 CALIB_ROOT = PROJECT_ROOT / "config" / "hand_eye"
 CALIB_FILENAME = "handeye3d_result.json"
+# 公共动作池：18001 录制的动作序列（相对项目根）
+SEQUENCES_SUBDIR = Path("data") / "sequences"
+# 序列文件名的时间戳后缀（同名多文件 = 同一动作的多次录制）
+SEQUENCE_STAMP_RE = re.compile(r"_\d{8}_\d{6}$")
+# 存量序列迁移时的默认归属组合（历史轨迹都是该组合录制的）
+LEGACY_SEQUENCE_COMBO = ("right_arm", "yinshi-1-right")
+# 方向内置起手式正则（能力条目没配 pose_pattern 时的兜底；与 api/flow.py
+# 的选档行为一致——flow 从这里取，保持单一来源）。第 1 捕获组 = 档位距离 m。
+BUILTIN_POSE_PATTERNS: dict[str, str] = {
+    "rtl": r"^\s*(\d+(?:\.\d+)?)-起手式新\s*$",
+    "ltr": r"^\s*(\d+(?:\.\d+)?)-左-起手式\s*$",
+}
 
 # 种子迁移时尝试从旧的固定路径复制标定（只在机器人本机存在）
 LEGACY_CALIB_SOURCE = ("/home/robot/yx/project/calib/hand_eye_3D/"
@@ -323,6 +342,28 @@ def _validate_capability(raw: Any, index: int,
     }
 
 
+def _validate_sequence_claim(raw: Any, index: int,
+                             capability_ids: set[str]) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError(f"sequence_claims[{index}] 必须是 JSON object")
+    capability_id = str(raw.get("capability_id") or "").strip()
+    if capability_id not in capability_ids:
+        raise ValueError(
+            f"sequence_claims[{index}].capability_id "
+            f"指向不存在的能力条目「{capability_id}」")
+    names_raw = raw.get("names")
+    if names_raw is None:
+        names_raw = []
+    if not isinstance(names_raw, list):
+        raise ValueError(f"sequence_claims[{index}].names 必须是数组")
+    names: list[str] = []
+    for name in names_raw:
+        clean = str(name or "").strip()
+        if clean and clean not in names:
+            names.append(clean)
+    return {"capability_id": capability_id, "names": sorted(names)}
+
+
 def validate_registry(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("注册表必须是 JSON object")
@@ -376,6 +417,22 @@ def validate_registry(payload: Any) -> dict[str, Any]:
         cap_ids.add(cap["id"])
         capabilities.append(cap)
 
+    raw_claims = payload.get("sequence_claims")
+    if raw_claims is None:
+        raw_claims = []
+    if not isinstance(raw_claims, list):
+        raise ValueError("sequence_claims 必须是数组")
+    capability_ids = {c["id"] for c in capabilities}
+    sequence_claims = []
+    claimed_caps: set[str] = set()
+    for i, raw in enumerate(raw_claims):
+        claim = _validate_sequence_claim(raw, i, capability_ids)
+        if claim["capability_id"] in claimed_caps:
+            raise ValueError(
+                f"起手式认领条目重复：{claim['capability_id']}")
+        claimed_caps.add(claim["capability_id"])
+        sequence_claims.append(claim)
+
     raw_active = payload.get("active")
     active: dict[str, str] | None = None
     if raw_active:
@@ -394,6 +451,7 @@ def validate_registry(payload: Any) -> dict[str, Any]:
         "hands": hands,
         "calibrations": calibrations,
         "capabilities": capabilities,
+        "sequence_claims": sequence_claims,
     }
 
 
@@ -582,3 +640,149 @@ def capability_for(registry: dict[str, Any], arm: str, hand_id: str,
                 and site in cap["task"]["sites"]):
             return cap
     return None
+
+
+# ------------------------------------------------------------------ 起手式认领
+
+
+def claimed_sequence_names(registry: dict[str, Any],
+                           capability_id: str) -> list[str]:
+    """能力条目已认领的动作名列表；没有认领记录视为空（严格：没认领=不可用）。"""
+    for claim in registry.get("sequence_claims") or []:
+        if claim["capability_id"] == capability_id:
+            return list(claim["names"])
+    return []
+
+
+def effective_pose_pattern(capability: dict[str, Any]) -> str | None:
+    """条目实际生效的起手式正则：自配的优先，否则按任务方向取内置。
+
+    cw/ccw 等没有内置正则的方向返回 None（不参与自动认领路由）。
+    """
+    pattern = str(capability.get("assets", {}).get("pose_pattern") or "")
+    if pattern:
+        return pattern
+    return BUILTIN_POSE_PATTERNS.get(capability["task"]["direction"])
+
+
+def route_sequence_claim(registry: dict[str, Any], arm: str, hand_id: str,
+                         name: str) -> list[str]:
+    """自动认领路由：动作名命中组合下哪些条目的起手式正则，就归谁。
+
+    含停用条目（录制时临时停用不该丢认领）；正则非法或方向无内置正则的
+    条目跳过。返回命中的 capability_id 列表（可能为空 = 留池待手动认领）。
+    """
+    matched: list[str] = []
+    for cap in registry.get("capabilities") or []:
+        if cap["arm"] != arm or cap["hand_id"] != hand_id:
+            continue
+        pattern = effective_pose_pattern(cap)
+        if not pattern:
+            continue
+        try:
+            if re.match(pattern, name):
+                matched.append(cap["id"])
+        except re.error:
+            continue
+    return matched
+
+
+def sequence_pool(root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
+    """扫描公共动作池（data/sequences），按动作名聚合。
+
+    同名多时间戳文件视为同一动作的多次录制，取 created_at 最新的一份的
+    元数据（chain_id / recorded_combo）。文件损坏跳过。
+    """
+    sequences_dir = Path(root) / SEQUENCES_SUBDIR
+    if not sequences_dir.is_dir():
+        return []
+    by_name: dict[str, dict[str, Any]] = {}
+    for path in sorted(sequences_dir.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        name = str(data.get("name") or "").strip()
+        if not name:
+            name = SEQUENCE_STAMP_RE.sub("", path.stem)
+        entry = by_name.setdefault(name, {
+            "name": name,
+            "files": 0,
+            "latest_file": "",
+            "latest_created_at": "",
+            "chain_id": None,
+            "recorded_combo": None,
+        })
+        entry["files"] += 1
+        created = str(data.get("created_at") or "")
+        if created >= entry["latest_created_at"]:
+            entry["latest_created_at"] = created
+            entry["latest_file"] = path.name
+            entry["chain_id"] = data.get("chain_id")
+            combo = data.get("recorded_combo")
+            entry["recorded_combo"] = combo if isinstance(combo, dict) else None
+    return sorted(by_name.values(), key=lambda item: item["name"])
+
+
+def migrate_sequence_claims(
+    path: str | Path = DEFAULT_REGISTRY_PATH,
+    root: Path = PROJECT_ROOT,
+) -> bool:
+    """一次性迁移到「能力条目级」认领。返回是否执行了迁移。
+
+    两种旧状态都能迁：
+    - 文件没有 sequence_claims 键（最早期）→ 把现有动作池视为
+      LEGACY_SEQUENCE_COMBO 的存量；
+    - 键里是组合级旧格式（带 arm/hand_id）→ 取各组合的已认领名单。
+    然后统一按正则路由拆到该组合的各能力条目上；已是新格式（带
+    capability_id）则不动。"""
+    registry_path = Path(path).expanduser().resolve()
+    if not registry_path.exists():
+        return False
+    try:
+        raw = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(raw, dict):
+        return False
+    raw_claims = raw.get("sequence_claims")
+    if isinstance(raw_claims, list) and all(
+            isinstance(c, dict) and "capability_id" in c
+            for c in raw_claims):
+        return False   # 已是新格式（含空列表）
+
+    # 组合 → 存量动作名
+    combo_names: dict[tuple[str, str], list[str]] = {}
+    if raw_claims is None:
+        combo_names[LEGACY_SEQUENCE_COMBO] = [
+            entry["name"] for entry in sequence_pool(root)]
+    elif isinstance(raw_claims, list):
+        for old in raw_claims:
+            if not isinstance(old, dict):
+                continue
+            combo = (str(old.get("arm") or ""),
+                     str(old.get("hand_id") or ""))
+            names = [str(n or "").strip() for n in old.get("names") or []]
+            combo_names[combo] = [n for n in names if n]
+    else:
+        return False
+
+    # 先按去掉认领的原始内容过校验，拿到规范化的能力条目再做路由
+    base = dict(raw)
+    base["sequence_claims"] = []
+    registry = validate_registry(base)
+    routed: dict[str, list[str]] = {}
+    for (arm, hand_id), names in combo_names.items():
+        for name in names:
+            for cap_id in route_sequence_claim(registry, arm, hand_id, name):
+                bucket = routed.setdefault(cap_id, [])
+                if name not in bucket:
+                    bucket.append(name)
+    registry["sequence_claims"] = [
+        {"capability_id": cap_id, "names": names}
+        for cap_id, names in routed.items()
+    ]
+    save_registry(registry, registry_path)
+    return True

@@ -70,6 +70,48 @@ def fetch_snapshot(
         "请先运行 IK_replay/capability.sh（prepare.sh 等启动脚本会自动拉起）。")
 
 
+def claim_sequence(
+    base_url: str | None,
+    arm: str,
+    hand_id: str,
+    name: str,
+    *,
+    timeout_s: float = 3.0,
+) -> dict[str, Any]:
+    """录制上报：把新动作名交给 18000 按组合下各条目的正则路由认领（幂等）。
+
+    18001 录制新序列后调用。成功返回 18000 的精简结果（含 claimed_to =
+    命中的能力条目）；不可达/被拒抛 CapabilityUnavailable。
+    """
+    base = (base_url or DEFAULT_CAPABILITY_URL).rstrip("/")
+    url = base + "/api/capability/sequence-claims/add"
+    body = json.dumps({"arm": arm, "hand_id": hand_id, "name": name},
+                      ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Content-Type": "application/json",
+                 "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+            payload = json.loads(
+                response.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read().decode("utf-8", errors="replace"))
+            message = detail.get("error") or str(detail)[:200]
+        except Exception:   # noqa: BLE001 —— 错误体解析失败就用状态码
+            message = f"HTTP {exc.code}"
+        raise CapabilityUnavailable(
+            f"18000 拒绝认领「{name}」→ {arm}+{hand_id}: {message}") from exc
+    except (OSError, ValueError) as exc:
+        raise CapabilityUnavailable(
+            f"访问不到 18000 能力中心（{url}）: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
+        raise CapabilityUnavailable(
+            f"18000 返回异常（{url}）: {str(payload)[:200]}")
+    return payload
+
+
 def describe_active(payload: dict[str, Any]) -> str:
     """启动日志统一的一行描述：激活组合 + 该组合标定状态。"""
     registry = payload.get("registry") or {}

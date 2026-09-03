@@ -32,7 +32,8 @@
                                 "retries": 3,   # 可选，最大尝试轮数（VLA 后端忽略）
                                 "manual": false,  # 可选，手动确认模式（见下）
                                 "site": "lab",  # 可选，现场：lab=实验室柜（默认）
-                                                # factory=工厂柜（两旋钮印刷相反）
+                                                # factory=工厂柜；只影响该柜
+                                                # 已验证动作的筛选，不影响方向
                                 "target_offset_wall_mm": {"x":0,"y":0,"z":0},
                                 # 可选，目的点人工微调（墙面系，mm，单轴限 ±100）：
                                 # x=沿墙向右 y=法向入墙 z=沿墙向上。叠加在 7005
@@ -53,11 +54,11 @@
                           POST /config/offset-presets[/delete] 管理）
                           返回 {"ok": true, "task_id": "..."}；执行中再触发 → 409
 
-现场（site）：工厂柜支持双向——「远方→就地」向左拨，
-    「就地→远方」向右拨；两边使用相同位移、下倾、重试和收尾逻辑，推力可
-    按方向分别配置。
-    实验室柜当前只开放「就地→远方」。YOLO 识别真实印刷状态，language
-    决定"要拨/已到位"类别，site + language 决定物理左右方向。
+方向：language 唯一决定——「远方→就地」向左拨（右→左），「就地→远方」
+    向右拨（左→右）；两边使用相同位移、下倾、重试和收尾逻辑，推力可
+    按方向分别配置。YOLO（Xuanniu_D.pt）识别开关物理指向「远方就地左/右」，
+    任何现场一致；site 只决定该柜验证过哪些动作（能力注册表 task.sites），
+    不再参与方向判断。工厂柜双向已验证，实验室柜当前只验证过向左拨。
     GET  /task/status  → 状态机 idle/starting/running/done + 流程日志尾部
                           + 最终结果（错误码见 api.flow.ErrorCode）
                           + step_times 分步耗时 + prompt 当前等待确认的步骤
@@ -79,8 +80,8 @@
                           用于"别的程序要接管、必须马上让我们松手"的场合。
 
 language 逐字固定（大小写/空格容错，多余的不认）：
-    "Change the switch from close to remote"   就地 → 远方（工厂/实验室柜）
-    "Change the switch from remote to close"   远方 → 就地（工厂柜可执行）
+    "Change the switch from close to remote"   就地 → 远方（向右拨，工厂柜验证）
+    "Change the switch from remote to close"   远方 → 就地（向左拨，两柜验证）
 """
 
 from __future__ import annotations
@@ -115,6 +116,7 @@ from core.capability_registry import (
     IMPLEMENTED_METHODS,
     calibration_info,
     capability_for,
+    claimed_sequence_names,
     find_hand,
 )
 from core.dispatch_defaults import (
@@ -137,12 +139,14 @@ from .client import ReachClient
 from .console_client import ConsoleClient
 from .flow import (
     FLIP_KIND_STATES,
-    SITE_RTL_KIND,
+    KIND_DIRECTIONS,
+    KIND_LABELS,
     ErrorCode,
     FlowError,
     SwitchFlow,
     resolve_flip_intent,
 )
+from .switch_states import SCENE_CLASSES
 from .pointcloud_client import PointcloudClient
 from .yolo_client import YoloClient
 
@@ -234,16 +238,19 @@ def _active_arm_context() -> dict[str, Any] | None:
 
 
 def _capability_for_kind(site: str, kind: str) -> dict[str, Any] | None:
-    """激活组合下，某现场 + 任务方向对应的已启用能力条目。"""
+    """激活组合下，某现场 + 任务方向对应的已启用能力条目。
+
+    方向由 kind 唯一决定（与 site 无关）；site 只用于筛选该柜验证过
+    的能力（task.sites）。
+    """
     registry = _capability_registry()
     if registry is None:
         return None
     active = registry.get("active")
-    if not active or site not in SITE_RTL_KIND:
+    if not active or site not in SITES or kind not in KIND_DIRECTIONS:
         return None
-    direction = "rtl" if kind == SITE_RTL_KIND[site] else "ltr"
     return capability_for(registry, active["arm"], active["hand_id"],
-                          direction, site)
+                          KIND_DIRECTIONS[kind], site)
 
 
 # ------------------------------------------------------------ reach 生命周期
@@ -569,8 +576,20 @@ def _run_task(task: dict) -> None:
                 f"横移 {params['sidestep_cm']:g}cm、推力 "
                 f"{params['push_force_n']:g}N、保持 {params['push_hold_s']:g}s、"
                 f"下倾 {params['down_deg']:g}°")
+        # 起手式认领（18000 配置，严格）：只允许本次解析出的能力条目认领
+        # 过的动作参与选档——拨/扭各认各的，互不污染。没解析出条目时为
+        # None（flow 按旧行为不过滤）。
+        registry = _capability_registry()
+        claimed_names: list[str] | None = None
+        if capability is not None and registry is not None:
+            claimed_names = claimed_sequence_names(registry,
+                                                   capability["id"])
+            task["log"].append(
+                f"起手式认领：条目 {capability['id']} 共认领 "
+                f"{len(claimed_names)} 个动作")
         flow = SwitchFlow(client=ReachClient(_args.reach_base),
                           console=console, yolo=yolo,
+                          claimed_pose_names=claimed_names,
                           **capability_kwargs,
                           coarse_target_deg=coarse["target_deg"],
                           coarse_accept_min_deg=coarse["accept_min_deg"],
@@ -666,9 +685,9 @@ CHECK_MOTOR_LIMITS_DEG = {               # 第 3 步：允许区间 (下限, 上
     14: ("腰偏航", -1.0, 3.5),   # 非对称：机器人惯常往左偏
 }
 CHECK_BOX_BAND = (0.20, 0.80)            # 第 4 步：框中心须在画宽的中间 60%
-CHECK_SCENE_CLASSES = ("就地", "远方")
-# language → (拨前状态, 目标状态)：第 4 步识别到目标状态 = 无需拨动
-CHECK_KIND_STATES = FLIP_KIND_STATES
+CHECK_SCENE_CLASSES = SCENE_CLASSES      # 开关物理指向类别（左/右）
+# 人读文案用的任务语义标签（就地/远方）；YOLO 比对用 FLIP_KIND_STATES
+CHECK_KIND_STATES = KIND_LABELS
 
 
 def _run_checks(check: dict, kind: str) -> dict:
@@ -781,8 +800,8 @@ def _run_checks(check: dict, kind: str) -> dict:
     ok_step(f"5 电机全部在限内，距离 {dist:.3f} m")
 
     # ---- 4️⃣ YOLO：已在目标状态则无需拨动；否则检查框横向居中 ----
-    # YOLO 识别的是真实印刷状态（工厂柜实测印刷相反也读得对），
-    # 直接按指令语义的前/后状态类别比对即可。
+    # YOLO 识别的是开关物理指向（左/右），任何现场一致，
+    # 直接按任务的前/后指向类别比对即可。
     site = check.get("site") or "lab"
     intent = resolve_flip_intent(site, kind)
     pre_cls, post_cls = intent["flip_from"], intent["flip_to"]
@@ -799,7 +818,7 @@ def _run_checks(check: dict, kind: str) -> dict:
     cands = [b for b in scene.get("boxes", [])
              if b.get("name") in CHECK_SCENE_CLASSES]
     if not cands:
-        return fail("画面里没识别到「就地/远方」开关框")
+        return fail("画面里没识别到开关指向（左/右）的框")
     best = max(cands, key=lambda b: b["conf"])
     if best["name"] == post_cls:
         steps[-1].update({"scene": best["name"], "conf": best["conf"]})
@@ -856,7 +875,7 @@ def check_flip(body: dict | None = None):
     site, _site_source = _resolve_site(body, _current_defaults())
     if site is None:
         return JSONResponse(
-            {"ok": False, "error": "site 只能是 lab（实验室柜）或 factory（工厂柜，印刷相反）"},
+            {"ok": False, "error": "site 只能是 lab（实验室柜）或 factory（工厂柜）"},
             status_code=422)
     intent = resolve_flip_intent(site, kind)
     if not _kind_supported(site, kind):
@@ -940,14 +959,15 @@ LANGUAGE_TASKS = {
     "change the switch from remote to close": "remote_to_close",
 }
 
-# 现场（site）决定同一物理方向对应的印刷语义。工厂柜已开放双向：
-# 远方→就地向左拨，反向任务就地→远方向右拨。实验室柜的镜像动作仍未验收。
+# 现场（site）只决定该柜验证过哪些动作，不再影响方向：方向由 kind 唯一
+# 决定（远方→就地=向左拨，就地→远方=向右拨），YOLO 按物理指向识别，
+# 两柜一致。工厂柜双向已验证；实验室柜只验证过向左拨（rtl）。
 SITES = ("lab", "factory")
-SITE_LABELS = {"lab": "实验室柜", "factory": "工厂柜（印刷相反）"}
+SITE_LABELS = {"lab": "实验室柜", "factory": "工厂柜"}
 # 旧的硬编码支持表：仅在能力注册表不可用（读失败/未设激活组合）时兜底。
 # 正常路径由注册表的激活组合 + 已启用能力推导（种子内容与本表一致）。
 SITE_SUPPORTED_KINDS = {
-    "lab": frozenset({"close_to_remote"}),
+    "lab": frozenset({"remote_to_close"}),
     "factory": frozenset({"close_to_remote", "remote_to_close"}),
 }
 
@@ -1136,7 +1156,7 @@ def _unsupported_message(kind: str, site: str) -> str:
         f"「{CHECK_KIND_STATES[item][0]} → {CHECK_KIND_STATES[item][1]}」"
         for item in _supported_kinds(site)
     ) or "（无——激活组合下没有该柜已启用的能力）"
-    return (f"「{pre} → {post}」在{SITE_LABELS[site]}上的镜像动作"
+    return (f"「{pre} → {post}」在{SITE_LABELS[site]}上"
             f"尚未真机验证；该柜当前支持 {supported}")
 
 
@@ -1170,7 +1190,7 @@ def task_submit(body: dict | None = None):
     site, site_source = _resolve_site(body, defaults)
     if site is None:
         return JSONResponse(
-            {"ok": False, "error": "site 只能是 lab（实验室柜）或 factory（工厂柜，印刷相反）"},
+            {"ok": False, "error": "site 只能是 lab（实验室柜）或 factory（工厂柜）"},
             status_code=422)
     intent = resolve_flip_intent(site, kind)
     try:
@@ -1281,7 +1301,7 @@ def task_submit(body: dict | None = None):
                  "stats_counted": False}
         _task_stats["accepted"] += 1
         if not _kind_supported(site, kind):
-            # 该柜做不了这个方向（= 未验证的镜像动作），快速失败不启动硬件
+            # 该柜没验证过这个方向，快速失败不启动硬件
             # ——平台仍按统一的轮询路径拿到结果，错误码 NOT_IMPLEMENTED
             _task["state"] = "done"
             _task["finished_at"] = now

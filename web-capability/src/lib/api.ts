@@ -33,12 +33,30 @@ export interface ActiveCombo {
   hand_id: string;
 }
 
+/** 某能力条目认领的起手式动作名（严格：没认领的动作该条目不可用；
+ *  拨/扭是不同条目，各认各的） */
+export interface SequenceClaim {
+  capability_id: string;
+  names: string[];
+}
+
+/** 公共动作池条目（data/sequences 按动作名聚合；同名多文件=多次录制） */
+export interface SequencePoolEntry {
+  name: string;
+  files: number;
+  latest_file: string;
+  latest_created_at: string;
+  chain_id: string | null;
+  recorded_combo: { arm?: string; hand_id?: string } | null;
+}
+
 export interface Registry {
   schema_version: number;
   active: ActiveCombo | null;
   hands: Hand[];
   calibrations: unknown[];
   capabilities: Capability[];
+  sequence_claims: SequenceClaim[];
 }
 
 export type CalibStatus = "ready" | "pending" | "missing";
@@ -84,6 +102,7 @@ export interface Payload {
   ok: boolean;
   registry: Registry;
   calibrations: CalibInfo[];
+  sequence_pool: SequencePoolEntry[];
   meta: Meta;
 }
 

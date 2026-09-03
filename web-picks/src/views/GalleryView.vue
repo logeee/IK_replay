@@ -184,7 +184,7 @@ function flowSummary(r: PickRecord): string | null {
             <span
               v-if="r.meta.matched_detection_name"
               class="badge"
-              :class="r.meta.matched_detection_name === '远方' ? 'remote' : 'local'"
+              :class="['远方', '远方就地右'].includes(r.meta.matched_detection_name) ? 'remote' : 'local'"
             >
               {{ r.meta.matched_detection_name }}
             </span>

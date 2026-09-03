@@ -127,7 +127,7 @@ function fmtSignedMetersAsMm(v?: number | null): string {
       <span
         v-if="meta.matched_detection_name"
         class="badge"
-        :class="meta.matched_detection_name === '远方' ? 'remote' : 'local'"
+        :class="['远方', '远方就地右'].includes(meta.matched_detection_name) ? 'remote' : 'local'"
       >
         {{ meta.matched_detection_name }}
       </span>

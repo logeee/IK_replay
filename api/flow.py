@@ -10,10 +10,11 @@
 场景判断和拨后复核走 7004 YOLO 服务（python -m api.yolo_server）：
 每处视觉判断连问 3 帧再下结论；配了 YOLO 却仍没结论时报 YOLO_FAILED
 退出（手臂受控回落），不转人工——无人值守的自动化不能卡在等人上。
-YOLO 识别的是开关的真实印刷状态（工厂柜实测：印刷相反时也能正确读出
-「远方」）。任务 kind 决定起止状态，site + kind 决定物理拨动方向：
-  工厂柜远方→就地：从右向左；工厂柜就地→远方：从左向右。
-  实验室柜的印刷方向相反，因此同一物理方向对应相反的状态变化。
+YOLO（Xuanniu_D.pt）识别的是开关的物理指向「远方就地左/右」，不读
+印刷文字，任何现场结果一致。语义按工厂柜印刷全局固定：就地=左、
+远方=右，因此任务 kind 唯一决定起止指向和物理方向：
+  remote_to_close（远方→就地）：右→左，向左拨；
+  close_to_remote（就地→远方）：左→右，向右拨。site 不再参与判断。
 拨完识别 flip_to = 成功、flip_from = 失败重试。
 
 取点（默认走 7005 语义点云算法）：冻结同帧 RGB-D → 建墙面坐标系 →
@@ -44,6 +45,8 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any
 
+from core.capability_registry import BUILTIN_POSE_PATTERNS
+
 from .client import ReachClient
 from .console_client import ConsoleAbort, ConsoleClient
 from .flip_evidence import (
@@ -51,6 +54,7 @@ from .flip_evidence import (
     save_flip_evidence,
     save_pick_flow_context,
 )
+from .switch_states import SCENE_CLASSES, SCENE_LEFT, SCENE_RIGHT
 from .yolo_client import YoloClient
 
 
@@ -85,32 +89,45 @@ class FlowResult:
     detail: dict[str, Any] = field(default_factory=dict)
 
 
+# 起止状态直接用 YOLO 的物理类别（就地=左、远方=右，工厂柜印刷约定，
+# 全局固定）；方向由 kind 唯一决定，与 site 无关。
 FLIP_KIND_STATES: dict[str, tuple[str, str]] = {
+    "close_to_remote": (SCENE_LEFT, SCENE_RIGHT),   # 就地→远方 = 向右拨
+    "remote_to_close": (SCENE_RIGHT, SCENE_LEFT),   # 远方→就地 = 向左拨
+}
+KIND_DIRECTIONS = {
+    "close_to_remote": "ltr",
+    "remote_to_close": "rtl",
+}
+# 人读的任务语义标签（日志/配置文案用；YOLO 比对一律用 FLIP_KIND_STATES）
+KIND_LABELS = {
     "close_to_remote": ("就地", "远方"),
     "remote_to_close": ("远方", "就地"),
 }
-SITE_RTL_KIND = {
+SITES = ("lab", "factory")
+# 旧单方向配置页每个现场只配一个方向；仅供 17001 兼容旧缓存页面时挑
+# 默认 kind 用，不再参与方向判断。
+LEGACY_SITE_KIND = {
     "lab": "close_to_remote",
     "factory": "remote_to_close",
 }
 
 
 def resolve_flip_intent(site: str, kind: str | None = None) -> dict[str, str]:
-    """Resolve semantic states and the physical direction for one task."""
+    """Resolve physical states and the flick direction for one task."""
     clean_site = str(site or "").strip().lower()
-    if clean_site not in SITE_RTL_KIND:
+    if clean_site not in SITES:
         raise ValueError(f"不支持的现场：{site!r}")
-    clean_kind = str(kind or SITE_RTL_KIND[clean_site]).strip().lower()
+    clean_kind = str(kind or LEGACY_SITE_KIND[clean_site]).strip().lower()
     if clean_kind not in FLIP_KIND_STATES:
         raise ValueError(f"不支持的拨动任务：{kind!r}")
     flip_from, flip_to = FLIP_KIND_STATES[clean_kind]
-    direction = "rtl" if clean_kind == SITE_RTL_KIND[clean_site] else "ltr"
     return {
         "site": clean_site,
         "kind": clean_kind,
         "flip_from": flip_from,
         "flip_to": flip_to,
-        "direction": direction,
+        "direction": KIND_DIRECTIONS[clean_kind],
     }
 
 
@@ -198,6 +215,9 @@ class SwitchFlow:
                  push_hold_s: float | None = None,  # 拨过后满推力保持秒数（None=执行端默认 1.5）
                  sidestep_down_deg: float | None = None,  # 横移向下倾角（None=类默认 15°）
                  pose_pattern: str | None = None,   # 起手式命名正则（能力注册表注入；None=按方向用内置正则）
+                 # 激活组合认领的动作名集合（18000 配置）。None=不过滤（注册表
+                 # 不可用的兜底路径）；集合（含空集）=严格按认领过滤选档。
+                 claimed_pose_names: set[str] | list[str] | None = None,
                  lift_m: float = 0.02,             # 规划中段抬高 2cm（防刮底）
                  endpoint_speed_rad_s: float = 0.3,  # 插值回「终点」路点的关节限速
                  max_flip_rounds: int = 3,         # 拨动失败回到 5️⃣ 的最大轮数
@@ -281,6 +301,10 @@ class SwitchFlow:
         )
         self.pose_pattern = (
             re.compile(pose_pattern) if pose_pattern else None
+        )
+        self.claimed_pose_names = (
+            None if claimed_pose_names is None
+            else {str(name) for name in claimed_pose_names}
         )
         self.lift_m = lift_m
         self.endpoint_speed_rad_s = endpoint_speed_rad_s
@@ -429,7 +453,7 @@ class SwitchFlow:
                 else "从左向右（右移）"
             # 措辞别带阶段卡的关键词（如"拨动成功"），看板靠日志兜底推进度
             self._log(
-                f"现场={'工厂柜（印刷相反）' if self.site == 'factory' else '实验室柜'}："
+                f"现场={'工厂柜' if self.site == 'factory' else '实验室柜'}："
                 f"任务「{self.flip_from} → {self.flip_to}」，物理方向 "
                 f"{direction_text} {self.sidestep_distance_cm:g}cm；"
                 f"识别「{self.flip_from}」= 要拨、"
@@ -1071,18 +1095,18 @@ class SwitchFlow:
     YOLO_RETRY_WAIT_S = 0.6   # 两次之间等一下，等新的一帧
 
     def _yolo_scene(self, tag: str, include_image: bool = False) -> dict | None:
-        """问 YOLO 服务当前是就地还是远方，最多问 YOLO_ATTEMPTS 次。
+        """问 YOLO 服务开关当前的物理指向（左/右），最多问 YOLO_ATTEMPTS 次。
 
-        返回 {"scene": "就地"|"远方", "conf": ...}；没配 YOLO、服务不可达
-        或每次都没识别到 → 返回 None。include_image=True 时返回里带
-        jpeg_b64（判定帧）和 boxes，供拨动证据存档。
+        返回 {"scene": "远方就地左"|"远方就地右", "conf": ...}；没配 YOLO、
+        服务不可达或每次都没识别到 → 返回 None。include_image=True 时返回
+        里带 jpeg_b64（判定帧）和 boxes，供拨动证据存档。
         """
         if self.yolo is None:
             return None
         for i in range(1, self.YOLO_ATTEMPTS + 1):
             res = self.yolo.scene(include_image=include_image)
             self._last_yolo_result = res
-            if res.get("ok") and res.get("scene") in ("就地", "远方"):
+            if res.get("ok") and res.get("scene") in SCENE_CLASSES:
                 self._log(f"{tag}：YOLO 识别为「{res['scene']}」"
                           f"（置信度 {res.get('conf')}，第 {i} 次尝试）")
                 return {"scene": res["scene"], "conf": res.get("conf"),
@@ -1091,7 +1115,7 @@ class SwitchFlow:
                         "wrist_jpeg_b64": res.get("wrist_jpeg_b64"),
                         "wrist_error": res.get("wrist_error")}
             self._log(f"{tag}：第 {i}/{self.YOLO_ATTEMPTS} 次没结论"
-                      f"（{res.get('error') or '画面里没识别到就地/远方'}）")
+                      f"（{res.get('error') or '画面里没识别到开关指向'}）")
             if i < self.YOLO_ATTEMPTS:
                 time.sleep(self.YOLO_RETRY_WAIT_S)
         return None
@@ -1118,8 +1142,8 @@ class SwitchFlow:
         if self.yolo is not None:
             raise FlowError(ErrorCode.YOLO_FAILED,
                             f"场景判断失败：YOLO 连续 {self.YOLO_ATTEMPTS} 次都没"
-                            f"识别到「就地/远方」——检查画面是否被遮挡、反光，"
-                            f"或机器人是否正对柜面")
+                            f"识别到开关指向（左/右）——检查画面是否被遮挡、"
+                            f"反光，或机器人是否正对柜面")
         answer = self._need_console("YOLO 场景判断").choice(
             "2️⃣ 场景判断（YOLO 无结论，请看相机画面人工判断）\n"
             f"任务目标为「{self.flip_to}」，当前是什么状态？",
@@ -1132,11 +1156,10 @@ class SwitchFlow:
                 "source": "console"}
 
     # 向左拨使用原「0.49-起手式新」；向右拨使用「0.49-左-起手式」。
-    # 前缀数字是该档的录制距离。
-    NEW_POSE_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)-起手式新\s*$")
-    LEFT_POSE_PATTERN = re.compile(
-        r"^\s*(\d+(?:\.\d+)?)-左-起手式\s*$"
-    )
+    # 前缀数字是该档的录制距离。正则字符串以能力注册表为单一来源
+    # （18000 自动认领路由也用同一份，见 core/capability_registry.py）。
+    NEW_POSE_PATTERN = re.compile(BUILTIN_POSE_PATTERNS["rtl"])
+    LEFT_POSE_PATTERN = re.compile(BUILTIN_POSE_PATTERNS["ltr"])
     # 选档基准 = 实测距离 - 0.03 m（手臂前伸量按比柜面近 3cm 的档位录制），
     # 再选数值最接近的已有档位；恰好位于两档中间时取较高档。
     POSE_MARGIN_M = 0.03
@@ -1197,6 +1220,17 @@ class SwitchFlow:
                     poses.append((float(m.group(1)), s))
                 except (TypeError, ValueError):
                     continue   # 注入正则的第 1 组不是数字 → 该序列不参与选档
+        # 起手式认领（18000 配置，严格）：激活组合没认领的动作不可用
+        if self.claimed_pose_names is not None:
+            matched = len(poses)
+            poses = [(thr, s) for thr, s in poses
+                     if str(s.get("name") or "") in self.claimed_pose_names]
+            if matched and not poses:
+                raise FlowError(
+                    ErrorCode.POSE_UNAVAILABLE,
+                    f"公共池有 {matched} 个「{family}」动作，但当前激活组合"
+                    "一个都没认领——到 18000 配置页认领后重启 17001",
+                )
         if not poses:
             example = "0.46-左-起手式" if rightward else "0.46-起手式新"
             raise FlowError(
@@ -1271,8 +1305,9 @@ class SwitchFlow:
     # 取点 = 拨前状态框（flip_from）的固定相对偏移。40 个人工标注样本
     # （d 0.44~0.73m、yaw -16~+15°）实测 au/av 与距离和角度都无关
     # （残差 ±4px ≈ ±1.5mm）：手柄凸出带来的视差被框宽的透视缩放自动补偿了。
-    # 样本来自实验室柜「就地」框；工厂柜用「远方」框套同一偏移——框的几何
-    # 是同一个开关区域，首上工厂柜时建议手动模式核对一次取点落位。
+    # ⚠ 该偏移按旧模型（Xuanniu.pt）「开关在右」的框标定；换 Xuanniu_D.pt
+    # 后框的几何可能不同，此像素兜底路径启用前需重新核对（主路径 7005
+    # 点云取点不受影响，偏移由 0.2.0-s 模型按面板中心重新推导）。
     POINT_AU = 1.230   # u = x1 + au×框宽（>1 即框右缘外侧，手柄位置）
     POINT_AV = 0.543   # v = y1 + av×框高
 
@@ -1732,13 +1767,13 @@ class SwitchFlow:
             failed = dict(getattr(self, "_last_yolo_result", None) or {})
             failed["ok"] = False
             failed["error"] = (
-                f"YOLO 连续 {self.YOLO_ATTEMPTS} 次都没识别到「就地/远方」"
+                f"YOLO 连续 {self.YOLO_ATTEMPTS} 次都没识别到开关指向"
             )
             self._save_flip_evidence("after", failed)
             raise FlowError(ErrorCode.YOLO_FAILED,
                             f"复核失败：YOLO 连续 {self.YOLO_ATTEMPTS} 次都没识别到"
-                            f"「就地/远方」，无法判定拨动结果——开关是否被手臂"
-                            f"遮住或已移出画面？")
+                            f"开关指向（左/右），无法判定拨动结果——开关是否被"
+                            f"手臂遮住或已移出画面？")
         return self._need_console("拨动复核").yesno(
             "复核（YOLO 无结论）：开关拨动成功了吗？")
 

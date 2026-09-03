@@ -9,6 +9,7 @@ import CapabilityDialog from "./components/CapabilityDialog.vue";
 import CapabilityList from "./components/CapabilityList.vue";
 import HandDialog from "./components/HandDialog.vue";
 import HandsPanel from "./components/HandsPanel.vue";
+import SequenceClaimPanel from "./components/SequenceClaimPanel.vue";
 
 const payload = ref<Payload | null>(null);
 const loadError = ref("");
@@ -103,6 +104,14 @@ async function applyActive(arm: string, handId: string) {
   );
 }
 
+async function saveSequenceClaims(capabilityId: string, names: string[]) {
+  await mutate(
+    "/api/capability/sequence-claims",
+    { capability_id: capabilityId, names },
+    "起手式认领已保存（重启 17001 生效）",
+  );
+}
+
 onMounted(reload);
 </script>
 
@@ -133,6 +142,11 @@ onMounted(reload);
       @edit="(cap) => (capDialog = { cap })"
       @toggle="toggleCapability"
       @remove="removeCapability"
+    />
+    <SequenceClaimPanel
+      :payload="payload"
+      :busy="busy"
+      @save="saveSequenceClaims"
     />
   </template>
   <div v-else-if="loadError" class="load-state error">
