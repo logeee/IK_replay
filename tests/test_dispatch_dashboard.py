@@ -29,7 +29,11 @@ class DispatchDashboardTests(unittest.TestCase):
         self.assertIn('id="defaultPresetCloseToRemote"', html)
         self.assertIn('id="firstOffsetY"', html)
         self.assertIn('id="learnFirstRoundDefault"', html)
+        self.assertIn('id="pushForce"', html)
+        self.assertIn('id="defaultPushForceRemoteToClose"', html)
+        self.assertIn('id="defaultPushForceCloseToRemote"', html)
         self.assertIn("first_round_offset_wall_mm_by_kind", html)
+        self.assertIn("push_force_n_by_kind", html)
         self.assertEqual(response.headers["cache-control"], "no-store, max-age=0")
         self.assertIn('cache: "no-store"', html)
 
