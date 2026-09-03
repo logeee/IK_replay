@@ -10,11 +10,13 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from urllib.error import HTTPError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
 
 FetchJson = Callable[[str, float, bool], Any]
+PostJson = Callable[[str, dict, float, bool], Any]
 
 
 _BRAINCO_PREVIEW = {
@@ -101,6 +103,20 @@ class HandRuntimeConfig:
 
 def _default_fetch_json(url: str, timeout: float, verify_tls: bool) -> Any:
     request = Request(url, headers={"Accept": "application/json"})
+    context = None
+    if url.lower().startswith("https://") and not verify_tls:
+        context = ssl._create_unverified_context()
+    with urlopen(request, timeout=timeout, context=context) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _default_post_json(url: str, payload: dict, timeout: float,
+                       verify_tls: bool) -> Any:
+    data = json.dumps(payload).encode("utf-8")
+    request = Request(url, data=data, headers={
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    })
     context = None
     if url.lower().startswith("https://") and not verify_tls:
         context = ssl._create_unverified_context()
@@ -248,12 +264,16 @@ class HandRuntime:
         config: HandRuntimeConfig,
         *,
         fetch_json: FetchJson | None = None,
+        post_json: PostJson | None = None,
         timeout_s: float = 0.8,
+        connect_timeout_s: float = 5.0,
         verify_tls: bool = False,
     ) -> None:
         self.config = config
         self.fetch_json = fetch_json or _default_fetch_json
+        self.post_json = post_json or _default_post_json
         self.timeout_s = timeout_s
+        self.connect_timeout_s = connect_timeout_s
         self.verify_tls = verify_tls
         self._catalog: Any = None
         self._catalog_at = 0.0
@@ -399,6 +419,39 @@ class HandRuntime:
             "positions": positions,
         }
 
+    def connect(self) -> dict[str, Any]:
+        """让 18089 连接激活组合绑定的设备（已连同设备时 18089 复用通道）。
+
+        接管手臂时顺带调用；设备被其他控制源占用时 18089 返回 409，
+        这里只透传错误、绝不抢占。
+        """
+        base = {
+            "device_id": self.config.device_id,
+            "side": self.config.side,
+            "hand_name": self.config.hand_name,
+        }
+        url = urljoin(self.config.service_url, "api/connect")
+        try:
+            body = self.post_json(
+                url, {"device_id": self.config.device_id},
+                self.connect_timeout_s, self.verify_tls)
+        except HTTPError as exc:
+            try:
+                detail = json.loads(exc.read().decode("utf-8", errors="replace"))
+                message = str(detail.get("error") or f"HTTP {exc.code}")
+            except (ValueError, OSError):
+                message = f"HTTP {exc.code}"
+            return {**base, "ok": False, "error": f"18089: {message}"}
+        except OSError as exc:
+            return {**base, "ok": False, "error": f"18089 不可达: {exc}"}
+        except ValueError as exc:
+            return {**base, "ok": False, "error": f"18089 返回非 JSON: {exc}"}
+        if not isinstance(body, dict) or body.get("ok") is False:
+            error = (body or {}).get("error") if isinstance(body, dict) else None
+            return {**base, "ok": False,
+                    "error": str(error or "18089 拒绝连接")}
+        return {**base, "ok": True}
+
     def asset_path(self, relative_path: str) -> Path:
         root = self.config.assets_root
         path = (root / relative_path).resolve()
@@ -435,3 +488,16 @@ def hand_asset_path(relative_path: str) -> Path:
     if runtime is None:
         raise FileNotFoundError("hand runtime is not configured")
     return runtime.asset_path(relative_path)
+
+
+def hand_connect() -> dict[str, Any]:
+    """按 18000 激活组合连接 18089 灵巧手（接管手臂时顺带调用）。
+
+    当前手型号没绑 18089 设备时返回 enabled=False（不算错误）。
+    """
+    with _runtime_lock:
+        runtime = _runtime
+    if runtime is None:
+        return {"ok": False, "enabled": False,
+                "error": "当前组合未绑定 18089 灵巧手"}
+    return {"enabled": True, **runtime.connect()}

@@ -1,0 +1,36 @@
+# IK_replay 18000 能力配置中心开机自启 unit
+#
+# 安装（复制到 systemd 目录并启用，见 deploy/README-自启动.md）：
+#   ./capability.sh stop   # 先收掉手动起的实例，避免端口冲突
+#   sudo cp deploy/ik-capability.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ik-capability.service
+#
+# 18000 是全组的启动依赖（17001/18001 启动第一步都要拜访它），由 systemd
+# 常驻：开机先于 ik-replay 拨闸组启动，进程崩溃 3 秒后自动拉活。
+
+[Unit]
+Description=IK_replay 能力配置中心（18000：四级注册表 + 标定归档 + 轨迹认领）
+After=network-online.target
+Wants=network-online.target
+# 拨闸组（prepare.sh）启动第一步就要拜访 18000，排在它前面
+Before=ik-replay.service
+
+[Service]
+Type=simple
+User=robot
+Group=robot
+WorkingDirectory=/home/robot/yx/project/IK_replay
+ExecStartPre=/bin/mkdir -p /home/robot/yx/project/IK_replay/logs/service
+ExecStart=/home/robot/miniconda3/envs/fastapi/bin/python -u tools/capability_server.py --port 18000
+# 等 API 真正可用才算「已启动」，上面的 Before= 排序才有意义
+ExecStartPost=/bin/bash -c 'for _ in $(seq 1 60); do curl -sf --max-time 1 http://127.0.0.1:18000/api/capability/registry >/dev/null && exit 0; sleep 0.5; done; exit 1'
+# 纯 HTTP + 注册表读写，崩了直接拉活
+Restart=always
+RestartSec=3
+# 业务日志沿用 capability.sh 的文件，方便 tail 同一处
+StandardOutput=append:/home/robot/yx/project/IK_replay/logs/service/capability.18000.log
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target

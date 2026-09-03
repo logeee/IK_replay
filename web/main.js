@@ -460,7 +460,7 @@ function updateReachArmUi() {
   } else {
     d.badge.textContent = st.arm_supported ? "未接管（仅模拟）" : "仅模拟";
     d.badge.classList.remove("exec");
-    d.arm.textContent = "接管手臂";
+    d.arm.textContent = "接管手臂与灵巧手";
     d.arm.classList.remove("danger");
   }
   d.arm.disabled = !st.arm_supported;
@@ -481,7 +481,8 @@ async function toggleReachArm() {
   const d = reach.dom;
   if (!st.armed) {
     const ok = window.confirm(
-      "确认接管手臂？\n\n接管后本程序将发布 rt/arm_sdk，手臂在当前姿态刚性保持。\n" +
+      "确认接管手臂与灵巧手？\n\n接管后本程序将发布 rt/arm_sdk，手臂在当前姿态刚性保持；\n" +
+      "并按 18000 激活组合连接 18089 灵巧手（连不上只提示，不影响手臂）。\n" +
       "请确保没有其他程序（遥操作等）正在控制手臂，否则会抽搐！");
     if (!ok) {
       return;
@@ -812,7 +813,7 @@ async function runReachPlan() {
     const rrtNote = usedRrt ? "直线撞障，已自动改走 RRT 绕障路径——请在预演里确认形状。" : "";
     reachMsg(st.armed
       ? `${rrtNote}预演回放中，确认无误后点「真机执行」`
-      : `${rrtNote}预演回放中（未接管手臂，先点「接管手臂」才能执行）`,
+      : `${rrtNote}预演回放中（未接管手臂，先点「接管手臂与灵巧手」才能执行）`,
       usedRrt ? "warn" : "success");
     replay(panel);
   } else {
@@ -918,7 +919,7 @@ async function planReachLeft() {
     const rrtNote = usedRrt ? "直线撞障，已自动改走 RRT 绕障路径——请在预演里确认形状。" : "";
     reachMsg(st.armed
       ? `${rrtNote}左侧规划预演回放中，确认无误后点「真机执行」`
-      : `${rrtNote}左侧规划预演回放中（未接管手臂，先点「接管手臂」才能执行）`,
+      : `${rrtNote}左侧规划预演回放中（未接管手臂，先点「接管手臂与灵巧手」才能执行）`,
       usedRrt ? "warn" : "success");
     replay(panel);
   } else {
@@ -1639,7 +1640,7 @@ async function runSequence(replan = false) {
     return;
   }
   if (!reach.status?.armed) {
-    reachMsg("动作序列需要先点击「接管手臂」", "error");
+    reachMsg("动作序列需要先点击「接管手臂与灵巧手」", "error");
     updateSequenceUi();
     return;
   }

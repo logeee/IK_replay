@@ -710,12 +710,16 @@ button:disabled {
 .reach-library-fields select {
   width: 100%;
   min-width: 0;
+  /* 全局 select 定死 height:32px，装不下 9px 内边距 + 14px 字，
+     文字下缘会被裁掉——这里改为高度自适应 */
+  height: auto;
   padding: 9px 10px;
   border: 1px solid #b9c7d3;
   border-radius: 7px;
   background: #fff;
   color: #172636;
   font-size: 14px;
+  line-height: 1.4;
 }
 
 .reach-library-hint {

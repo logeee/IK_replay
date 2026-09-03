@@ -161,9 +161,28 @@ def reach_torso():
 # --------------- 接管 / 释放手臂（由前端操作） ---------------
 
 
+def _hand_takeover_note() -> tuple[dict, str]:
+    """接管手臂时顺带连接 18089 灵巧手（按 18000 激活组合）。
+
+    连接失败只提示、不影响手臂接管；该组合没绑手时不啰嗦。
+    """
+    from core.hand_runtime import hand_connect
+
+    hand = hand_connect()
+    if hand.get("ok"):
+        note = (f"；灵巧手已连接（{hand.get('hand_name')}"
+                f" · {hand.get('side')}）")
+    elif not hand.get("enabled"):
+        note = ""
+    else:
+        note = f"；灵巧手连接失败：{hand.get('error')}（不影响手臂）"
+    return hand, note
+
+
 @router.post("/arm")
 def reach_arm():
-    """接管手臂：创建控制器、发布 rt/arm_sdk、在当前姿态刚性保持。
+    """接管手臂与灵巧手：创建控制器、发布 rt/arm_sdk、在当前姿态刚性保
+    持；并按 18000 激活组合让 18089 连接灵巧手（连不上只提示）。
 
     真机会被立即接管！前端须先经人确认，且确保没有其他控制程序。
     """
@@ -172,15 +191,19 @@ def reach_arm():
             {"ok": False, "error": "本次启动不支持真机执行（mock 模式或 DDS 不可用）"},
             status_code=409)
     with state.arm_lock:
-        if state.controller is not None:
-            return {"ok": True, "armed": True, "message": "已处于接管状态"}
-        try:
-            controller = state.arm_factory()
-            controller.start()
-        except Exception as exc:
-            return JSONResponse({"ok": False, "error": f"接管失败: {exc}"}, status_code=502)
-        state.controller = controller
-    return {"ok": True, "armed": True, "message": "已接管，手臂在当前姿态刚性保持"}
+        already_armed = state.controller is not None
+        if not already_armed:
+            try:
+                controller = state.arm_factory()
+                controller.start()
+            except Exception as exc:
+                return JSONResponse({"ok": False, "error": f"接管失败: {exc}"}, status_code=502)
+            state.controller = controller
+    # 连手是最长 5s 的 HTTP 调用，放在 arm_lock 外做
+    hand, note = _hand_takeover_note()
+    message = ("已处于接管状态" if already_armed
+               else "已接管，手臂在当前姿态刚性保持") + note
+    return {"ok": True, "armed": True, "hand": hand, "message": message}
 
 
 @router.post("/disarm")

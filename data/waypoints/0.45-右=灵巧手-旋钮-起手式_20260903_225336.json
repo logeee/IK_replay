@@ -1,0 +1,26 @@
+{
+  "name": "0.45-右=灵巧手-旋钮-起手式",
+  "chain_id": "right_arm",
+  "named_joints": {
+    "right_shoulder_pitch_joint": -0.6141771245776485,
+    "right_shoulder_roll_joint": -0.05288071593101386,
+    "right_shoulder_yaw_joint": 0.14250306232780005,
+    "right_elbow_joint": -0.343848491755809,
+    "right_wrist_roll_joint": 0.20401530433686463,
+    "right_wrist_pitch_joint": 0.09540647093864427,
+    "right_wrist_yaw_joint": -0.1383163446739829
+  },
+  "created_at": "2026-09-03 22:53:36",
+  "generated_from": "0.46-起手式新_20260822_031411.json",
+  "forward_offset_m": -0.01,
+  "offset_root_m": [
+    -0.01,
+    0.0,
+    0.0
+  ],
+  "copied_from": "0.45-起手式新终点_20260822_162940.json",
+  "recorded_combo": {
+    "arm": "right_arm",
+    "hand_id": "qiangnao-1-right"
+  }
+}
