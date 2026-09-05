@@ -426,7 +426,8 @@ def reach_run_sequence(body: dict):
         label = f"序列:{str(seq.get('name') or path.stem)}"[:32]
         # 运动后端与 /execute 同一套规则：body.motion_backend 缺省用 18000 默认；
         # 选 pink 需运行时可用且已锚定，否则 409（不进执行线程）
-        exec_backend, backend_error = _resolve_exec_backend(body.get("motion_backend"))
+        exec_backend, backend_error = _resolve_exec_backend(
+            body.get("motion_backend"), label=label, allow_pink=False)
         if backend_error:
             return JSONResponse({"ok": False, "error": backend_error}, status_code=409)
         ctl_status = state.controller.status()

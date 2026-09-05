@@ -232,8 +232,36 @@ def _exec_status() -> dict:
     }
 
 
-def _resolve_exec_backend(requested) -> tuple[str | None, str | None]:
-    """/execute 的 body.motion_backend -> 实际后端；返回 (backend, error)。"""
+# 临时保护（验证期）：pink 只允许用于「7005 冻结点云选点 → 规划 → 主轨迹」这一条路径。
+# 动作序列、前往路点、横移、拨旋等一律走原方案——它们的目标不是世界系里的一个点，
+# 也没有取点时刻的 world_T_root，在 pink 下的语义尚未验证。验证充分后删掉这个开关即可。
+PINK_ONLY_FOR_POINTCLOUD_PICK = True
+_PINK_ALLOWED_LABEL_PREFIX = "主轨迹"
+
+
+def _pink_scope_error(label: str | None) -> str | None:
+    """返回不允许 pink 的原因；允许时返回 None。"""
+    if not PINK_ONLY_FOR_POINTCLOUD_PICK:
+        return None
+    if label is None or not str(label).startswith(_PINK_ALLOWED_LABEL_PREFIX):
+        return (f"验证期保护：pink 仅允许执行 7005 选点规划出的主轨迹，"
+                f"「{label or '序列/路点'}」请用原方案执行")
+    ctx = state.pick_context or {}
+    if ctx.get("selection_mode") != "frozen_rgbd_pointcloud":
+        return "验证期保护：pink 仅允许 7005 冻结点云选点（当前取点不是来自 7005），请用原方案执行"
+    rt = state.pink_runtime
+    if rt is None or rt.pick_world_T_root is None or rt.pick_world_frame_anchor != rt.world_frame.anchor_count:
+        return "验证期保护：pink 需要「锚定之后」在 7005 取的点（当前取点早于锚定或已失效），请重新取点或用原方案执行"
+    return None
+
+
+def _resolve_exec_backend(requested, *, label: str | None = None,
+                          allow_pink: bool = True) -> tuple[str | None, str | None]:
+    """/execute、/sequences/run 的 body.motion_backend -> 实际后端；返回 (backend, error)。
+
+    ``label``：本次执行段名（用于 pink 作用域保护）；``allow_pink=False`` 的入口
+    （动作序列等）请求 pink 一律拒绝。
+    """
     backend = str(requested or state.motion_backend or "legacy").strip().lower()
     if backend not in ("legacy", "pink"):
         return None, f"motion_backend 必须是 legacy 或 pink，收到 {requested!r}"
@@ -241,8 +269,13 @@ def _resolve_exec_backend(requested) -> tuple[str | None, str | None]:
         rt = state.pink_runtime
         if rt is None:
             return None, "pink 后端不可用（未安装 pinocchio/pink 或初始化失败），请用原方案执行"
+        if not allow_pink:
+            return None, "验证期保护：该入口（动作序列/路点）不允许 pink，请用原方案执行"
         if not rt.world_frame.anchored:
             return None, "世界系未锚定：请在机器人双脚站定时点「锚定世界系」，再取点、规划、执行"
+        scope_error = _pink_scope_error(label)
+        if scope_error:
+            return None, scope_error
     return backend, None
 
 
@@ -474,7 +507,7 @@ def reach_execute(body: dict):
             {"ok": False, "error": "flip_evidence 必须是对象"},
             status_code=400,
         )
-    exec_backend, backend_error = _resolve_exec_backend(body.get("motion_backend"))
+    exec_backend, backend_error = _resolve_exec_backend(body.get("motion_backend"), label=label)
     if backend_error:
         return JSONResponse({"ok": False, "error": backend_error}, status_code=409)
 

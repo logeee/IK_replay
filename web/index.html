@@ -184,7 +184,7 @@
                 <select id="reachExecBackend" hidden
                         title="本次执行用哪个运动后端（默认跟 18000 配置）。原方案：关节路点按节拍直发；PINK：把路点提升为世界系 TCP 轨迹、50Hz 闭环补偿躯干漂移，需先锚定世界系。规划过程两者完全相同，执行中不可切换">
                   <option value="legacy">本次：原方案</option>
-                  <option value="pink">本次：PINK</option>
+                  <option value="pink">本次：PINK（仅主轨迹）</option>
                 </select>
                 <button id="reachExecBtn" type="button" class="danger" disabled>真机执行</button>
                 <button id="reachStopBtn" type="button" class="danger" disabled>急停</button>
@@ -364,6 +364,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=107"></script>
+    <script type="module" src="/web/main.js?v=108"></script>
   </body>
 </html>

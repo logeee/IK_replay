@@ -1370,7 +1370,7 @@ async function sidestepReach(stepCm, options = {}) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        motion_backend: execBackendChoice(),
+        motion_backend: "legacy",   // 验证期保护：非主轨迹一律原方案（服务端同样拦截）
         waypoints: panel.frames.map((frame) => frame.named_joints),
         label: `${dirName}移${stepCm}cm${pushN > 0 ? `+${pushN}N` : ""}`,
         // 带推力时快拨（0.06 m/s）：借冲量越过旋钮定位卡点，比慢慢顶有效；
@@ -1558,7 +1558,7 @@ async function twistReach(twist) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        motion_backend: execBackendChoice(),
+        motion_backend: "legacy",   // 验证期保护：非主轨迹一律原方案（服务端同样拦截）
         waypoints: panel.frames.map((frame) => frame.named_joints),
         label: `${name}${angle}°`,
         duration: Math.max(2, angle / 15),   // 15°/s，最短 2s
@@ -1836,7 +1836,7 @@ async function moveToWaypoint(wp, options = {}) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        motion_backend: execBackendChoice(),
+        motion_backend: "legacy",   // 验证期保护：非主轨迹一律原方案（服务端同样拦截）
         waypoints: seg.waypoints.map((frame) => frame.named_joints),
         duration: options.duration ?? 2.5,
         max_speed_rad_s: options.maxSpeed ?? 0.4,  // 回放段精度要求低，放行到快档
@@ -2144,7 +2144,7 @@ async function runSequence(replan = false) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         file: seq.file, replan, margin_m: marginM,
-        motion_backend: execBackendChoice(),
+        motion_backend: "legacy",   // 验证期保护：非主轨迹一律原方案（服务端同样拦截）
       }),
     });
     const res = await resp.json();
@@ -2681,7 +2681,7 @@ async function executeReach(options = {}) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        motion_backend: execBackendChoice(),
+        motion_backend: execBackendChoice(),   // 只有 7005 选点主轨迹允许 pink
         waypoints: mainFrames.map((frame) => frame.named_joints),
         duration,
         label: fine ? "主轨迹(精定位)" : "主轨迹",

@@ -275,18 +275,61 @@ class PinkBackendOfflineTest(unittest.TestCase):
         self.assertEqual(state.exec_backend, "legacy")
         np.testing.assert_allclose(self.ctl.read_measured(), Q_GOAL, atol=1e-6)
 
+    def _pick_from_7005(self) -> None:
+        """模拟 7005 冻结点云取点：pick_context + 取点时刻 world_T_root。"""
+        state.pick_context = {"selection_mode": "frozen_rgbd_pointcloud"}
+        self.assertIsNotNone(self.rt.capture_pick_frame())
+
     def test_resolve_exec_backend(self) -> None:
+        saved_ctx = state.pick_context
+        self.addCleanup(setattr, state, "pick_context", saved_ctx)
         state.motion_backend = "legacy"
         self.assertEqual(execution._resolve_exec_backend(None), ("legacy", None))
         self.assertEqual(execution._resolve_exec_backend(""), ("legacy", None))
-        backend, err = execution._resolve_exec_backend("pink")   # 未锚定
+        backend, err = execution._resolve_exec_backend("pink", label="主轨迹")   # 未锚定
         self.assertIsNone(backend)
         self.assertIn("未锚定", err)
         self.rt.anchor()
-        self.assertEqual(execution._resolve_exec_backend(" PINK "), ("pink", None))
+        self._pick_from_7005()
+        self.assertEqual(execution._resolve_exec_backend(" PINK ", label="主轨迹"), ("pink", None))
+        self.assertEqual(execution._resolve_exec_backend("pink", label="主轨迹(精定位)"), ("pink", None))
         state.motion_backend = "pink"
-        self.assertEqual(execution._resolve_exec_backend(None), ("pink", None))
+        self.assertEqual(execution._resolve_exec_backend(None, label="主轨迹"), ("pink", None))
         self.assertEqual(execution._resolve_exec_backend("legacy"), ("legacy", None))
+
+    def test_pink_scope_guard_only_allows_pointcloud_pick_main_trajectory(self) -> None:
+        """验证期保护：只有 7005 选点 → 主轨迹 允许 pink；序列/路点/横移/拨旋、非 7005 取点、
+        锚定前的取点一律拒绝，且拒绝理由可读。"""
+        saved_ctx = state.pick_context
+        self.addCleanup(setattr, state, "pick_context", saved_ctx)
+        state.motion_backend = "pink"
+        self.rt.anchor()
+        self._pick_from_7005()
+        # 非主轨迹段名
+        for label in ("左移3cm", "左扭30°", "前往:起手式", "序列:0.45-起手式新", None):
+            backend, err = execution._resolve_exec_backend("pink", label=label)
+            self.assertIsNone(backend, label)
+            self.assertIn("仅允许", err)
+        # 动作序列入口：即使段名伪装成主轨迹也拒绝
+        backend, err = execution._resolve_exec_backend("pink", label="主轨迹", allow_pink=False)
+        self.assertIsNone(backend)
+        self.assertIn("不允许 pink", err)
+        # 主轨迹 + 7005 取点 → 允许
+        self.assertEqual(execution._resolve_exec_backend("pink", label="主轨迹"), ("pink", None))
+        # 取点不是 7005（18001 画面像素点）→ 拒绝
+        state.pick_context = {"selection_mode": "live_rgb_depth"}
+        backend, err = execution._resolve_exec_backend("pink", label="主轨迹")
+        self.assertIsNone(backend)
+        self.assertIn("7005", err)
+        # 7005 取点但早于当前锚定（重新锚定后取点失效）→ 拒绝
+        state.pick_context = {"selection_mode": "frozen_rgbd_pointcloud"}
+        self.rt.anchor()
+        backend, err = execution._resolve_exec_backend("pink", label="主轨迹")
+        self.assertIsNone(backend)
+        self.assertIn("锚定之后", err)
+        # 默认后端是 pink 但请求显式 legacy：任何入口都放行
+        self.assertEqual(execution._resolve_exec_backend("legacy", label="序列:x", allow_pink=False),
+                         ("legacy", None))
         backend, err = execution._resolve_exec_backend("curobo")
         self.assertIsNone(backend)
         self.assertIn("legacy 或 pink", err)
