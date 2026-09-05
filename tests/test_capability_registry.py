@@ -336,7 +336,8 @@ class SeedAndPersistenceTests(unittest.TestCase):
     def test_seed_contains_two_verified_capabilities(self):
         seed = reg.seed_registry()
         self.assertEqual(seed["active"],
-                         {"arm": "right_arm", "hand_id": "yinshi-1-right"})
+                         {"arm": "right_arm", "hand_id": "yinshi-1-right",
+                          "motion_backend": "legacy"})
         directions = {cap["task"]["direction"]
                       for cap in seed["capabilities"]}
         self.assertEqual(directions, {"rtl", "ltr"})
@@ -421,6 +422,18 @@ class ValidationTests(unittest.TestCase):
     def test_rejects_active_pointing_to_missing_hand(self):
         seed = self._seed()
         seed["active"] = {"arm": "right_arm", "hand_id": "ghost"}
+        with self.assertRaises(ValueError):
+            reg.validate_registry(seed)
+
+    def test_active_motion_backend_defaults_to_legacy_and_accepts_pink(self):
+        seed = self._seed()
+        hand_id = seed["active"]["hand_id"]
+        # 旧注册表没有 motion_backend → 补 legacy（原方案不受影响）
+        seed["active"] = {"arm": "right_arm", "hand_id": hand_id}
+        self.assertEqual(reg.validate_registry(seed)["active"]["motion_backend"], "legacy")
+        seed["active"] = {"arm": "right_arm", "hand_id": hand_id, "motion_backend": " PINK "}
+        self.assertEqual(reg.validate_registry(seed)["active"]["motion_backend"], "pink")
+        seed["active"] = {"arm": "right_arm", "hand_id": hand_id, "motion_backend": "curobo"}
         with self.assertRaises(ValueError):
             reg.validate_registry(seed)
 

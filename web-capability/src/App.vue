@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import type { Capability, Hand, Payload } from "./lib/api";
+import type { Capability, Hand, MotionBackend, Payload } from "./lib/api";
 import { apiGet, apiPost } from "./lib/api";
 import ActiveCombo from "./components/ActiveCombo.vue";
 import CalibDialog from "./components/CalibDialog.vue";
@@ -96,10 +96,14 @@ async function saveCalibration(body: Record<string, unknown>) {
   }
 }
 
-async function applyActive(arm: string, handId: string) {
+async function applyActive(
+  arm: string,
+  handId: string,
+  motionBackend: MotionBackend = "legacy",
+) {
   await mutate(
     "/api/capability/active",
-    { arm, hand_id: handId },
+    { arm, hand_id: handId, motion_backend: motionBackend },
     "激活组合已切换（重启 17001/18001 生效）",
   );
 }

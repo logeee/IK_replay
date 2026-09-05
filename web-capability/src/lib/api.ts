@@ -31,7 +31,11 @@ export interface Capability {
 export interface ActiveCombo {
   arm: string;
   hand_id: string;
+  /** 18001 运动后端：legacy=关节路点直发；pink=世界系 PINK 闭环跟踪（旧注册表可能缺省） */
+  motion_backend?: MotionBackend;
 }
+
+export type MotionBackend = "legacy" | "pink";
 
 /** 某能力条目的认领（严格：没认领的该条目不可用；拨/扭是不同条目，
  *  各认各的）。waypoint_names 只存手选位点；终点位点由已认领起手式推导 */
@@ -101,6 +105,8 @@ export interface ParamSpec {
 export interface Meta {
   arms: string[];
   arm_labels: Record<string, string>;
+  motion_backends?: MotionBackend[];
+  motion_backend_labels?: Record<string, string>;
   design_sides: string[];
   sites: string[];
   directions: string[];

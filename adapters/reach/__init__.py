@@ -29,6 +29,9 @@ from .state import ReachState, configure, router, state
 # 各路由路径互不冲突）
 from . import (execution, hand, locomotion, perception, planning, tcp,  # noqa: E402,F401
                pointcloud_source, recordings, service)
+# pink 后端路由（/pink/status|anchor|hold|resume）；模块顶层不 import pinocchio，
+# legacy 后端下只是几个返回 409 的接口
+from . import execution_pink  # noqa: E402,F401
 from .planning import _axis_last_worker  # noqa: F401  tools/test_axis_last_rrt.py 在用
 
 __all__ = ["ReachState", "configure", "router", "state"]

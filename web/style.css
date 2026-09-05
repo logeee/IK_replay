@@ -552,6 +552,21 @@ button:disabled {
   color: #8a5b00;
 }
 
+.reach-badge.backend.pink-ok {
+  background: #e7e3f7;
+  color: #4b3a8f;
+}
+
+.reach-badge.backend.pink-warn {
+  background: #fff1d6;
+  color: #8a5b00;
+}
+
+.reach-badge.backend.pink-fault {
+  background: #fbe9e7;
+  color: #b3362a;
+}
+
 .reach-badge.hand.error {
   background: #fbe9e7;
   color: #a5342b;

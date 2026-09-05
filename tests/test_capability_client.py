@@ -78,7 +78,8 @@ class FetchSnapshotTests(unittest.TestCase):
         payload = fetch_snapshot(server.url, attempts=1)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["registry"]["active"],
-                         {"arm": "right_arm", "hand_id": "yinshi-1-right"})
+                         {"arm": "right_arm", "hand_id": "yinshi-1-right",
+                          "motion_backend": "legacy"})
         # registry 经过本地 validate_registry 重校验（缺省参数已补齐）
         cap = payload["registry"]["capabilities"][0]
         self.assertIn("sidestep_cm", cap["method_params"])

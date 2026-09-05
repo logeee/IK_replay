@@ -125,5 +125,7 @@ def describe_active(payload: dict[str, Any]) -> str:
          and item.get("hand_id") == active.get("hand_id")),
         "missing",
     )
+    backend = active.get("motion_backend") or "legacy"
     return (f"激活组合: {ARM_LABELS.get(active.get('arm'), active.get('arm'))}"
-            f" + {hand.get('name') or active.get('hand_id')}（标定 {status}）")
+            f" + {hand.get('name') or active.get('hand_id')}（标定 {status}，"
+            f"运动后端 {backend}）")

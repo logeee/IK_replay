@@ -1,0 +1,66 @@
+# H2 浮动基座（骨盆/躯干在世界系的位姿）估计配置。
+#
+# 来源：同事 arm-motion-middleware v1.0.3 的 configs/hardware/h2/floating_base.yml
+# 与 joint_mapping.yml（commit f276d08）。
+#
+# 原理（支撑腿运动学里程计）：
+#   IMU 四元数            -> 骨盆在世界系的姿态（锚定时 yaw 归零）
+#   全身 URDF + 腿关节角   -> 骨盆到双脚的 FK
+#   锚定时刻双脚位置固定为世界系锚点
+#   每一拍：骨盆位置 = 脚锚点 - R_world_pelvis · p_pelvis_foot（左右脚取平均）
+#   再乘腰关节 FK          -> world_T_torso
+#
+# 限制：rt/lowstate 没有里程计与触地信息，只在双脚站定时有效；走动后必须
+# 重新锚定。不积分 IMU 加速度。
+
+floating_base:
+  source: SUPPORT_KINEMATIC_ODOMETRY
+  orientation_source: rt/lowstate.imu_state
+  quaternion_order: WXYZ
+  imu_convention: FLU_ENU
+  pelvis_R_imu_quaternion_wxyz: [1.0, 0.0, 0.0, 0.0]
+  yaw_alignment: STARTUP_ZERO
+  support_mode: DOUBLE_ASSUMED
+  initial_pelvis_position_world_m: [0.0, 0.0, 1.02]
+  left_foot_frame: left_ankle_pitch_link
+  right_foot_frame: right_ankle_pitch_link
+  root_frame: torso_link
+  full_body_urdf: assets/robots/h2/h2_full_body_kinematics.urdf
+  # 双脚锚点误差超过此值时 quality 标记为 DOUBLE_SUPPORT_INCONSISTENT
+  anchor_warning_m: 0.03
+  walking_translation_supported: false
+
+# rt/lowstate motor_state 序号 -> 全身 URDF 关节名。
+# q_model = sign * q_hardware + offset_rad
+motor_index_to_joint:
+  0:  {joint: left_hip_pitch_joint,       sign: 1.0, offset_rad: 0.0}
+  1:  {joint: left_hip_roll_joint,        sign: 1.0, offset_rad: 0.0}
+  2:  {joint: left_hip_yaw_joint,         sign: 1.0, offset_rad: 0.0}
+  3:  {joint: left_knee_joint,            sign: 1.0, offset_rad: 0.0}
+  4:  {joint: left_ankle_roll_joint,      sign: 1.0, offset_rad: 0.0}
+  5:  {joint: left_ankle_pitch_joint,     sign: 1.0, offset_rad: 0.0}
+  6:  {joint: right_hip_pitch_joint,      sign: 1.0, offset_rad: 0.0}
+  7:  {joint: right_hip_roll_joint,       sign: 1.0, offset_rad: 0.0}
+  8:  {joint: right_hip_yaw_joint,        sign: 1.0, offset_rad: 0.0}
+  9:  {joint: right_knee_joint,           sign: 1.0, offset_rad: 0.0}
+  10: {joint: right_ankle_roll_joint,     sign: 1.0, offset_rad: 0.0}
+  11: {joint: right_ankle_pitch_joint,    sign: 1.0, offset_rad: 0.0}
+  12: {joint: waist_yaw_joint,            sign: 1.0, offset_rad: 0.0}
+  13: {joint: waist_roll_joint,           sign: 1.0, offset_rad: 0.0}
+  14: {joint: waist_pitch_joint,          sign: 1.0, offset_rad: 0.0}
+  15: {joint: left_shoulder_pitch_joint,  sign: 1.0, offset_rad: 0.0}
+  16: {joint: left_shoulder_roll_joint,   sign: 1.0, offset_rad: 0.0}
+  17: {joint: left_shoulder_yaw_joint,    sign: 1.0, offset_rad: 0.0}
+  18: {joint: left_elbow_joint,           sign: 1.0, offset_rad: 0.0}
+  19: {joint: left_wrist_roll_joint,      sign: 1.0, offset_rad: 0.0}
+  20: {joint: left_wrist_pitch_joint,     sign: 1.0, offset_rad: 0.0}
+  21: {joint: left_wrist_yaw_joint,       sign: 1.0, offset_rad: 0.0}
+  22: {joint: right_shoulder_pitch_joint, sign: 1.0, offset_rad: 0.0}
+  23: {joint: right_shoulder_roll_joint,  sign: 1.0, offset_rad: 0.0}
+  24: {joint: right_shoulder_yaw_joint,   sign: 1.0, offset_rad: 0.0}
+  25: {joint: right_elbow_joint,          sign: 1.0, offset_rad: 0.0}
+  26: {joint: right_wrist_roll_joint,     sign: 1.0, offset_rad: 0.0}
+  27: {joint: right_wrist_pitch_joint,    sign: 1.0, offset_rad: 0.0}
+  28: {joint: right_wrist_yaw_joint,      sign: 1.0, offset_rad: 0.0}
+  29: {joint: head_pitch_joint,           sign: 1.0, offset_rad: 0.0}
+  30: {joint: head_yaw_joint,             sign: 1.0, offset_rad: 0.0}

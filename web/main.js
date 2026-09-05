@@ -262,6 +262,7 @@ async function initReach() {
   d.planLeft.addEventListener("click", () => planReachLeft());
   d.exec.addEventListener("click", () => executeReach());
   d.stop.addEventListener("click", () => stopReach());
+  initPinkUi(status);
   d.scan.addEventListener("click", () => scanObstacles());
   d.clearObs.addEventListener("click", () => clearObstacles());
   d.handMove.addEventListener("click", () => toggleHandMove());
@@ -2840,6 +2841,121 @@ async function stopReach() {
   } catch (error) {
     reachMsg(`急停请求失败: ${error.message}`, "error");
   }
+}
+
+// ---- pink 运动后端（18000 active.motion_backend=pink）----
+// legacy 后端只显示一个灰色徽章，其余按钮全部隐藏，行为与以前完全一致。
+const pinkUi = { timer: null };
+
+function initPinkUi(status) {
+  const badge = document.getElementById("reachBackendBadge");
+  const anchorBtn = document.getElementById("reachAnchorBtn");
+  const holdBtn = document.getElementById("reachPinkHoldBtn");
+  const resumeBtn = document.getElementById("reachPinkResumeBtn");
+  if (!badge) return;
+  const backend = status.motion_backend || status.exec?.motion_backend || "legacy";
+  badge.classList.remove("hidden");
+  if (backend !== "pink") {
+    badge.textContent = "后端：原方案";
+    return;
+  }
+  badge.textContent = "后端：PINK（未锚定）";
+  badge.classList.add("pink-warn");
+  anchorBtn.hidden = false;
+  holdBtn.hidden = false;
+  resumeBtn.hidden = false;
+  holdBtn.disabled = true;
+  resumeBtn.disabled = true;
+
+  anchorBtn.addEventListener("click", async () => {
+    if (!window.confirm("锚定世界系？\n\n机器人必须双脚站定不动。锚定后此前的取点作废，需要重新取点再规划执行。")) {
+      return;
+    }
+    try {
+      const res = await fetchJson("/api/reach/pink/anchor", { method: "POST" });
+      const fb = res.floating_base || {};
+      reachMsg(`世界系已锚定（${fb.quality || "-"}）；请重新取点`, "success");
+      await refreshPinkStatus();
+    } catch (error) {
+      reachMsg(`锚定失败: ${error.message}`, "error");
+    }
+  });
+  holdBtn.addEventListener("click", async () => {
+    try {
+      await fetchJson("/api/reach/pink/hold", { method: "POST" });
+      reachMsg("已暂停（保持最后目标，等待 RESUME）", "error");
+      await refreshPinkStatus();
+    } catch (error) {
+      reachMsg(`HOLD 失败: ${error.message}`, "error");
+    }
+  });
+  resumeBtn.addEventListener("click", async () => {
+    try {
+      await fetchJson("/api/reach/pink/resume", { method: "POST" });
+      reachMsg("已请求继续（从当前位置重规划到原目标）", "success");
+      await refreshPinkStatus();
+    } catch (error) {
+      reachMsg(`RESUME 失败: ${error.message}`, "error");
+    }
+  });
+  refreshPinkStatus();
+  pinkUi.timer = setInterval(refreshPinkStatus, 1500);
+}
+
+async function refreshPinkStatus() {
+  const badge = document.getElementById("reachBackendBadge");
+  const holdBtn = document.getElementById("reachPinkHoldBtn");
+  const resumeBtn = document.getElementById("reachPinkResumeBtn");
+  let st;
+  try {
+    st = await fetchJson("/api/reach/pink/status");
+  } catch {
+    return;
+  }
+  if (!st?.available) return;
+  const wf = st.world_frame || {};
+  const fbState = wf.state || {};
+  const session = st.session;
+  const sup = session?.supervisor || null;
+  let text = "后端：PINK";
+  let cls = "pink-ok";
+  if (!wf.anchored) {
+    text += "（未锚定）";
+    cls = "pink-warn";
+  } else {
+    text += `（已锚定 #${wf.anchor_count}`;
+    if (fbState.quality && fbState.quality !== "DOUBLE_SUPPORT_GOOD") {
+      text += "，双脚锚点不一致";
+      cls = "pink-warn";
+    }
+    if (!st.pick_world_frame) {
+      text += "，待取点";
+    }
+    text += "）";
+  }
+  if (sup) {
+    text += ` ${sup.supervisor_state}`;
+    if (sup.fault_state) {
+      text += `:${sup.fault_state}`;
+      cls = "pink-fault";
+    }
+  } else if (st.last_summary?.final_executor_error_m != null) {
+    text += ` 上次终态 ${(st.last_summary.final_executor_error_m * 1000).toFixed(1)}mm`;
+  }
+  if (st.lowstate_age_ms != null && st.lowstate_age_ms > 200) {
+    text += ` lowstate ${Math.round(st.lowstate_age_ms)}ms`;
+    cls = "pink-fault";
+  }
+  badge.textContent = text;
+  badge.classList.remove("pink-ok", "pink-warn", "pink-fault");
+  badge.classList.add(cls);
+  badge.title = fbState.timestamp_s != null
+    ? `world_T_root 平移 ${(fbState.world_T_root || []).slice(0, 3).map((r) => (r[3] ?? 0).toFixed(3)).join(", ")} m；`
+      + `脚锚点误差 L ${(fbState.left_anchor_error_m * 1000).toFixed(0)}mm / R ${(fbState.right_anchor_error_m * 1000).toFixed(0)}mm`
+    : "尚未锚定：机器人双脚站定后点「锚定世界系」";
+  const running = !!session && !session.finished;
+  holdBtn.disabled = !running || (sup && sup.supervisor_state !== "RUNNING" && sup.supervisor_state !== "RECOVERING_HOLD");
+  resumeBtn.disabled = !running || !sup || sup.supervisor_state !== "PAUSED_MANUAL";
 }
 
 async function loadRobotData(robotId = null) {

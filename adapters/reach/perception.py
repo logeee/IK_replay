@@ -170,6 +170,9 @@ def reach_pick(body: dict):
     state.pick_pixel = [u, v]
     state.pick_torso = _read_torso()
     state.torso_diag = None
+    if state.pink_runtime is not None:
+        # pink 后端：目标从这一刻起冻结在世界系里（world_T_root 由 IMU+腿运动学估计）
+        state.pink_runtime.capture_pick_frame()
     state.pick_context = {
         "selection_mode": "live_rgb_depth",
         "source_frame_id": result.get("frame_id"),
@@ -275,6 +278,9 @@ def confirm_pointcloud_pick(body: dict):
     state.pick_pixel = pixel
     state.pick_torso = _read_torso()
     state.torso_diag = None
+    if state.pink_runtime is not None:
+        # pink 后端：目标从这一刻起冻结在世界系里（world_T_root 由 IMU+腿运动学估计）
+        state.pink_runtime.capture_pick_frame()
     state.pick_context = {
         "selection_mode": "frozen_rgbd_pointcloud",
         "selection_source": body.get("selection_source", "manual"),

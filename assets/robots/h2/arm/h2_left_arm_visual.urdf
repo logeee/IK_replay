@@ -1,0 +1,92 @@
+<?xml version="1.0"?>
+<!-- Isaac Sim 6.0 USD-aligned left-arm kinematics with link-local visual meshes. -->
+<robot name="h2_left_arm_visual">
+  <link name="torso_link">
+    <inertial>
+      <origin xyz="0.00740421 0.00628045 0.21557476" rpy="0 0 0"/>
+      <mass value="18.532"/>
+      <inertia ixx="0.28724318" ixy="0.00098980" ixz="0.00314913" iyy="0.26211219" iyz="-0.01080762" izz="0.09419831"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="../meshes/isaac_sim_6_0/torso_link.obj"/></geometry>
+    </visual>
+  </link>
+
+  <link name="left_shoulder_pitch_link">
+    <visual><geometry><mesh filename="../meshes/isaac_sim_6_0/left_shoulder_pitch_link.obj"/></geometry></visual>
+  </link>
+  <joint name="left_shoulder_pitch_joint" type="revolute">
+    <origin xyz="0.0019779 0.11553 0.35792" rpy="0.26914 0 0"/>
+    <parent link="torso_link"/>
+    <child link="left_shoulder_pitch_link"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.617993878" upper="1.832595715" effort="120" velocity="28.375"/>
+  </joint>
+
+  <link name="left_shoulder_roll_link">
+    <visual><geometry><mesh filename="../meshes/isaac_sim_6_0/left_shoulder_roll_link.obj"/></geometry></visual>
+  </link>
+  <joint name="left_shoulder_roll_joint" type="revolute">
+    <origin xyz="-0.00082158 0.060413 -0.040043" rpy="-0.26914 0 0"/>
+    <parent link="left_shoulder_pitch_link"/>
+    <child link="left_shoulder_roll_link"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-0.516617092" upper="2.635447171" effort="54" velocity="34.3"/>
+  </joint>
+
+  <link name="left_shoulder_yaw_link">
+    <visual><geometry><mesh filename="../meshes/isaac_sim_6_0/left_shoulder_yaw_link.obj"/></geometry></visual>
+  </link>
+  <joint name="left_shoulder_yaw_joint" type="revolute">
+    <origin xyz="-0.0025946 0.0038061 -0.09623" rpy="0 0 0"/>
+    <parent link="left_shoulder_roll_link"/>
+    <child link="left_shoulder_yaw_link"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.617993878" upper="2.617993878" effort="54" velocity="34.3"/>
+  </joint>
+
+  <link name="left_elbow_link">
+    <visual><geometry><mesh filename="../meshes/isaac_sim_6_0/left_elbow_link.obj"/></geometry></visual>
+  </link>
+  <joint name="left_elbow_joint" type="revolute">
+    <origin xyz="0.015424 0.020635 -0.13364" rpy="0 0 0"/>
+    <parent link="left_shoulder_yaw_link"/>
+    <child link="left_elbow_link"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-0.986111028" upper="3.071779484" effort="54" velocity="34.3"/>
+  </joint>
+
+  <link name="left_wrist_roll_link">
+    <visual><geometry><mesh filename="../meshes/isaac_sim_6_0/left_wrist_roll_link.obj"/></geometry></visual>
+  </link>
+  <joint name="left_wrist_roll_joint" type="revolute">
+    <origin xyz="0.13119 -0.021207 -0.013343" rpy="0 0 0"/>
+    <parent link="left_elbow_link"/>
+    <child link="left_wrist_roll_link"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-2.617993878" upper="2.617993878" effort="54" velocity="34.3"/>
+  </joint>
+
+  <link name="left_wrist_pitch_link">
+    <visual><geometry><mesh filename="../meshes/isaac_sim_6_0/left_wrist_pitch_link.obj"/></geometry></visual>
+  </link>
+  <joint name="left_wrist_pitch_joint" type="revolute">
+    <origin xyz="0.080589 0.000030398 -0.0013317" rpy="0 0 0"/>
+    <parent link="left_wrist_roll_link"/>
+    <child link="left_wrist_pitch_link"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-0.436332313" upper="0.436332313" effort="25" velocity="50.125"/>
+  </joint>
+
+  <link name="left_wrist_yaw_link">
+    <visual><geometry><mesh filename="../meshes/isaac_sim_6_0/left_wrist_yaw_link.obj"/></geometry></visual>
+  </link>
+  <joint name="left_wrist_yaw_joint" type="revolute">
+    <origin xyz="0.028225 0.00048901 0.00058318" rpy="0 0 0"/>
+    <parent link="left_wrist_pitch_link"/>
+    <child link="left_wrist_yaw_link"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.221730476" upper="1.221730476" effort="25" velocity="50.125"/>
+  </joint>
+</robot>

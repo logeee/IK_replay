@@ -102,6 +102,10 @@ class ReachState:
         self.last_settle_trim: dict | None = None   # 最近一次执行的修正结果（含偏置）
         self.execution_history: deque[dict[str, Any]] = deque(maxlen=30)
         self.execution_history_lock = threading.Lock()
+        # 运动后端（18000 active.motion_backend）：legacy=原按节拍下发路点；
+        # pink=世界系 PINK 闭环跟踪（adapters/reach/execution_pink.py）。
+        self.motion_backend = "legacy"
+        self.pink_runtime = None           # execution_pink.PinkRuntime，仅 pink 后端时非 None
 
 
 state = ReachState()

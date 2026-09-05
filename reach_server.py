@@ -191,6 +191,11 @@ def main() -> int:
     parser.add_argument("--no-robot", action="store_true",
                         help="不连 DDS（纯模拟联调，页面上无法接管手臂）")
     parser.add_argument("--network-interface", default=None, help="DDS 网卡，如 enp86s0")
+    parser.add_argument("--motion-backend", choices=("auto", "legacy", "pink"), default="auto",
+                        help="运动后端。auto=按 18000 active.motion_backend（默认 legacy）；"
+                             "legacy=原按节拍下发关节路点；pink=世界系 PINK 闭环跟踪"
+                             "（补偿躯干漂移，需要 pinocchio/pin-pink）。"
+                             "pink 初始化失败会回退 legacy 并告警")
     parser.add_argument("--arm-max-speed", type=float, default=0.4,
                         help="最大关节速度 rad/s（默认 0.4）。这是限速天花板，"
                              "正常轨迹快慢仍由执行时长控制；带推力的快拨段需要它放行")
@@ -482,6 +487,39 @@ def main() -> int:
     )
     # 录制新序列时盖「来源组合」戳并自动认领给它（camera-only 时无组合）
     reach.state.active_combo = dict(active_combo) if active_combo else None
+
+    # ---- 运动后端：18000 active.motion_backend（可被 --motion-backend 覆盖）----
+    # legacy 路径完全不 import control/（pinocchio 缺失也不影响原方案）；
+    # pink 初始化失败回退 legacy 并大字告警，绝不阻止启动。
+    motion_backend = (args.motion_backend if args.motion_backend != "auto"
+                      else str(active_combo.get("motion_backend") or "legacy"))
+    if motion_backend == "pink" and not args.camera_only:
+        try:
+            from adapters.reach.execution_pink import build_runtime as build_pink_runtime
+
+            wrist_link = reach.state.wrist_link or robot_model.end_link(args.chain)
+            reach.state.pink_runtime = build_pink_runtime(
+                arm_side=arm, wrist_link=wrist_link,
+                network_interface=args.network_interface,
+                mock=(joints_reader is None))
+            reach.state.motion_backend = "pink"
+            cfg = reach.state.pink_runtime.config
+            print(f"[reach] 运动后端 = pink（世界系 PINK 闭环跟踪）："
+                  f"{reach.state.pink_runtime.pink_config_path.name}，"
+                  f"qdot 上限 {cfg['pink']['max_joint_velocity_rad_s']} rad/s，"
+                  f"反馈 {reach.state.pink_runtime.feedback}，"
+                  f"lowstate {'mock' if joints_reader is None else 'DDS 只读订阅'}")
+            print("[reach]   ⚠ 执行前必须先锚定世界系（页面「锚定世界系」/ POST /api/reach/pink/anchor），"
+                  "机器人双脚站定；走动后需重新锚定")
+        except Exception as exc:
+            reach.state.pink_runtime = None
+            reach.state.motion_backend = "legacy"
+            print(f"[reach] !!! pink 后端初始化失败，回退 legacy：{type(exc).__name__}: {exc}")
+    else:
+        reach.state.motion_backend = "legacy"
+        if motion_backend == "pink":
+            print("[reach] camera-only 模式忽略 motion_backend=pink")
+        print("[reach] 运动后端 = legacy（关节路点按节拍直发）")
     reach.state.capability_url = (
         args.capability_url or DEFAULT_CAPABILITY_URL).rstrip("/")
     # 认领可见性（启动快照冻结）：激活组合已启用能力认领的动作 + 生效位点

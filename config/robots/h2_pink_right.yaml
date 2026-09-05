@@ -1,0 +1,65 @@
+# PINK 微分 IK 控制器参数 —— H2 右臂（7 DoF，固定基座于 torso_link）。
+#
+# 来源：同事 arm-motion-middleware v1.0.3 的 configs/approach/approach_v1_pink_right.yml
+# （commit f276d08）。真机 PASS 时使用的冻结参数：TCP 为主任务，q_nominal 为次级
+# 姿态任务（权重很低），qdot 上限 1.5 rad/s。
+#
+# 注意：TCP 偏移不在这里配置。运行时由 18000 激活的手（手眼标定 tcp_point_id +
+# tool_out_mm）动态构造 ToolConfig，与 IK/规划/碰撞用的是同一个点。
+
+model:
+  urdf_path: assets/robots/h2/arm/h2_right_arm_visual.urdf
+  root_frame: torso_link
+  wrist_frame: right_wrist_yaw_link
+  controlled_joints:
+    - right_shoulder_pitch_joint
+    - right_shoulder_roll_joint
+    - right_shoulder_yaw_joint
+    - right_elbow_joint
+    - right_wrist_roll_joint
+    - right_wrist_pitch_joint
+    - right_wrist_yaw_joint
+
+pink:
+  qp_solver: daqp
+  position_cost: 20.0
+  orientation_cost: 5.0
+  frame_gain: 0.5
+  frame_lm_damping: 0.001
+  posture_cost: 0.05
+  damping_cost: 0.001
+  qp_damping: 1.0e-8
+  # PINK 输出的关节速度上限。注意 H2ArmController 自身还有 --arm-max-speed
+  # 限速（默认 0.4 rad/s）；pink 后端执行时两者取一致，否则参考轨迹会跑在
+  # 执行器前面造成跟踪滞后。
+  max_joint_velocity_rad_s: 1.5
+  # STRICT：当前构型越过位置限位时 QP 直接失败；WARN：记为告警并裁剪，
+  # 由执行器的硬限位兜底。真机验证阶段同事使用 WARN。
+  joint_limit_policy: WARN
+
+# ApproachTracker：轨迹预瞄与躯干位姿外推（补偿 50 Hz 控制延迟）。
+tracker:
+  trajectory_preview_s: 0.0667
+  predictor_history: 8
+  root_prediction:
+    mode: FILTERED_PREDICTION
+    horizon_s: 0.0667
+    twist_filter:
+      enabled: true
+      time_constant_s: 0.10
+    clamp:
+      linear_velocity_m_s: 0.5
+      angular_velocity_rad_s: 1.5
+
+# 18001 执行层接入参数（adapters/reach/execution_pink.py）。
+execution:
+  # 喂给 PINK 的反馈状态：
+  #   internal —— PINK 积分自己上一拍的 q_target（推荐；与同事真机验证语义一致，
+  #               执行器 H2ArmController 只是限速低通跟随）。
+  #   command  —— 执行器当前指令角；measured —— 实测角。
+  #   后两者在执行器限速远低于 PINK 上限时会让 QP 每拍饱和、终点附近极限环振荡。
+  feedback: internal
+  # 执行器落后 PINK 目标超过此值（rad）→ 故障保持，从执行器状态重规划
+  executor_lag_fault_rad: 0.25
+  # 到位后在世界系保持并测终态误差的时长（s）
+  hold_s: 1.0

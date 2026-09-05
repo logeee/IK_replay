@@ -35,6 +35,8 @@
             <strong>点击取目标 → IK 预演 → 真机执行</strong>
             <span id="reachBadge" class="reach-badge">-</span>
             <span id="reachHandBadge" class="reach-badge hand">灵巧手：加载中</span>
+            <span id="reachBackendBadge" class="reach-badge backend hidden"
+                  title="18000 激活组合的运动后端：legacy=关节路点直发；pink=世界系 PINK 闭环跟踪（补偿躯干漂移）">后端：-</span>
             <button id="reachCollapseBtn" type="button" title="收起/展开">—</button>
           </header>
           <div id="reachBody" class="reach-body">
@@ -181,6 +183,12 @@
                         title="平移在先、进出在后：先竖直+水平对齐到目标正前方（保持当前深度），最后一段才沿机器人前后方向往里伸；往外拔则先拔出到目标深度再平移">左侧规划</button>
                 <button id="reachExecBtn" type="button" class="danger" disabled>真机执行</button>
                 <button id="reachStopBtn" type="button" class="danger" disabled>急停</button>
+                <button id="reachAnchorBtn" type="button" hidden
+                        title="pink 后端：把此刻骨盆位姿定为世界系原点（yaw 归零、双脚位置固定）。机器人必须双脚站定；走动后必须重新锚定，锚定后需重新取点">锚定世界系</button>
+                <button id="reachPinkHoldBtn" type="button" hidden
+                        title="pink 后端：人工暂停——冻结轨迹时钟并保持最后目标（不松手）">暂停 HOLD</button>
+                <button id="reachPinkResumeBtn" type="button" hidden
+                        title="pink 后端：从人工暂停/恢复超时中继续（从当前位置重规划到原目标）">继续 RESUME</button>
               </div>
               <div id="reachMsg" class="reach-msg"></div>
               <div id="reachDiag" class="reach-diag hidden"></div>

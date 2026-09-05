@@ -60,6 +60,11 @@ LEGACY_CALIB_SOURCE = ("/home/robot/yx/project/calib/hand_eye_3D/"
 
 ARMS = ("right_arm", "left_arm")
 ARM_LABELS = {"right_arm": "右臂", "left_arm": "左臂"}
+# 18001 运动后端：legacy=原按节拍下发关节路点；pink=世界系 PINK 闭环跟踪
+# （补偿躯干漂移，需 pinocchio/pin-pink）。切换后重启 18001 生效。
+MOTION_BACKENDS = ("legacy", "pink")
+MOTION_BACKEND_LABELS = {"legacy": "原方案（关节路点直发）",
+                         "pink": "PINK 世界系闭环跟踪"}
 DESIGN_SIDES = ("right", "left")
 SITES = ("lab", "factory")
 # 任务的物理方向：rtl=向左拨（右到左）、ltr=向右拨（左到右）、
@@ -457,7 +462,14 @@ def validate_registry(payload: Any) -> dict[str, Any]:
         if hand_id not in hand_ids:
             raise ValueError(
                 f"active.hand_id 指向不存在的手型号「{hand_id}」")
-        active = {"arm": arm, "hand_id": hand_id}
+        motion_backend = str(
+            raw_active.get("motion_backend") or "legacy").strip().lower()
+        if motion_backend not in MOTION_BACKENDS:
+            raise ValueError(
+                f"active.motion_backend 必须是 {'/'.join(MOTION_BACKENDS)}，"
+                f"收到「{motion_backend}」")
+        active = {"arm": arm, "hand_id": hand_id,
+                  "motion_backend": motion_backend}
 
     return {
         "schema_version": 1,

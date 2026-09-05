@@ -226,6 +226,7 @@ def _exec_status() -> dict:
         "progress": state.exec_progress,
         "message": state.exec_message,
         "torso_diag": state.torso_diag,
+        "motion_backend": state.motion_backend,
     }
 
 
@@ -561,7 +562,8 @@ def _log_exec(kind: str, result: str, q_target, *, sag=None, settle_trim=None,
               push_hold_s: float | None = None,
               trace=None, command_handoff=None,
               execution_context: dict | None = None,
-              stiffness_scale: float = 1.0) -> None:
+              stiffness_scale: float = 1.0,
+              extra: dict | None = None) -> None:
     """每段真机动作落一行 JSONL：logs/reach/reach_YYYYMMDD.jsonl。
 
     调参靠的是横向对比（改了 α / payload / kp 之后到底好了多少），
@@ -682,6 +684,9 @@ def _log_exec(kind: str, result: str, q_target, *, sag=None, settle_trim=None,
         rec["torso_drift"] = state.torso_diag
         # 快照拷贝：采样线程可能还在往里 append
         rec["torso_trace"] = [dict(s) for s in list(trace)] if trace else None
+        rec["motion_backend"] = state.motion_backend
+        if extra:
+            rec["pink"] = extra
 
         rec = _json_safe_value(rec)
         with state.execution_history_lock:
@@ -916,6 +921,14 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
                execution_context: dict | None = None,
                flip_evidence: dict | None = None,
                stiffness_scale: float = 1.0) -> None:
+    if state.motion_backend == "pink":
+        # 18000 active.motion_backend=pink：世界系 PINK 闭环跟踪（同签名、同阶段语义）
+        from .execution_pink import exec_loop_pink
+        return exec_loop_pink(
+            q_list, duration, push_tau=push_tau, speed=speed, push_hold_s=push_hold_s,
+            label=label, command_start_q=command_start_q, command_handoff=command_handoff,
+            execution_context=execution_context, flip_evidence=flip_evidence,
+            stiffness_scale=stiffness_scale)
     ctl = state.controller
     trace, trace_stop = _start_torso_trace(ctl)
     log = dict(duration=duration, speed=speed, pushing=push_tau is not None,

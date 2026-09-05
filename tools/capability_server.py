@@ -85,6 +85,8 @@ def _registry_payload(registry: dict[str, Any]) -> dict[str, Any]:
         "meta": {
             "arms": list(reg.ARMS),
             "arm_labels": reg.ARM_LABELS,
+            "motion_backends": list(reg.MOTION_BACKENDS),
+            "motion_backend_labels": reg.MOTION_BACKEND_LABELS,
             "design_sides": list(reg.DESIGN_SIDES),
             "sites": list(reg.SITES),
             "directions": list(reg.DIRECTIONS),
@@ -206,8 +208,14 @@ async def active_set(request: Request):
     body = await _json_body(request)
     with _lock:
         registry = reg.load_registry(REGISTRY_PATH)
-        registry["active"] = {"arm": body.get("arm"),
-                              "hand_id": body.get("hand_id")}
+        previous = registry.get("active") or {}
+        # motion_backend 未传时沿用现值（只切手/臂不应悄悄改运动后端）
+        registry["active"] = {
+            "arm": body.get("arm"),
+            "hand_id": body.get("hand_id"),
+            "motion_backend": body.get(
+                "motion_backend", previous.get("motion_backend", "legacy")),
+        }
         try:
             registry = reg.save_registry(registry, REGISTRY_PATH)
         except ValueError as exc:
