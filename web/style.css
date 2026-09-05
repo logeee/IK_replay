@@ -510,10 +510,17 @@ button:disabled {
   background: #f2f6f9;
   font-size: 13px;
   color: #1d2a38;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.reach-header > strong {
+  flex: 0 0 auto;
 }
 
 .reach-header button {
   margin-left: auto;
+  flex: 0 0 auto;
   width: 26px;
   height: 22px;
   border: 1px solid rgba(20, 31, 45, 0.15);
@@ -526,8 +533,20 @@ button:disabled {
   padding: 2px 8px;
   border-radius: 9px;
   font-size: 11px;
+  line-height: 16px;
   background: #e4ecf2;
   color: #43596d;
+  /* 标题栏只允许一行：徽标在空间不足时收缩并省略号截断，悬停看 title */
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 手臂接管状态很短，优先保住不截断 */
+#reachBadge {
+  flex-shrink: 0;
 }
 
 .reach-badge.exec {
@@ -537,9 +556,6 @@ button:disabled {
 
 .reach-badge.hand {
   max-width: 230px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .reach-badge.hand.online {
@@ -1196,4 +1212,260 @@ button:disabled {
   color: #6b7b88;
   border-top: 1px dashed #d5dee5;
   padding-top: 4px;
+}
+
+/* pink：本次执行后端二选一，和按钮同排同高 */
+.reach-actions select#reachExecBackend {
+  min-height: 30px;
+  border: 1px solid rgba(20, 31, 45, 0.15);
+  border-radius: 6px;
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 6px;
+}
+
+.reach-actions select#reachExecBackend:has(option[value="pink"]:checked) {
+  background: #fdf1f6;
+  border-color: #c2467a;
+  color: #8a2c55;
+}
+
+/* pink：实时全身姿态开关（aria-pressed=true 为开） */
+.reach-actions button#reachLiveBodyBtn[aria-pressed="true"] {
+  background: #e6f4ea;
+  border-color: #3f8f5a;
+  color: #1f5f34;
+}
+
+/* ---- pink 浮动基座：按钮上的状态点 + 读数弹窗 ---- */
+
+.reach-actions button.reach-fb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.reach-fb-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #b7c2cc;
+  flex: 0 0 auto;
+}
+
+.reach-fb-btn.ok .reach-fb-dot { background: var(--success); }
+.reach-fb-btn.warn .reach-fb-dot { background: #e0a21b; }
+.reach-fb-btn.bad .reach-fb-dot {
+  background: var(--danger);
+  animation: reach-fb-blink 1s steps(2, start) infinite;
+}
+
+@keyframes reach-fb-blink {
+  to { opacity: 0.25; }
+}
+
+.reach-fb-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(17, 31, 46, 0.45);
+  backdrop-filter: blur(2px);
+  animation: reach-fb-fade 0.15s ease-out;
+}
+
+.reach-fb-overlay.hidden {
+  display: none;
+}
+
+.reach-fb-dialog {
+  width: 460px;
+  max-width: 100%;
+  max-height: 100%;
+  overflow: auto;
+  border: 1px solid rgba(20, 31, 45, 0.14);
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 24px 60px rgba(17, 31, 46, 0.35);
+  font-size: 12px;
+  color: #1d2a38;
+  animation: reach-fb-in 0.18s ease-out;
+}
+
+@keyframes reach-fb-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes reach-fb-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+.reach-fb-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(20, 31, 45, 0.1);
+  background: #f2f6f9;
+  white-space: nowrap;
+}
+
+.reach-fb-head strong {
+  font-size: 13px;
+}
+
+.reach-fb-head button {
+  margin-left: auto;
+  width: 24px;
+  height: 22px;
+  border: 1px solid rgba(20, 31, 45, 0.15);
+  border-radius: 5px;
+  background: #ffffff;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.reach-fb-chip {
+  padding: 2px 8px;
+  border-radius: 9px;
+  font-size: 11px;
+  background: #e4ecf2;
+  color: #43596d;
+  white-space: nowrap;
+}
+
+.reach-fb-chip.hidden { display: none; }
+.reach-fb-chip.ok { background: #e1f4e8; color: #1c7243; }
+.reach-fb-chip.warn { background: #fff1d6; color: #8a5b00; }
+.reach-fb-chip.bad { background: #fbe9e7; color: #b3362a; }
+
+.reach-fb-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px 12px;
+}
+
+.reach-fb-body h4 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #65717f;
+  text-transform: uppercase;
+}
+
+.reach-fb-body h4 small {
+  margin-left: 6px;
+  font-weight: 400;
+  text-transform: none;
+  color: #8a97a4;
+}
+
+.reach-fb-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.reach-fb-grid.two { grid-template-columns: repeat(2, 1fr); }
+.reach-fb-grid.four { grid-template-columns: repeat(4, 1fr); }
+
+.reach-fb-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 8px 7px;
+  border: 1px solid #d8e0e7;
+  border-radius: 7px;
+  background: #f7fafc;
+}
+
+.reach-fb-tile.warn { border-color: #ecd39a; background: #fff8e8; }
+.reach-fb-tile.bad { border-color: #e6b3ad; background: #fdeeec; }
+
+.reach-fb-label {
+  font-size: 10px;
+  color: #6b7b88;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reach-fb-value {
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #1d2a38;
+  white-space: nowrap;
+}
+
+.reach-fb-tile.warn .reach-fb-value { color: #8a5b00; }
+.reach-fb-tile.bad .reach-fb-value { color: #b3362a; }
+
+.reach-fb-value small {
+  margin-left: 2px;
+  font-size: 10px;
+  font-weight: 500;
+  color: #8a97a4;
+}
+
+.reach-fb-bar {
+  position: relative;
+  height: 4px;
+  margin-top: 3px;
+  border-radius: 2px;
+  background: #e1e8ee;
+  overflow: hidden;
+}
+
+.reach-fb-bar i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 2px;
+  background: var(--success);
+}
+
+.reach-fb-bar.signed::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  left: 50%;
+  width: 1px;
+  background: #9aa8b4;
+}
+
+.reach-fb-tile.warn .reach-fb-bar i { background: #e0a21b; }
+.reach-fb-tile.bad .reach-fb-bar i { background: var(--danger); }
+
+.reach-fb-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.reach-fb-empty {
+  padding: 6px 2px;
+  color: #6b7b88;
+  line-height: 1.5;
+}
+
+.reach-fb-error {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #fbe9e7;
+  color: #b3362a;
+  word-break: break-all;
 }

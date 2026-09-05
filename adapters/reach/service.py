@@ -41,7 +41,9 @@ def reach_status():
                        else state.T_cam2root.tolist()),
         "arm_supported": state.arm_factory is not None,   # 有真机执行能力
         "armed": state.controller is not None,            # 前端已接管手臂
-        "motion_backend": state.motion_backend,           # legacy / pink（18000 配置）
+        "motion_backend": state.motion_backend,           # 默认后端 legacy / pink（18000 配置）
+        "exec_backend": state.exec_backend,               # 本次/上次执行实际用的后端
+        "pink_available": state.pink_runtime is not None,  # pink 可选（运行时已建）
         "hand_move": bool(state.controller and state.controller.status()["float"]),
         "joints_available": (state.controller is not None
                              or state.provider_reader is not None),

@@ -2,7 +2,8 @@
 
 * 假 H2ArmController：复刻 set_target / 矢量同步限速 / status() 语义；
 * MockLowStateSampler：站立中性位，执行中途注入躯干后仰 + 腰俯仰；
-* 走 ``execution._exec_loop`` → 按 ``state.motion_backend`` 分发到 ``exec_loop_pink``。
+* 走 ``execution._exec_loop`` → 按本次 ``motion_backend``（缺省取 ``state.motion_backend``）
+  分发到 ``exec_loop_pink``。
 
 验收：
 1. 世界系终态 TCP 误差 < 3 mm（躯干动了仍对准取点时刻冻结的世界系目标）；
@@ -64,6 +65,14 @@ class FakeArmController:
     def shutdown(self) -> None:
         self._stop.set()
         self._thread.join(1.0)
+
+    def reset(self, q0: np.ndarray) -> None:
+        """测试用：瞬移回 q0（模拟"人把手臂放回起点"）。"""
+        with self._lock:
+            self._cmd = q0.copy()
+            self._desired = q0.copy()
+            self._jog = False
+            self.targets.clear()
 
     # ---- H2ArmController API 子集 ----
     def enable_jog(self) -> None:
@@ -234,6 +243,59 @@ class PinkBackendOfflineTest(unittest.TestCase):
             rec = list(state.execution_history)[-1]
         self.assertEqual(rec["motion_backend"], "legacy")
         self.assertNotIn("pink", rec)
+
+    def test_per_execution_backend_overrides_default(self) -> None:
+        """默认 legacy、运行时可用：同一 q_list 先按默认（legacy）跑，再按次选 pink 跑，
+        两条记录后端各自正确；exec_backend 反映本次实际使用的后端。"""
+        state.motion_backend = "legacy"
+        self.rt.anchor()
+        execution._exec_loop(self._q_list(6), 1.0, speed=0.4, label="default-legacy",
+                             command_start_q=Q_START.copy())
+        self.assertIn("完成", state.exec_message)
+        self.assertEqual(state.exec_backend, "legacy")
+        # 回到起点再用 pink 跑同一条
+        self.ctl.reset(Q_START)
+        state.exec_running = True
+        execution._exec_loop(self._q_list(6), 1.0, speed=0.4, label="override-pink",
+                             command_start_q=Q_START.copy(), motion_backend="pink")
+        self.assertIn("完成", state.exec_message)
+        self.assertEqual(state.exec_backend, "pink")
+        with state.execution_history_lock:
+            recs = list(state.execution_history)
+        self.assertEqual([r["motion_backend"] for r in recs], ["legacy", "pink"])
+        self.assertNotIn("pink", recs[0])
+        self.assertEqual(recs[1]["pink"]["backend"], "pink")
+        # 反向：默认 pink，按次选 legacy
+        state.motion_backend = "pink"
+        self.ctl.reset(Q_START)
+        state.exec_running = True
+        execution._exec_loop(self._q_list(6), 1.0, speed=0.4, label="override-legacy",
+                             command_start_q=Q_START.copy(), motion_backend="legacy")
+        self.assertIn("完成", state.exec_message)
+        self.assertEqual(state.exec_backend, "legacy")
+        np.testing.assert_allclose(self.ctl.read_measured(), Q_GOAL, atol=1e-6)
+
+    def test_resolve_exec_backend(self) -> None:
+        state.motion_backend = "legacy"
+        self.assertEqual(execution._resolve_exec_backend(None), ("legacy", None))
+        self.assertEqual(execution._resolve_exec_backend(""), ("legacy", None))
+        backend, err = execution._resolve_exec_backend("pink")   # 未锚定
+        self.assertIsNone(backend)
+        self.assertIn("未锚定", err)
+        self.rt.anchor()
+        self.assertEqual(execution._resolve_exec_backend(" PINK "), ("pink", None))
+        state.motion_backend = "pink"
+        self.assertEqual(execution._resolve_exec_backend(None), ("pink", None))
+        self.assertEqual(execution._resolve_exec_backend("legacy"), ("legacy", None))
+        backend, err = execution._resolve_exec_backend("curobo")
+        self.assertIsNone(backend)
+        self.assertIn("legacy 或 pink", err)
+        state.pink_runtime = None
+        backend, err = execution._resolve_exec_backend("pink")
+        self.assertIsNone(backend)
+        self.assertIn("不可用", err)
+        # 运行时缺失时默认 pink 也应能被解析为报错而不是崩
+        self.assertEqual(execution._resolve_exec_backend("legacy"), ("legacy", None))
 
     def test_normalize_motion_backend(self) -> None:
         self.assertEqual(normalize_motion_backend(None), "legacy")

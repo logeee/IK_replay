@@ -1370,6 +1370,7 @@ async function sidestepReach(stepCm, options = {}) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        motion_backend: execBackendChoice(),
         waypoints: panel.frames.map((frame) => frame.named_joints),
         label: `${dirName}移${stepCm}cm${pushN > 0 ? `+${pushN}N` : ""}`,
         // 带推力时快拨（0.06 m/s）：借冲量越过旋钮定位卡点，比慢慢顶有效；
@@ -1557,6 +1558,7 @@ async function twistReach(twist) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        motion_backend: execBackendChoice(),
         waypoints: panel.frames.map((frame) => frame.named_joints),
         label: `${name}${angle}°`,
         duration: Math.max(2, angle / 15),   // 15°/s，最短 2s
@@ -1834,6 +1836,7 @@ async function moveToWaypoint(wp, options = {}) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        motion_backend: execBackendChoice(),
         waypoints: seg.waypoints.map((frame) => frame.named_joints),
         duration: options.duration ?? 2.5,
         max_speed_rad_s: options.maxSpeed ?? 0.4,  // 回放段精度要求低，放行到快档
@@ -2139,7 +2142,10 @@ async function runSequence(replan = false) {
     const resp = await fetch("/api/reach/sequences/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ file: seq.file, replan, margin_m: marginM }),
+      body: JSON.stringify({
+        file: seq.file, replan, margin_m: marginM,
+        motion_backend: execBackendChoice(),
+      }),
     });
     const res = await resp.json();
     if (!resp.ok || !res.ok) {
@@ -2675,6 +2681,7 @@ async function executeReach(options = {}) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        motion_backend: execBackendChoice(),
         waypoints: mainFrames.map((frame) => frame.named_joints),
         duration,
         label: fine ? "主轨迹(精定位)" : "主轨迹",
@@ -2843,21 +2850,42 @@ async function stopReach() {
   }
 }
 
-// ---- pink 运动后端（18000 active.motion_backend=pink）----
-// legacy 后端只显示一个灰色徽章，其余按钮全部隐藏，行为与以前完全一致。
-const pinkUi = { timer: null };
+// ---- pink 运动后端 ----
+// 18000 的 motion_backend 只是默认值；pink 运行时可用（status.pink_available）时，
+// 执行按钮旁出现「本次：原方案 / PINK」二选一，每次 /execute 带上所选后端。
+// 运行时不可用（没装 pinocchio 等）时只显示灰色徽章，其余全部隐藏，行为与以前完全一致。
+const pinkUi = { timer: null, defaultBackend: "legacy" };
+
+function execBackendChoice() {
+  const sel = document.getElementById("reachExecBackend");
+  if (!sel || sel.hidden) return pinkUi.defaultBackend;
+  return sel.value === "pink" ? "pink" : "legacy";
+}
 
 function initPinkUi(status) {
   const badge = document.getElementById("reachBackendBadge");
   const anchorBtn = document.getElementById("reachAnchorBtn");
   const holdBtn = document.getElementById("reachPinkHoldBtn");
   const resumeBtn = document.getElementById("reachPinkResumeBtn");
+  const backendSel = document.getElementById("reachExecBackend");
   if (!badge) return;
   const backend = status.motion_backend || status.exec?.motion_backend || "legacy";
+  pinkUi.defaultBackend = backend === "pink" ? "pink" : "legacy";
   badge.classList.remove("hidden");
-  if (backend !== "pink") {
+  const available = Boolean(status.pink_available ?? status.exec?.pink_available ?? backend === "pink");
+  if (!available) {
     badge.textContent = "后端：原方案";
     return;
+  }
+  if (backendSel) {
+    backendSel.hidden = false;
+    backendSel.value = pinkUi.defaultBackend;
+    backendSel.addEventListener("change", () => {
+      reachMsg(backendSel.value === "pink"
+        ? "本次执行改用 PINK 世界系跟踪（需已锚定；停止 = 世界系保持不撒手）"
+        : "本次执行改用原方案（关节路点按节拍直发）", "success");
+      refreshPinkStatus();
+    });
   }
   badge.textContent = "后端：PINK（未锚定）";
   badge.classList.add("pink-warn");
@@ -2899,7 +2927,249 @@ function initPinkUi(status) {
     }
   });
   refreshPinkStatus();
-  pinkUi.timer = setInterval(refreshPinkStatus, 1500);
+  // 仅页面显示的轮询周期；控制环本身是 50 Hz，与此无关
+  pinkUi.timer = setInterval(refreshPinkStatus, 250);
+  initLiveBody();
+}
+
+// ---- 实时全身姿态（pink 后端）----
+// /api/reach/pink/body 给出 31 路电机映射后的 URDF 关节角 + 骨盆相对锚定时刻的位姿。
+// 10 Hz 驱动三维模型：腿/腰/头/双臂全部实时；某链正在回放/预演时该链关节让给回放帧。
+const liveBody = { enabled: true, timer: null, busy: false, active: false };
+
+function initLiveBody() {
+  const btn = document.getElementById("reachLiveBodyBtn");
+  if (!btn) return;
+  btn.hidden = false;
+  const render = () => {
+    btn.setAttribute("aria-pressed", String(liveBody.enabled));
+    btn.textContent = liveBody.enabled ? "实时全身 ●" : "实时全身 ○";
+    btn.classList.toggle("active", liveBody.enabled);
+  };
+  btn.addEventListener("click", () => {
+    liveBody.enabled = !liveBody.enabled;
+    render();
+    if (!liveBody.enabled) resetLiveBodyPose();
+  });
+  render();
+  liveBody.timer = setInterval(refreshLiveBody, 100);
+}
+
+function resetLiveBodyPose() {
+  if (!state.robotGroup) return;
+  state.robotGroup.position.copy(state.sceneOffset);
+  state.robotGroup.quaternion.identity();
+  state.robotGroup.updateMatrixWorld(true);
+  liveBody.active = false;
+}
+
+async function refreshLiveBody() {
+  if (!liveBody.enabled || liveBody.busy || !state.robotGroup) return;
+  liveBody.busy = true;
+  let body;
+  try {
+    body = await fetchJson("/api/reach/pink/body");
+  } catch {
+    liveBody.busy = false;
+    return;
+  } finally {
+    liveBody.busy = false;
+  }
+  if (!body?.available || !body.joints) return;
+  liveBody.active = true;
+
+  // 正在回放/预演的链：手臂关节以回放帧为准，其余关节仍实时
+  const frozen = new Set();
+  for (const panel of Object.values(state.panels)) {
+    if (panel.playing) {
+      for (const name of panel.chain.joint_names || []) frozen.add(name);
+    }
+  }
+  // 写进 robotJointState：其它地方重绘（applyFrame 等）时腿腰不会被打回零位而闪烁；
+  // 手臂链因此也以真机为 IK 起点。想用滑杆手动摆姿态时把「实时全身」关掉即可。
+  for (const [name, value] of Object.entries(body.joints)) {
+    if (!frozen.has(name)) state.robotJointState[name] = value;
+  }
+  setRobotJoints(state.robotJointState, false);
+
+  // 骨盆相对锚定的位姿：把整个模型按 anchor_T_pelvis 摆放（场景 = 锚定时刻的骨盆系 + 地面偏移）
+  const T = body.anchor_T_pelvis;
+  if (Array.isArray(T) && T.length === 4) {
+    const m = new THREE.Matrix4().set(
+      T[0][0], T[0][1], T[0][2], T[0][3],
+      T[1][0], T[1][1], T[1][2], T[1][3],
+      T[2][0], T[2][1], T[2][2], T[2][3],
+      0, 0, 0, 1,
+    );
+    // 场景里骨盆原点在 sceneOffset；倾斜应绕骨盆原点发生，因此先平移到骨盆再施加 T
+    const offset = new THREE.Matrix4().makeTranslation(
+      state.sceneOffset.x, state.sceneOffset.y, state.sceneOffset.z);
+    const full = offset.multiply(m);
+    full.decompose(state.robotGroup.position, state.robotGroup.quaternion, state.robotGroup.scale);
+    state.robotGroup.scale.set(1, 1, 1);
+    state.robotGroup.updateMatrixWorld(true);
+  }
+}
+
+// 浮动基座实时读数弹窗：给「锚定后站着不动 / 轻压躯干」这两个真机前核对用。
+// 面板里只留一个带状态点的「浮动基座」按钮，点开才显示读数；Δ 以本次锚定后
+// 看到的第一帧为基准，最大 Δ 在同一锚定期内累计。
+const pinkPanelRef = { anchorCount: null, p0: null, maxDrift: 0, bound: false };
+
+// 阈值（mm / ° / ms）：绿 → 黄 → 红
+const FB_LIMITS = {
+  drift: [10, 30],      // 相对锚定漂移
+  foot: [10, 25],       // 脚锚点误差
+  jump: [5, 15],        // 单帧跳变
+  tilt: [5, 10],        // 躯干倾角
+  lowstate: [100, 200], // lowstate 延迟
+};
+
+function fbLevel(value, [warn, bad]) {
+  const v = Math.abs(value);
+  return v >= bad ? "bad" : v >= warn ? "warn" : "ok";
+}
+
+function fbEsc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// 一个读数格：标签 + 数值 + 底部进度条（相对阈值上限，居中零点时用 signed）
+function fbTile(label, value, unit, limits, { signed = false, digits = 0 } = {}) {
+  const lvl = limits ? fbLevel(value, limits) : "ok";
+  const span = limits ? limits[1] * 1.5 : 1;
+  const ratio = Math.max(-1, Math.min(1, value / span));
+  let bar = "";
+  if (limits) {
+    bar = signed
+      ? `<div class="reach-fb-bar signed"><i style="${ratio >= 0 ? "left:50%" : "left:auto;right:50%"};width:${Math.abs(ratio) * 50}%"></i></div>`
+      : `<div class="reach-fb-bar"><i style="width:${Math.abs(ratio) * 100}%"></i></div>`;
+  }
+  const text = value == null || Number.isNaN(value) ? "-" : value.toFixed(digits);
+  return `<div class="reach-fb-tile ${lvl}"><span class="reach-fb-label">${label}</span>`
+    + `<span class="reach-fb-value">${text}<small>${unit}</small></span>${bar}</div>`;
+}
+
+function fbChip(text, lvl = "") {
+  return `<span class="reach-fb-chip ${lvl}">${fbEsc(text)}</span>`;
+}
+
+function bindPinkFbPopup() {
+  if (pinkPanelRef.bound) return;
+  pinkPanelRef.bound = true;
+  const btn = document.getElementById("reachPinkFbBtn");
+  const pop = document.getElementById("reachPinkFbPop");
+  const close = document.getElementById("reachPinkFbClose");
+  if (!btn || !pop) return;
+  btn.hidden = false;
+  // 居中模态弹窗：点遮罩、× 或 Esc 关闭
+  const toggle = (show) => pop.classList.toggle("hidden", !show);
+  btn.addEventListener("click", () => toggle(true));
+  close.addEventListener("click", () => toggle(false));
+  pop.addEventListener("pointerdown", (e) => {
+    if (e.target === pop) toggle(false);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !pop.classList.contains("hidden")) toggle(false);
+  });
+}
+
+function renderPinkPanel(st, wf, fbState, sup) {
+  bindPinkFbPopup();
+  const btn = document.getElementById("reachPinkFbBtn");
+  const body = document.getElementById("reachPinkFbBody");
+  const anchorChip = document.getElementById("reachPinkFbAnchor");
+  const qualityChip = document.getElementById("reachPinkFbQuality");
+  if (!btn || !body) return;
+
+  if (!wf.anchored || !fbState.position_world) {
+    btn.className = "reach-fb-btn idle";
+    anchorChip.textContent = "未锚定";
+    anchorChip.className = "reach-fb-chip warn";
+    qualityChip.textContent = "";
+    qualityChip.className = "reach-fb-chip hidden";
+    body.innerHTML = `<div class="reach-fb-empty">机器人双脚站定后点「锚定世界系」，这里会显示 world 位姿读数。</div>`;
+    return;
+  }
+
+  const p = fbState.position_world;
+  if (pinkPanelRef.anchorCount !== wf.anchor_count) {
+    pinkPanelRef.anchorCount = wf.anchor_count;
+    pinkPanelRef.p0 = p.slice();
+    pinkPanelRef.maxDrift = 0;
+  }
+  const d = p.map((v, i) => (v - pinkPanelRef.p0[i]) * 1000);
+  const drift = Math.hypot(...d);
+  pinkPanelRef.maxDrift = Math.max(pinkPanelRef.maxDrift, drift);
+
+  // 只看 roll/pitch 的粗略倾角（yaw 锚定时归零）
+  const q = fbState.quaternion_world_wxyz || [];
+  let roll = null;
+  let pitch = null;
+  if (q.length === 4) {
+    const [w, x, y, z] = q;
+    roll = Math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y)) * 180 / Math.PI;
+    pitch = Math.asin(Math.max(-1, Math.min(1, 2 * (w * y - z * x)))) * 180 / Math.PI;
+  }
+  const footL = (fbState.left_anchor_error_m || 0) * 1000;
+  const footR = (fbState.right_anchor_error_m || 0) * 1000;
+  const jump = (fbState.base_pose_jump_m || 0) * 1000;
+  const lowstate = st.lowstate_age_ms != null ? Math.round(st.lowstate_age_ms) : null;
+  const qualityOk = !fbState.quality || fbState.quality === "DOUBLE_SUPPORT_GOOD";
+
+  const levels = [
+    fbLevel(pinkPanelRef.maxDrift, FB_LIMITS.drift),
+    fbLevel(footL, FB_LIMITS.foot),
+    fbLevel(footR, FB_LIMITS.foot),
+    fbLevel(jump, FB_LIMITS.jump),
+    roll != null ? fbLevel(roll, FB_LIMITS.tilt) : "ok",
+    pitch != null ? fbLevel(pitch, FB_LIMITS.tilt) : "ok",
+    lowstate != null ? fbLevel(lowstate, FB_LIMITS.lowstate) : "ok",
+    qualityOk ? "ok" : "bad",
+    sup?.fault_state ? "bad" : "ok",
+  ];
+  const overall = levels.includes("bad") ? "bad" : levels.includes("warn") ? "warn" : "ok";
+  btn.className = `reach-fb-btn ${overall}`;
+
+  anchorChip.textContent = `锚定 #${wf.anchor_count}`;
+  anchorChip.className = "reach-fb-chip ok";
+  qualityChip.textContent = qualityOk ? "双脚支撑 OK" : (fbState.quality || "质量未知");
+  qualityChip.className = `reach-fb-chip ${qualityOk ? "ok" : "bad"}`;
+
+  const sections = [];
+  sections.push(`<section><h4>骨盆 world 位置 <small>m</small></h4><div class="reach-fb-grid">`
+    + fbTile("x", p[0], "", null, { digits: 3 })
+    + fbTile("y", p[1], "", null, { digits: 3 })
+    + fbTile("z", p[2], "", null, { digits: 3 })
+    + `</div></section>`);
+  sections.push(`<section><h4>相对锚定漂移 Δ <small>站着不动应在毫米级</small></h4><div class="reach-fb-grid four">`
+    + fbTile("Δx", d[0], "mm", FB_LIMITS.drift, { signed: true })
+    + fbTile("Δy", d[1], "mm", FB_LIMITS.drift, { signed: true })
+    + fbTile("Δz", d[2], "mm", FB_LIMITS.drift, { signed: true })
+    + fbTile("本次最大", pinkPanelRef.maxDrift, "mm", FB_LIMITS.drift)
+    + `</div></section>`);
+  if (roll != null) {
+    sections.push(`<section><h4>躯干倾角</h4><div class="reach-fb-grid two">`
+      + fbTile("roll", roll, "°", FB_LIMITS.tilt, { signed: true, digits: 1 })
+      + fbTile("pitch", pitch, "°", FB_LIMITS.tilt, { signed: true, digits: 1 })
+      + `</div></section>`);
+  }
+  sections.push(`<section><h4>双脚锚点</h4><div class="reach-fb-grid">`
+    + fbTile("左脚误差", footL, "mm", FB_LIMITS.foot)
+    + fbTile("右脚误差", footR, "mm", FB_LIMITS.foot)
+    + fbTile("单帧跳变", jump, "mm", FB_LIMITS.jump)
+    + `</div></section>`);
+
+  const chips = [
+    fbChip(`lowstate ${lowstate != null ? lowstate + "ms" : "-"}`, lowstate != null ? fbLevel(lowstate, FB_LIMITS.lowstate) : ""),
+    fbChip(st.pick_world_frame ? "取点世界系 已记录" : "取点世界系 未记录", st.pick_world_frame ? "ok" : "warn"),
+    sup ? fbChip(`Supervisor ${sup.supervisor_state}${sup.fault_state ? " : " + sup.fault_state : ""}`, sup.fault_state ? "bad" : "ok") : "",
+  ].join("");
+  sections.push(`<section><h4>链路</h4><div class="reach-fb-chips">${chips}</div></section>`);
+  if (st.last_error) {
+    sections.push(`<div class="reach-fb-error">最近错误：${fbEsc(st.last_error)}</div>`);
+  }
+  body.innerHTML = sections.join("");
 }
 
 async function refreshPinkStatus() {
@@ -2917,8 +3187,16 @@ async function refreshPinkStatus() {
   const fbState = wf.state || {};
   const session = st.session;
   const sup = session?.supervisor || null;
-  let text = "后端：PINK";
+  const choice = execBackendChoice();
+  let text = choice === "pink" ? "本次：PINK" : `本次：原方案（PINK 可选`;
   let cls = "pink-ok";
+  if (choice !== "pink") {
+    text += wf.anchored ? "，已锚定）" : "，未锚定）";
+    badge.textContent = text;
+    badge.classList.remove("pink-ok", "pink-warn", "pink-fault");
+    renderPinkPanel(st, wf, fbState, sup);
+    return;
+  }
   if (!wf.anchored) {
     text += "（未锚定）";
     cls = "pink-warn";
@@ -2949,10 +3227,12 @@ async function refreshPinkStatus() {
   badge.textContent = text;
   badge.classList.remove("pink-ok", "pink-warn", "pink-fault");
   badge.classList.add(cls);
-  badge.title = fbState.timestamp_s != null
+  renderPinkPanel(st, wf, fbState, sup);
+  // 徽标可能被省略号截断，title 里先放完整文字
+  badge.title = `${text}\n` + (fbState.timestamp_s != null
     ? `world_T_root 平移 ${(fbState.world_T_root || []).slice(0, 3).map((r) => (r[3] ?? 0).toFixed(3)).join(", ")} m；`
       + `脚锚点误差 L ${(fbState.left_anchor_error_m * 1000).toFixed(0)}mm / R ${(fbState.right_anchor_error_m * 1000).toFixed(0)}mm`
-    : "尚未锚定：机器人双脚站定后点「锚定世界系」";
+    : "尚未锚定：机器人双脚站定后点「锚定世界系」");
   const running = !!session && !session.finished;
   holdBtn.disabled = !running || (sup && sup.supervisor_state !== "RUNNING" && sup.supervisor_state !== "RECOVERING_HOLD");
   resumeBtn.disabled = !running || !sup || sup.supervisor_state !== "PAUSED_MANUAL";

@@ -488,12 +488,15 @@ def main() -> int:
     # 录制新序列时盖「来源组合」戳并自动认领给它（camera-only 时无组合）
     reach.state.active_combo = dict(active_combo) if active_combo else None
 
-    # ---- 运动后端：18000 active.motion_backend（可被 --motion-backend 覆盖）----
-    # legacy 路径完全不 import control/（pinocchio 缺失也不影响原方案）；
-    # pink 初始化失败回退 legacy 并大字告警，绝不阻止启动。
+    # ---- 运动后端 ----
+    # 18000 active.motion_backend（可被 --motion-backend 覆盖）只是**默认**后端；
+    # 每次 /execute 可在页面上单独选原方案/PINK。为此 pink 运行时"能建就建"：
+    # 只是加载 pinocchio 模型 + 一个只读 lowstate 订阅，不碰手臂；legacy 分支代码
+    # 完全不变。pinocchio 缺失或初始化失败 -> pink 不可选、默认回退 legacy，绝不阻止启动。
     motion_backend = (args.motion_backend if args.motion_backend != "auto"
                       else str(active_combo.get("motion_backend") or "legacy"))
-    if motion_backend == "pink" and not args.camera_only:
+    reach.state.pink_runtime = None
+    if not args.camera_only:
         try:
             from adapters.reach.execution_pink import build_runtime as build_pink_runtime
 
@@ -502,24 +505,28 @@ def main() -> int:
                 arm_side=arm, wrist_link=wrist_link,
                 network_interface=args.network_interface,
                 mock=(joints_reader is None))
-            reach.state.motion_backend = "pink"
             cfg = reach.state.pink_runtime.config
-            print(f"[reach] 运动后端 = pink（世界系 PINK 闭环跟踪）："
+            print(f"[reach] pink 运行时就绪（可按次选用）："
                   f"{reach.state.pink_runtime.pink_config_path.name}，"
                   f"qdot 上限 {cfg['pink']['max_joint_velocity_rad_s']} rad/s，"
                   f"反馈 {reach.state.pink_runtime.feedback}，"
                   f"lowstate {'mock' if joints_reader is None else 'DDS 只读订阅'}")
-            print("[reach]   ⚠ 执行前必须先锚定世界系（页面「锚定世界系」/ POST /api/reach/pink/anchor），"
-                  "机器人双脚站定；走动后需重新锚定")
         except Exception as exc:
             reach.state.pink_runtime = None
-            reach.state.motion_backend = "legacy"
-            print(f"[reach] !!! pink 后端初始化失败，回退 legacy：{type(exc).__name__}: {exc}")
+            level = "!!!" if motion_backend == "pink" else "   "
+            print(f"[reach] {level} pink 运行时不可用（本次只能用原方案）：{type(exc).__name__}: {exc}")
+    elif motion_backend == "pink":
+        print("[reach] camera-only 模式忽略 motion_backend=pink")
+    if motion_backend == "pink" and reach.state.pink_runtime is not None:
+        reach.state.motion_backend = "pink"
+        print("[reach] 默认运动后端 = pink（世界系 PINK 闭环跟踪）")
+        print("[reach]   ⚠ 执行前必须先锚定世界系（页面「锚定世界系」/ POST /api/reach/pink/anchor），"
+              "机器人双脚站定；走动后需重新锚定")
     else:
         reach.state.motion_backend = "legacy"
-        if motion_backend == "pink":
-            print("[reach] camera-only 模式忽略 motion_backend=pink")
-        print("[reach] 运动后端 = legacy（关节路点按节拍直发）")
+        print("[reach] 默认运动后端 = legacy（关节路点按节拍直发）"
+              + ("，页面可按次切到 pink" if reach.state.pink_runtime is not None else ""))
+    reach.state.exec_backend = reach.state.motion_backend
     reach.state.capability_url = (
         args.capability_url or DEFAULT_CAPABILITY_URL).rstrip("/")
     # 认领可见性（启动快照冻结）：激活组合已启用能力认领的动作 + 生效位点

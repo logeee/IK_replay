@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>双臂 IK 调试回放台</title>
-    <link rel="stylesheet" href="/web/style.css?v=69" />
+    <link rel="stylesheet" href="/web/style.css?v=70" />
     <script type="importmap">
       {
         "imports": {
@@ -181,6 +181,11 @@
                         title="现有逻辑：数值 IK 解到目标 + 直线/经由路点规划">右侧规划</button>
                 <button id="reachPlanLeftBtn" type="button" disabled
                         title="平移在先、进出在后：先竖直+水平对齐到目标正前方（保持当前深度），最后一段才沿机器人前后方向往里伸；往外拔则先拔出到目标深度再平移">左侧规划</button>
+                <select id="reachExecBackend" hidden
+                        title="本次执行用哪个运动后端（默认跟 18000 配置）。原方案：关节路点按节拍直发；PINK：把路点提升为世界系 TCP 轨迹、50Hz 闭环补偿躯干漂移，需先锚定世界系。规划过程两者完全相同，执行中不可切换">
+                  <option value="legacy">本次：原方案</option>
+                  <option value="pink">本次：PINK</option>
+                </select>
                 <button id="reachExecBtn" type="button" class="danger" disabled>真机执行</button>
                 <button id="reachStopBtn" type="button" class="danger" disabled>急停</button>
                 <button id="reachAnchorBtn" type="button" hidden
@@ -189,10 +194,26 @@
                         title="pink 后端：人工暂停——冻结轨迹时钟并保持最后目标（不松手）">暂停 HOLD</button>
                 <button id="reachPinkResumeBtn" type="button" hidden
                         title="pink 后端：从人工暂停/恢复超时中继续（从当前位置重规划到原目标）">继续 RESUME</button>
+                <button id="reachPinkFbBtn" type="button" class="reach-fb-btn" hidden
+                        title="pink 后端浮动基座实时读数。站着不动时 Δ 应在毫米级；轻压躯干 x 变正、z 变小属正常"><i class="reach-fb-dot"></i>浮动基座</button>
+                <button id="reachLiveBodyBtn" type="button" hidden aria-pressed="true"
+                        title="pink 后端：用 rt/lowstate 的 31 路电机角实时驱动三维视图里的全身模型（腿/腰/头/双臂），并按浮动基座估计让模型整体随躯干倾斜；回放/预演时手臂链交给回放帧">实时全身 ●</button>
               </div>
               <div id="reachMsg" class="reach-msg"></div>
               <div id="reachDiag" class="reach-diag hidden"></div>
             </div>
+          </div>
+        </div>
+
+        <div id="reachPinkFbPop" class="reach-fb-overlay hidden">
+          <div class="reach-fb-dialog" role="dialog" aria-modal="true" aria-label="浮动基座实时读数">
+            <div class="reach-fb-head">
+              <strong>浮动基座实时读数</strong>
+              <span id="reachPinkFbAnchor" class="reach-fb-chip">未锚定</span>
+              <span id="reachPinkFbQuality" class="reach-fb-chip"></span>
+              <button id="reachPinkFbClose" type="button" title="关闭">×</button>
+            </div>
+            <div id="reachPinkFbBody" class="reach-fb-body"></div>
           </div>
         </div>
 
@@ -343,6 +364,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=106"></script>
+    <script type="module" src="/web/main.js?v=107"></script>
   </body>
 </html>

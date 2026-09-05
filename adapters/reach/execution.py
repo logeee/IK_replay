@@ -226,8 +226,24 @@ def _exec_status() -> dict:
         "progress": state.exec_progress,
         "message": state.exec_message,
         "torso_diag": state.torso_diag,
-        "motion_backend": state.motion_backend,
+        "motion_backend": state.motion_backend,       # 默认后端
+        "exec_backend": state.exec_backend,           # 本次/上次执行实际用的
+        "pink_available": state.pink_runtime is not None,
     }
+
+
+def _resolve_exec_backend(requested) -> tuple[str | None, str | None]:
+    """/execute 的 body.motion_backend -> 实际后端；返回 (backend, error)。"""
+    backend = str(requested or state.motion_backend or "legacy").strip().lower()
+    if backend not in ("legacy", "pink"):
+        return None, f"motion_backend 必须是 legacy 或 pink，收到 {requested!r}"
+    if backend == "pink":
+        rt = state.pink_runtime
+        if rt is None:
+            return None, "pink 后端不可用（未安装 pinocchio/pink 或初始化失败），请用原方案执行"
+        if not rt.world_frame.anchored:
+            return None, "世界系未锚定：请在机器人双脚站定时点「锚定世界系」，再取点、规划、执行"
+    return backend, None
 
 
 def _execution_summary(record: dict[str, Any]) -> dict[str, Any]:
@@ -379,7 +395,11 @@ def reach_execute(body: dict):
            "stiffness_scale": float?,
            "push": {"direction_root": [x,y,z], "force_n": float}?,
            "push_hold_s": float?,
+           "motion_backend": "legacy" | "pink"?,
            "flip_evidence": {"record": str, "flip_from": str?}?}
+
+    motion_backend（可选）：本次执行用哪个运动后端；缺省用 18000 配置的默认值。
+    pink 需要 pink 运行时可用且世界系已锚定，否则 409。执行中不可切换。
 
     label（可选）：段名，只用于 logs/reach 里区分主轨迹/横移/收回。
 
@@ -454,6 +474,9 @@ def reach_execute(body: dict):
             {"ok": False, "error": "flip_evidence 必须是对象"},
             status_code=400,
         )
+    exec_backend, backend_error = _resolve_exec_backend(body.get("motion_backend"))
+    if backend_error:
+        return JSONResponse({"ok": False, "error": backend_error}, status_code=409)
 
     with state.exec_lock:
         if state.exec_running:
@@ -526,10 +549,12 @@ def reach_execute(body: dict):
         state.exec_running = True
         state.exec_progress = 0.0
         state.exec_message = "执行中"
+        state.exec_backend = exec_backend
         state.exec_thread = threading.Thread(
             target=_exec_loop,
             args=(q_list, duration),
             kwargs={
+                "motion_backend": exec_backend,
                 "push_tau": push_tau,
                 "push_hold_s": push_hold_s,
                 "speed": speed,
@@ -684,7 +709,7 @@ def _log_exec(kind: str, result: str, q_target, *, sag=None, settle_trim=None,
         rec["torso_drift"] = state.torso_diag
         # 快照拷贝：采样线程可能还在往里 append
         rec["torso_trace"] = [dict(s) for s in list(trace)] if trace else None
-        rec["motion_backend"] = state.motion_backend
+        rec["motion_backend"] = state.exec_backend
         if extra:
             rec["pink"] = extra
 
@@ -920,9 +945,12 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
                command_handoff: dict | None = None,
                execution_context: dict | None = None,
                flip_evidence: dict | None = None,
-               stiffness_scale: float = 1.0) -> None:
-    if state.motion_backend == "pink":
-        # 18000 active.motion_backend=pink：世界系 PINK 闭环跟踪（同签名、同阶段语义）
+               stiffness_scale: float = 1.0,
+               motion_backend: str | None = None) -> None:
+    backend = motion_backend or state.motion_backend
+    state.exec_backend = backend
+    if backend == "pink":
+        # 本次执行选 pink：世界系 PINK 闭环跟踪（同签名、同阶段语义）
         from .execution_pink import exec_loop_pink
         return exec_loop_pink(
             q_list, duration, push_tau=push_tau, speed=speed, push_hold_s=push_hold_s,

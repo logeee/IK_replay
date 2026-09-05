@@ -31,6 +31,15 @@ from fastapi.responses import JSONResponse
 
 from .state import _read_torso, router, state
 
+
+def _pelvis_pose_matrix(fb) -> np.ndarray:
+    """FloatingBaseState -> world_T_pelvis 齐次矩阵。"""
+    from control.floating_base import quaternion_wxyz_to_rotation
+    T = np.eye(4)
+    T[:3, :3] = quaternion_wxyz_to_rotation(np.asarray(fb.quaternion_world_wxyz, dtype=float))
+    T[:3, 3] = np.asarray(fb.position_world, dtype=float)
+    return T
+
 MOTION_BACKENDS = ("legacy", "pink")
 CONTROL_DT = 0.02
 HOLD_S = 1.0                     # 到位后世界系保持时长（同时测终态误差）
@@ -93,6 +102,7 @@ class PinkRuntime:
         self.last_summary: dict[str, Any] | None = None
         self.pick_world_T_root: np.ndarray | None = None
         self.pick_world_frame_anchor: int | None = None
+        self.anchor_world_T_pelvis: np.ndarray | None = None
         self.last_error: str | None = None
 
     # ------------------------------------------------------------------ 控制器
@@ -121,7 +131,28 @@ class PinkRuntime:
         # 旧的取点世界系已失效（锚点变了）
         self.pick_world_T_root = None
         self.pick_world_frame_anchor = None
+        self.anchor_world_T_pelvis = _pelvis_pose_matrix(fb)
         return fb.to_dict()
+
+    def body_snapshot(self) -> dict[str, Any]:
+        """页面「实时全身姿态」用：最新 lowstate 映射成 URDF 关节名→rad，
+        外加骨盆相对**锚定时刻**的位姿（锚定前为单位阵），供三维视图整体倾斜模型。
+        不触发浮动基座更新（由 /pink/status 或执行循环负责），只读。"""
+        sample = self.sampler.sample()
+        joints = self.world_frame.config.map_motor_q(dict(enumerate(sample.motor_q.tolist())))
+        out: dict[str, Any] = {
+            "joints": joints,
+            "lowstate_age_ms": self.sampler.age_ms(),
+            "anchored": self.world_frame.anchored,
+            "anchor_count": self.world_frame.anchor_count,
+            "anchor_T_pelvis": np.eye(4).tolist(),
+        }
+        fb = self.world_frame.last_state
+        if fb is not None and self.anchor_world_T_pelvis is not None:
+            world_T_pelvis = _pelvis_pose_matrix(fb)
+            out["anchor_T_pelvis"] = (np.linalg.inv(self.anchor_world_T_pelvis) @ world_T_pelvis).tolist()
+            out["quality"] = fb.quality
+        return out
 
     def update_world(self):
         sample = self.sampler.sample()
@@ -142,8 +173,15 @@ class PinkRuntime:
         self.pick_world_frame_anchor = self.world_frame.anchor_count
         return self.pick_world_T_root
 
-    def status(self) -> dict[str, Any]:
+    def status(self, refresh_world: bool = False) -> dict[str, Any]:
+        """``refresh_world=True``：空闲时也用最新 lowstate 刷一帧浮动基座，供页面实时观察
+        （执行中由 exec 循环刷新，调用方不要再传 True，避免与执行线程竞争）。"""
         session = self.session
+        if refresh_world and self.world_frame.anchored:
+            try:
+                self.update_world()
+            except Exception as exc:
+                self.last_error = f"status.update_world: {exc}"
         return {
             "backend": "pink",
             "arm_side": self.arm_side,
@@ -453,9 +491,20 @@ def pink_status():
         return {"ok": True, "backend": state.motion_backend, "available": False}
     try:
         return {"ok": True, "available": True, "motion_backend": state.motion_backend,
-                **state.pink_runtime.status()}
+                **state.pink_runtime.status(refresh_world=not state.exec_running)}
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@router.get("/pink/body")
+def pink_body():
+    """实时全身姿态（31 路电机 → URDF 关节名）+ 骨盆相对锚定的位姿，页面 10 Hz 轮询。"""
+    if state.pink_runtime is None:
+        return {"ok": True, "available": False}
+    try:
+        return {"ok": True, "available": True, **state.pink_runtime.body_snapshot()}
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
 
 
 @router.post("/pink/anchor")
