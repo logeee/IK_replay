@@ -37,6 +37,12 @@ export interface ActiveCombo {
 
 export type MotionBackend = "legacy" | "pink";
 
+/** 柜面坐标系构建配置（7005 启动时读取；改后重启 7005 生效） */
+export interface CabinetFrameConfig {
+  method: string;
+  params: Record<string, number>;
+}
+
 /** 某能力条目的认领（严格：没认领的该条目不可用；拨/扭是不同条目，
  *  各认各的）。waypoint_names 只存手选位点；终点位点由已认领起手式推导 */
 export interface SequenceClaim {
@@ -69,6 +75,8 @@ export interface WaypointPoolEntry {
 export interface Registry {
   schema_version: number;
   active: ActiveCombo | null;
+  /** 旧注册表可能缺省：服务端会按方法一 + 默认参数补齐 */
+  cabinet_frame?: CabinetFrameConfig;
   hands: Hand[];
   calibrations: unknown[];
   capabilities: Capability[];
@@ -100,6 +108,9 @@ export interface ParamSpec {
   default: number;
   min: number;
   max: number;
+  /** 柜面坐标系参数规格才有：整数项 / 中文标签 */
+  integer?: boolean;
+  label?: string;
 }
 
 export interface Meta {
@@ -107,6 +118,10 @@ export interface Meta {
   arm_labels: Record<string, string>;
   motion_backends?: MotionBackend[];
   motion_backend_labels?: Record<string, string>;
+  cabinet_frame_methods?: string[];
+  cabinet_frame_method_labels?: Record<string, string>;
+  cabinet_frame_param_specs?: Record<string, Record<string, ParamSpec>>;
+  cabinet_frame_default_method?: string;
   design_sides: string[];
   sites: string[];
   directions: string[];

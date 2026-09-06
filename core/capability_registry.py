@@ -17,6 +17,10 @@ handeye3d_result.json。一二级组合相同则共用同一份标定。
 录制新序列时上报（臂+手+动作名），18000 拿动作名匹配该组合各条目的起手
 式正则（条目没配就用方向内置正则），命中谁自动认领给谁；谁都不命中就留
 池待手动认领。历史存量在首次迁移时按正则拆给 右臂+因时-右-1 的条目。
+
+柜面坐标系（cabinet_frame，顶层键）：7005 点云服务构建柜面坐标系用哪种
+方法及其参数（枚举见 core/cabinet_frame_methods.py）。旧注册表没有该键
+时按方法一 + 默认参数补齐，行为与改造前完全一致；改配置后重启 7005 生效。
 """
 from __future__ import annotations
 
@@ -31,6 +35,16 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+# 柜面坐标系方法枚举：这里 re-export 供 tools/capability_server.py 以
+# reg.CABINET_FRAME_* 取用（放进 18000 payload.meta）
+from core.cabinet_frame_methods import (  # noqa: F401
+    CABINET_FRAME_METHOD_LABELS,
+    CABINET_FRAME_METHODS,
+    CABINET_FRAME_PARAM_SPECS,
+    DEFAULT_CABINET_FRAME_METHOD,
+    validate_cabinet_frame_config,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "config" / "capability_registry.json"
@@ -471,9 +485,14 @@ def validate_registry(payload: Any) -> dict[str, Any]:
         active = {"arm": arm, "hand_id": hand_id,
                   "motion_backend": motion_backend}
 
+    # 顶层 cabinet_frame：旧注册表没有该键 → 方法一 + 默认参数（行为不变）
+    cabinet_frame = validate_cabinet_frame_config(
+        payload.get("cabinet_frame"), "cabinet_frame")
+
     return {
         "schema_version": 1,
         "active": active,
+        "cabinet_frame": cabinet_frame,
         "hands": hands,
         "calibrations": calibrations,
         "capabilities": capabilities,
@@ -649,6 +668,12 @@ def find_capability(registry: dict[str, Any],
 
 def active_combo(registry: dict[str, Any]) -> dict[str, str] | None:
     return registry.get("active")
+
+
+def cabinet_frame_config(registry: dict[str, Any] | None) -> dict[str, Any]:
+    """柜面坐标系构建配置 {"method", "params"}；缺省按方法一默认值补齐。"""
+    return validate_cabinet_frame_config(
+        (registry or {}).get("cabinet_frame"), "cabinet_frame")
 
 
 def enabled_capabilities(registry: dict[str, Any], arm: str,

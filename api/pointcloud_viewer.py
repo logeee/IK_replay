@@ -26,12 +26,19 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 
+from core.cabinet_frame_methods import (
+    CABINET_FRAME_METHOD_LABELS,
+    CABINET_FRAME_METHODS,
+    default_cabinet_frame_config,
+    validate_cabinet_frame_config,
+)
 from core.capability_client import (
     DEFAULT_CAPABILITY_URL,
     CapabilityUnavailable,
     describe_active,
     fetch_snapshot,
 )
+from core.capability_registry import cabinet_frame_config
 
 from .pointcloud_core import (
     PointCloud,
@@ -56,6 +63,10 @@ _http = requests.Session()
 _http.trust_env = False
 _reach_base = "http://127.0.0.1:18001"
 _capability_snapshot: dict[str, Any] | None = None   # 启动拜访 18000 的注册表快照
+# 柜面坐标系构建配置 {"method", "params"}：启动时取 18000 快照的
+# cabinet_frame（可被 --cabinet-frame-method 覆盖）；未启动 main() 时
+# （单测/直接 import）按方法一默认值，与改造前行为一致。
+_cabinet_frame_config: dict[str, Any] = default_cabinet_frame_config()
 _model = None
 _model_name = ""
 _model_error = ""
@@ -286,6 +297,12 @@ def status():
         "conf": _default_conf,
         "reach_base": _reach_base,
         "latest_capture_id": latest_id,
+        "cabinet_frame": {
+            **_cabinet_frame_config,
+            "method_label": CABINET_FRAME_METHOD_LABELS.get(
+                _cabinet_frame_config["method"],
+                _cabinet_frame_config["method"]),
+        },
         "semantic_mode": (
             "yolo_instance_mask_fallback_box"
             if _model is not None
@@ -783,6 +800,10 @@ def _save_pick_record(
                             ("target_wall_m", "panel_center_wall_m",
                              "offset_wall_m", "wall_axes_camera",
                              "panel_fit_quality")} if auto.get("ok") else None,
+            # 柜面坐标系用的是哪种构建方法（墙面系偏移标定与方法绑定，
+            # 回看记录时要能分辨）
+            "cabinet_frame_method": (
+                (capture_value.wall_plane or {}).get("method")),
             "yolo_boxes": capture_value.boxes,
             "crop_radius_m": PICK_CROP_RADIUS_M,
         }
@@ -920,39 +941,44 @@ def _ensure_wall_plane(capture_value: Capture) -> dict[str, Any]:
             return capture_value.wall_plane
         if capture_value.wall_plane_error is not None:
             raise ValueError(capture_value.wall_plane_error)
-        from .cabinet_wall_frame import build_wall_coordinate_frame
+        from .cabinet_frame import build_cabinet_frame
 
+        config = _cabinet_frame_config
         started = time.perf_counter()
         try:
+            # 柜面拟合用整帧点云（不按 YOLO 框加密），stride 与方法参数一致
             wall_cloud = build_pointcloud(
                 capture_value.depth_mm,
                 capture_value.bgr,
                 capture_value.intrinsics,
                 [],
-                stride=3,
+                stride=int(config["params"].get("stride", 3)),
                 z_min_m=float(capture_value.metadata["z_min_m"]),
                 z_max_m=float(capture_value.metadata["z_max_m"]),
                 max_points=350_000,
                 dense_box_sampling=False,
                 distortion=capture_value.distortion,
             )
-            wall_plane = build_wall_coordinate_frame(
+            wall_plane = build_cabinet_frame(
+                config,
                 wall_cloud.positions,
                 wall_cloud.pixels,
                 capture_value.depth_mm.shape,
-                plane_threshold_m=0.008,
-                stride=3,
-                min_plane_points=300,
-                plane_analysis_max_points=200_000,
+                depth_mm=capture_value.depth_mm,
+                intrinsics=capture_value.intrinsics,
+                boxes=capture_value.boxes,
             )
         except (TypeError, ValueError, np.linalg.LinAlgError) as exc:
             capture_value.wall_plane_error = str(exc)
-            print(f"[pointcloud] 柜面坐标系拟合失败: {exc}", flush=True)
+            print(
+                f"[pointcloud] 柜面坐标系拟合失败（{config['method']}）: {exc}",
+                flush=True,
+            )
             raise
         capture_value.wall_plane = wall_plane
         print(
-            "[pointcloud] 柜面坐标系已缓存: X轴来源="
-            f"{wall_plane.get('axis_estimation')}, 耗时 "
+            f"[pointcloud] 柜面坐标系已缓存: 方法={wall_plane.get('method')}, "
+            f"X轴来源={wall_plane.get('axis_estimation')}, 耗时 "
             f"{(time.perf_counter() - started) * 1000.0:.0f} ms",
             flush=True,
         )
@@ -1422,7 +1448,7 @@ def _lan_ip() -> str:
 
 def main() -> None:
     global _reach_base, _model, _model_name, _model_error, _names, _default_conf
-    global _capability_snapshot
+    global _capability_snapshot, _cabinet_frame_config
     import uvicorn
 
     parser = argparse.ArgumentParser(description="RGB/YOLO语义点云查看器（7005）")
@@ -1433,6 +1459,10 @@ def main() -> None:
     parser.add_argument("--conf", type=float, default=0.25)
     parser.add_argument("--capability-url", default=DEFAULT_CAPABILITY_URL,
                         help="18000 能力中心地址（启动拜访，必须可达）")
+    parser.add_argument("--cabinet-frame-method", default="auto",
+                        choices=("auto", *CABINET_FRAME_METHODS),
+                        help="柜面坐标系构建方法。auto=按 18000 cabinet_frame "
+                             "配置（含参数）；显式指定则用该方法的默认参数")
     args = parser.parse_args()
     _reach_base = args.reach_base.rstrip("/")
     _default_conf = args.conf
@@ -1444,6 +1474,22 @@ def main() -> None:
         print(f"[pointcloud] 启动拜访 18000 失败：{exc}")
         raise SystemExit(1)
     print(f"[pointcloud] 18000 {describe_active(_capability_snapshot)}")
+
+    # 柜面坐标系构建方法：进程生命周期内固定为启动时的配置（改 18000 后
+    # 重启 7005 生效，与全项目「重启生效」约定一致）。
+    if args.cabinet_frame_method == "auto":
+        _cabinet_frame_config = cabinet_frame_config(
+            _capability_snapshot.get("registry"))
+        source = "18000"
+    else:
+        _cabinet_frame_config = validate_cabinet_frame_config(
+            {"method": args.cabinet_frame_method})
+        source = "命令行"
+    print(
+        "[pointcloud] 柜面坐标系方法: "
+        f"{CABINET_FRAME_METHOD_LABELS.get(_cabinet_frame_config['method'])}"
+        f"（{source}）参数 {_cabinet_frame_config['params']}"
+    )
 
     model_path = Path(args.model)
     _model_name = model_path.name

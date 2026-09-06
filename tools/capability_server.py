@@ -13,6 +13,8 @@ config/hand_eye/{arm}__{hand_id}/handeye3d_result.json。
 - POST /api/capability/capabilities        新增/编辑能力条目
 - POST /api/capability/capabilities/delete 删除能力条目
 - POST /api/capability/active              切换激活组合（17001/18001 重启后生效）
+- POST /api/capability/cabinet-frame       设置柜面坐标系构建方法与参数
+                                           （7005 重启后生效）
 - POST /api/capability/calibrations        登记标定（source_path 复制入库 或
                                            content 直接上传 JSON 内容）
 - POST /api/capability/sequence-claims     整组保存某能力条目的认领
@@ -87,6 +89,10 @@ def _registry_payload(registry: dict[str, Any]) -> dict[str, Any]:
             "arm_labels": reg.ARM_LABELS,
             "motion_backends": list(reg.MOTION_BACKENDS),
             "motion_backend_labels": reg.MOTION_BACKEND_LABELS,
+            "cabinet_frame_methods": list(reg.CABINET_FRAME_METHODS),
+            "cabinet_frame_method_labels": reg.CABINET_FRAME_METHOD_LABELS,
+            "cabinet_frame_param_specs": reg.CABINET_FRAME_PARAM_SPECS,
+            "cabinet_frame_default_method": reg.DEFAULT_CABINET_FRAME_METHOD,
             "design_sides": list(reg.DESIGN_SIDES),
             "sites": list(reg.SITES),
             "directions": list(reg.DIRECTIONS),
@@ -216,6 +222,30 @@ async def active_set(request: Request):
             "motion_backend": body.get(
                 "motion_backend", previous.get("motion_backend", "legacy")),
         }
+        try:
+            registry = reg.save_registry(registry, REGISTRY_PATH)
+        except ValueError as exc:
+            return _error(str(exc))
+    return _registry_payload(registry)
+
+
+@app.post("/api/capability/cabinet-frame")
+async def cabinet_frame_set(request: Request):
+    """设置柜面坐标系构建方法：body {method, params?}。
+
+    方法不变时 params 只覆盖给出的键（其余沿用现值）；切换方法时不沿用旧
+    参数（不同方法参数集不同），缺省键按新方法默认值补齐。7005 重启后生效。
+    """
+    body = await _json_body(request)
+    with _lock:
+        registry = reg.load_registry(REGISTRY_PATH)
+        previous = registry.get("cabinet_frame") or {}
+        method = str(body.get("method") or previous.get("method") or "")
+        params = body.get("params")
+        if method == previous.get("method"):
+            params = {**(previous.get("params") or {}),
+                      **(params if isinstance(params, dict) else {})}
+        registry["cabinet_frame"] = {"method": method, "params": params}
         try:
             registry = reg.save_registry(registry, REGISTRY_PATH)
         except ValueError as exc:
@@ -399,5 +429,8 @@ if __name__ == "__main__":
     print(f"[capability] 激活组合: "
           f"{reg.ARM_LABELS.get(active.get('arm'), '未设置')}"
           f" + {active.get('hand_id', '-')}")
+    frame = reg.cabinet_frame_config(registry)
+    print(f"[capability] 柜面坐标系方法: "
+          f"{reg.CABINET_FRAME_METHOD_LABELS.get(frame['method'], frame['method'])}")
     print(f"[capability] 浏览器打开: http://{_lan_ip()}:{args.port}/")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")

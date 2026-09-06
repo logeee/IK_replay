@@ -1,8 +1,15 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import type { Capability, Hand, MotionBackend, Payload } from "./lib/api";
+import type {
+  CabinetFrameConfig,
+  Capability,
+  Hand,
+  MotionBackend,
+  Payload,
+} from "./lib/api";
 import { apiGet, apiPost } from "./lib/api";
 import ActiveCombo from "./components/ActiveCombo.vue";
+import CabinetFramePanel from "./components/CabinetFramePanel.vue";
 import CalibDialog from "./components/CalibDialog.vue";
 import CalibPanel from "./components/CalibPanel.vue";
 import CapabilityDialog from "./components/CapabilityDialog.vue";
@@ -108,6 +115,14 @@ async function applyActive(
   );
 }
 
+async function saveCabinetFrame(config: CabinetFrameConfig) {
+  await mutate(
+    "/api/capability/cabinet-frame",
+    config,
+    "柜面坐标系配置已保存（重启 7005 生效）",
+  );
+}
+
 async function saveSequenceClaims(
   capabilityId: string,
   names: string[],
@@ -127,7 +142,7 @@ onMounted(reload);
   <div class="topbar">
     <span class="brand">能力配置中心<span class="dot">·</span>18000</span>
     <span class="hint">
-      四级：臂侧 → 手型号 → 任务配置 → 实现方式 ｜ 修改保存后重启 17001 / 18001 生效
+      四级：臂侧 → 手型号 → 任务配置 → 实现方式 ｜ 修改保存后重启 17001 / 18001 生效（柜面坐标系配置重启 7005）
     </span>
     <span class="spacer"></span>
   </div>
@@ -143,6 +158,7 @@ onMounted(reload);
       />
       <CalibPanel :payload="payload" @register="calibDialog = true" />
     </div>
+    <CabinetFramePanel :payload="payload" :busy="busy" @save="saveCabinetFrame" />
     <CapabilityList
       :payload="payload"
       :busy="busy"

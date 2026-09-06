@@ -651,7 +651,7 @@ class PointCloudBackendTest(unittest.TestCase):
                 "radius_m": 0.12,
             },
         ), mock.patch(
-            "api.cabinet_wall_frame.build_wall_coordinate_frame",
+            "api.cabinet_frame.method1_plane_analysis.build_wall_coordinate_frame",
             return_value=wall,
         ) as build_wall:
             confirmed = pointcloud_viewer.confirm_pointcloud_target(
@@ -698,7 +698,7 @@ class PointCloudBackendTest(unittest.TestCase):
                 "radius_m": 0.12,
             },
         ), mock.patch(
-            "api.cabinet_wall_frame.build_wall_coordinate_frame",
+            "api.cabinet_frame.method1_plane_analysis.build_wall_coordinate_frame",
             side_effect=ValueError("柜面点不足"),
         ) as build_wall:
             confirmed = pointcloud_viewer.confirm_pointcloud_target(
@@ -754,7 +754,7 @@ class PointCloudBackendTest(unittest.TestCase):
         }
         with (
             mock.patch(
-                "api.cabinet_wall_frame.build_wall_coordinate_frame",
+                "api.cabinet_frame.method1_plane_analysis.build_wall_coordinate_frame",
                 return_value=wall,
             ) as build_wall,
             mock.patch(
@@ -793,7 +793,7 @@ class PointCloudBackendTest(unittest.TestCase):
         ):
             metadata = pointcloud_viewer.capture({"stride": 1})
         with mock.patch(
-            "api.cabinet_wall_frame.build_wall_coordinate_frame",
+            "api.cabinet_frame.method1_plane_analysis.build_wall_coordinate_frame",
             side_effect=ValueError("柜面点不足"),
         ):
             response = pointcloud_viewer.auto_target(metadata["capture_id"])
