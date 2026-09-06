@@ -10,7 +10,7 @@ from .switch_states import SCENE_LEFT, SCENE_RIGHT
 
 
 MODEL_VERSION = "0.2.0-s"
-# 键为开关物理指向类别（Xuanniu_D.pt）。偏移沿用旧模型标定值：旧「远方」
+# 键为开关物理指向类别（Xuanniu_hhy.pt 旋钮左/右）。偏移沿用旧模型标定值：旧「远方」
 # 规则在工厂柜上对应开关在右（+x），旧「就地」对应开关在左（−x）。
 # ⚠ 换模型后框/掩码几何可能有差异，首次实机使用建议手动模式核对一次
 # 取点落位再放开自动执行。

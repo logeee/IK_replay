@@ -12,7 +12,7 @@ from api.yolo_client import YoloClient
 from .state import state
 
 
-SCENES = SCENE_CLASSES   # 开关物理指向类别（远方就地左/右）
+SCENES = SCENE_CLASSES   # 开关物理指向类别（旋钮左/右）
 YOLO_ATTEMPTS = 3
 YOLO_RETRY_WAIT_S = 0.6
 VERIFY_SETTLE_S = 1.5

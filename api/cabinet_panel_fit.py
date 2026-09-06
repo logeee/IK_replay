@@ -11,6 +11,7 @@ import numpy as np
 
 from .cabinet_wall_frame import fit_dominant_plane
 from .pointcloud_core import PointCloud, detection_pixel_mask
+from .switch_states import SCENE_CLASSES
 
 # 独立 handler：无论宿主进程日志配置如何，都保证打到 stdout（服务日志文件）
 logger = logging.getLogger("panel_fit")
@@ -592,11 +593,20 @@ def analyze_yolo_mask_panel(
     min_points: int = 100,
     wall_plane: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Fit the highest-confidence YOLO panel from an existing point cloud."""
+    """Fit the highest-confidence knob instance from an existing point cloud.
+
+    只在旋钮类（``SCENE_CLASSES``：旋钮左/右）里选置信度最高的框；
+    「面板」等其他类别忽略——面板类留给柜面坐标系方法二使用。
+    """
     if not boxes:
         return {"available": False, "reason": "当前帧没有 YOLO 实例"}
     valid_boxes: list[tuple[int, dict[str, Any]]] = []
+    ignored_names: list[str] = []
     for index, box in enumerate(boxes):
+        name = str(box.get("name", ""))
+        if name not in SCENE_CLASSES:
+            ignored_names.append(name or str(box.get("cls", "?")))
+            continue
         try:
             confidence = float(box.get("conf", 0.0))
         except (TypeError, ValueError):
@@ -604,6 +614,14 @@ def analyze_yolo_mask_panel(
         if np.isfinite(confidence):
             valid_boxes.append((index, box))
     if not valid_boxes:
+        if ignored_names:
+            return {
+                "available": False,
+                "reason": (
+                    f"当前帧没有旋钮类实例（{'/'.join(SCENE_CLASSES)}），"
+                    f"仅有 {sorted(set(ignored_names))}"
+                ),
+            }
         return {"available": False, "reason": "YOLO 实例置信度无效"}
     box_index, box = max(
         valid_boxes, key=lambda item: float(item[1].get("conf", 0.0))
@@ -684,8 +702,10 @@ def analyze_yolo_mask_panel(
         for index, candidate in valid_boxes
     )
     logger.info(
-        "候选 %d 个：%s ｜ 选中[%d]（置信度最高） mask内点 %d → 参与拟合 %d（亮度过滤=%s）",
+        "旋钮候选 %d 个（忽略非旋钮类 %d 个）：%s ｜ 选中[%d]（置信度最高） "
+        "mask内点 %d → 参与拟合 %d（亮度过滤=%s）",
         len(valid_boxes),
+        len(ignored_names),
         candidate_summary,
         box_index,
         int(mask_points.shape[0]) + int(removed_points.shape[0]),

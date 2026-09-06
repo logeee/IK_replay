@@ -231,6 +231,46 @@ class CabinetGeometryTest(unittest.TestCase):
         self.assertTrue(fitted["detection"]["used_polygon_mask"])
         self.assertGreater(fitted["mask_point_count"], 6_000)
 
+    def test_panel_analysis_ignores_non_knob_classes(self):
+        """「面板」类置信度再高也不选；一帧里只有面板类则报无旋钮实例。"""
+        x_values, y_values = np.meshgrid(
+            np.linspace(-0.12, 0.12, 100),
+            np.linspace(-0.08, 0.08, 70),
+        )
+        points = np.column_stack(
+            (x_values.ravel(), y_values.ravel(), np.full(x_values.size, 0.8))
+        )
+        pixels = np.column_stack(
+            (
+                100 + (x_values.ravel() + 0.12) * 400,
+                100 + (y_values.ravel() + 0.08) * 400,
+            )
+        )
+        panel_box = {"cls": 0, "name": "面板", "conf": 0.99,
+                     "xyxy": [0, 0, 300, 300]}
+        knob_box = {"cls": 2, "name": SCENE_RIGHT, "conf": 0.6,
+                    "xyxy": [95, 95, 205, 170]}
+
+        fitted = analyze_yolo_mask_panel(
+            self.pointcloud(points, pixels),
+            [panel_box, knob_box],
+            image_shape=(300, 300),
+            wall_plane=None,
+        )
+        self.assertTrue(fitted["available"])
+        self.assertEqual(fitted["detection"]["box_index"], 1)
+        self.assertEqual(fitted["detection"]["name"], SCENE_RIGHT)
+
+        only_panel = analyze_yolo_mask_panel(
+            self.pointcloud(points, pixels),
+            [panel_box],
+            image_shape=(300, 300),
+            wall_plane=None,
+        )
+        self.assertFalse(only_panel["available"])
+        self.assertIn("没有旋钮类实例", only_panel["reason"])
+        self.assertIn("面板", only_panel["reason"])
+
     def test_panel_analysis_reports_too_few_mask_points(self):
         points = np.zeros((20, 3), dtype=np.float32)
         points[:, 2] = 1.0

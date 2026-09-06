@@ -4,7 +4,7 @@
 本来就没法同进程；模型加载+预热约 2s、常驻内存约 1GB，开机拉起一次，
 流程 API / 采集台 / 前端都通过 HTTP 问它。
 
-模型类别（Xuanniu_D.pt）: 0=远方就地左 1=远方就地右
+模型类别（Xuanniu_hhy.pt）: 0=面板（本服务忽略）1=旋钮左 2=旋钮右
 （模型只认开关的物理指向，不读印刷文字，任何现场识别结果一致）
 
 对流程的意义：本服务只报告开关当前的物理指向「左/右」，起止指向由任务
@@ -13,12 +13,12 @@ language 决定。开始前识别到任务目标指向则无需拨；识别到�
 
 启动（需装有 ultralytics 的环境）：
     /home/robot/miniconda3/envs/fastapi/bin/python -m api.yolo_server \
-        --model models/Xuanniu_D.pt --conf 0.25
+        --model models/Xuanniu_hhy.pt --conf 0.25
 
 接口：
     GET  /api/yolo/status   模型名/类别表/阈值（也当健康检查用）
     POST /api/yolo/infer    从 reach_server 抓一帧推理，返回全部框
-    GET  /api/yolo/scene    抓帧推理后归类：远方就地左 / 远方就地右 /
+    GET  /api/yolo/scene    抓帧推理后归类：旋钮左 / 旋钮右 /
                             null（没识别到）
 """
 
@@ -168,7 +168,7 @@ def scene(
 ):
     """开关指向归类：取左/右两类框里置信度最高的那个定调。
 
-    返回 {"ok": true, "scene": "远方就地左"|"远方就地右"|null,
+    返回 {"ok": true, "scene": "旋钮左"|"旋钮右"|null,
           "conf": ..., "boxes": [...]}
     scene=null 表示画面里没识别到这两类（调用方转人工或报错）。
     include_image=true 时返回体多一个 jpeg_b64——就是本次判定用的头部帧。
@@ -217,7 +217,7 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=7004)
     parser.add_argument("--reach-base", default="http://127.0.0.1:8001")
-    parser.add_argument("--model", default="models/Xuanniu_D.pt",
+    parser.add_argument("--model", default="models/Xuanniu_hhy.pt",
                         help="YOLO .pt 模型路径")
     parser.add_argument("--conf", type=float, default=0.25, help="置信度阈值")
     parser.add_argument("--capability-url", default=DEFAULT_CAPABILITY_URL,
