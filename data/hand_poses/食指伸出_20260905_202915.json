@@ -1,0 +1,18 @@
+{
+  "name": "食指伸出",
+  "device_id": "brainco_revo2",
+  "side": "right",
+  "positions": [
+    1.0,
+    0.0,
+    0.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "created_at": "2026-09-05 20:29:15",
+  "recorded_combo": {
+    "arm": "right_arm",
+    "hand_id": "qiangnao-1-right"
+  }
+}

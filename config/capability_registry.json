@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "active": {
-    "arm": "right_arm",
-    "hand_id": "qiangnao-1-right",
+    "arm": "left_arm",
+    "hand_id": "yinshi-1-left",
     "motion_backend": "pink"
   },
   "hands": [
@@ -22,6 +22,15 @@
       "tool_out_mm": 0.0,
       "hand_web_device_id": "brainco_revo2",
       "tcp_point_id": "tip:right_index_tip",
+      "notes": ""
+    },
+    {
+      "id": "yinshi-1-left",
+      "name": "因时-1-左",
+      "design_side": "left",
+      "tool_out_mm": 0.0,
+      "hand_web_device_id": "inspire_dfx",
+      "tcp_point_id": "",
       "notes": ""
     }
   ],
