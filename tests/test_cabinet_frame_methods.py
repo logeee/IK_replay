@@ -173,6 +173,35 @@ class DispatchTest(unittest.TestCase):
             {**base, "x_axis_camera": [2, 0, 0]}, method="m")
         self.assertEqual(scaled["x_axis_camera"], [1.0, 0.0, 0.0])
 
+    def test_method2_config_params_are_forwarded(self):
+        config = {
+            "method": methods.METHOD2_PANEL_EDGES,
+            "params": {"plane_threshold_mm": 6, "min_points": 50,
+                       "min_inlier_ratio": 0.5,
+                       "max_horizontal_tilt_deg": 20},
+        }
+        fake = {
+            "origin_camera_m": [0, 0, 1],
+            "x_axis_camera": [1, 0, 0],
+            "y_axis_camera": [0, 0, 1],
+            "z_axis_camera": [0, -1, 0],
+            "axis_estimation": "panel-rectangle-edges",
+        }
+        points, pixels, shape = _plane_inputs()
+        with mock.patch(
+            "api.cabinet_frame.method2_panel_edges.build_panel_edge_frame",
+            return_value=fake,
+        ) as build:
+            frame = build_cabinet_frame(
+                config, points, pixels, shape, boxes=[{"name": "面板"}])
+        kwargs = build.call_args.kwargs
+        self.assertAlmostEqual(kwargs["plane_threshold_m"], 0.006)
+        self.assertEqual(kwargs["min_points"], 50)
+        self.assertAlmostEqual(kwargs["min_inlier_ratio"], 0.5)
+        self.assertAlmostEqual(kwargs["max_horizontal_tilt_deg"], 20.0)
+        self.assertEqual(build.call_args.args[3], [{"name": "面板"}])
+        self.assertEqual(frame["method"], methods.METHOD2_PANEL_EDGES)
+
     def test_compat_import_path_still_works(self):
         from api.cabinet_wall_frame import (
             build_wall_coordinate_frame, fit_dominant_plane)

@@ -7,6 +7,9 @@ Z=上) 右手系，供自动定位（面板中心 → 墙面系偏移 → 点 1/
 * method1_plane_analysis —— 方法一（原有实现，``api/cabinet_frame/
   method1_plane_analysis.py``）：RANSAC 主平面定 Y 轴，多平面分割 + P0
   边界线 / 次平面主轴 / 平面交线三级回退定 X 轴。
+* method2_panel_edges —— 方法二（``api/cabinet_frame/method2_panel_edges.py``）：
+  取 YOLO「面板」类 mask 内的点云，拟合面板平面（Y 轴）与矩形两条边，
+  更接近画面水平的边为 X 轴，Z = X × Y。依赖 Xuanniu_hhy.pt 的面板类。
 * 后续方法在 ``CABINET_FRAME_METHODS`` 登记 id / 标签 / 参数规格，并在
   ``api/cabinet_frame/__init__.py`` 的分发表登记实现即可。
 
@@ -22,6 +25,7 @@ import math
 from typing import Any
 
 METHOD1_PLANE_ANALYSIS = "method1_plane_analysis"
+METHOD2_PANEL_EDGES = "method2_panel_edges"
 
 # 参数规格：{方法 id: {参数名: {default, min, max, integer?, label}}}。
 # 方法一的默认值与原 api/pointcloud_viewer._ensure_wall_plane 硬编码一致，
@@ -45,10 +49,30 @@ CABINET_FRAME_PARAM_SPECS: dict[str, dict[str, dict[str, Any]]] = {
             "label": "X 轴分析最大点数",
         },
     },
+    # 方法二默认值与 api/cabinet_panel_fit.fit_yolo_panel_rectangle 的默认一致
+    METHOD2_PANEL_EDGES: {
+        "plane_threshold_mm": {
+            "default": 4.0, "min": 1.0, "max": 20.0,
+            "label": "面板平面内点阈值 (mm)",
+        },
+        "min_points": {
+            "default": 100, "min": 10, "max": 20000, "integer": True,
+            "label": "面板 mask 最少点数",
+        },
+        "min_inlier_ratio": {
+            "default": 0.35, "min": 0.05, "max": 1.0,
+            "label": "平面内点最低比例",
+        },
+        "max_horizontal_tilt_deg": {
+            "default": 30.0, "min": 5.0, "max": 45.0,
+            "label": "X 轴相对画面水平最大倾角 (°)",
+        },
+    },
 }
 CABINET_FRAME_METHODS: tuple[str, ...] = tuple(CABINET_FRAME_PARAM_SPECS)
 CABINET_FRAME_METHOD_LABELS: dict[str, str] = {
     METHOD1_PLANE_ANALYSIS: "方法一：多平面分析（P0 边界线定 X 轴）",
+    METHOD2_PANEL_EDGES: "方法二：面板 mask 矩形边定轴（横边=X，竖边=Z）",
 }
 DEFAULT_CABINET_FRAME_METHOD = METHOD1_PLANE_ANALYSIS
 
@@ -128,6 +152,7 @@ __all__ = [
     "CABINET_FRAME_PARAM_SPECS",
     "DEFAULT_CABINET_FRAME_METHOD",
     "METHOD1_PLANE_ANALYSIS",
+    "METHOD2_PANEL_EDGES",
     "default_cabinet_frame_config",
     "default_cabinet_frame_params",
     "validate_cabinet_frame_config",

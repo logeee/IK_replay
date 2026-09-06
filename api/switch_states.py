@@ -2,7 +2,7 @@
 
 模型只认开关旋钮的物理指向、不读印刷文字，因此实验室柜/工厂柜识别结果
 一致，视觉层不再需要区分现场。Xuanniu_hhy.pt 类别：
-    0 = 面板     开关所在的面板（本词表**不使用**，留给柜面坐标系方法二）
+    0 = 面板     开关所在的面板（不参与状态判定；柜面坐标系方法二用它的 mask）
     1 = 旋钮左   开关拨向左（等同旧模型 Xuanniu_D.pt 的「远方就地左」）
     2 = 旋钮右   开关拨向右（等同旧模型的「远方就地右」）
 
@@ -21,6 +21,9 @@ SCENE_RIGHT = "旋钮右"
 SCENE_CLASSES = (SCENE_LEFT, SCENE_RIGHT)
 # 人读文案用：错误信息里的「左/右」比完整类别名简洁
 SCENE_SHORT = {SCENE_LEFT: "左", SCENE_RIGHT: "右"}
+# 面板类：不参与开关状态判定，只供柜面坐标系方法二（api/cabinet_frame/
+# method2_panel_edges.py）取面板 mask 点云
+PANEL_CLASS = "面板"
 # 旧模型（Xuanniu_D.pt）的类别名，只用于读历史记录 / 兼容显示
 LEGACY_SCENE_NAMES = {"远方就地左": SCENE_LEFT, "远方就地右": SCENE_RIGHT}
 

@@ -8,6 +8,10 @@
         points_xyz, pixel_coordinates, image_shape,
     )
 
+已有方法：
+* ``method1_plane_analysis``（method1_plane_analysis.py）整帧多平面分析；
+* ``method2_panel_edges``（method2_panel_edges.py）YOLO「面板」mask 矩形边。
+
 新增方法的步骤：
 1. ``core/cabinet_frame_methods.py`` 登记 id / 标签 / 参数规格
    （18000 校验与页面下拉都从那里取）；
@@ -42,6 +46,7 @@ from core.cabinet_frame_methods import (
     CABINET_FRAME_METHODS,
     DEFAULT_CABINET_FRAME_METHOD,
     METHOD1_PLANE_ANALYSIS,
+    METHOD2_PANEL_EDGES,
     default_cabinet_frame_config,
     validate_cabinet_frame_config,
 )
@@ -54,8 +59,8 @@ _ORTHOGONALITY_ATOL = 1e-4   # 与 cabinet_target_finder.predict_target 一致
 class CabinetFrameInputs:
     """一帧冻结 RGB-D 的几何输入（相机系）。
 
-    方法一只用 points/pixels/image_shape；其余字段给后续方法预留
-    （例如用深度图直接算、用 YOLO 框限定区域、用外参取重力方向）。
+    方法一只用 points/pixels/image_shape；方法二另外用 boxes（YOLO
+    「面板」类多边形 mask）；其余字段给后续方法预留。
     """
     points_xyz: np.ndarray                       # N×3，相机系 m
     pixel_coordinates: np.ndarray                # N×2，(u, v)
@@ -86,8 +91,25 @@ def _build_method1(inputs: CabinetFrameInputs,
     )
 
 
+def _build_method2(inputs: CabinetFrameInputs,
+                   params: dict[str, Any]) -> dict[str, Any]:
+    from . import method2_panel_edges as impl
+
+    return impl.build_panel_edge_frame(
+        inputs.points_xyz,
+        inputs.pixel_coordinates,
+        inputs.image_shape,
+        inputs.boxes,
+        plane_threshold_m=float(params["plane_threshold_mm"]) / 1000.0,
+        min_points=int(params["min_points"]),
+        min_inlier_ratio=float(params["min_inlier_ratio"]),
+        max_horizontal_tilt_deg=float(params["max_horizontal_tilt_deg"]),
+    )
+
+
 _METHOD_BUILDERS: dict[str, Builder] = {
     METHOD1_PLANE_ANALYSIS: _build_method1,
+    METHOD2_PANEL_EDGES: _build_method2,
 }
 
 
