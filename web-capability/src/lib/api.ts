@@ -53,6 +53,8 @@ export interface TargetModelConfig {
 export interface VectorParamSpec {
   label?: string;
   length?: number;
+  /** 代码内置常量（偏移写死在 core/target_models.py） */
+  default?: number[];
 }
 
 /** 某能力条目的认领（严格：没认领的该条目不可用；拨/扭是不同条目，

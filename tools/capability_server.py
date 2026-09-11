@@ -269,9 +269,8 @@ async def cabinet_frame_set(request: Request):
 async def target_model_set(request: Request):
     """设置自动选点模型：body {method, params?}。
 
-    语义与 cabinet-frame 一致：同模型时 params 只覆盖给出的键；切换模型
-    不沿用旧参数。tools/calibrate_panel_anchor.py 标定完成后也调这里把
-    偏移写入。7005 重启后生效。
+    同模型时 params 只覆盖给出的标量键；偏移向量是代码常量（core/target_models.py），
+    这里给了也会被忽略。7005 重启后生效。
     """
     body = await _json_body(request)
     with _lock:

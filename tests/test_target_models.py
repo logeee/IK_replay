@@ -22,22 +22,33 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(config["params"], {})
         self.assertEqual(tm.TARGET_MODEL_VERSIONS[tm.KNOB_MASK_CENTER], "0.2.0-s")
 
-    def test_panel_anchor_defaults_are_uncalibrated(self):
+    def test_panel_anchor_defaults_are_the_builtin_calibration(self):
+        # 偏移与 0.2.0-s 一样写死在代码里：缺省即可用，不会退成全零
         config = tm.validate_target_model_config({"method": "Panel_Anchor"})
         self.assertEqual(config["method"], tm.PANEL_ANCHOR)
         params = config["params"]
-        self.assertEqual(params["anchor_offset_wall_mm"], [0.0, 0.0, 0.0])
-        self.assertEqual(params["panel_size_mm"], [0.0, 0.0])
+        self.assertEqual(params["anchor_offset_wall_mm"], [-87.5, -6.03, -62.22])
+        self.assertEqual(params["point1_offset_wall_mm"], [48.19, 5.94, -18.19])
+        self.assertEqual(params["point3_offset_wall_mm"], [-48.19, 5.94, -18.19])
+        self.assertEqual(params["panel_size_mm"], [241.4, 182.0])
         self.assertEqual(params["border_margin_px"], 8)
-        self.assertFalse(tm.panel_anchor_is_calibrated(params))
+        self.assertTrue(tm.panel_anchor_is_calibrated(params))
+        # 注册表里就算写了全零也不生效：向量永远是代码常量
+        zeros = tm.validate_target_model_config({"method": tm.PANEL_ANCHOR, "params": {
+            "anchor_offset_wall_mm": [0, 0, 0], "point1_offset_wall_mm": [0, 0, 0],
+            "point3_offset_wall_mm": [0, 0, 0]}})["params"]
+        self.assertEqual(zeros["anchor_offset_wall_mm"], [-87.5, -6.03, -62.22])
+        self.assertTrue(tm.panel_anchor_is_calibrated(zeros))
 
-    def test_vectors_validated(self):
+    def test_vectors_validated_but_ignored(self):
+        # 格式仍校验（及早发现写错的配置），值一律用代码常量
         config = tm.validate_target_model_config({
             "method": tm.PANEL_ANCHOR,
             "params": {"anchor_offset_wall_mm": ["1", 2, -3.5],
                        "point1_offset_wall_mm": [40, 0, 0]},
         })
-        self.assertEqual(config["params"]["anchor_offset_wall_mm"], [1.0, 2.0, -3.5])
+        self.assertEqual(config["params"]["anchor_offset_wall_mm"], [-87.5, -6.03, -62.22])
+        self.assertEqual(config["params"]["point1_offset_wall_mm"], [48.19, 5.94, -18.19])
         self.assertTrue(tm.panel_anchor_is_calibrated(config["params"]))
         with self.assertRaisesRegex(ValueError, "长度 3"):
             tm.validate_target_model_params(
@@ -80,8 +91,9 @@ class RegistryTest(unittest.TestCase):
             reg.save_registry(registry, path)
             loaded = reg.load_registry(path)
         params = loaded["target_model"]["params"]
-        self.assertEqual(params["anchor_offset_wall_mm"], [10.0, 0.0, -5.0])
-        self.assertEqual(params["panel_size_mm"], [300.0, 200.0])
+        # 向量不随注册表走：读回来仍是代码常量
+        self.assertEqual(params["anchor_offset_wall_mm"], [-87.5, -6.03, -62.22])
+        self.assertEqual(params["panel_size_mm"], [241.4, 182.0])
         self.assertEqual(params["min_points"], 300)   # 缺省补齐
 
 
@@ -97,11 +109,11 @@ def _wall_plane() -> dict:
 
 class PredictTest(unittest.TestCase):
     def params(self) -> dict:
-        return tm.validate_target_model_params(tm.PANEL_ANCHOR, {
-            "anchor_offset_wall_mm": [100, 10, -50],
-            "point1_offset_wall_mm": [30, 0, 0],
-            "point3_offset_wall_mm": [-30, 0, 0],
-        })
+        # 预测函数只认传入的 params 字典；这里直接构造，不经过（会改回常量的）校验
+        return {**tm.default_target_model_params(tm.PANEL_ANCHOR),
+                "anchor_offset_wall_mm": [100, 10, -50],
+                "point1_offset_wall_mm": [30, 0, 0],
+                "point3_offset_wall_mm": [-30, 0, 0]}
 
     def reference(self) -> dict:
         return {"available": True,
@@ -127,10 +139,13 @@ class PredictTest(unittest.TestCase):
         self.assertEqual(right["matched_detection_name"], SCENE_RIGHT)
 
     def test_rejects_uncalibrated_and_unknown_class(self):
+        uncalibrated = {**tm.default_target_model_params(tm.PANEL_ANCHOR),
+                        "anchor_offset_wall_mm": [0.0, 0.0, 0.0],
+                        "point1_offset_wall_mm": [0.0, 0.0, 0.0],
+                        "point3_offset_wall_mm": [0.0, 0.0, 0.0]}
         with self.assertRaisesRegex(ValueError, "尚未标定"):
             anchor.predict_target_panel_anchor(
-                self.reference(), SCENE_RIGHT, _wall_plane(),
-                tm.default_target_model_params(tm.PANEL_ANCHOR))
+                self.reference(), SCENE_RIGHT, _wall_plane(), uncalibrated)
         with self.assertRaisesRegex(ValueError, "不支持检测类别"):
             anchor.predict_target_panel_anchor(
                 self.reference(), PANEL_CLASS, _wall_plane(), self.params())

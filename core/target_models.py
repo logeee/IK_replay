@@ -67,24 +67,38 @@ TARGET_MODEL_PARAM_SPECS: dict[str, dict[str, dict[str, Any]]] = {
         },
     },
 }
-# 向量参数（mm，墙面系 x右/y入墙/z上）：默认全零 = 尚未标定
+# 向量参数（mm，墙面系 x右/y入墙/z上）。默认值就是写死的标定结果（与 0.2.0-s
+# 把常量写在代码里一个做法）：2026-09-12 会话 20260912_002932_hhy-mianban，
+# 11 帧旋钮 mask 中心 + 7 帧点 1，点 3 按旋钮中心左右镜像。重新标定时用
+# tools/calibrate_panel_anchor.py 得到新值后改这里。
 _VECTOR_PARAMS: dict[str, dict[str, dict[str, Any]]] = {
     PANEL_ANCHOR: {
         "anchor_offset_wall_mm": {
             "label": "面板矩形中心 → 锚点偏移 (mm)",
+            "default": [-87.5, -6.03, -62.22],
         },
         "point1_offset_wall_mm": {
             "label": "锚点 → 点 1（旋钮右）偏移 (mm)",
+            "default": [48.19, 5.94, -18.19],
         },
         "point3_offset_wall_mm": {
             "label": "锚点 → 点 3（旋钮左）偏移 (mm)",
+            "default": [-48.19, 5.94, -18.19],
         },
         "panel_size_mm": {
             "label": "标定时面板矩形 [长边, 短边] (mm)，0 = 不检查尺寸",
             "length": 2,
+            "default": [241.4, 182.0],
         },
     },
 }
+
+
+def _vector_default(meta: dict[str, Any]) -> list[float]:
+    default = meta.get("default")
+    if default is None:
+        return [0.0] * int(meta.get("length", 3))
+    return [float(v) for v in default]
 _VECTOR_ABS_MAX_MM = 2000.0
 
 
@@ -97,13 +111,14 @@ def default_target_model_params(method: str) -> dict[str, Any]:
     result: dict[str, Any] = {
         key: limits["default"] for key, limits in spec.items()}
     for key, meta in _VECTOR_PARAMS.get(method, {}).items():
-        result[key] = [0.0] * int(meta.get("length", 3))
+        result[key] = _vector_default(meta)
     return result
 
 
-def _clean_vector(raw: Any, field: str, length: int) -> list[float]:
+def _clean_vector(raw: Any, field: str, length: int,
+                  default: list[float] | None = None) -> list[float]:
     if raw is None:
-        return [0.0] * length
+        return list(default) if default is not None else [0.0] * length
     if not isinstance(raw, (list, tuple)) or len(raw) != length:
         raise ValueError(f"{field} 必须是长度 {length} 的数组")
     values: list[float] = []
@@ -157,9 +172,11 @@ def validate_target_model_params(
             result[key] = int(round(number))
         else:
             result[key] = number
+    # 向量偏移是代码常量：注册表/请求里给的值一律忽略（和 0.2.0-s 写死常量一致），
+    # 只校验格式以便及早发现写错的配置
     for key, meta in vectors.items():
-        result[key] = _clean_vector(
-            value.get(key), f"{field}.{key}", int(meta.get("length", 3)))
+        _clean_vector(value.get(key), f"{field}.{key}", int(meta.get("length", 3)))
+        result[key] = _vector_default(meta)
     return result
 
 

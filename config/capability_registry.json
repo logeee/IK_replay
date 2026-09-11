@@ -175,7 +175,7 @@
       "arm": "left_arm",
       "hand_id": "qiangnao-revo2-left",
       "task": {
-        "name": "旋钮右到左",
+        "name": "旋钮左到右",
         "direction": "ccw",
         "sites": [
           "lab",

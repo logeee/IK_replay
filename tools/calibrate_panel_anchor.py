@@ -293,7 +293,8 @@ def main() -> int:
     parser.add_argument("--allow-single-slot", action="store_true",
                         help="只标了一个点位时也输出（midpoint 下锚点=该点，另一点位为 0；仅应急）")
     parser.add_argument("--write", action="store_true",
-                        help="通过 18000 写入注册表 target_model（并切换为 panel_anchor）")
+                        help="通过 18000 把 target_model 切换为 panel_anchor（偏移向量本身是"
+                             "代码常量，需手动同步到 core/target_models.py）")
     parser.add_argument("--capability-url", default="http://127.0.0.1:18000")
     args = parser.parse_args()
 
@@ -519,7 +520,9 @@ def main() -> int:
             print(f"[calib] 写入 18000 失败: {payload.get('error') or response.status_code}",
                   file=sys.stderr)
             return 1
-        print("[calib] 已写入 18000 并切换为 panel_anchor；重启 7005 生效")
+        print("[calib] 已通过 18000 切换为 panel_anchor；重启 7005 生效")
+        print("[calib] 注意：偏移向量是代码常量，注册表里的会被忽略——要启用这次标定的"
+              "新值，把上面四个向量写进 core/target_models.py 的 _VECTOR_PARAMS default")
     else:
         print("[calib] 未写入（加 --write 直接写入 18000；或在 18000 页面粘贴上面 JSON）")
     return 0

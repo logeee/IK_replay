@@ -541,7 +541,6 @@ def validate_registry(payload: Any) -> dict[str, Any]:
     # 顶层 target_model：旧注册表没有该键 → knob_mask_center（0.2.0-s，行为不变）
     target_model = validate_target_model_config(
         payload.get("target_model"), "target_model")
-
     return {
         "schema_version": 1,
         "active": active,
