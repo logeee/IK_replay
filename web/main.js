@@ -175,6 +175,7 @@ async function initReach() {
   if (status.robot && status.robot !== state.activeRobot) {
     await loadRobotData(status.robot);
   }
+  paintActiveHandLink();
 
   reach.dom = {
     panel: document.getElementById("reachPanel"),
@@ -3274,6 +3275,7 @@ async function loadRobotData(robotId = null) {
     renderPanels(metadata);
     const urdfUrl = `${metadata.robot.urdf_url}${metadata.robot.urdf_url.includes("?") ? "&" : "?"}v=2`;
     await loadRobot(urdfUrl);
+    paintActiveHandLink();
     attachViewerFrames(metadata);
     for (const panel of Object.values(state.panels)) {
       setJointInputs(panel, panel.chain.default_current_joints);
@@ -4183,7 +4185,7 @@ async function loadDexterousHand(snapshot) {
       if (!meshEl) continue;
       const visualGroup = new THREE.Group();
       applyOrigin(visualGroup, parseOrigin(visualEl.querySelector("origin")));
-      const material = materialFromVisual(visualEl);
+      const material = activeHandMaterial();
       materials.push(material);
       const filename = meshEl.getAttribute("filename");
       const scale = parseVector(meshEl.getAttribute("scale"), [1, 1, 1]);
@@ -4272,6 +4274,42 @@ async function loadDexterousHand(snapshot) {
       attachChildren(joint.child);
     }
   }
+}
+
+// 激活臂（肩到手，含灵巧手模型）统一用淡紫色，与灰白的机器人本体区分，
+// 不再沿用 URDF 自带颜色
+function activeHandMaterial() {
+  return new THREE.MeshStandardMaterial({
+    color: new THREE.Color("#c4b3ee"),
+    roughness: 0.62,
+    metalness: 0.05,
+  });
+}
+
+function paintActiveHandLink() {
+  const chainId = reach.status?.chain_id;
+  if (!chainId || !state.linkGroups?.size) return;
+  const chain = state.panels[chainId]?.chain || state.metadata?.chains?.[chainId];
+  const linkNames = new Set(chain?.chain_links || chain?.display_links || []);
+  if (chain?.base_link) linkNames.delete(chain.base_link);
+  linkNames.add(chainId === "left_arm" ? "left_hand_link" : "right_hand_link");
+  const material = activeHandMaterial();
+  let painted = false;
+  for (const linkName of linkNames) {
+    const group = state.linkGroups.get(linkName);
+    if (!group) continue;
+    // 只刷本 link 直接挂的 visual，不递归进子 link（子 link 由自己的名字决定）
+    for (const visualGroup of group.children) {
+      if (visualGroup.name.endsWith("_origin")) continue;
+      visualGroup.traverse((object) => {
+        if (object.isMesh && !object.userData.targetMarker) {
+          object.material = material;
+          painted = true;
+        }
+      });
+    }
+  }
+  if (painted) state.robotMaterials.push(material);
 }
 
 function handMeshUrl(filename, baseUrl) {
