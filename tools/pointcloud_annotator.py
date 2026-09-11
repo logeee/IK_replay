@@ -20,13 +20,14 @@ import copy
 import json
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from fastapi import HTTPException  # noqa: E402
+from fastapi import HTTPException, Request  # noqa: E402
 from fastapi.responses import HTMLResponse  # noqa: E402
 
 import numpy as np  # noqa: E402
@@ -88,10 +89,17 @@ class CabinetFrameProvider:
         return params
 
     def compute(self, data_dir: Path, session_id: str, frame_id: str,
-                fallback_boxes: list[dict] | None) -> tuple[dict[str, Any], dict[str, Any]]:
-        """返回 (柜面坐标系 plane, panel_anchor 参考点拟合)。后者失败时带 error。"""
+                fallback_boxes: list[dict] | None,
+                timings: list[tuple[str, float]] | None = None,
+                ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """返回 (柜面坐标系 plane, panel_anchor 参考点拟合)。后者失败时带 error。
+
+        ``timings`` 传入列表时逐步追加 (步骤名, 毫秒)，用于看每一步耗时。"""
+        timer = _StepTimer(timings)
         config, source = self.current()
+        timer.lap("读 18000 柜面坐标系配置")
         frame = ExportSession.open(data_dir / session_id).load_frame(frame_id)
+        timer.lap("读帧（深度 PNG + 彩色 JPG + YOLO json）")
         boxes = frame["boxes"] if frame["boxes"] is not None else (fallback_boxes or [])
         depth = frame["depth_mm"]
         cloud = build_pointcloud(
@@ -100,10 +108,13 @@ class CabinetFrameProvider:
             z_min_m=Z_MIN_M, z_max_m=Z_MAX_M, max_points=350_000,
             dense_box_sampling=False, distortion=frame["distortion"],
         )
+        timer.lap(f"全图点云 stride {int(config['params'].get('stride', 3))}"
+                  f"（{cloud.positions.shape[0]} 点）")
         plane = build_cabinet_frame(
             config, cloud.positions, cloud.pixels, depth.shape,
             depth_mm=depth, intrinsics=frame["intrinsics"], boxes=boxes,
         )
+        timer.lap(f"柜面坐标系 {config['method']}")
         # panel_anchor 的参考点：与 7005 / 标定脚本同一条路径（框内密采样点云）
         try:
             dense = build_pointcloud(
@@ -112,8 +123,11 @@ class CabinetFrameProvider:
                 dense_box_sampling=True, box_padding_ratio=0.1,
                 distortion=frame["distortion"],
             )
-            reference = fit_panel_reference(dense, boxes, depth.shape, plane,
-                                            self.panel_anchor_params())
+            timer.lap(f"框内密采样点云（{dense.positions.shape[0]} 点）")
+            params = self.panel_anchor_params()
+            timer.lap("读 18000 panel_anchor 参数")
+            reference = fit_panel_reference(dense, boxes, depth.shape, plane, params)
+            timer.lap("面板矩形拟合（RANSAC 平面 + 轮廓 + 霍夫）")
             origin = np.asarray(plane["origin_camera_m"])
             axes = np.asarray([plane["x_axis_camera"], plane["y_axis_camera"],
                                plane["z_axis_camera"]])
@@ -138,6 +152,102 @@ class CabinetFrameProvider:
         plane.setdefault("sample_count", int(cloud.positions.shape[0]))
         plane.setdefault("inlier_ratio", 0.0)
         return plane, reference
+
+
+class _StepTimer:
+    """把连续步骤的耗时追加到列表：``lap(name)`` 记录自上次 lap 以来的毫秒数。"""
+
+    def __init__(self, sink: list[tuple[str, float]] | None) -> None:
+        self.sink = sink
+        self.t = time.perf_counter()
+
+    def lap(self, name: str) -> None:
+        now = time.perf_counter()
+        if self.sink is not None:
+            self.sink.append((name, round((now - self.t) * 1000.0, 1)))
+        self.t = now
+
+
+# 原工具 analyze_frame 内部各步的耗时：把它模块里引用的函数包一层计时，
+# 结果落到当前线程的 sink（analyze 请求开头设置）。不改 Mac 代码副本本身。
+_MAC_STEP_SINK = threading.local()
+_MAC_STEPS = (
+    ("rgbd_collector.analysis", "reconstruct_frame", "原工具·重建点云"),
+    ("rgbd_collector.analysis", "fit_dominant_plane", "原工具·主平面拟合"),
+    ("rgbd_collector.analysis", "segment_dominant_planes", "原工具·多平面分割"),
+    ("rgbd_collector.analysis", "split_plane_labels_by_connectivity", "原工具·平面连通域拆分"),
+    ("rgbd_collector.analysis", "describe_p0_boundary_lines", "原工具·P0 边界线"),
+    ("rgbd_collector.analysis", "estimate_wall_x_from_p0_boundary_lines", "原工具·由边界线估 X 轴"),
+    ("rgbd_collector.analysis", "estimate_wall_x_from_secondary_plane_shape", "原工具·由次平面估 X 轴"),
+    ("rgbd_collector.analysis", "estimate_wall_x_from_plane_intersections", "原工具·由平面交线估 X 轴"),
+    ("rgbd_collector.analysis", "semantic_clusters", "原工具·YOLO 语义聚类"),
+    ("rgbd_collector.analysis", "analyze_yolo_mask_panel", "原工具·面板拟合（对照用）"),
+    ("rgbd_collector.analysis", "highest_confidence_semantic_pointcloud", "原工具·最高置信语义点云"),
+)
+
+
+def _calibration_from_plane(plane: dict[str, Any]) -> dict[str, Any]:
+    """把 IK_replay 的柜面坐标系伪装成原工具的「已保存墙面标定」，让它跳过自己那套
+    多平面分析（约 1.7 s），直接套用我们的坐标系。"""
+    return {
+        "schema": "rgbd-wall-coordinate-calibration/v2",
+        "origin_camera_m": list(plane["origin_camera_m"]),
+        "center_camera_m": list(plane.get("center_camera_m", plane["origin_camera_m"])),
+        "normal_camera": list(plane.get("normal_camera", plane["y_axis_camera"])),
+        "x_axis_camera": list(plane["x_axis_camera"]),
+        "y_axis_camera": list(plane["y_axis_camera"]),
+        "z_axis_camera": list(plane["z_axis_camera"]),
+        "coordinate_system": plane.get("coordinate_system", "wall-right-handed-x-right-y-inward-z-up"),
+        "origin_definition": plane.get("origin_definition", "ik_replay-cabinet-frame"),
+        "calibration_method": "accepted-automatic",
+        "accepted_axis_estimation": plane.get("accepted_axis_estimation"),
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "plane_threshold_m": float(plane.get("threshold_m", 0.004)),
+        "plane_inlier_count": int(plane.get("inlier_count", 0)),
+        "plane_inlier_ratio": float(plane.get("inlier_ratio", 0.0)),
+        "plane_rms_m": float(plane.get("rms_m", 0.0)),
+        "source": {"provider": "IK_replay 18006", "cabinet_frame": plane.get("cabinet_frame")},
+    }
+
+
+def _instrument_mac_analysis(detector) -> None:
+    import importlib
+
+    analysis = importlib.import_module("rgbd_collector.analysis")
+    original_load = analysis.load_wall_calibration
+
+    def load_wall_calibration(data_root, session_id, frame_id):
+        override = getattr(_MAC_STEP_SINK, "calibration", None)
+        if override is not None:
+            return override
+        return original_load(data_root, session_id, frame_id)
+
+    analysis.load_wall_calibration = load_wall_calibration
+
+    def wrap(fn, label):
+        def timed(*args, **kwargs):
+            t0 = time.perf_counter()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                sink = getattr(_MAC_STEP_SINK, "sink", None)
+                if sink is not None:
+                    sink.append((label, round((time.perf_counter() - t0) * 1000.0, 1)))
+        timed.__name__ = getattr(fn, "__name__", label)
+        return timed
+
+    for module_name, attr, label in _MAC_STEPS:
+        module = importlib.import_module(module_name)
+        if hasattr(module, attr):
+            setattr(module, attr, wrap(getattr(module, attr), label))
+    if detector is not None and hasattr(detector, "infer_frame"):
+        detector.infer_frame = wrap(detector.infer_frame, "原工具·YOLO 推理（有帧缓存）")
+
+
+def _timings_report(timings: list[tuple[str, float]]) -> dict[str, Any]:
+    total = round(sum(ms for _, ms in timings), 1)
+    return {"total_ms": total,
+            "steps": [{"name": name, "ms": ms} for name, ms in timings]}
 
 
 def _take_route(app, path: str, method: str):
@@ -194,6 +304,133 @@ _FRAME_LIST_PATCHED = """      const data = await json(`/api/sessions/${encodeUR
 _FINDER_MODELS_ORIGINAL = """      const data = await json("/api/target-finder/models");"""
 _FINDER_MODELS_PATCHED = """      const data = await json("/api/target-finder/models?session_id=" + encodeURIComponent($("session").value || ""));"""
 
+# 切帧后是否自动分析：默认关，省得浏览时每帧都等；按「分析」按钮或 Tab 找点时再算
+_AUTO_CHECK_ORIGINAL = '''      <label class="check">
+        <input id="yoloPanelFit" type="checkbox"'''
+_AUTO_CHECK_PATCHED = '''      <label class="check">
+        <input id="autoAnalyze" type="checkbox">
+        切帧后自动分析（关：只加载点云，按「分析 YOLO 与柜面」或 Tab 时再算）
+      </label>
+      <label class="check">
+        <input id="yoloPanelFit" type="checkbox"'''
+_AUTO_RUN_ORIGINAL = """      await analyzeCurrent({session, frame, loadToken});
+    }"""
+_AUTO_RUN_PATCHED = """      if ($("autoAnalyze").checked) await analyzeCurrent({session, frame, loadToken});
+      else setStatus("点云已加载（未分析）", false,
+        `点云 ${window.__ikCloudMs || "?"} ms · 按「分析 YOLO 与柜面」或 Tab 找点时再计算`);
+    }"""
+_TAB_WAIT_ORIGINAL = """      if (!wallAxes(currentAnalysis?.plane))
+        throw new Error("请先等待当前帧坐标系与 YOLO 分析完成");"""
+_TAB_WAIT_PATCHED = """      if (!wallAxes(currentAnalysis?.plane)) {
+        await analyzeCurrent({session, frame});
+        if (!wallAxes(currentAnalysis?.plane))
+          throw new Error("当前帧坐标系不可用，无法找点");
+      }"""
+# 分析耗时：客户端总往返 + 服务端分步
+_ANALYZE_T0_ORIGINAL = """      const requestToken = ++analysisRequestToken;
+      setStatus("正在加载坐标系与 YOLO…");"""
+_ANALYZE_T0_PATCHED = """      const requestToken = ++analysisRequestToken;
+      const analyzeT0 = performance.now();
+      setStatus("正在加载坐标系与 YOLO…");"""
+_ANALYZE_SKIP_ORIGINAL = """      if (currentAnalysis.plane.plane_analysis_skipped)
+        setStatus(
+          "已加载保存坐标系",
+          false,
+          `已跳过柜面分析 · YOLO ${currentAnalysis.yolo.boxes.length} 个实例`
+        );"""
+_ANALYZE_SKIP_PATCHED = """      if (currentAnalysis.plane.plane_analysis_skipped && !currentAnalysis.timings)
+        setStatus(
+          "已加载保存坐标系",
+          false,
+          `已跳过柜面分析 · YOLO ${currentAnalysis.yolo.boxes.length} 个实例`
+        );"""
+_ANALYZE_DONE_ORIGINAL = """      else
+        setStatus("分析完成", false,
+          `柜面内点 ${(currentAnalysis.plane.inlier_ratio * 100).toFixed(1)}% · ` +
+          `YOLO ${currentAnalysis.yolo.boxes.length} 个实例`);
+    }"""
+_ANALYZE_DONE_PATCHED = """      else {
+        const t = currentAnalysis.timings;
+        const steps = t ? t.steps.map(s => `${s.name} ${s.ms.toFixed(0)}`).join("<br>") : "";
+        setStatus(`分析完成 · ${((performance.now() - analyzeT0) / 1000).toFixed(1)} s`, false,
+          `柜面内点 ${(currentAnalysis.plane.inlier_ratio * 100).toFixed(1)}% · ` +
+          `YOLO ${currentAnalysis.yolo.boxes.length} 个实例` +
+          (t ? `<br>服务端 ${t.total_ms.toFixed(0)} ms（往返 ${(performance.now() - analyzeT0).toFixed(0)} ms）<br>${steps}` : ""));
+      }
+    }"""
+_CLOUD_MS_ORIGINAL = """      setStatus(`${pointCount.toLocaleString()} 个点`, false,
+        `${session}<br>${frame}<br>包围半径 ${radius.toFixed(3)} m`);"""
+_CLOUD_MS_PATCHED = """      window.__ikCloudMs = response.headers.get("X-Server-Ms");
+      setStatus(`${pointCount.toLocaleString()} 个点`, false,
+        `${session}<br>${frame}<br>包围半径 ${radius.toFixed(3)} m · 点云服务端 ${window.__ikCloudMs || "?"} ms`);"""
+
+# 「测试耗时」按钮：对当前帧连续跑 3 次分析，按步骤汇总（首次含预热，单独列出）
+_TIMING_BTN_ORIGINAL = """      <button id="analyzeBtn" class="secondary">分析 YOLO 与柜面</button>"""
+_TIMING_BTN_PATCHED = """      <button id="analyzeBtn" class="secondary">分析 YOLO 与柜面</button>
+      <button id="timingBtn" class="secondary">测试耗时（3 次）</button>"""
+_TIMING_JS_ORIGINAL = """    $("analyzeBtn").onclick = () => analyzeCurrent().catch(e => setStatus(e.message, true));"""
+_TIMING_JS_PATCHED = """    $("analyzeBtn").onclick = () => analyzeCurrent().catch(e => setStatus(e.message, true));
+    function showTimingPanel(html) {
+      let panel = document.getElementById("ikTimingPanel");
+      if (!panel) {
+        panel = document.createElement("div");
+        panel.id = "ikTimingPanel";
+        panel.style.cssText = "position:fixed;top:56px;left:50%;transform:translateX(-50%);z-index:9999;" +
+          "min-width:640px;max-width:92vw;max-height:80vh;overflow:auto;padding:16px 20px;" +
+          "background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:10px;" +
+          "box-shadow:0 12px 40px rgba(0,0,0,.6);font:14px/1.6 system-ui,sans-serif";
+        document.body.appendChild(panel);
+      }
+      panel.innerHTML = html + '<div style="text-align:right;margin-top:10px"><button id="ikTimingClose">关闭</button></div>';
+      panel.hidden = false;
+      document.getElementById("ikTimingClose").onclick = () => { panel.hidden = true; };
+    }
+    $("timingBtn").onclick = async () => {
+      const session = $("session").value, frame = $("frame").value;
+      if (!session || !frame) { setStatus("请先选择会话和帧", true); return; }
+      const runs = [];
+      try {
+        for (let i = 0; i < 3; i++) {
+          setStatus(`测试耗时：第 ${i + 1}/3 次…`);
+          const t0 = performance.now();
+          const data = await json(
+            `/api/analyze/${encodeURIComponent(session)}/${encodeURIComponent(frame)}`,
+            {method: "POST", headers: {"Content-Type": "application/json"},
+             body: JSON.stringify(analysisOptions())});
+          runs.push({rtt: performance.now() - t0, t: data.analysis.timings});
+        }
+      } catch (e) { setStatus(e.message, true); return; }
+      if (!runs[0].t) { setStatus("服务端未返回耗时信息（是否已 restart 18006？）", true); return; }
+      // 稳态取第 2、3 次平均；第 1 次含预热单列
+      const steps = runs[0].t.steps.map((s, i) => ({
+        name: s.name,
+        warm: runs[0].t.steps[i].ms,
+        steady: (runs[1].t.steps[i].ms + runs[2].t.steps[i].ms) / 2,
+      }));
+      const steadyTotal = steps.reduce((a, s) => a + s.steady, 0);
+      const warmTotal = steps.reduce((a, s) => a + s.warm, 0);
+      const steadyRtt = (runs[1].rtt + runs[2].rtt) / 2;
+      const td = "padding:4px 12px;border-bottom:1px solid #1f2937;white-space:nowrap";
+      const rows = steps.map(s => {
+        const pct = steadyTotal ? s.steady / steadyTotal * 100 : 0;
+        const w = Math.max(2, Math.round(pct * 2.2));
+        return `<tr><td style="${td}">${s.name}</td>` +
+          `<td style="${td};text-align:right;font-variant-numeric:tabular-nums">${s.steady.toFixed(0)}</td>` +
+          `<td style="${td};text-align:right;font-variant-numeric:tabular-nums">${pct.toFixed(0)}%</td>` +
+          `<td style="${td}"><div style="display:inline-block;height:12px;width:${w}px;background:${pct > 50 ? "#f97316" : "#60a5fa"};border-radius:3px;vertical-align:middle"></div></td>` +
+          `<td style="${td};text-align:right;color:#9ca3af;font-variant-numeric:tabular-nums">${s.warm.toFixed(0)}</td></tr>`;
+      });
+      const th = "padding:4px 12px;text-align:left;color:#9ca3af;font-weight:600;border-bottom:1px solid #374151";
+      showTimingPanel(
+        `<div style="font-size:16px;font-weight:700;margin-bottom:8px">分析耗时 · 帧 ${escapeHtml(frame.slice(0, 6))}</div>` +
+        `<div style="margin-bottom:10px">稳态（第 2、3 次平均）服务端 <b>${steadyTotal.toFixed(0)} ms</b>，浏览器往返 <b>${steadyRtt.toFixed(0)} ms</b>；` +
+        `首次含预热 ${warmTotal.toFixed(0)} ms</div>` +
+        `<table style="border-collapse:collapse"><tr><th style="${th}">步骤</th><th style="${th};text-align:right">稳态 ms</th>` +
+        `<th style="${th};text-align:right">占比</th><th style="${th}"></th><th style="${th};text-align:right">首次 ms</th></tr>${rows.join("")}</table>`);
+      setStatus(`耗时测试完成 · 稳态服务端 ${steadyTotal.toFixed(0)} ms`);
+      console.table(steps.map(s => ({步骤: s.name, 稳态ms: Math.round(s.steady), 首次ms: Math.round(s.warm)})));
+    };"""
+
 _SAVE_STATUS_ORIGINAL = """      setStatus(
         `点位 ${activePointSlot} 已保存`,"""
 _SAVE_STATUS_PATCHED = """      refreshFrames(true).catch(() => {});
@@ -234,6 +471,11 @@ _PANEL_INFO_PATCHED = """      if (currentAnalysis?.yolo_panel_fit) {
         else if (!f.available)
           lines.push(`面板中心: 拟合失败（${f.error || "未知"}）`);
       }
+      if (currentAnalysis?.timings) {
+        const t = currentAnalysis.timings;
+        lines.push(`分析耗时 ${t.total_ms.toFixed(0)} ms：` +
+          t.steps.map(s => `${s.name} ${s.ms.toFixed(0)}`).join(" · "));
+      }
       if (currentAnalysis?.yolo) {
         const instances = currentAnalysis.yolo.boxes;"""
 
@@ -243,6 +485,15 @@ def _patch_page(html: str) -> str:
     for original, patched in ((_FRAME_LIST_ORIGINAL, _FRAME_LIST_PATCHED),
                               (_SAVE_STATUS_ORIGINAL, _SAVE_STATUS_PATCHED),
                               (_FINDER_MODELS_ORIGINAL, _FINDER_MODELS_PATCHED),
+                              (_AUTO_CHECK_ORIGINAL, _AUTO_CHECK_PATCHED),
+                              (_AUTO_RUN_ORIGINAL, _AUTO_RUN_PATCHED),
+                              (_TAB_WAIT_ORIGINAL, _TAB_WAIT_PATCHED),
+                              (_ANALYZE_T0_ORIGINAL, _ANALYZE_T0_PATCHED),
+                              (_ANALYZE_SKIP_ORIGINAL, _ANALYZE_SKIP_PATCHED),
+                              (_ANALYZE_DONE_ORIGINAL, _ANALYZE_DONE_PATCHED),
+                              (_CLOUD_MS_ORIGINAL, _CLOUD_MS_PATCHED),
+                              (_TIMING_BTN_ORIGINAL, _TIMING_BTN_PATCHED),
+                              (_TIMING_JS_ORIGINAL, _TIMING_JS_PATCHED),
                               (_PANEL_CSS_ORIGINAL, _PANEL_CSS_PATCHED),
                               (_PANEL_CHECK_ORIGINAL, _PANEL_CHECK_PATCHED),
                               (_PANEL_INFO_ORIGINAL, _PANEL_INFO_PATCHED)):
@@ -267,35 +518,57 @@ def create_app(collector: Path, data_dir: Path, model: Path | None, conf: float,
     from rgbd_collector.pointcloud_app import create_pointcloud_app
 
     web_root = collector / "web"
-    app = create_pointcloud_app(
-        data_dir, web_root=web_root,
-        yolo=OfflineYolo(model, confidence=conf, device=None),
-    )
+    detector = OfflineYolo(model, confidence=conf, device=None)
+    app = create_pointcloud_app(data_dir, web_root=web_root, yolo=detector)
+    _instrument_mac_analysis(detector)
 
     original_analyze = _take_route(app, "/api/analyze/{session_id}/{frame_id}", "POST")
 
     @app.post("/api/analyze/{session_id}/{frame_id}")
     def analyze(session_id: str, frame_id: str, body: dict | None = None):
-        result = original_analyze(session_id, frame_id, body)
-        analysis = result["analysis"]
-        fallback_boxes = ((analysis.get("yolo") or {}).get("boxes")
-                          if isinstance(analysis.get("yolo"), dict) else None)
+        timings: list[tuple[str, float]] = []
+        # 先算 IK_replay 的柜面坐标系 + 面板中心，再把坐标系塞给原工具当「已保存标定」，
+        # 原工具就只做 YOLO / 语义聚类，不再跑自己那套多平面分析
         try:
-            plane, reference = provider.compute(data_dir, session_id, frame_id,
-                                                fallback_boxes)
+            plane, reference = provider.compute(data_dir, session_id, frame_id, None, timings)
+            ik_error = None
         except Exception as exc:
-            analysis["cabinet_frame_error"] = str(exc)
+            plane, reference, ik_error = None, None, str(exc)
+        options = dict(body or {})
+        options["include_yolo_panel_fit"] = False   # 面板拟合用 IK_replay 的，原工具的不再算
+        mac_steps: list[tuple[str, float]] = []
+        _MAC_STEP_SINK.sink = mac_steps
+        _MAC_STEP_SINK.calibration = _calibration_from_plane(plane) if plane else None
+        t0 = time.perf_counter()
+        try:
+            result = original_analyze(session_id, frame_id, options)
+        finally:
+            _MAC_STEP_SINK.sink = None
+            _MAC_STEP_SINK.calibration = None
+        mac_total = (time.perf_counter() - t0) * 1000.0
+        merged: dict[str, float] = {}
+        for name, ms in mac_steps:
+            merged[name] = merged.get(name, 0.0) + ms
+        timings.extend((name, round(ms, 1)) for name, ms in merged.items())
+        timings.append(("原工具·其他（读文件/编码/拷贝等）",
+                        round(max(0.0, mac_total - sum(merged.values())), 1)))
+        analysis = result["analysis"]
+        if plane is None:
+            analysis["cabinet_frame_error"] = ik_error
             mac = analysis.get("plane") or {}
             mac["accepted_axis_estimation"] = (
-                f"IK_replay 柜面坐标系失败（{exc}），暂用原工具结果")
+                f"IK_replay 柜面坐标系失败（{ik_error}），暂用原工具结果")
             mac["calibrated"] = True
             mac["calibration_method"] = "accepted-automatic"
+            analysis["timings"] = _timings_report(timings)
             return result
         analysis["mac_plane"] = copy.deepcopy(analysis.get("plane"))
         analysis["plane"] = plane
         # 页面的「面板拟合」叠加层（矩形 + 中心点）改为显示 panel_anchor 参考点
-        analysis["mac_yolo_panel_fit"] = analysis.get("yolo_panel_fit")
         analysis["yolo_panel_fit"] = reference
+        analysis["timings"] = _timings_report(timings)
+        print(f"[18006] 分析 {frame_id[:6]} 共 {analysis['timings']['total_ms']:.0f} ms："
+              + "；".join(f"{name} {ms:.0f}" for name, ms in timings))
         return result
 
     # 「算法找点（Tab）」改用 IK_replay 的 panel_anchor：原工具的 0.x 版本按 Mac 端的
@@ -397,6 +670,18 @@ def create_app(collector: Path, data_dir: Path, model: Path | None, conf: float,
         except (TypeError, ValueError, RuntimeError, KeyError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "prediction": prediction, "panel_fit": reference}
+
+    @app.middleware("http")
+    async def time_pointcloud(request: Request, call_next):
+        # 切帧时页面先拉点云再分析；点云生成耗时也记进服务日志和响应头
+        if not request.url.path.startswith("/api/pointcloud/"):
+            return await call_next(request)
+        t0 = time.perf_counter()
+        response = await call_next(request)
+        ms = (time.perf_counter() - t0) * 1000.0
+        response.headers["X-Server-Ms"] = f"{ms:.0f}"
+        print(f"[18006] 点云 {request.url.path.rsplit('/', 1)[-1][:6]} 生成 {ms:.0f} ms")
+        return response
 
     _take_route(app, "/", "GET")
     page_html = _patch_page((web_root / "pointcloud.html").read_text(encoding="utf-8"))
