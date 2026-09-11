@@ -62,12 +62,35 @@ owned_pid() {
     [[ "$cmdline" == *"$token"* ]]
 }
 
+# 日志当前字节数：启动前记下，失败时只回显本次启动新写的内容
+log_offset() {
+    local f=$1
+    [[ -f "$f" ]] && stat -c %s "$f" || echo 0
+}
+
+# 把服务本次启动以来写的日志直接印到终端（最多 25 行），别让人再去翻文件
+show_failure_reason() {
+    local name=$1 log_file=$2 offset=$3
+    local lines
+    lines=$(tail -c +"$((offset + 1))" "$log_file" 2>/dev/null \
+        | grep -v '^[[:space:]]*$' | tail -n 25)
+    echo "──────── [$name] 失败原因（摘自 $log_file）────────"
+    if [[ -n "$lines" ]]; then
+        echo "$lines" | sed 's/^/  │ /'
+    else
+        echo "  │ （日志里没有新输出——进程可能在打印任何东西之前就崩了，"
+        echo "  │   试试手动执行同样的命令看报错：见 $log_file）"
+    fi
+    echo "────────────────────────────────────────────────────"
+}
+
 wait_until_ready() {
-    local name=$1 url=$2 pid=$3 attempts=$4 log_file=$5
+    local name=$1 url=$2 pid=$3 attempts=$4 log_file=$5 offset=${6:-0}
     local i
     for ((i=0; i<attempts; i++)); do
         if ! kill -0 "$pid" 2>/dev/null; then
-            echo "[$name] 启动进程已退出，请查看 $log_file"
+            echo "[$name] ✗ 启动进程已退出"
+            show_failure_reason "$name" "$log_file" "$offset"
             return 1
         fi
         if healthy "$url"; then
@@ -75,7 +98,8 @@ wait_until_ready() {
         fi
         sleep 0.5
     done
-    echo "[$name] 等待就绪超时，请查看 $log_file"
+    echo "[$name] ✗ 等待就绪超时（$((attempts / 2)) 秒内状态接口没通）"
+    show_failure_reason "$name" "$log_file" "$offset"
     return 1
 }
 
@@ -83,8 +107,12 @@ stop_owned() {
     local name=$1 pid_file=$2 token=$3 wait_steps=$4
     local pid i
     if ! owned_pid "$pid_file" "$token"; then
+        if [[ -f "$pid_file" ]]; then
+            echo "[$name] 进程已退出，清理 pid 文件"
+        else
+            echo "[$name] 没有由本脚本启动的进程"
+        fi
         rm -f "$pid_file"
-        echo "[$name] 没有由本脚本启动的进程"
         return
     fi
     pid=$(<"$pid_file")
@@ -197,6 +225,7 @@ else
     )
     [[ -n "$HAND_EYE_CALIB" ]] && reach_args+=(--calib "$HAND_EYE_CALIB")
     [[ -n "$TOOL_OUT_MM" ]] && reach_args+=(--tool-out-mm "$TOOL_OUT_MM")
+    reach_log_offset=$(log_offset "$REACH_LOG")
     nohup env PYTHONUNBUFFERED=1 "$PYTHON" "${reach_args[@]}" \
         >>"$REACH_LOG" 2>&1 &
     reach_pid=$!
@@ -204,7 +233,8 @@ else
     started_reach=1
     echo "[18001] 启动中 pid=$reach_pid 日志=$REACH_LOG"
     if ! wait_until_ready \
-        "18001" "$REACH_BASE/api/reach/status" "$reach_pid" 80 "$REACH_LOG"; then
+        "18001" "$REACH_BASE/api/reach/status" "$reach_pid" 80 "$REACH_LOG" \
+        "$reach_log_offset"; then
         stop_owned "18001 Reach" "$REACH_PID_FILE" "$REACH_TOKEN" 20
         exit 1
     fi
@@ -221,6 +251,7 @@ elif port_in_use "$YOLO_PORT"; then
     fi
     exit 1
 else
+    yolo_log_offset=$(log_offset "$YOLO_LOG")
     nohup env PYTHONUNBUFFERED=1 "$PYTHON" -m api.yolo_server \
         --port "$YOLO_PORT" \
         --reach-base "$REACH_BASE" \
@@ -232,7 +263,8 @@ else
     started_yolo=1
     echo "[7004] 启动中 pid=$yolo_pid 日志=$YOLO_LOG"
     if ! wait_until_ready \
-        "7004" "$YOLO_BASE/api/yolo/status" "$yolo_pid" 80 "$YOLO_LOG"; then
+        "7004" "$YOLO_BASE/api/yolo/status" "$yolo_pid" 80 "$YOLO_LOG" \
+        "$yolo_log_offset"; then
         stop_owned "7004 YOLO" "$YOLO_PID_FILE" "$YOLO_TOKEN" 20
         if (( started_reach )); then
             stop_owned "18001 Reach" "$REACH_PID_FILE" "$REACH_TOKEN" 50
@@ -254,6 +286,7 @@ elif port_in_use "$POINTCLOUD_PORT"; then
     fi
     exit 1
 else
+    viewer_log_offset=$(log_offset "$VIEWER_LOG")
     nohup env PYTHONUNBUFFERED=1 "$PYTHON" -m api.pointcloud_viewer \
         --port "$POINTCLOUD_PORT" \
         --reach-base "$REACH_BASE" \
@@ -265,7 +298,7 @@ else
     echo "[7005] 启动中 pid=$viewer_pid 日志=$VIEWER_LOG"
     if ! wait_until_ready \
         "7005" "http://127.0.0.1:$POINTCLOUD_PORT/api/pointcloud/status" \
-        "$viewer_pid" 80 "$VIEWER_LOG"; then
+        "$viewer_pid" 80 "$VIEWER_LOG" "$viewer_log_offset"; then
         stop_owned "7005点云" "$VIEWER_PID_FILE" "$VIEWER_TOKEN" 20
         if (( started_yolo )); then
             stop_owned "7004 YOLO" "$YOLO_PID_FILE" "$YOLO_TOKEN" 20

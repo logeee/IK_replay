@@ -356,7 +356,16 @@ def main() -> int:
     )
 
     if not args.camera_only and not args.calib.exists():
-        print(f"[reach] 标定文件不存在: {args.calib}")
+        combo_desc = (f"{active_combo.get('arm')} + {active_combo.get('hand_id')}"
+                      if active_combo else "（无激活组合）")
+        print(f"[reach] !!! 启动失败：当前激活组合 {combo_desc} 还没有手眼标定归档\n"
+              f"[reach]     缺文件: {args.calib}\n"
+              f"[reach]     可选处理：\n"
+              f"[reach]       1) 给这套组合做手眼标定，并在 18000「手眼标定归档」登记；\n"
+              f"[reach]       2) 到 18000 页面把激活组合切回已标定的组合"
+              f"（现有归档见 config/hand_eye/）；\n"
+              f"[reach]       3) 仅录点 / 回放不做视觉：HAND_EYE_CALIB=<其他归档> "
+              f"临时覆盖（视觉定位结果对该臂不可信）")
         return 1
     if args.camera_only:
         print("[reach] 相机预览模式：不加载手眼标定，不连接/控制机器人")
