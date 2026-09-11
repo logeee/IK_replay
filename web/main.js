@@ -148,7 +148,18 @@ const reach = {
   handPollTimer: null,
   handPollBusy: false,
 };
-const START_TEST_WAYPOINT_NAME = "起手点测试";
+// 固定位点「起手点测试」的基础名；实际位点名按 18001 运行的臂加 R-/L- 前缀
+// （右臂 R-起手点测试 / 左臂 L-起手点测试），与后端 core/arm_assets.py 一致。
+const START_TEST_WAYPOINT_BASE = "起手点测试";
+const ARM_NAME_PREFIX = { right_arm: "R-", left_arm: "L-" };
+
+function armNamePrefix() {
+  return ARM_NAME_PREFIX[reach.status?.chain_id] || "";
+}
+
+function startTestWaypointName() {
+  return `${armNamePrefix()}${START_TEST_WAYPOINT_BASE}`;
+}
 
 async function initReach() {
   let status = null;
@@ -1615,13 +1626,13 @@ async function returnToWaypoint(wp) {
 
 function startTestWaypoint() {
   return (reach.waypoints || []).find(
-    (waypoint) => String(waypoint.name || "").trim() === START_TEST_WAYPOINT_NAME,
+    (waypoint) => String(waypoint.name || "").trim() === startTestWaypointName(),
   ) || null;
 }
 
 function ordinaryWaypoints() {
   return (reach.waypoints || []).filter(
-    (waypoint) => String(waypoint.name || "").trim() !== START_TEST_WAYPOINT_NAME,
+    (waypoint) => String(waypoint.name || "").trim() !== startTestWaypointName(),
   );
 }
 
@@ -1748,14 +1759,14 @@ async function executeHandPose(silent) {
 async function gotoStartTestWaypoint() {
   const wp = startTestWaypoint();
   if (!wp) {
-    reachMsg(`没有找到固定路点「${START_TEST_WAYPOINT_NAME}」`, "error");
+    reachMsg(`没有找到固定路点「${startTestWaypointName()}」`, "error");
     return;
   }
   const poseFile = reach.dom.handPoseSel.value;
   const pose = (reach.handPoses || []).find((p) => p.file === poseFile);
   if (reach.status.armed
       && !window.confirm(
-        `确认真机运动到路点「${START_TEST_WAYPOINT_NAME}」？\n` +
+        `确认真机运动到路点「${startTestWaypointName()}」？\n` +
         "（从当前姿态关节插值直达）" +
         (pose ? `\n灵巧手同时执行手位「${pose.name}」` : ""),
       )) {
@@ -1769,8 +1780,8 @@ async function gotoStartTestWaypoint() {
       executeHandPose(true);
     }
     await moveToWaypoint(wp, {
-      verb: `到达「${START_TEST_WAYPOINT_NAME}」`,
-      label: `前往:${START_TEST_WAYPOINT_NAME}`,
+      verb: `到达「${startTestWaypointName()}」`,
+      label: `前往:${startTestWaypointName()}`,
     });
   } finally {
     reach.dom.startTest.disabled = !startTestWaypoint();

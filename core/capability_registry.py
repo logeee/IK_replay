@@ -21,6 +21,11 @@ handeye3d_result.json。一二级组合相同则共用同一份标定。
 柜面坐标系（cabinet_frame，顶层键）：7005 点云服务构建柜面坐标系用哪种
 方法及其参数（枚举见 core/cabinet_frame_methods.py）。旧注册表没有该键
 时按方法一 + 默认参数补齐，行为与改造前完全一致；改配置后重启 7005 生效。
+
+左右臂归属（core/arm_assets.py）：动作 / 位点文件都带 ``arm`` 字段，名字以
+``R-`` / ``L-`` 开头。能力条目只能认领与自己 ``arm`` 同臂的动作和位点
+（校验名字前缀；18000 保存认领时再对照池里文件的 ``arm``），左臂条目绝不
+会拿到右臂的轨迹。
 """
 from __future__ import annotations
 
@@ -45,6 +50,7 @@ from core.cabinet_frame_methods import (  # noqa: F401
     DEFAULT_CABINET_FRAME_METHOD,
     validate_cabinet_frame_config,
 )
+from core import arm_assets
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "config" / "capability_registry.json"
@@ -58,15 +64,30 @@ SEQUENCE_STAMP_RE = re.compile(r"_\d{8}_\d{6}$")
 LEGACY_SEQUENCE_COMBO = ("right_arm", "yinshi-1-right")
 # 方向内置起手式正则（能力条目没配 pose_pattern 时的兜底；与 api/flow.py
 # 的选档行为一致——flow 从这里取，保持单一来源）。第 1 捕获组 = 档位距离 m。
+# 名字开头允许（也应当）带 L-/R- 臂归属前缀（core/arm_assets.py）；臂的
+# 校验不靠正则，靠文件的 arm 字段。
 BUILTIN_POSE_PATTERNS: dict[str, str] = {
+    "rtl": r"^\s*(?:[LR]-)?(\d+(?:\.\d+)?)-起手式新\s*$",
+    "ltr": r"^\s*(?:[LR]-)?(\d+(?:\.\d+)?)-左-起手式\s*$",
+}
+# 加臂前缀之前的旧内置正则（迁移时识别存量条目自配的同款正则并替换）
+LEGACY_POSE_PATTERNS: dict[str, str] = {
     "rtl": r"^\s*(\d+(?:\.\d+)?)-起手式新\s*$",
     "ltr": r"^\s*(\d+(?:\.\d+)?)-左-起手式\s*$",
 }
 # 位点池：18001 录制的单个路点（相对项目根）
 WAYPOINTS_SUBDIR = Path("data") / "waypoints"
-# flick 流程固定要用的两个公共位点（api/flow.py 的起手式起点 + 回落点）；
+# flick 流程固定要用的两个公共位点（api/flow.py 的起手式起点 + 回落点）的
+# **基础名**；落盘 / 认领时按臂加前缀（右臂 = R-录制点位1 / R-起手点测试）。
 # 迁移时给存量 flick 条目预置，新条目由用户在页面自行挑选
-FLOW_REQUIRED_WAYPOINTS: tuple[str, ...] = ("录制点位1", "起手点测试")
+FLOW_REQUIRED_WAYPOINT_BASES: tuple[str, ...] = ("录制点位1", "起手点测试")
+FLOW_REQUIRED_WAYPOINTS: tuple[str, ...] = FLOW_REQUIRED_WAYPOINT_BASES
+
+
+def flow_required_waypoints(arm: str) -> tuple[str, ...]:
+    """flick 流程固定位点在某臂下的实际名字（带 L-/R- 前缀）。"""
+    return tuple(arm_assets.arm_asset_name(arm, base)
+                 for base in FLOW_REQUIRED_WAYPOINT_BASES)
 
 # 种子迁移时尝试从旧的固定路径复制标定（只在机器人本机存在）
 LEGACY_CALIB_SOURCE = ("/home/robot/yx/project/calib/hand_eye_3D/"
@@ -104,8 +125,8 @@ METHOD_LABELS = {"flick": "拨动", "twist": "拧（未实现）"}
 IMPLEMENTED_METHODS = frozenset({"flick"})
 
 # 现有起手式命名正则（与 api/flow.py 的 NEW/LEFT_POSE_PATTERN 一致）
-POSE_PATTERN_RTL = r"^\s*(\d+(?:\.\d+)?)-起手式新\s*$"
-POSE_PATTERN_LTR = r"^\s*(\d+(?:\.\d+)?)-左-起手式\s*$"
+POSE_PATTERN_RTL = BUILTIN_POSE_PATTERNS["rtl"]
+POSE_PATTERN_LTR = BUILTIN_POSE_PATTERNS["ltr"]
 
 
 def calib_rel_path(arm: str, hand_id: str) -> str:
@@ -367,15 +388,17 @@ def _validate_capability(raw: Any, index: int,
 
 
 def _validate_sequence_claim(raw: Any, index: int,
-                             capability_ids: set[str]) -> dict[str, Any]:
+                             capability_arms: dict[str, str]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError(f"sequence_claims[{index}] 必须是 JSON object")
     capability_id = str(raw.get("capability_id") or "").strip()
-    if capability_id not in capability_ids:
+    if capability_id not in capability_arms:
         raise ValueError(
             f"sequence_claims[{index}].capability_id "
             f"指向不存在的能力条目「{capability_id}」")
-    def _clean_names(key: str) -> list[str]:
+    cap_arm = capability_arms[capability_id]
+
+    def _clean_names(key: str, label: str) -> list[str]:
         values = raw.get(key)
         if values is None:
             values = []
@@ -384,16 +407,30 @@ def _validate_sequence_claim(raw: Any, index: int,
         cleaned: list[str] = []
         for value in values:
             text = str(value or "").strip()
-            if text and text not in cleaned:
-                cleaned.append(text)
+            if not text or text in cleaned:
+                continue
+            # 臂归属（安全）：条目只能认领同臂的动作 / 位点。名字前缀是第一道
+            # 关；18000 保存时还会对照池里文件的 arm 字段。
+            named_arm = arm_assets.arm_from_name(text)
+            if named_arm is None:
+                raise ValueError(
+                    f"sequence_claims[{index}].{key} 的{label}「{text}」没有 "
+                    f"L-/R- 臂归属前缀（旧文件请先运行 "
+                    f"tools/migrate_arm_ownership.py）")
+            if named_arm != cap_arm:
+                raise ValueError(
+                    f"sequence_claims[{index}].{key} 的{label}「{text}」属于"
+                    f"{ARM_LABELS[named_arm]}，而能力条目「{capability_id}」是"
+                    f"{ARM_LABELS[cap_arm]}——左右臂资产绝不能混用")
+            cleaned.append(text)
         return sorted(cleaned)
 
     return {
         "capability_id": capability_id,
         # 认领的起手式动作名
-        "names": _clean_names("names"),
+        "names": _clean_names("names", "动作"),
         # 手选的非终点位点名（终点位点不落库：由已认领起手式自动推导）
-        "waypoint_names": _clean_names("waypoint_names"),
+        "waypoint_names": _clean_names("waypoint_names", "位点"),
     }
 
 
@@ -455,11 +492,11 @@ def validate_registry(payload: Any) -> dict[str, Any]:
         raw_claims = []
     if not isinstance(raw_claims, list):
         raise ValueError("sequence_claims 必须是数组")
-    capability_ids = {c["id"] for c in capabilities}
+    capability_arms = {c["id"]: c["arm"] for c in capabilities}
     sequence_claims = []
     claimed_caps: set[str] = set()
     for i, raw in enumerate(raw_claims):
-        claim = _validate_sequence_claim(raw, i, capability_ids)
+        claim = _validate_sequence_claim(raw, i, capability_arms)
         if claim["capability_id"] in claimed_caps:
             raise ValueError(
                 f"起手式认领条目重复：{claim['capability_id']}")
@@ -724,6 +761,10 @@ def route_sequence_claim(registry: dict[str, Any], arm: str, hand_id: str,
     条目跳过。返回命中的 capability_id 列表（可能为空 = 留池待手动认领）。
     """
     matched: list[str] = []
+    # 臂归属：动作名前缀必须就是录制臂（18001 落盘时已加前缀）；前缀缺失或
+    # 属于另一条臂的名字不参与路由，谁也认领不到
+    if arm_assets.arm_from_name(name) != arm_assets.normalize_arm(arm):
+        return matched
     for cap in registry.get("capabilities") or []:
         if cap["arm"] != arm or cap["hand_id"] != hand_id:
             continue
@@ -782,6 +823,8 @@ def sequence_pool(root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "latest_file": "",
             "latest_created_at": "",
             "chain_id": None,
+            # 臂归属（arm 字段；None = 无标记 / 与名字前缀矛盾 → 任何臂都不可用）
+            "arm": None,
             "recorded_combo": None,
             "endpoint_name": "",
         })
@@ -791,6 +834,7 @@ def sequence_pool(root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             entry["latest_created_at"] = created
             entry["latest_file"] = path.name
             entry["chain_id"] = data.get("chain_id")
+            entry["arm"] = arm_assets.asset_arm(data)
             combo = data.get("recorded_combo")
             entry["recorded_combo"] = combo if isinstance(combo, dict) else None
             waypoints = data.get("waypoints") or []
@@ -821,6 +865,7 @@ def waypoint_pool(root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "latest_file": "",
             "latest_created_at": "",
             "chain_id": None,
+            "arm": None,
         })
         entry["files"] += 1
         created = str(data.get("created_at") or "")
@@ -828,7 +873,32 @@ def waypoint_pool(root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             entry["latest_created_at"] = created
             entry["latest_file"] = path.name
             entry["chain_id"] = data.get("chain_id")
+            entry["arm"] = arm_assets.asset_arm(data)
     return sorted(by_name.values(), key=lambda item: item["name"])
+
+
+def check_claim_against_pool(arm: str, names: list[str],
+                             pool: list[dict[str, Any]], label: str) -> None:
+    """18000 保存认领时的第二道关：池里同名文件的 arm 必须就是条目的臂。
+
+    名字不在池中（文件已删 / 改名的残留）只按前缀校验（validate_registry
+    已做），这里不报错——页面要允许把残留取消掉。
+    """
+    target = arm_assets.normalize_arm(arm)
+    by_name = {str(e.get("name") or ""): e for e in pool}
+    for name in names:
+        entry = by_name.get(name)
+        if entry is None:
+            continue
+        file_arm = entry.get("arm")
+        if file_arm is None:
+            raise ValueError(
+                f"{label}「{name}」的文件没有有效的 arm 归属标记，不能认领"
+                f"（请先运行 tools/migrate_arm_ownership.py）")
+        if file_arm != target:
+            raise ValueError(
+                f"{label}「{name}」的文件属于{ARM_LABELS.get(file_arm, file_arm)}，"
+                f"能力条目是{ARM_LABELS.get(target, target)}——左右臂资产绝不能混用")
 
 
 def claimed_waypoint_names(registry: dict[str, Any], capability_id: str,
@@ -889,6 +959,7 @@ def migrate_sequence_claims(
         registry = load_registry(registry_path)
         method_by_id = {c["id"]: c["method"]
                         for c in registry["capabilities"]}
+        arm_by_id = {c["id"]: c["arm"] for c in registry["capabilities"]}
         for claim in registry["sequence_claims"]:
             raw_entry = next(
                 (c for c in raw_claims
@@ -897,7 +968,8 @@ def migrate_sequence_claims(
                     and method_by_id.get(claim["capability_id"]) == "flick"):
                 claim["waypoint_names"] = sorted(
                     set(claim["waypoint_names"])
-                    | set(FLOW_REQUIRED_WAYPOINTS))
+                    | set(flow_required_waypoints(
+                        arm_by_id[claim["capability_id"]])))
         save_registry(registry, registry_path)
         return True
 
@@ -929,10 +1001,11 @@ def migrate_sequence_claims(
                 if name not in bucket:
                     bucket.append(name)
     method_by_id = {c["id"]: c["method"] for c in registry["capabilities"]}
+    arm_by_id = {c["id"]: c["arm"] for c in registry["capabilities"]}
     registry["sequence_claims"] = [
         {"capability_id": cap_id, "names": names,
-         # flick 条目预置流程必需公共位点（起手式起点 + 回落点）
-         "waypoint_names": (list(FLOW_REQUIRED_WAYPOINTS)
+         # flick 条目预置流程必需公共位点（起手式起点 + 回落点，按臂取名）
+         "waypoint_names": (list(flow_required_waypoints(arm_by_id[cap_id]))
                             if method_by_id.get(cap_id) == "flick" else [])}
         for cap_id, names in routed.items()
     ]

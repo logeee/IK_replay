@@ -14,13 +14,15 @@ from typing import Any
 
 from fastapi.responses import JSONResponse
 
+from core import arm_assets
 from core import tcp_points as tcp_store
 
 from .state import router, state
 
 
 def _custom_points(hand_id: str) -> list[dict[str, Any]]:
-    items = tcp_store.list_points(hand_id)
+    # 手型号过滤之外再按本臂过滤：左臂看不到右臂录的点
+    items = tcp_store.list_points(hand_id, arm=state.chain_id)
     if state.T_wrist2hand:
         for item in items:
             item["xyz_wrist"] = tcp_store.hand_to_wrist(
@@ -54,7 +56,8 @@ def apply_selection(kind: str | None, key: str | None) -> dict[str, Any]:
 
     hand_id = str((state.active_combo or {}).get("hand_id") or "")
     if kind == "custom":
-        item = tcp_store.load_point(str(key))
+        # 臂归属不一致抛 ArmMismatch（ValueError 子类）→ 调用方按业务错误处理
+        item = tcp_store.load_point(str(key), arm=state.chain_id)
         if item.get("hand_id") != hand_id:
             raise ValueError(
                 f"TCP 点属于 {item.get('hand_id')}，不是激活的 {hand_id}")

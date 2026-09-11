@@ -42,7 +42,7 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
-from core import hand_poses, tcp_points  # noqa: E402
+from core import arm_assets, hand_poses, tcp_points  # noqa: E402
 from core.hand_runtime import (  # noqa: E402
     _DEFAULT_PREVIEWS,
     _default_fetch_json,
@@ -177,9 +177,15 @@ def hand_command_route(body: dict) -> Any:
     return {"ok": True}
 
 
+def _own_arm() -> str:
+    """激活组合的臂：本页保存的手位 / TCP 点都归属它（R-/L- 前缀 + arm 字段）。"""
+    return str(CONTEXT["combo"]["arm"])
+
+
 @app.get("/api/hand/poses")
 def poses_list() -> dict:
-    return {"ok": True, "poses": hand_poses.list_poses(),
+    return {"ok": True, "poses": hand_poses.list_poses(arm=_own_arm()),
+            "arm": _own_arm(),
             "device_id": CONTEXT["device_id"], "side": CONTEXT["side"]}
 
 
@@ -191,6 +197,7 @@ def poses_save(body: dict) -> Any:
             body.get("positions"),
             device_id=CONTEXT["device_id"],
             side=CONTEXT["side"],
+            arm=_own_arm(),
             combo=CONTEXT["combo"],
         )
     except ValueError as exc:
@@ -201,7 +208,11 @@ def poses_save(body: dict) -> Any:
 @app.post("/api/hand/poses/delete")
 def poses_delete(body: dict) -> Any:
     filename = str(body.get("file") or "")
-    if not hand_poses.delete_pose(filename):
+    try:
+        deleted = hand_poses.delete_pose(filename, arm=_own_arm())
+    except arm_assets.ArmMismatch as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+    if not deleted:
         return JSONResponse(
             {"ok": False, "error": f"姿态文件不存在: {filename}"},
             status_code=404)
@@ -212,11 +223,13 @@ def poses_delete(body: dict) -> Any:
 
 def _own_point_or_error(filename: str) -> dict | JSONResponse:
     try:
-        item = tcp_points.load_point(filename)
+        item = tcp_points.load_point(filename, arm=_own_arm())
     except FileNotFoundError:
         return JSONResponse(
             {"ok": False, "error": f"TCP 点不存在: {filename}"},
             status_code=404)
+    except arm_assets.ArmMismatch as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
     if item.get("hand_id") != CONTEXT["combo"]["hand_id"]:
         return JSONResponse(
             {"ok": False,
@@ -229,7 +242,7 @@ def _own_point_or_error(filename: str) -> dict | JSONResponse:
 def tcp_list() -> dict:
     hand_id = str(CONTEXT["combo"]["hand_id"])
     transform = CONTEXT.get("T_wrist2hand")
-    custom = tcp_points.list_points(hand_id)
+    custom = tcp_points.list_points(hand_id, arm=_own_arm())
     if transform:
         for item in custom:
             item["xyz_wrist"] = tcp_points.hand_to_wrist(
@@ -267,6 +280,7 @@ def tcp_save(body: dict) -> Any:
             item = tcp_points.save_point(
                 body.get("name"), body.get("xyz_hand"),
                 hand_id=CONTEXT["combo"]["hand_id"],
+                arm=_own_arm(),
                 combo=CONTEXT["combo"])
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)

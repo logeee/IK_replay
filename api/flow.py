@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any
 
+from core import arm_assets
 from core.capability_registry import BUILTIN_POSE_PATTERNS
 
 from .client import ReachClient
@@ -221,6 +222,10 @@ class SwitchFlow:
                  # 生效位点集合（= 手选位点 ∪ 已认领起手式的推导终点，18000
                  # 配置）。None=不校验；集合=插值只准去这些已录位点。
                  claimed_waypoint_names: set[str] | list[str] | None = None,
+                 # 执行臂（18000 激活组合的 arm）。起手式 / 位点文件都带臂归属
+                 # （core/arm_assets.py）：选档只认本臂的动作，插值只去本臂的
+                 # 位点，固定位点名（录制点位1 / 起手点测试）按臂加 R-/L- 前缀。
+                 arm: str = "right_arm",
                  lift_m: float = 0.02,             # 规划中段抬高 2cm（防刮底）
                  endpoint_speed_rad_s: float = 0.3,  # 插值回「终点」路点的关节限速
                  max_flip_rounds: int = 3,         # 拨动失败回到 5️⃣ 的最大轮数
@@ -313,6 +318,9 @@ class SwitchFlow:
             None if claimed_waypoint_names is None
             else {str(name) for name in claimed_waypoint_names}
         )
+        self.arm = arm_assets.normalize_arm(arm)
+        if self.arm is None:
+            raise ValueError(f"SwitchFlow 的执行臂非法: {arm!r}")
         self.lift_m = lift_m
         self.endpoint_speed_rad_s = endpoint_speed_rad_s
         self.max_flip_rounds = max_flip_rounds
@@ -1056,6 +1064,11 @@ class SwitchFlow:
         if target is None:
             raise FlowError(ErrorCode.EXEC_FAILED,
                             f"{tag} 找不到路点「{wp_name}」——请先在调试页录制它")
+        # 臂归属（安全）：18001 列表已按臂过滤，这里再校验一次文件的 arm 字段
+        try:
+            arm_assets.check_asset_arm(target, self.arm, "位点")
+        except arm_assets.ArmMismatch as exc:
+            raise FlowError(ErrorCode.EXEC_FAILED, f"{tag} {exc}") from exc
 
         joints = self.client.joints()
         if not joints.get("ok"):
@@ -1228,13 +1241,22 @@ class SwitchFlow:
                        else self.NEW_POSE_PATTERN)
             family = "左-起手式" if rightward else "起手式新"
         poses: list[tuple[float, dict]] = []
+        foreign_arm = 0
         for s in seqs:
             m = pattern.match(str(s.get("name") or ""))
-            if m:
-                try:
-                    poses.append((float(m.group(1)), s))
-                except (TypeError, ValueError):
-                    continue   # 注入正则的第 1 组不是数字 → 该序列不参与选档
+            if not m:
+                continue
+            # 臂归属（安全）：只认本臂的动作文件（18001 列表已过滤，这里兜底）
+            if not arm_assets.belongs_to(s, self.arm):
+                foreign_arm += 1
+                continue
+            try:
+                poses.append((float(m.group(1)), s))
+            except (TypeError, ValueError):
+                continue   # 注入正则的第 1 组不是数字 → 该序列不参与选档
+        if foreign_arm:
+            self._log(f"⚠ {foreign_arm} 个「{family}」动作不属于"
+                      f"{arm_assets.ARM_LABELS[self.arm]}或无归属标记，已排除")
         # 起手式认领（18000 配置，严格）：激活组合没认领的动作不可用
         if self.claimed_pose_names is not None:
             matched = len(poses)
@@ -1247,7 +1269,8 @@ class SwitchFlow:
                     "一个都没认领——到 18000 配置页认领后重启 17001",
                 )
         if not poses:
-            example = "0.46-左-起手式" if rightward else "0.46-起手式新"
+            example = arm_assets.arm_asset_name(
+                self.arm, "0.46-左-起手式" if rightward else "0.46-起手式新")
             raise FlowError(
                 ErrorCode.POSE_UNAVAILABLE,
                 f"没有任何「{family}」序列（如「{example}」）",
@@ -1287,7 +1310,12 @@ class SwitchFlow:
     # 所有起手式序列都从这个已录路点起录。起点漂移 >0.5 rad 时服务端会
     # 重新规划（轨迹未经人工验证，还会覆盖文件里的录制），所以运行序列前
     # 先插值回录制起点，保证走"录播"路径。
-    SEQ_START_WAYPOINT = "录制点位1"
+    # 基础名；实际位点名按执行臂加前缀（右臂 R-录制点位1 / 左臂 L-录制点位1）
+    SEQ_START_WAYPOINT_BASE = "录制点位1"
+
+    @property
+    def SEQ_START_WAYPOINT(self) -> str:  # noqa: N802 —— 保留原常量名
+        return arm_assets.arm_asset_name(self.arm, self.SEQ_START_WAYPOINT_BASE)
 
     def apply_opening_pose(self, pose: dict) -> None:
         """把手臂摆到起手式：先插值回录制起点，再原样回放录制轨迹。"""
@@ -1793,8 +1821,13 @@ class SwitchFlow:
         return self._need_console("拨动复核").yesno(
             "复核（YOLO 无结论）：开关拨动成功了吗？")
 
-    DESCEND_WAYPOINT = "起手点测试"   # 复核成功后插值回落到这个已录路点
+    # 复核成功后插值回落到这个已录路点（基础名；实际按臂加 R-/L- 前缀）
+    DESCEND_WAYPOINT_BASE = "起手点测试"
     DESCEND_SPEED_RAD_S = 0.6         # 收尾回落比常规插值快一倍
+
+    @property
+    def DESCEND_WAYPOINT(self) -> str:  # noqa: N802 —— 保留原常量名
+        return arm_assets.arm_asset_name(self.arm, self.DESCEND_WAYPOINT_BASE)
 
     def _is_left_start_pose(self, pose: dict | None = None) -> bool:
         """是否为需要经配套终点避开柜面的「X.XX-左-起手式」。"""

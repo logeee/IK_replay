@@ -60,6 +60,18 @@ def main() -> int:
                         help="拨动失败重试轮数")
     args = parser.parse_args()
 
+    # 执行臂跟 18001 实际运行的链一致（它启动时已与 18000 激活组合对齐）：
+    # 起手式 / 位点文件按臂归属过滤（R-/L- 前缀 + arm 字段），拿不到就不跑
+    reach_client = ReachClient(args.base)
+    try:
+        arm = str(reach_client.status().get("chain_id") or "")
+    except Exception as exc:  # noqa: BLE001 —— 网络错误一律转文字
+        print(f"[flow] 读不到 18001 状态（{args.base}），无法确定执行臂: {exc}")
+        return 2
+    if arm not in ("right_arm", "left_arm"):
+        print(f"[flow] 18001 状态没有有效的 chain_id（收到 {arm!r}），拒绝启动")
+        return 2
+
     console = None if args.no_console else ConsoleClient(args.console)
     yolo = None if args.no_yolo else YoloClient(args.yolo)
     alignment = load_alignment_config()
@@ -81,9 +93,10 @@ def main() -> int:
                 else fine_target + args.fine_tol)
     fine_cmd_tol = (fine["command_tolerance_deg"] if args.fine_tol is None
                     else args.fine_tol / 2)
-    flow = SwitchFlow(client=ReachClient(args.base),
+    flow = SwitchFlow(client=reach_client,
                       console=console,
                       yolo=yolo,
+                      arm=arm,
                       coarse_target_deg=coarse_target,
                       coarse_accept_min_deg=coarse_min,
                       coarse_accept_max_deg=coarse_max,

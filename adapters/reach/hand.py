@@ -9,10 +9,10 @@ from __future__ import annotations
 from fastapi import HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 
-from core import hand_poses
+from core import arm_assets, hand_poses
 from core.hand_runtime import hand_asset_path, hand_command, hand_snapshot
 
-from .state import router
+from .state import router, state
 
 
 @router.get("/hand")
@@ -22,8 +22,9 @@ def dexterous_hand_state() -> dict:
 
 @router.get("/hand/poses")
 def dexterous_hand_poses() -> dict:
-    """姿态库列表（18003 保存的命名手位）。"""
-    return {"ok": True, "poses": hand_poses.list_poses()}
+    """姿态库列表（18003 保存的命名手位），只回本臂的。"""
+    return {"ok": True, "arm": state.chain_id,
+            "poses": hand_poses.list_poses(arm=state.chain_id)}
 
 
 @router.post("/hand/pose")
@@ -37,11 +38,15 @@ def dexterous_hand_pose(body: dict):
     name = None
     if filename:
         try:
-            pose = hand_poses.load_pose(filename)
+            # 臂归属（安全）：只执行本臂的手位
+            pose = hand_poses.load_pose(filename, arm=state.chain_id)
         except FileNotFoundError:
             return JSONResponse(
                 {"ok": False, "error": f"姿态文件不存在: {filename}"},
                 status_code=404)
+        except arm_assets.ArmMismatch as exc:
+            return JSONResponse({"ok": False, "error": str(exc)},
+                                status_code=409)
         except ValueError as exc:
             return JSONResponse({"ok": False, "error": str(exc)},
                                 status_code=422)

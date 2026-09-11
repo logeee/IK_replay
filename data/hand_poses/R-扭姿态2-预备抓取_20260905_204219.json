@@ -1,0 +1,19 @@
+{
+  "name": "R-扭姿态2-预备抓取",
+  "device_id": "brainco_revo2",
+  "side": "right",
+  "positions": [
+    0.3,
+    0.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "created_at": "2026-09-05 20:42:19",
+  "recorded_combo": {
+    "arm": "right_arm",
+    "hand_id": "qiangnao-1-right"
+  },
+  "arm": "right_arm"
+}

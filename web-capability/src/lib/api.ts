@@ -58,6 +58,8 @@ export interface SequencePoolEntry {
   latest_file: string;
   latest_created_at: string;
   chain_id: string | null;
+  /** 臂归属（文件 arm 字段；null = 无标记 / 与名字前缀矛盾 → 任何臂不可用） */
+  arm: string | null;
   recorded_combo: { arm?: string; hand_id?: string } | null;
   /** 配套终点位点名（由序列最后一个路点推导，与运行时规则一致） */
   endpoint_name: string;
@@ -70,6 +72,8 @@ export interface WaypointPoolEntry {
   latest_file: string;
   latest_created_at: string;
   chain_id: string | null;
+  /** 臂归属（同上） */
+  arm: string | null;
 }
 
 export interface Registry {
@@ -116,6 +120,9 @@ export interface ParamSpec {
 export interface Meta {
   arms: string[];
   arm_labels: Record<string, string>;
+  /** 名字 / 文件名的臂归属前缀：right_arm → "R-"、left_arm → "L-" */
+  arm_prefixes?: Record<string, string>;
+  builtin_pose_patterns?: Record<string, string>;
   motion_backends?: MotionBackend[];
   motion_backend_labels?: Record<string, string>;
   cabinet_frame_methods?: string[];
@@ -164,10 +171,18 @@ export const PARAM_LABELS: Record<string, string> = {
   down_deg: "向下倾角 (°)",
 };
 
-// 与 api/flow.py 内置正则一致，新建能力时按方向带出默认值
+// 与 core/capability_registry.py BUILTIN_POSE_PATTERNS 一致，新建能力时按方向
+// 带出默认值。名字开头的 (?:[LR]-)? 是臂归属前缀（R-/L-），臂的校验靠文件
+// 的 arm 字段而不靠正则。
 export const DEFAULT_POSE_PATTERNS: Record<string, string> = {
-  rtl: "^\\s*(\\d+(?:\\.\\d+)?)-起手式新\\s*$",
-  ltr: "^\\s*(\\d+(?:\\.\\d+)?)-左-起手式\\s*$",
+  rtl: "^\\s*(?:[LR]-)?(\\d+(?:\\.\\d+)?)-起手式新\\s*$",
+  ltr: "^\\s*(?:[LR]-)?(\\d+(?:\\.\\d+)?)-左-起手式\\s*$",
+};
+
+/** 名字前缀兜底（服务端 meta.arm_prefixes 缺省时用） */
+export const ARM_PREFIXES: Record<string, string> = {
+  right_arm: "R-",
+  left_arm: "L-",
 };
 
 export async function apiGet(): Promise<Payload> {

@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import type { Capability, Payload } from "../lib/api";
-import { DEFAULT_POSE_PATTERNS, DIRECTION_LABELS } from "../lib/api";
+import {
+  ARM_PREFIXES,
+  DEFAULT_POSE_PATTERNS,
+  DIRECTION_LABELS,
+} from "../lib/api";
 
 const props = defineProps<{ payload: Payload; busy: boolean }>();
 const emit = defineEmits<{
@@ -46,6 +50,36 @@ watch(
 const currentCap = computed(
   () => capabilities.value.find((c) => c.id === capabilityId.value) ?? null,
 );
+
+// ---------- 臂归属（安全）：条目只能看到 / 认领同臂的文件 ----------
+
+const armPrefixes = computed<Record<string, string>>(
+  () => props.payload.meta.arm_prefixes ?? ARM_PREFIXES,
+);
+
+function armLabel(arm: string | null | undefined): string {
+  if (!arm) return "无归属";
+  return props.payload.meta.arm_labels[arm] || arm;
+}
+
+/** 当前条目的臂；没选条目时为空串（什么都不显示） */
+const currentArm = computed(() => currentCap.value?.arm ?? "");
+
+/** 同臂的动作池（异臂 / 无标记的不显示，也不可勾选） */
+const armSequencePool = computed(() =>
+  props.payload.sequence_pool.filter((e) => e.arm === currentArm.value),
+);
+
+/** 同臂的位点池 */
+const armWaypointPool = computed(() =>
+  props.payload.waypoint_pool.filter((w) => w.arm === currentArm.value),
+);
+
+/** 被臂过滤挡掉的数量（页面提示用） */
+const hiddenByArm = computed(() => ({
+  sequences: props.payload.sequence_pool.length - armSequencePool.value.length,
+  waypoints: props.payload.waypoint_pool.length - armWaypointPool.value.length,
+}));
 
 /** 条目实际生效的起手式正则（自配优先，否则方向内置）；自动路由也用它 */
 const effectivePattern = computed<string>(() => {
@@ -108,7 +142,7 @@ const dirty = computed(
 /** 已认领但池中无文件的名字（文件被删/改名后残留），也要能取消 */
 const orphanNames = computed(() =>
   savedNames.value.filter(
-    (name) => !props.payload.sequence_pool.some((e) => e.name === name),
+    (name) => !armSequencePool.value.some((e) => e.name === name),
   ),
 );
 
@@ -124,7 +158,7 @@ function claimedBy(name: string): string[] {
 
 function selectMatched() {
   selected.value = [
-    ...props.payload.sequence_pool
+    ...armSequencePool.value
       .filter((e) => hitsPattern(e.name))
       .map((e) => e.name),
   ];
@@ -140,19 +174,19 @@ function clearAll() {
 const derivedEndpoints = computed<string[]>(() => {
   const endpoints = new Set<string>();
   for (const name of selected.value) {
-    const entry = props.payload.sequence_pool.find((e) => e.name === name);
+    const entry = armSequencePool.value.find((e) => e.name === name);
     if (entry?.endpoint_name) endpoints.add(entry.endpoint_name);
   }
   return [...endpoints].sort();
 });
 
 function waypointExists(name: string): boolean {
-  return props.payload.waypoint_pool.some((w) => w.name === name);
+  return armWaypointPool.value.some((w) => w.name === name);
 }
 
-/** 可手选的位点 = 池子里除去当前草稿的推导终点 */
+/** 可手选的位点 = 同臂池子里除去当前草稿的推导终点 */
 const pickableWaypoints = computed(() =>
-  props.payload.waypoint_pool.filter(
+  armWaypointPool.value.filter(
     (w) => !derivedEndpoints.value.includes(w.name),
   ),
 );
@@ -167,10 +201,12 @@ const orphanWaypoints = computed(() =>
   <section class="card">
     <h2>起手式与位点认领 <span class="lvl-tag">按能力条目 · 公共池</span></h2>
     <p class="sub">
-      data/sequences（动作）与 data/waypoints（位点）是全组合共享的公共池；
-      认领挂在能力条目（任务+方式）上——拨和扭各认各的（严格：没认领 =
-      该条目不可用）。起手式选了，配套终点位点自动带上；其余位点手动挑选。
-      18001 录制新序列会按正则自动认领给对应条目。保存后重启 17001 生效。
+      data/sequences（动作）与 data/waypoints（位点）是全组合共享的公共池，
+      但每个文件都带左右臂归属（名字 / 文件名以 R- / L- 开头 + arm 字段），
+      能力条目只能认领与自己同臂的文件。认领挂在能力条目（任务+方式）上——
+      拨和扭各认各的（严格：没认领 = 该条目不可用）。起手式选了，配套终点
+      位点自动带上；其余位点手动挑选。18001 录制新序列会按正则自动认领给
+      对应条目。保存后重启 17001 生效。
     </p>
     <div class="controls">
       <label class="field grow">能力条目
@@ -181,7 +217,7 @@ const orphanWaypoints = computed(() =>
         </select>
       </label>
       <span class="badge plain off">
-        起手式 {{ selected.length }} / {{ payload.sequence_pool.length }}
+        起手式 {{ selected.length }} / {{ armSequencePool.length }}
         ｜位点 手选 {{ selectedWaypoints.length }} + 终点 {{ derivedEndpoints.length }}
       </span>
       <span class="spacer"></span>
@@ -197,15 +233,25 @@ const orphanWaypoints = computed(() =>
       ｜自动路由正则：
       <span class="mono">{{ effectivePattern || "（未配置，不参与自动认领）" }}</span>
     </p>
+    <p v-if="currentCap" class="arm-line">
+      <span class="tag arm">{{ armLabel(currentArm) }} · 只显示 {{ armPrefixes[currentArm] || "?" }} 前缀</span>
+      <span class="dim">
+        左右臂资产绝不混用：本条目只能看到并认领归属{{ armLabel(currentArm) }}的动作与位点
+        <template v-if="hiddenByArm.sequences || hiddenByArm.waypoints">
+          （已隐藏其他臂 / 无归属标记的：动作 {{ hiddenByArm.sequences }} 个、位点 {{ hiddenByArm.waypoints }} 个）
+        </template>
+      </span>
+    </p>
 
     <h3 class="group-title">起手式（动作序列）</h3>
-    <ul v-if="payload.sequence_pool.length || orphanNames.length" class="pool">
-      <li v-for="entry in payload.sequence_pool" :key="entry.name" class="row">
+    <ul v-if="armSequencePool.length || orphanNames.length" class="pool">
+      <li v-for="entry in armSequencePool" :key="entry.name" class="row">
         <label class="pick">
           <input v-model="selected" type="checkbox" :value="entry.name" />
           <span class="mono name">{{ entry.name }}</span>
         </label>
         <span class="tags">
+          <span class="tag arm">{{ armLabel(entry.arm) }}</span>
           <span v-if="hitsPattern(entry.name)" class="tag hit">命中正则</span>
           <span v-if="entry.files > 1" class="tag">×{{ entry.files }} 次录制</span>
           <span v-if="entry.latest_created_at" class="tag">
@@ -230,7 +276,9 @@ const orphanWaypoints = computed(() =>
         </span>
       </li>
     </ul>
-    <p v-else class="dim empty">动作池是空的——先在 18001 页面录制序列。</p>
+    <p v-else class="dim empty">
+      {{ armLabel(currentArm) }}的动作池是空的——先在 18001（激活该臂）页面录制序列。
+    </p>
 
     <h3 class="group-title">位点（路点）</h3>
     <div v-if="derivedEndpoints.length" class="endpoint-strip">
@@ -258,6 +306,7 @@ const orphanWaypoints = computed(() =>
           <span class="mono name">{{ wp.name }}</span>
         </label>
         <span class="tags">
+          <span class="tag arm">{{ armLabel(wp.arm) }}</span>
           <span v-if="wp.files > 1" class="tag">×{{ wp.files }} 次录制</span>
           <span v-if="wp.latest_created_at" class="tag">
             最近 {{ wp.latest_created_at }}
@@ -411,6 +460,21 @@ const orphanWaypoints = computed(() =>
 .tag.hit {
   color: #7de3d0;
   border-color: rgba(86, 217, 197, 0.4);
+}
+
+.tag.arm {
+  color: #9ec5ff;
+  border-color: rgba(120, 170, 255, 0.45);
+  font-weight: 600;
+}
+
+.arm-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  margin: 0 0 12px;
 }
 
 .tag.warn {

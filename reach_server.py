@@ -111,7 +111,9 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=18001)
 
     parser.add_argument("--robot", default="h2", help="使用的机器人配置（默认 h2）")
-    parser.add_argument("--chain", default="right_arm", help="执行链（默认 right_arm）")
+    parser.add_argument("--chain", default=None, choices=("right_arm", "left_arm"),
+                        help="执行链。缺省跟随 18000 激活组合的臂；显式给出时必须"
+                             "与激活组合一致，否则拒绝启动（左右臂资产绝不混用）")
     parser.add_argument(
         "--calib",
         type=Path,
@@ -279,13 +281,31 @@ def main() -> int:
         if not active_combo or active_hand is None:
             print("[reach] 18000 尚未配置有效的 active.arm + active.hand_id")
             return 1
+        # 臂归属（安全）：本进程只在一条臂上运行（state.chain_id），所有录制 /
+        # 回放 / 手位 / TCP 点都按它过滤。缺省跟随激活组合；显式 --chain 必须
+        # 与激活组合一致，否则左臂进程会拿到右臂组合的认领 / 标定——直接拒绝
+        # 启动，不做任何兜底
+        combo_arm_name = str(active_combo.get("arm"))
+        if args.chain is None:
+            args.chain = combo_arm_name
+        elif combo_arm_name != str(args.chain):
+            print(f"[reach] !!! --chain {args.chain} 与 18000 激活组合的臂 "
+                  f"{combo_arm_name} 不一致，拒绝启动（左右臂资产绝不能"
+                  f"混用；请去掉 --chain 或到 18000 切换激活组合）")
+            return 1
+        print(f"[reach] 执行链 = {args.chain}（录制 / 回放只认该臂的 "
+              f"{'R-' if args.chain == 'right_arm' else 'L-'} 文件）")
         if args.calib is None:
             args.calib = calib_abs_path(
                 str(active_combo["arm"]), str(active_combo["hand_id"]))
         if args.tool_out_mm is None:
             args.tool_out_mm = float(active_hand.get("tool_out_mm", 0.0))
-    elif args.tool_out_mm is None:
-        args.tool_out_mm = 0.0
+    else:
+        if args.tool_out_mm is None:
+            args.tool_out_mm = 0.0
+        if args.chain is None:
+            # 相机预览模式不驱动手臂；有激活组合就跟随，否则按右臂
+            args.chain = str(active_combo.get("arm") or "right_arm")
 
     from core.gravity_profiles import active_profile, load_registry, validate_parameters
 

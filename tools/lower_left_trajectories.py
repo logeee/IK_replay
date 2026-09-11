@@ -22,8 +22,9 @@ from api.gravity_calibration import (  # noqa: E402
 )
 
 
+# 文件名开头的 R-/L- 是臂归属前缀（core/arm_assets.py）；「左」是拨动方向
 LEFT_SEQUENCE_PATTERN = re.compile(
-    r"^(?P<distance>\d+\.\d+)-左-起手式_(?P<timestamp>\d{8}_\d{6})\.json$"
+    r"^(?:[LR]-)?(?P<distance>\d+\.\d+)-左-起手式_(?P<timestamp>\d{8}_\d{6})\.json$"
 )
 
 

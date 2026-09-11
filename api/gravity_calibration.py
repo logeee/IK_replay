@@ -28,6 +28,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from core import arm_assets
 from core.gravity_profiles import (
     DEFAULT_GRAVITY_PROFILES_PATH,
     VERSION_PATTERN,
@@ -178,6 +179,7 @@ def _load_regular_waypoint(filename: str) -> dict[str, Any]:
         "file": path.name,
         "name": str(payload.get("name") or path.stem),
         "chain_id": str(payload.get("chain_id") or "right_arm"),
+        "arm": arm_assets.asset_arm(payload),
         "robot": str(payload.get("robot") or "h2"),
         "created_at": payload.get("created_at"),
         "named_joints": joints,
@@ -317,6 +319,8 @@ def _load_sequence_preview(
         "name": str(payload.get("name") or path.stem),
         "robot": robot,
         "chain_id": chain_id,
+        # 臂归属（arm 字段；None = 无标记 / 与名字前缀矛盾）
+        "arm": arm_assets.asset_arm(payload),
         "created_at": payload.get("created_at"),
         "recorded_at": trajectory.get("recorded_at"),
         "planner": trajectory.get("planner"),
@@ -361,6 +365,7 @@ def _list_sequences() -> list[dict[str, Any]]:
                     "name",
                     "robot",
                     "chain_id",
+                    "arm",
                     "created_at",
                     "recorded_at",
                     "planner",
@@ -423,7 +428,9 @@ def _retarget_sequence(
     clean_name = str(target_name or "").strip()
     if not clean_name or len(clean_name) > 80:
         raise GravityServiceError("新轨迹名称不能为空且不能超过80字")
-    match = re.match(r"^\s*(\d+(?:\.\d+)?)", clean_name)
+    # 名字允许（不要求）带 R-/L- 臂前缀；距离前缀在其后。最终落盘名按源轨迹
+    # 的臂统一加前缀（见下方 arm_assets.prefixed_name）
+    match = re.match(r"^\s*(\d+(?:\.\d+)?)", arm_assets.strip_arm_prefix(clean_name))
     if not match:
         raise GravityServiceError("新轨迹名称必须以距离开头，例如0.47避障起手式")
     offset = float(forward_offset_m)
@@ -552,7 +559,24 @@ def _retarget_sequence(
 
     timestamp = output_timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
     distance_prefix = match.group(1)
-    resolved_endpoint_name = str(endpoint_name or f"{distance_prefix}终点").strip()
+    # 臂归属（安全）：新轨迹 / 新终点与源轨迹同臂——源文件必须带有效 arm
+    # 字段，且与源的关节链一致；名字统一加该臂前缀，落盘写 arm 字段
+    source_arm = source.get("arm")
+    if source_arm is None:
+        raise GravityServiceError(
+            f"源轨迹 {source_filename} 没有有效的 arm 归属标记，拒绝重定向"
+            "（请先运行 tools/migrate_arm_ownership.py）")
+    if source_arm != chain_id:
+        raise GravityServiceError(
+            f"源轨迹 {source_filename} 的 arm={source_arm} 与关节链 "
+            f"{chain_id} 不一致，拒绝重定向")
+    try:
+        clean_name = arm_assets.prefixed_name(source_arm, clean_name)
+        resolved_endpoint_name = arm_assets.prefixed_name(
+            source_arm,
+            str(endpoint_name or f"{distance_prefix}终点").strip())
+    except ValueError as exc:
+        raise GravityServiceError(str(exc)) from exc
     endpoint_file = f"{resolved_endpoint_name}_{timestamp}.json"
     sequence_file = f"{clean_name}_{timestamp}.json"
     endpoint_named = {
@@ -562,6 +586,7 @@ def _retarget_sequence(
     now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     endpoint_payload = {
         "name": resolved_endpoint_name,
+        "arm": source_arm,
         "chain_id": chain_id,
         "named_joints": endpoint_named,
         "created_at": now_text,
@@ -579,6 +604,7 @@ def _retarget_sequence(
     duration_s = max(1.0, travel / 0.35)
     sequence_payload = {
         "name": clean_name,
+        "arm": source_arm,
         "chain_id": chain_id,
         "waypoints": [str(source_waypoints[0]), endpoint_file],
         "created_at": now_text,

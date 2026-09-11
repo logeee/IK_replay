@@ -9,6 +9,8 @@
 - 标定指尖点（handeye3d_result.json 的 tcp_points_wrist_m）本来就是
   腕系坐标，这里只做只读透传，选择池里与自定义点并列。
 - 每个手型号可记一个默认点（_default.json），18001 启动时自动应用。
+- 左右臂归属（core/arm_assets.py）：每个点带 ``arm`` 字段、名字以 R-/L-
+  开头；列表 / 加载按臂过滤与校验（手型号过滤之外再加一道臂的关）。
 """
 
 from __future__ import annotations
@@ -18,6 +20,8 @@ import math
 import time
 from pathlib import Path
 from typing import Any
+
+from core import arm_assets
 
 ROOT = Path(__file__).resolve().parents[1]
 POINTS_DIR = ROOT / "data" / "tcp_points"
@@ -53,8 +57,9 @@ def safe_point_path(filename: str,
 
 
 def list_points(hand_id: str | None = None,
-                directory: Path | None = None) -> list[dict[str, Any]]:
-    """自定义 TCP 点；hand_id 给定时只回该手型号的（18001 过滤用）。"""
+                directory: Path | None = None, *,
+                arm: str | None = None) -> list[dict[str, Any]]:
+    """自定义 TCP 点；hand_id / arm 给定时只回该手型号 / 该臂的（18001 过滤用）。"""
     base = _points_dir(directory)
     if not base.is_dir():
         return []
@@ -71,19 +76,25 @@ def list_points(hand_id: str | None = None,
             continue
         if hand_id is not None and str(data.get("hand_id") or "") != hand_id:
             continue
+        if arm is not None and not arm_assets.belongs_to(data, arm):
+            continue
         data["file"] = path.name
         items.append(data)
     return items
 
 
 def load_point(filename: str,
-               directory: Path | None = None) -> dict[str, Any]:
+               directory: Path | None = None, *,
+               arm: str | None = None) -> dict[str, Any]:
+    """加载 TCP 点；arm 给定时校验归属，不一致抛 arm_assets.ArmMismatch。"""
     path = safe_point_path(filename, directory)
     if path is None or not path.is_file():
         raise FileNotFoundError(filename)
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"{filename} 不是 JSON object")
+    if arm is not None:
+        arm_assets.check_asset_arm(data, arm, "TCP 点")
     data["xyz_hand"] = validate_xyz(data.get("xyz_hand"))
     data["file"] = path.name
     return data
@@ -94,6 +105,7 @@ def save_point(
     xyz_hand: Any,
     *,
     hand_id: str,
+    arm: str,
     combo: dict[str, Any] | None = None,
     directory: Path | None = None,
 ) -> dict[str, Any]:
@@ -110,6 +122,9 @@ def save_point(
         "xyz_hand": validate_xyz(xyz_hand),
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
+    # 臂归属：arm 字段 + 名字前缀（文件名随名字，自然带前缀）
+    arm_assets.stamp(item, arm)
+    name = item["name"]
     if combo:
         item["recorded_combo"] = {
             "arm": combo.get("arm"),
@@ -147,6 +162,10 @@ def update_point(
         name = str(name).strip()
         if not name:
             raise ValueError("TCP 点名不能为空")
+        # 改名保持臂归属前缀（文件带 arm 时按 arm 加前缀；写了异臂前缀拒绝）
+        own_arm = arm_assets.asset_arm(data)
+        if own_arm is not None:
+            name = arm_assets.prefixed_name(own_arm, name)
         data["name"] = name
     if xyz_hand is not None:
         data["xyz_hand"] = validate_xyz(xyz_hand)

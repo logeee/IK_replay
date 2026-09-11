@@ -105,6 +105,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from copy import deepcopy
 
 from core.alignment_config import load_alignment_config
+from core import arm_assets
 from core.capability_client import (
     DEFAULT_CAPABILITY_URL,
     CapabilityUnavailable,
@@ -237,6 +238,12 @@ def _active_arm_context() -> dict[str, Any] | None:
         "calib_path": (str(ROOT / calib["path"])
                        if calib["status"] == "ready" else None),
     }
+
+
+def _active_arm() -> str:
+    """当前执行臂（18000 激活组合的 arm；注册表不可用时回退 right_arm）。"""
+    ctx = _active_arm_context()
+    return str(ctx["arm"]) if ctx else "right_arm"
 
 
 def _capability_for_kind(site: str, kind: str) -> dict[str, Any] | None:
@@ -594,8 +601,15 @@ def _run_task(task: dict) -> None:
                 f"认领：条目 {capability['id']} 起手式 "
                 f"{len(claimed_names)} 个、生效位点 "
                 f"{len(claimed_waypoints)} 个")
+        # 执行臂 = 激活组合的臂（reach_server 也按它拉起）：流程只用该臂的
+        # 起手式 / 位点文件（R-/L- 前缀 + arm 字段，core/arm_assets.py）
+        flow_arm = _active_arm()
+        task["log"].append(
+            f"执行臂：{ARM_LABELS.get(flow_arm, flow_arm)}（只使用 "
+            f"{arm_assets.arm_prefix(flow_arm)} 前缀的起手式 / 位点）")
         flow = SwitchFlow(client=ReachClient(_args.reach_base),
                           console=console, yolo=yolo,
+                          arm=flow_arm,
                           claimed_pose_names=claimed_names,
                           claimed_waypoint_names=claimed_waypoints,
                           **capability_kwargs,
@@ -1649,8 +1663,14 @@ def _emergency_stop(reason: str) -> dict:
             "task_state": task["state"] if task else "idle"}
 
 
-ARM_RESET_WAYPOINT = "起手点测试"
+# 安全复位位点的基础名；实际按执行臂加 R-/L- 前缀（见 _arm_reset_waypoint）
+ARM_RESET_WAYPOINT_BASE = "起手点测试"
+ARM_RESET_WAYPOINT = ARM_RESET_WAYPOINT_BASE
 ARM_RESET_SPEED_RAD_S = 0.15
+
+
+def _arm_reset_waypoint(arm: str | None = None) -> str:
+    return arm_assets.arm_asset_name(arm or _active_arm(), ARM_RESET_WAYPOINT_BASE)
 ARM_RESET_STIFFNESS_SCALE = 0.5
 ARM_RESET_SEGMENT_TIMEOUT_S = 60.0
 
@@ -1668,9 +1688,15 @@ def _wait_arm_idle(client: ReachClient, timeout_s: float) -> dict:
 
 
 def _reset_arm_via_waypoints(
-    client: ReachClient, waypoint_names: list[str]
+    client: ReachClient, waypoint_names: list[str],
+    arm: str | None = None,
 ) -> list[str]:
-    """以半刚度、低速逐段回位；全部到位后才释放。"""
+    """以半刚度、低速逐段回位；全部到位后才释放。
+
+    每个复位位点都必须属于执行臂（arm 字段，core/arm_assets.py），否则
+    保持接管不动——宁可让人处置，也不能把右臂位点发给左臂。
+    """
+    arm = arm or _active_arm()
     available = {
         str(item.get("name")): item
         for item in (client.waypoints().get("waypoints") or [])
@@ -1680,6 +1706,10 @@ def _reset_arm_via_waypoints(
         target = available.get(name)
         if target is None:
             raise RuntimeError(f"找不到安全复位路点「{name}」")
+        try:
+            arm_assets.check_asset_arm(target, arm, "复位位点")
+        except arm_assets.ArmMismatch as exc:
+            raise RuntimeError(str(exc)) from exc
         joints = client.joints()
         if not joints.get("ok"):
             raise RuntimeError(f"读取当前关节失败: {joints.get('error')}")
@@ -1767,16 +1797,18 @@ def arm_stop():
         result["actions"].append("立即冻结当前机械臂轨迹")
         _wait_arm_idle(client, 5.0)
 
+        reset_arm = flow.arm if flow is not None else _active_arm()
         route = (
             flow.safe_reset_waypoints()
             if flow is not None
-            else [ARM_RESET_WAYPOINT]
+            else [_arm_reset_waypoint(reset_arm)]
         )
-        result["actions"].extend(_reset_arm_via_waypoints(client, route))
+        result["actions"].extend(
+            _reset_arm_via_waypoints(client, route, arm=reset_arm))
         result.update(
             ok=True,
             arm_released=True,
-            message="当前流程已中断；机械臂已低刚度回到起手点测试并释放",
+            message=f"当前流程已中断；机械臂已低刚度回到{route[-1]}并释放",
             route=route,
         )
     except Exception as exc:

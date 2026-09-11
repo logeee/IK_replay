@@ -1,4 +1,11 @@
-"""路点 / 动作序列 / 横移的录制、落盘与回放执行。"""
+"""路点 / 动作序列 / 横移的录制、落盘与回放执行。
+
+左右臂归属（core/arm_assets.py，安全）：本服务只在一条臂上运行
+（state.chain_id）。录制落盘一律写 ``arm`` 字段并给名字加 ``R-``/``L-``
+前缀；列表接口只回本臂的文件（无归属标记 / 异臂的文件一律不显示，
+``?scope=all`` 也只放开认领过滤、不放开臂过滤）；回放执行前再校验一次，
+不一致 → 409。左臂绝不会拿到右臂的轨迹。
+"""
 
 from __future__ import annotations
 
@@ -12,6 +19,8 @@ from pathlib import Path
 import numpy as np
 from fastapi.responses import JSONResponse
 
+from core import arm_assets
+
 from .execution import (
     _exec_loop,
     _exec_status,
@@ -20,6 +29,57 @@ from .execution import (
     _validated_command_snapshot,
 )
 from .state import _read_joints, router, state
+
+
+# --------------- 左右臂归属 ---------------
+
+
+def _own_arm() -> str:
+    """本服务运行的臂（--chain），所有录制 / 回放都以它为准。"""
+    return state.chain_id
+
+
+def _load_dir_json(directory: Path | None, *, by_mtime: bool = True) -> list[dict]:
+    """读目录下全部 *.json（附 file 字段），坏文件跳过。"""
+    if directory is None or not directory.is_dir():
+        return []
+    paths = directory.glob("*.json")
+    if by_mtime:
+        paths = sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True)
+    else:
+        paths = sorted(paths)
+    items: list[dict] = []
+    for path in paths:
+        try:
+            data = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        data["file"] = path.name
+        items.append(data)
+    return items
+
+
+def _split_by_arm(items: list[dict]) -> tuple[list[dict], dict[str, int]]:
+    """按本臂过滤；顺带统计被挡掉的异臂 / 无标记文件数（诊断字段）。"""
+    own = _own_arm()
+    kept: list[dict] = []
+    stats = {"foreign_arm": 0, "unmarked": 0}
+    for item in items:
+        declared = arm_assets.asset_arm(item)
+        if declared == own:
+            kept.append(item)
+        elif declared is None:
+            stats["unmarked"] += 1
+        else:
+            stats["foreign_arm"] += 1
+    return kept, stats
+
+
+def _arm_reject(exc: Exception) -> JSONResponse:
+    return JSONResponse({"ok": False, "error": str(exc), "arm": _own_arm()},
+                        status_code=409)
 
 
 # --------------- 中间路点（录制 / 落盘 / 复用） ---------------
@@ -57,34 +117,39 @@ def _safe_waypoint_file(filename: str) -> Path | None:
 
 
 def _load_waypoints() -> list[dict]:
-    if not state.waypoints_dir.is_dir():
-        return []
-    items = []
-    for path in sorted(state.waypoints_dir.glob("*.json"),
-                       key=lambda p: p.stat().st_mtime, reverse=True):
-        try:
-            data = json.loads(path.read_text())
-            data["file"] = path.name
-            items.append(data)
-        except (json.JSONDecodeError, OSError):
-            continue
-    return items
+    """本臂的全部位点（异臂 / 无归属标记的已剔除）。"""
+    return _split_by_arm(_load_dir_json(state.waypoints_dir))[0]
+
+
+def _load_waypoint_for_arm(filename: str, label: str = "位点") -> dict:
+    """读并校验一个位点文件必须属于本臂；否则抛 ArmMismatch / OSError。"""
+    path = _safe_waypoint_file(filename)
+    if path is None or not path.is_file():
+        raise FileNotFoundError(f"{label}文件不存在: {filename}")
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict):
+        raise ValueError(f"{label}文件不是 JSON object: {filename}")
+    arm_assets.check_asset_arm(data, _own_arm(), label)
+    data["file"] = path.name
+    return data
 
 
 @router.get("/waypoints")
 def reach_waypoints(scope: str = ""):
-    """位点列表。默认按认领可见性过滤（激活组合已启用能力的生效位点 +
-    本组合自己录的）；?scope=all 看全池。"""
-    items = _load_waypoints()
+    """位点列表（只含本臂）。默认再按认领可见性过滤（激活组合已启用能力的
+    生效位点 + 本组合自己录的）；?scope=all 放开认领过滤看本臂全池。
+    异臂 / 无归属标记的文件任何 scope 都不显示（arm_hidden 给出被挡数量）。"""
+    own_items, arm_stats = _split_by_arm(_load_dir_json(state.waypoints_dir))
     if scope == "all":
-        visible = items
+        visible = own_items
     else:
-        visible = [w for w in items
+        visible = [w for w in own_items
                    if _visible_by_claims(w, state.visible_waypoints)]
-    return {"waypoints": visible, "total": len(items),
-            "hidden": len(items) - len(visible),
-            "filtered": len(visible) != len(items) or (
+    return {"waypoints": visible, "total": len(own_items),
+            "hidden": len(own_items) - len(visible),
+            "filtered": len(visible) != len(own_items) or (
                 scope != "all" and state.visible_waypoints is not None),
+            "arm": _own_arm(), "arm_hidden": arm_stats,
             "combo": state.active_combo}
 
 
@@ -101,12 +166,18 @@ def reach_record_waypoint(body: dict):
     if "/" in name or "\\" in name or ".." in name:
         return JSONResponse({"ok": False, "error": "名字不能包含路径分隔符"}, status_code=400)
     try:
+        # 臂归属：名字加 R-/L- 前缀（用户已写同臂前缀则保持；写了异臂前缀拒绝）
+        name = arm_assets.prefixed_name(_own_arm(), name)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    try:
         q = [float(v) for v in _read_joints()]
     except Exception as exc:
         return JSONResponse({"ok": False, "error": f"读不到真机关节: {exc}"}, status_code=503)
     stamp = time.strftime("%Y%m%d_%H%M%S")
     item = {
         "name": name,
+        "arm": _own_arm(),
         "chain_id": state.chain_id,
         "named_joints": dict(zip(state.joint_names, q)),
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -129,6 +200,13 @@ def reach_delete_waypoint(filename: str):
         return JSONResponse({"ok": False, "error": "非法文件名"}, status_code=400)
     if not path.is_file():
         return JSONResponse({"ok": False, "error": f"没有文件 {filename!r}"}, status_code=404)
+    try:
+        # 只能删本臂的文件（另一条臂的资产对本服务不可见，也不可删）
+        _load_waypoint_for_arm(filename)
+    except arm_assets.ArmMismatch as exc:
+        return _arm_reject(exc)
+    except (OSError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     path.unlink()
     return {"ok": True}
 
@@ -144,27 +222,20 @@ def _safe_sequence_file(filename: str) -> Path | None:
 
 @router.get("/sequences")
 def reach_sequences(scope: str = ""):
-    """动作序列列表。默认按认领可见性过滤（激活组合已启用能力认领的动作
-    + 本组合自己录的）；?scope=all 看全池。"""
-    items = []
-    if state.sequences_dir is not None and state.sequences_dir.is_dir():
-        for path in sorted(state.sequences_dir.glob("*.json"),
-                           key=lambda p: p.stat().st_mtime, reverse=True):
-            try:
-                data = json.loads(path.read_text())
-                data["file"] = path.name
-                items.append(data)
-            except (json.JSONDecodeError, OSError):
-                continue
+    """动作序列列表（只含本臂）。默认再按认领可见性过滤（激活组合已启用
+    能力认领的动作 + 本组合自己录的）；?scope=all 放开认领过滤看本臂全池。
+    异臂 / 无归属标记的文件任何 scope 都不显示。"""
+    own_items, arm_stats = _split_by_arm(_load_dir_json(state.sequences_dir))
     if scope == "all":
-        visible = items
+        visible = own_items
     else:
-        visible = [s for s in items
+        visible = [s for s in own_items
                    if _visible_by_claims(s, state.visible_sequences)]
-    return {"sequences": visible, "total": len(items),
-            "hidden": len(items) - len(visible),
-            "filtered": len(visible) != len(items) or (
+    return {"sequences": visible, "total": len(own_items),
+            "hidden": len(own_items) - len(visible),
+            "filtered": len(visible) != len(own_items) or (
                 scope != "all" and state.visible_sequences is not None),
+            "arm": _own_arm(), "arm_hidden": arm_stats,
             "combo": state.active_combo}
 
 
@@ -182,12 +253,21 @@ def reach_save_sequence(body: dict):
         return JSONResponse({"ok": False, "error": "名字不能包含路径分隔符"}, status_code=400)
     if not files:
         return JSONResponse({"ok": False, "error": "序列至少要有 1 个路点"}, status_code=400)
+    try:
+        name = arm_assets.prefixed_name(_own_arm(), name)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     for f in files:
-        p = _safe_waypoint_file(str(f))
-        if p is None or not p.is_file():
+        try:
+            # 序列引用的每个路点都必须是本臂的
+            _load_waypoint_for_arm(str(f), "路点")
+        except arm_assets.ArmMismatch as exc:
+            return _arm_reject(exc)
+        except Exception:
             return JSONResponse({"ok": False, "error": f"路点文件不存在: {f}"}, status_code=400)
     item = {
         "name": name,
+        "arm": _own_arm(),
         "chain_id": state.chain_id,
         "waypoints": [str(f) for f in files],
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -313,16 +393,21 @@ def reach_run_sequence(body: dict):
         return JSONResponse({"ok": False, "error": "序列文件不存在"}, status_code=404)
     try:
         seq = json.loads(path.read_text())
+        # 臂归属（安全）：序列本身与它引用的每个路点都必须属于本臂，
+        # 任何一个不是 → 拒绝执行，不做任何兜底
+        arm_assets.check_asset_arm(seq, _own_arm(), "序列")
         targets = []
         target_names = []
         for fname in seq.get("waypoints") or []:
-            wp_path = _safe_waypoint_file(str(fname))
-            wp = json.loads(wp_path.read_text())
+            wp = _load_waypoint_for_arm(str(fname), "路点")
             targets.append(np.asarray([float(wp["named_joints"][n])
                                        for n in state.joint_names], dtype=float))
             target_names.append(str(wp.get("name") or fname))
         if not targets:
             raise ValueError("序列不含路点")
+    except arm_assets.ArmMismatch as exc:
+        print(f"[reach] !!! 拒绝执行序列 {path.name}: {exc}")
+        return _arm_reject(exc)
     except Exception as exc:
         return JSONResponse({"ok": False, "error": f"序列/路点读取失败: {exc}"}, status_code=400)
 
@@ -489,6 +574,13 @@ def reach_delete_sequence(filename: str):
         return JSONResponse({"ok": False, "error": "非法文件名"}, status_code=400)
     if not path.is_file():
         return JSONResponse({"ok": False, "error": f"没有文件 {filename!r}"}, status_code=404)
+    try:
+        seq = json.loads(path.read_text())
+        arm_assets.check_asset_arm(seq, _own_arm(), "序列")
+    except arm_assets.ArmMismatch as exc:
+        return _arm_reject(exc)
+    except (OSError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": f"序列读取失败: {exc}"}, status_code=400)
     path.unlink()
     return {"ok": True}
 
@@ -500,25 +592,27 @@ def reach_delete_sequence(filename: str):
 # 是否可回放由前端把关：距离一致 + 方向夹角 <10° + 起点关节偏差 <0.1 rad。
 
 
+def sidestep_name(step_cm: float) -> str:
+    """横移录制名：sidestep_L10cm / sidestep_R6cm（L/R 是**横移方向**：正=左移）。"""
+    return f"sidestep_{'L' if step_cm > 0 else 'R'}{abs(step_cm):.0f}cm"
+
+
 @router.get("/sidesteps")
 def reach_list_sidesteps():
-    if state.sidesteps_dir is None or not state.sidesteps_dir.is_dir():
-        return {"sidesteps": []}
-    items = []
-    for path in sorted(state.sidesteps_dir.glob("*.json")):
-        try:
-            data = json.loads(path.read_text())
-            data["file"] = path.name
-            items.append(data)
-        except (json.JSONDecodeError, OSError):
-            continue
-    return {"sidesteps": items}
+    """横移录制列表（只含本臂）。前端按距离 / 方向 / 起点匹配后直接把
+    录制关节送 /execute 回放，所以这里的臂过滤就是安全关口：另一条臂的
+    横移文件根本不会到前端手里。"""
+    own_items, arm_stats = _split_by_arm(
+        _load_dir_json(state.sidesteps_dir, by_mtime=False))
+    return {"sidesteps": own_items, "arm": _own_arm(), "arm_hidden": arm_stats}
 
 
 @router.post("/sidesteps")
 def reach_save_sidestep(body: dict):
-    """保存一次横移规划（同距离覆盖旧的）。
+    """保存一次横移规划（同臂同距离覆盖旧的）。
     Body: {"step_cm": float, "direction_root": [3], "waypoints": [{named_joints, tcp_pose}...]}
+    落盘 data/sidesteps/<R|L>-sidestep_<L|R><n>cm.json：开头的 R-/L- 是臂归属，
+    后面的 L/R 是横移方向。
     """
     try:
         step_cm = float(body["step_cm"])
@@ -529,14 +623,21 @@ def reach_save_sidestep(body: dict):
     except Exception as exc:
         return JSONResponse({"ok": False, "error": f"参数非法: {exc}"}, status_code=400)
     item = {
+        "name": arm_assets.prefixed_name(_own_arm(), sidestep_name(step_cm)),
+        "arm": _own_arm(),
+        "chain_id": state.chain_id,
         "step_cm": step_cm,
         "direction_root": direction,
         "waypoints": waypoints,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
+    try:
+        # 前端送来的关节名必须是本臂的（防止别处拼出的异臂关节角落盘）
+        arm_assets.check_asset_arm(item, _own_arm(), "横移录制")
+    except arm_assets.ArmMismatch as exc:
+        return _arm_reject(exc)
     state.sidesteps_dir.mkdir(parents=True, exist_ok=True)
-    tag = f"{'L' if step_cm > 0 else 'R'}{abs(step_cm):.0f}cm"
-    path = state.sidesteps_dir / f"sidestep_{tag}.json"
+    path = state.sidesteps_dir / f"{item['name']}.json"
     path.write_text(json.dumps(item, ensure_ascii=False))
     item["file"] = path.name
     return {"ok": True, "sidestep": item}

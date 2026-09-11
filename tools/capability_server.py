@@ -46,6 +46,7 @@ from fastapi.staticfiles import StaticFiles
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from core import arm_assets
 from core import capability_registry as reg
 
 DIST_DIR = ROOT / "web-capability" / "dist"
@@ -87,6 +88,9 @@ def _registry_payload(registry: dict[str, Any]) -> dict[str, Any]:
         "meta": {
             "arms": list(reg.ARMS),
             "arm_labels": reg.ARM_LABELS,
+            # 名字 / 文件名的臂归属前缀（right_arm → "R-"），页面标注用
+            "arm_prefixes": {arm: arm_assets.arm_prefix(arm) for arm in reg.ARMS},
+            "builtin_pose_patterns": reg.BUILTIN_POSE_PATTERNS,
             "motion_backends": list(reg.MOTION_BACKENDS),
             "motion_backend_labels": reg.MOTION_BACKEND_LABELS,
             "cabinet_frame_methods": list(reg.CABINET_FRAME_METHODS),
@@ -310,8 +314,9 @@ async def sequence_claims_set(request: Request):
     capability_id = str(body.get("capability_id") or "").strip()
     with _lock:
         registry = reg.load_registry(REGISTRY_PATH)
-        if not any(c["id"] == capability_id
-                   for c in registry["capabilities"]):
+        capability = next((c for c in registry["capabilities"]
+                           if c["id"] == capability_id), None)
+        if capability is None:
             return _error(f"能力条目「{capability_id}」不存在", 404)
         previous = next((c for c in registry["sequence_claims"]
                          if c["capability_id"] == capability_id), None)
@@ -323,6 +328,18 @@ async def sequence_claims_set(request: Request):
                 body["waypoint_names"] if "waypoint_names" in body
                 else (previous or {}).get("waypoint_names") or []),
         }
+        # 臂归属（安全）：条目只能认领同臂文件。名字前缀由 validate_registry
+        # 校验；这里再对照池里文件的 arm 字段（防止改名伪装）
+        try:
+            reg.check_claim_against_pool(
+                capability["arm"], [str(n) for n in entry["names"] or []],
+                reg.sequence_pool(ROOT), "动作")
+            reg.check_claim_against_pool(
+                capability["arm"],
+                [str(n) for n in entry["waypoint_names"] or []],
+                reg.waypoint_pool(ROOT), "位点")
+        except ValueError as exc:
+            return _error(str(exc))
         others = [c for c in registry["sequence_claims"]
                   if c["capability_id"] != capability_id]
         registry["sequence_claims"] = others + [entry]
@@ -354,6 +371,11 @@ async def sequence_claims_add(request: Request):
         hand_id = str(body.get("hand_id") or "").strip()
         if not reg.find_hand(registry, hand_id):
             return _error(f"手型号「{hand_id}」不存在", 404)
+        # 臂归属：动作名必须带录制臂的前缀（18001 落盘时已加），否则不路由
+        if arm_assets.arm_from_name(name) != arm:
+            return _error(
+                f"动作名「{name}」没有 {arm_assets.arm_prefix(arm)} 前缀，"
+                f"与上报的臂 {reg.ARM_LABELS[arm]} 不符，拒绝认领")
         matched = reg.route_sequence_claim(registry, arm, hand_id, name)
         claimed_to: list[dict] = []
         changed = False
