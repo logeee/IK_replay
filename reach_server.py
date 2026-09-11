@@ -48,6 +48,8 @@ sys.path.insert(0, str(HAND_EYE_3D_ROOT))
 DEFAULT_RGBD_CALIB = PROJECT_ROOT / "config" / "camera" / "orbbec_rgbd_calibration.json"
 DEFAULT_CAMERA_CONFIG_CACHE = PROJECT_ROOT / "config" / "camera" / "teleimager_config_cache.json"
 DEFAULT_GRAVITY_PROFILES = PROJECT_ROOT / "config" / "gravity_compensation.json"
+# 手眼标定绑定的相机 ≠ 运行相机，且未选择降级时的退出码（启动脚本据此询问用户）
+EXIT_CAMERA_MISMATCH = 3
 DEFAULT_HAND_ASSETS_ROOT = Path("/home/robot/eai-teleop-studio/assets")
 
 
@@ -71,6 +73,35 @@ def _browser_urls(host: str, port: int) -> list[str]:
     if not addresses:
         return [f"http://127.0.0.1:{port}/"]
     return [f"http://{address}:{port}/" for address in sorted(addresses)]
+
+
+def _accept_camera_mismatch(policy: str, reason: str) -> bool:
+    """标定相机 ≠ 运行相机时，决定是否按「无标定」降级继续。
+
+    ask：stdin 是终端就问一句（默认 N）；不是终端（nohup / systemd / 启动脚本）
+    没法问，等同 exit——由 prepare-pointcloud.sh 看到退出码后在它的终端里问。
+    """
+    print(f"[reach] !!! 手眼标定与运行相机不一致：{reason}")
+    print("[reach]     这份标定的 T_cam2base 是对另一颗相机标的，视觉定位结果不可信。")
+    print("[reach]     处理：用当前相机重做该组合的手眼标定并在 18000 登记；"
+          "或按「无标定」降级启动（只能关节录制 / 回放 / 接管）")
+    if policy == "degrade":
+        print("[reach]     --on-camera-mismatch degrade：按无标定降级启动")
+        return True
+    if policy == "exit":
+        print("[reach]     --on-camera-mismatch exit：退出")
+        return False
+    if not sys.stdin.isatty():
+        print(f"[reach]     非交互终端无法询问，退出（退出码 {EXIT_CAMERA_MISMATCH}）；"
+              "要降级请加 --on-camera-mismatch degrade")
+        return False
+    try:
+        answer = input("[reach] 是否按「无标定」降级启动？[y/N] ").strip().lower()
+    except EOFError:
+        answer = ""
+    accepted = answer in ("y", "yes")
+    print(f"[reach]     {'已接受降级' if accepted else '已选择退出'}")
+    return accepted
 
 
 def _validate_camera_identity(
@@ -158,6 +189,11 @@ def main() -> int:
                         help="生产默认 zmq；orbbec 会主动打开本机相机，仅限调试")
     parser.add_argument("--camera-serial", default=None,
                         help="仅 --camera-source orbbec 使用的 Orbbec 序列号")
+    parser.add_argument("--on-camera-mismatch", choices=("ask", "degrade", "exit"),
+                        default="ask",
+                        help="手眼标定绑定的相机与运行相机不一致时：ask=终端里询问是否按"
+                             "「无标定」降级启动（非交互终端等同 exit）；degrade=直接降级；"
+                             f"exit=退出（退出码 {EXIT_CAMERA_MISMATCH}）")
     parser.add_argument("--camera-host", default="127.0.0.1",
                         help="teleimager 主机地址")
     parser.add_argument("--camera-request-port", type=int, default=60000,
@@ -447,12 +483,26 @@ def main() -> int:
         try:
             camera.start()
             camera_info = camera.info()
-            if calibration is not None:
-                _validate_camera_identity(calibration, camera_info)
         except Exception as exc:
             camera.stop()
-            print(f"[reach] 相机外参与运行设备一致性检查失败: {exc}")
+            print(f"[reach] 相机启动失败: {exc}")
             return 1
+        if calibration is not None:
+            try:
+                _validate_camera_identity(calibration, camera_info)
+            except ValueError as exc:
+                # 标定绑定的相机 ≠ 现在装的相机：外参 T_cam2base 已不可信。
+                # 按 --on-camera-mismatch 决定：询问 / 直接降级为「无标定」/ 退出
+                if not _accept_camera_mismatch(args.on_camera_mismatch, str(exc)):
+                    camera.stop()
+                    return EXIT_CAMERA_MISMATCH
+                handeye_missing = True
+                args.calib = None
+                calibration = None
+                hand_runtime = None
+                configure_hand_runtime(None)
+                print("[reach] ⚠ 已按「无标定」降级启动：视觉选点 / 笛卡尔规划 / TCP 切换 / "
+                      "转身对齐禁用（409），灵巧手 18089 运行时不加载；关节录制 / 回放 / 接管可用")
         print(f"[reach] camera = {args.camera_source}: {camera_info}")
 
     arm = "right" if args.chain == "right_arm" else "left"
@@ -651,7 +701,8 @@ def main() -> int:
                 return JSONResponse(
                     {
                         "ok": False,
-                        "error": ("当前激活组合没有手眼标定归档：视觉选点 / 笛卡尔规划 / "
+                        "error": ("当前激活组合无可用手眼标定（缺归档，或标定相机 ≠ 运行相机）："
+                                  "视觉选点 / 笛卡尔规划 / "
                                   "TCP 切换 / 转身对齐已禁用；请先做手眼标定并在 18000 登记"),
                         "handeye_ready": False,
                     },

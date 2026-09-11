@@ -230,7 +230,8 @@ def configure(*, camera, wrist_camera=None, robot_model, robot_id: str, chain_id
             "mode": "no_handeye",
             "wrist_link": wrist_link,
             "tcp_definition": tcp_definition,
-            "message": ("当前激活组合没有手眼标定归档：关节录制 / 回放 / 接管可用；"
+            "message": ("当前激活组合无可用手眼标定（缺归档，或标定相机 ≠ 运行相机）："
+                        "关节录制 / 回放 / 接管可用；"
                         "视觉选点、笛卡尔规划、TCP 切换、转身对齐已禁用"),
         }
     else:

@@ -225,17 +225,48 @@ else
     )
     [[ -n "$HAND_EYE_CALIB" ]] && reach_args+=(--calib "$HAND_EYE_CALIB")
     [[ -n "$TOOL_OUT_MM" ]] && reach_args+=(--tool-out-mm "$TOOL_OUT_MM")
-    reach_log_offset=$(log_offset "$REACH_LOG")
-    nohup env PYTHONUNBUFFERED=1 "$PYTHON" "${reach_args[@]}" \
-        >>"$REACH_LOG" 2>&1 &
-    reach_pid=$!
-    echo "$reach_pid" >"$REACH_PID_FILE"
-    started_reach=1
-    echo "[18001] 启动中 pid=$reach_pid 日志=$REACH_LOG"
-    if ! wait_until_ready \
-        "18001" "$REACH_BASE/api/reach/status" "$reach_pid" 80 "$REACH_LOG" \
-        "$reach_log_offset"; then
+    # 手眼标定绑定的相机 ≠ 运行相机时 reach_server 的策略：后台进程问不了人，
+    # 默认 exit（退出码 3）；本脚本看到 3 后在自己的终端里问一次是否降级重启。
+    # 也可直接 CAMERA_MISMATCH=degrade ./prepare-pointcloud.sh 跳过询问。
+    reach_args+=(--on-camera-mismatch "${CAMERA_MISMATCH:-exit}")
+
+    launch_reach() {   # 启动 18001 并等就绪；返回 0=就绪，3=相机不一致退出，1=其他失败
+        reach_log_offset=$(log_offset "$REACH_LOG")
+        nohup env PYTHONUNBUFFERED=1 "$PYTHON" "$@" >>"$REACH_LOG" 2>&1 &
+        reach_pid=$!
+        echo "$reach_pid" >"$REACH_PID_FILE"
+        started_reach=1
+        echo "[18001] 启动中 pid=$reach_pid 日志=$REACH_LOG"
+        if wait_until_ready \
+            "18001" "$REACH_BASE/api/reach/status" "$reach_pid" 80 "$REACH_LOG" \
+            "$reach_log_offset"; then
+            return 0
+        fi
+        local code=1
+        if ! kill -0 "$reach_pid" 2>/dev/null; then
+            wait "$reach_pid" 2>/dev/null; code=$?
+        fi
         stop_owned "18001 Reach" "$REACH_PID_FILE" "$REACH_TOKEN" 20
+        [[ "$code" == 3 ]] && return 3
+        return 1
+    }
+
+    launch_reach "${reach_args[@]}"; rc=$?
+    if [[ "$rc" == 3 && -t 0 ]]; then
+        echo
+        echo "[18001] 手眼标定绑定的相机与现在的相机不是同一颗（详见上方日志）。"
+        echo "        降级启动 = 只能关节录制 / 回放 / 接管；视觉选点、笛卡尔规划、TCP 切换、转身对齐禁用。"
+        read -r -p "        是否按「无标定」降级启动 18001？[y/N] " answer
+        if [[ "${answer,,}" == "y" || "${answer,,}" == "yes" ]]; then
+            launch_reach "${reach_args[@]}" --on-camera-mismatch degrade; rc=$?
+        else
+            echo "[18001] 已选择退出。要恢复视觉功能：用当前相机重做该组合的手眼标定并在 18000 登记。"
+        fi
+    elif [[ "$rc" == 3 ]]; then
+        echo "[18001] 手眼标定绑定的相机与现在的相机不一致，且当前不是交互终端无法询问。"
+        echo "        要按「无标定」降级启动请执行：CAMERA_MISMATCH=degrade $0"
+    fi
+    if [[ "$rc" != 0 ]]; then
         exit 1
     fi
     echo "[18001] 已就绪"
