@@ -201,7 +201,8 @@ stop_server() {
     local pid
     if ! pid=$(running_pid); then
         # pid 文件丢了（如上次启动健康检查超时）也要能收编孤儿进程
-        pid=$(pgrep -f "tools/capability_server\.py --port $PORT" | head -1)
+        # pgrep 无匹配返回 1，set -e/pipefail 下会让脚本静默退出——用 || true 兜住
+        pid=$(pgrep -f "tools/capability_server\.py --port $PORT" | head -1 || true)
         if ! pid_alive "$pid"; then
             echo "[能力配置] 没有找到端口 $PORT 上由本脚本启动的服务"
             return
