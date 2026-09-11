@@ -1,0 +1,20 @@
+{
+  "name": "L-测试灵巧手-2",
+  "chain_id": "left_arm",
+  "named_joints": {
+    "left_shoulder_pitch_joint": -0.7825433015823364,
+    "left_shoulder_roll_joint": 0.13165271282196045,
+    "left_shoulder_yaw_joint": -0.08799417316913605,
+    "left_elbow_joint": -0.1592104285955429,
+    "left_wrist_roll_joint": 0.31027159094810486,
+    "left_wrist_pitch_joint": 0.005668538622558117,
+    "left_wrist_yaw_joint": 0.45281198620796204
+  },
+  "created_at": "2026-09-11 22:59:56",
+  "arm": "left_arm",
+  "mirrored_from": "R-测试灵巧手-2_20260904_010938.json",
+  "recorded_combo": {
+    "arm": "left_arm",
+    "hand_id": "yinshi-1-left"
+  }
+}
