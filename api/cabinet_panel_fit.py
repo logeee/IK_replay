@@ -24,6 +24,9 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
+# 边界霍夫用的固定随机种子：结果只取决于点云，不取决于调用方传的 seed
+HOUGH_RNG_SEED = 20260912
+
 
 def fit_yolo_panel_rectangle(
     points_xyz: np.ndarray,
@@ -171,6 +174,9 @@ def fit_yolo_panel_rectangle(
     cv2.drawContours(boundary, [contour], -1, 255, 1)
     min_line_pixels = max(8, int(min(grid.shape) * 0.10))
     max_gap_m = min(0.012, float(np.max(extent)) * 0.05)
+    # HoughLinesP 是随机采样算法：固定 OpenCV 全局 RNG，让同一帧的边界线段
+    # 与遍历顺序可复现，不随 seed（= YOLO 框序号）漂移
+    cv2.setRNGSeed(HOUGH_RNG_SEED)
     hough = cv2.HoughLinesP(
         boundary,
         rho=1,
@@ -271,50 +277,70 @@ def fit_yolo_panel_rectangle(
                 / total_segment_length
             )
 
+    orientation_refinement_deg = 0.0
+    orientation_ambiguity = 0.0
     if axis_a is None or axis_b is None:
-        best_orientation: tuple[float, np.ndarray, np.ndarray] | None = None
-        best_orientation_score = -1.0
-        for candidate in segments:
-            axis_a_candidate = np.asarray(candidate["direction"])
-            axis_b_candidate = np.array(
-                [-axis_a_candidate[1], axis_a_candidate[0]]
-            )
-            support_a = 0.0
-            support_b = 0.0
-            for segment in segments:
-                direction = np.asarray(segment["direction"])
-                length = float(segment["length"])
-                alignment_a = abs(float(direction @ axis_a_candidate))
-                alignment_b = abs(float(direction @ axis_b_candidate))
-                if max(alignment_a, alignment_b) < direction_tolerance_cos:
-                    continue
-                if alignment_a >= alignment_b:
-                    support_a += length
-                else:
-                    support_b += length
-            aligned_support = support_a + support_b
-            balance = min(support_a, support_b) / max(
-                support_a, support_b, 1e-9
-            )
-            score = aligned_support * (0.5 + 0.5 * balance)
-            if score > best_orientation_score:
-                best_orientation_score = score
-                best_orientation = (
-                    aligned_support,
-                    axis_a_candidate,
-                    axis_b_candidate,
-                )
-        assert best_orientation is not None
-        aligned_support, axis_a, axis_b = best_orientation
+        # 矩形只有横/竖两个方向，线段角度 θ 模 90° 后应聚成一团。
+        # 4θ 把模 90° 的角度映射到单位圆上，便于加权平均与算偏差。
+        seg_angles = np.array(
+            [float(np.arctan2(seg["direction"][1], seg["direction"][0]))
+             for seg in segments])
+        seg_lengths = np.array([float(seg["length"]) for seg in segments])
+        seg_phase = np.exp(1j * 4.0 * seg_angles)
+        tolerance_rad = np.radians(15.0)
+
+        def deviation_mod90(theta: float) -> np.ndarray:
+            """各线段方向与候选轴（或其垂线）的最小夹角，弧度。"""
+            diff = np.angle(seg_phase * np.exp(-1j * 4.0 * theta)) / 4.0
+            return np.abs(diff)
+
+        # 候选打分：长度 × (1 − 偏差/15°)²——与候选完全平行的边贡献最大，
+        # 快到容差边缘的锯齿短线几乎不计分。老版本 15° 内一律满分，导致
+        # 0° 与 6.7° 候选打平，赢家取决于霍夫随机采样的顺序。
+        scored: list[tuple[float, float]] = []
+        for theta in seg_angles:
+            deviation = deviation_mod90(float(theta))
+            weight = np.clip(1.0 - deviation / tolerance_rad, 0.0, 1.0) ** 2
+            scored.append((float(np.sum(seg_lengths * weight)), float(theta)))
+        scored.sort(key=lambda item: -item[0])
+        best_score, best_theta = scored[0]
+        # 与最佳方向差 > 3° 的次优候选：分值接近说明定向不唯一
+        for score, theta in scored[1:]:
+            gap = float(np.abs(np.angle(np.exp(1j * 4.0 * (theta - best_theta)))) / 4.0)
+            if gap > np.radians(3.0):
+                orientation_ambiguity = score / max(best_score, 1e-9)
+                break
+
+        # 精化：把 15° 内对齐的线段按长度加权求平均方向（模 90°），
+        # 不再直接采用单条线段的原始角度
+        aligned = deviation_mod90(best_theta) <= tolerance_rad
+        aligned_support = float(np.sum(seg_lengths[aligned]))
+        mean_phase = np.sum(seg_lengths[aligned] * seg_phase[aligned])
+        if abs(mean_phase) > 1e-9:
+            refined_theta = float(np.angle(mean_phase)) / 4.0
+            # 取与 best_theta 同一象限的等价角（模 90°）
+            k = np.round((best_theta - refined_theta) / (np.pi / 2))
+            refined_theta += float(k) * np.pi / 2
+        else:
+            refined_theta = best_theta
+        orientation_refinement_deg = float(np.degrees(refined_theta - best_theta))
+        axis_a = np.array([np.cos(refined_theta), np.sin(refined_theta)])
+        axis_b = np.array([-axis_a[1], axis_a[0]])
         orientation_concentration = float(
             aligned_support / total_segment_length
         )
         dbg["定向"] = (
             f"{orientation_source} 集中度 {orientation_concentration:.2f}"
-            "（回退路径要求 ≥0.35）"
+            f" 候选 {np.degrees(best_theta):.1f}° → 精化 {np.degrees(refined_theta):.1f}°"
+            f" 次优/最佳 {orientation_ambiguity:.2f}"
+            "（回退路径要求集中度 ≥0.35）"
         )
         if orientation_concentration < 0.35:
             fail("面板边界方向不稳定")
+        if orientation_ambiguity > 0.9:
+            logger.warning(
+                "面板边界定向不唯一：次优候选得分达最佳的 %.0f%%（%s）",
+                orientation_ambiguity * 100, dbg["定向"])
 
     def dense_extent(positions: np.ndarray) -> tuple[float, float]:
         """Trim sparse tails (for example mask bleed) after quantiles."""
@@ -515,6 +541,8 @@ def fit_yolo_panel_rectangle(
         ),
         "orientation_support": orientation_concentration,
         "orientation_source": orientation_source,
+        "orientation_refinement_deg": orientation_refinement_deg,
+        "orientation_ambiguity": orientation_ambiguity,
         "edges": [
             {
                 "role": "long",

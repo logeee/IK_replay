@@ -108,8 +108,56 @@ def _take_route(app, path: str, method: str):
     raise RuntimeError(f"原应用没有路由 {method} {path}")
 
 
+_FRAME_LIST_ORIGINAL = """      const data = await json(`/api/sessions/${encodeURIComponent(session)}/frames`);
+      $("frame").innerHTML = (data.frames || []).map(item =>
+        `<option value="${escapeHtml(item.id)}">#${item.sequence} · ${escapeHtml(item.saved_at || "")} · 有效 ${((item.valid_ratio || 0) * 100).toFixed(1)}%</option>`
+      ).join("");
+"""
+
+# 帧下拉里标出每帧已保存的点位（✅ 点1·点3 / 🟡 点1 / ⬜ 未标），并给出会话进度
+_FRAME_LIST_PATCHED = """      const data = await json(`/api/sessions/${encodeURIComponent(session)}/frames`);
+      window.__ikAnnotated = {};
+      try {
+        const ann = await json(`/api/sessions/${encodeURIComponent(session)}/annotations`);
+        for (const rec of (ann.annotations || [])) {
+          const pts = rec.points && typeof rec.points === "object" ? rec.points : {"1": rec};
+          window.__ikAnnotated[rec.frame_id] = Object.keys(pts).filter(k => Array.isArray(pts[k]?.target_camera_m)).sort();
+        }
+      } catch (e) {}
+      const markOf = id => {
+        const slots = window.__ikAnnotated[id];
+        if (!slots || !slots.length) return "⬜ 未标";
+        const full = slots.includes("1") && slots.includes("3");
+        return (full ? "✅ " : "🟡 ") + slots.map(s => "点" + s).join("·");
+      };
+      $("frame").innerHTML = (data.frames || []).map(item =>
+        `<option value="${escapeHtml(item.id)}">#${item.sequence} · ${markOf(item.id)} · ${escapeHtml((item.saved_at || "").slice(11, 19))} · 有效 ${((item.valid_ratio || 0) * 100).toFixed(1)}%</option>`
+      ).join("");
+      {
+        const total = (data.frames || []).length;
+        const done = (data.frames || []).filter(f => (window.__ikAnnotated[f.id] || []).length).length;
+        const n1 = Object.values(window.__ikAnnotated).filter(s => s.includes("1")).length;
+        const n3 = Object.values(window.__ikAnnotated).filter(s => s.includes("3")).length;
+        const label = $("frame").parentElement;
+        if (label && label.tagName === "LABEL")
+          label.firstChild.textContent = `帧（已标 ${done}/${total}：点1×${n1} 点3×${n3}）`;
+      }
+"""
+
+_SAVE_STATUS_ORIGINAL = """      setStatus(
+        `点位 ${activePointSlot} 已保存`,"""
+_SAVE_STATUS_PATCHED = """      refreshFrames(true).catch(() => {});
+      setStatus(
+        `点位 ${activePointSlot} 已保存`,"""
+
+
 def _patch_page(html: str) -> str:
-    """把「已确认保存的自动结果（原来源 …）」文案改成直接显示来源。"""
+    """页面小改：坐标系来源文案、帧列表标注状态、保存后刷新列表。"""
+    for original, patched in ((_FRAME_LIST_ORIGINAL, _FRAME_LIST_PATCHED),
+                              (_SAVE_STATUS_ORIGINAL, _SAVE_STATUS_PATCHED)):
+        if original not in html:
+            print(f"[18006] ⚠ 页面代码与预期不一致，跳过一处补丁: {patched.strip()[:40]}…")
+        html = html.replace(original, patched)
     return (html
             .replace("`坐标系来源: 已确认保存的自动结果（原来源 ` +", "`坐标系来源: ` +")
             .replace('`${p.accepted_axis_estimation || "未知"}）`', '`${p.accepted_axis_estimation || "未知"}`')
