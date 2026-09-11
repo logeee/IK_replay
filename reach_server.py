@@ -295,12 +295,14 @@ def main() -> int:
             return 1
         print(f"[reach] 执行链 = {args.chain}（录制 / 回放只认该臂的 "
               f"{'R-' if args.chain == 'right_arm' else 'L-'} 文件）")
+        calib_explicit = args.calib is not None
         if args.calib is None:
             args.calib = calib_abs_path(
                 str(active_combo["arm"]), str(active_combo["hand_id"]))
         if args.tool_out_mm is None:
             args.tool_out_mm = float(active_hand.get("tool_out_mm", 0.0))
     else:
+        calib_explicit = False
         if args.tool_out_mm is None:
             args.tool_out_mm = 0.0
         if args.chain is None:
@@ -355,18 +357,23 @@ def main() -> int:
         + (f"（CLI临时覆盖 {cli_overrides}）" if cli_overrides else "")
     )
 
+    # 手眼标定缺失 → 降级启动（不拒绝）：机器人侧照常，依赖标定的接口被保护层
+    # 拒绝。显式 --calib 指向不存在的文件仍是错误（那是拼错路径，不是没标定）
+    handeye_missing = False
     if not args.camera_only and not args.calib.exists():
+        if calib_explicit:
+            print(f"[reach] !!! --calib 指定的标定文件不存在: {args.calib}")
+            return 1
         combo_desc = (f"{active_combo.get('arm')} + {active_combo.get('hand_id')}"
                       if active_combo else "（无激活组合）")
-        print(f"[reach] !!! 启动失败：当前激活组合 {combo_desc} 还没有手眼标定归档\n"
+        print(f"[reach] ⚠ 当前激活组合 {combo_desc} 还没有手眼标定归档，按「无标定」降级启动\n"
               f"[reach]     缺文件: {args.calib}\n"
-              f"[reach]     可选处理：\n"
-              f"[reach]       1) 给这套组合做手眼标定，并在 18000「手眼标定归档」登记；\n"
-              f"[reach]       2) 到 18000 页面把激活组合切回已标定的组合"
-              f"（现有归档见 config/hand_eye/）；\n"
-              f"[reach]       3) 仅录点 / 回放不做视觉：HAND_EYE_CALIB=<其他归档> "
-              f"临时覆盖（视觉定位结果对该臂不可信）")
-        return 1
+              f"[reach]     可用：DDS 状态、接管手臂、关节位点 / 序列 / 横移的录制与回放\n"
+              f"[reach]     禁用：视觉选点(pick)、点云→机器人坐标、笛卡尔/圆弧规划、TCP 切换、"
+              f"转身对齐（均返回 409）\n"
+              f"[reach]     恢复：给这套组合做手眼标定并在 18000「手眼标定归档」登记后重启 18001")
+        handeye_missing = True
+        args.calib = None
     if args.camera_only:
         print("[reach] 相机预览模式：不加载手眼标定，不连接/控制机器人")
     if args.robot_only:
@@ -388,8 +395,12 @@ def main() -> int:
     )
 
     hand_runtime = None
+    calibration = None
     configure_hand_runtime(None)
-    if not args.camera_only:
+    if handeye_missing:
+        print("[reach] 灵巧手 18089 运行时依赖标定里的 T_wrist2hand / TCP，无标定模式不加载"
+              "（本服务的手位下发不可用，请用 18003 配置页直接调手）")
+    elif not args.camera_only:
         try:
             calibration = json.loads(args.calib.read_text(encoding="utf-8"))
             hand_config = build_hand_runtime_config(
@@ -436,7 +447,7 @@ def main() -> int:
         try:
             camera.start()
             camera_info = camera.info()
-            if not args.camera_only:
+            if calibration is not None:
                 _validate_camera_identity(calibration, camera_info)
         except Exception as exc:
             camera.stop()
@@ -502,7 +513,7 @@ def main() -> int:
         camera=camera, wrist_camera=wrist_camera,
         robot_model=robot_model, robot_id=args.robot,
         chain_id=args.chain,
-        calib_path=None if args.camera_only else args.calib,
+        calib_path=None if (args.camera_only or handeye_missing) else args.calib,
         camera_only=args.camera_only,
         robot_only=args.robot_only,
         collision_checker=app_module.collision_checkers[args.robot],
@@ -610,6 +621,39 @@ def main() -> int:
                     {
                         "ok": False,
                         "error": "相机预览模式：缺少手眼标定，机器人坐标、规划和执行均已禁用",
+                    },
+                    status_code=409,
+                )
+            return await call_next(request)
+    elif handeye_missing:
+        from fastapi.responses import JSONResponse
+
+        # 无标定降级：只拦「相机 → 机器人坐标」和「依赖 TCP 标定」的接口，
+        # 关节空间的录制 / 回放 / 接管 / 状态全部放行
+        blocked_no_handeye = {
+            "/api/reach/pick",                    # 像素 → 机器人坐标
+            "/api/reach/confirm_pointcloud_pick",
+            "/api/reach/latest_pick",
+            "/api/reach/attach_pick_record",
+            "/api/reach/scan_obstacles",          # 点云 → 根系障碍
+            "/api/reach/plan_cartesian",          # 目标点在根系、走 TCP
+            "/api/reach/plan_arc",
+            "/api/reach/plan_axis_last",
+            "/api/reach/tcp/select",              # 没有标定 TCP 可换
+            "/api/reach/turn",                    # 转身对齐要相机→机体外参
+            "/api/reach/align_yaw",
+        }
+
+        @app_module.app.middleware("http")
+        async def guard_no_handeye(request, call_next):
+            if (request.url.path in blocked_no_handeye
+                    and request.method != "OPTIONS"):
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error": ("当前激活组合没有手眼标定归档：视觉选点 / 笛卡尔规划 / "
+                                  "TCP 切换 / 转身对齐已禁用；请先做手眼标定并在 18000 登记"),
+                        "handeye_ready": False,
                     },
                     status_code=409,
                 )

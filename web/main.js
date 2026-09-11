@@ -438,11 +438,16 @@ async function initReach() {
   scheduleDexterousHandPoll();
   updateReachArmUi();
   refreshReachDiag();
-  const rms = status.calib?.rms_mm;
-  const markerCount = Object.keys(status.p_tool_wrist_m_by_marker || {}).length;
-  reachMsg(`标定: ${status.calib?.solved_at || "?"} · RMS ${rms ? rms.toFixed(2) : "?"} mm · ` +
-    `TCP=p_tool [${(status.p_tool || []).map((v) => v.toFixed(3)).join(", ")}] m` +
-    (markerCount ? ` · 手部关键点 ${markerCount} 个` : ""));
+  if (status.calib && status.calib.ready === false) {
+    // 无标定降级 / 相机预览：把后端的说明原样给用户，别显示一串 "?"
+    reachMsg(`⚠ 无手眼标定（${status.calib.mode || "?"}）：${status.calib.message || ""}`);
+  } else {
+    const rms = status.calib?.rms_mm;
+    const markerCount = Object.keys(status.p_tool_wrist_m_by_marker || {}).length;
+    reachMsg(`标定: ${status.calib?.solved_at || "?"} · RMS ${rms ? rms.toFixed(2) : "?"} mm · ` +
+      `TCP=p_tool [${(status.p_tool || []).map((v) => v.toFixed(3)).join(", ")}] m` +
+      (markerCount ? ` · 手部关键点 ${markerCount} 个` : ""));
+  }
   startReachPickSync();
 }
 

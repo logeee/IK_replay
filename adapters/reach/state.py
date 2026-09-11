@@ -144,9 +144,16 @@ def configure(*, camera, wrist_camera=None, robot_model, robot_id: str, chain_id
     tcp_definition: dict[str, Any] = {"type": "calibration_reference"}
     wrist_link = None
     base_link = "torso_link"
-    if not camera_only:
-        if calib_path is None:
-            raise ValueError("非相机预览模式必须提供手眼标定")
+    # 无标定降级模式：不是相机预览，但激活组合还没有手眼标定归档。机器人侧
+    # （DDS 订阅、接管、关节录制 / 回放）照常可用；相机→机器人坐标全部为
+    # None，TCP 退化为腕系原点（p_tool = 0），依赖标定的接口由 reach_server
+    # 的保护层按 handeye_ready 拒绝
+    handeye_missing = (not camera_only) and calib_path is None
+    if handeye_missing:
+        p_tool = [0.0, 0.0, 0.0]
+        tcp_definition = {"type": "wrist_origin_fallback"}
+        wrist_link = chain_id.replace("_arm", "_wrist_yaw_link")
+    elif not camera_only:
         calib = json.loads(Path(calib_path).read_text())
         T_cam2torso = np.asarray(calib["T_cam2base"], dtype=float).reshape(4, 4)
         base_link = calib.get("base_link", "torso_link")
@@ -204,7 +211,7 @@ def configure(*, camera, wrist_camera=None, robot_model, robot_id: str, chain_id
     state.p_tool_by_marker = p_tool_by_marker
     state.tool_reference_marker = tool_reference_marker
     state.wrist_link = wrist_link
-    state.handeye_ready = not camera_only
+    state.handeye_ready = not camera_only and not handeye_missing
     state.camera_only = camera_only
     state.robot_only = robot_only
     state.gravity_profile = dict(gravity_profile or {})
@@ -216,6 +223,15 @@ def configure(*, camera, wrist_camera=None, robot_model, robot_id: str, chain_id
             "ready": False,
             "mode": "camera_only",
             "message": "尚未加载手眼标定；仅开放相机预览和相机系深度观测",
+        }
+    elif handeye_missing:
+        state.calib_meta = {
+            "ready": False,
+            "mode": "no_handeye",
+            "wrist_link": wrist_link,
+            "tcp_definition": tcp_definition,
+            "message": ("当前激活组合没有手眼标定归档：关节录制 / 回放 / 接管可用；"
+                        "视觉选点、笛卡尔规划、TCP 切换、转身对齐已禁用"),
         }
     else:
         state.calib_meta = {
