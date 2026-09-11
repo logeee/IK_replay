@@ -31,6 +31,22 @@ class NamingTests(unittest.TestCase):
         self.assertEqual(aa.strip_arm_prefix("R-0.43-起手式新"), "0.43-起手式新")
         self.assertEqual(aa.strip_arm_prefix("0.43-起手式新"), "0.43-起手式新")
 
+    def test_match_pose_pattern_tolerates_legacy_custom_regex(self):
+        # 迁移前用户写的自定义正则没有 (?:[LR]-)?，迁移后名字都带前缀
+        legacy = r"^\s*(\d+(?:\.\d+)?)-扭-起手式\s*$"
+        m = aa.match_pose_pattern(legacy, "R-0.52-扭-起手式")
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(1), "0.52")
+        # 新式正则、无前缀名字、编译后的正则都照常工作
+        new = r"^\s*(?:[LR]-)?(\d+(?:\.\d+)?)-扭-起手式\s*$"
+        self.assertEqual(aa.match_pose_pattern(new, "L-0.5-扭-起手式").group(1), "0.5")
+        self.assertEqual(aa.match_pose_pattern(legacy, "0.5-扭-起手式").group(1), "0.5")
+        import re
+        self.assertIsNotNone(aa.match_pose_pattern(re.compile(legacy), "R-1-扭-起手式"))
+        # 完全不相关的名字仍然不中
+        self.assertIsNone(aa.match_pose_pattern(legacy, "R-0.52-起手式新"))
+        self.assertIsNone(aa.match_pose_pattern(legacy, ""))
+
     def test_arm_asset_name(self):
         self.assertEqual(aa.arm_asset_name("left_arm", "起手点测试"), "L-起手点测试")
 

@@ -290,39 +290,34 @@ class ExecutionHandoffTests(unittest.TestCase):
             for name, value in saved.items():
                 setattr(state, name, value)
 
-    def test_sequence_replay_passes_last_sent_command_to_exec_loop(self):
+    _SEQUENCE_STATE_ATTRS = (
+        "controller", "sequences_dir", "waypoints_dir", "joint_names",
+        "chain_id", "exec_running", "exec_progress", "exec_message",
+        "exec_thread",
+    )
+
+    def _run_sequence_in_sandbox(self, sequence: dict, waypoint: dict):
+        """把序列 / 位点写进临时目录，在 right_arm 服务里调 reach_run_sequence。
+
+        返回 (result, thread_mock, fake_thread)。
+        """
         state = recordings.state
-        attributes = [
-            "controller", "sequences_dir", "waypoints_dir", "joint_names",
-            "exec_running", "exec_progress", "exec_message", "exec_thread",
-        ]
-        saved = {name: getattr(state, name) for name in attributes}
+        saved = {name: getattr(state, name)
+                 for name in self._SEQUENCE_STATE_ATTRS}
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             sequences = root / "sequences"
             waypoints = root / "waypoints"
             sequences.mkdir()
             waypoints.mkdir()
-            (waypoints / "target.json").write_text(
-                json.dumps({
-                    "name": "target",
-                    "named_joints": {"j1": 0.1, "j2": 0.1},
-                })
-            )
-            (sequences / "sequence.json").write_text(
-                json.dumps({
-                    "name": "sequence",
-                    "waypoints": ["target.json"],
-                    "trajectory": {
-                        "frames": [[0.0, 0.0], [0.1, 0.1]],
-                    },
-                })
-            )
+            (waypoints / "target.json").write_text(json.dumps(waypoint))
+            (sequences / "sequence.json").write_text(json.dumps(sequence))
             try:
                 state.controller = _SequenceController()
                 state.sequences_dir = sequences
                 state.waypoints_dir = waypoints
                 state.joint_names = ["j1", "j2"]
+                state.chain_id = "right_arm"
                 state.exec_running = False
                 fake_thread = mock.Mock()
                 with mock.patch.object(
@@ -331,18 +326,78 @@ class ExecutionHandoffTests(unittest.TestCase):
                     result = recordings.reach_run_sequence(
                         {"file": "sequence.json"}
                     )
-                self.assertTrue(result["ok"])
-                kwargs = thread.call_args.kwargs["kwargs"]
-                np.testing.assert_allclose(
-                    kwargs["command_start_q"], [0.02, -0.01]
-                )
-                self.assertEqual(
-                    kwargs["command_handoff"]["source"], "sequence_replay"
-                )
-                fake_thread.start.assert_called_once()
+                return result, thread, fake_thread
             finally:
                 for name, value in saved.items():
                     setattr(state, name, value)
+
+    @staticmethod
+    def _sequence(**overrides) -> dict:
+        item = {
+            "name": "R-sequence",
+            "arm": "right_arm",
+            "waypoints": ["target.json"],
+            "trajectory": {"frames": [[0.0, 0.0], [0.1, 0.1]]},
+        }
+        item.update(overrides)
+        return item
+
+    @staticmethod
+    def _waypoint(**overrides) -> dict:
+        item = {
+            "name": "R-target",
+            "arm": "right_arm",
+            "named_joints": {"j1": 0.1, "j2": 0.1},
+        }
+        item.update(overrides)
+        return item
+
+    def test_sequence_replay_passes_last_sent_command_to_exec_loop(self):
+        result, thread, fake_thread = self._run_sequence_in_sandbox(
+            self._sequence(), self._waypoint())
+        self.assertTrue(result["ok"])
+        kwargs = thread.call_args.kwargs["kwargs"]
+        np.testing.assert_allclose(
+            kwargs["command_start_q"], [0.02, -0.01]
+        )
+        self.assertEqual(
+            kwargs["command_handoff"]["source"], "sequence_replay"
+        )
+        fake_thread.start.assert_called_once()
+
+    def test_sequence_replay_rejects_sequence_of_other_arm_or_unmarked(self):
+        """序列 arm 是左臂 / 缺失 / 与名字前缀矛盾 → 409，不起执行线程。"""
+        cases = [
+            self._sequence(name="L-sequence", arm="left_arm"),
+            self._sequence(arm=None),
+            self._sequence(arm="both"),
+            self._sequence(name="L-sequence"),          # 前缀与 arm 矛盾
+        ]
+        for sequence in cases:
+            if sequence.get("arm") is None:
+                sequence.pop("arm", None)
+            result, thread, fake_thread = self._run_sequence_in_sandbox(
+                sequence, self._waypoint())
+            self.assertEqual(result.status_code, 409, sequence)
+            body = json.loads(result.body)
+            self.assertFalse(body["ok"])
+            self.assertEqual(body["arm"], "right_arm")
+            thread.assert_not_called()
+            fake_thread.start.assert_not_called()
+
+    def test_sequence_replay_rejects_referenced_waypoint_of_other_arm(self):
+        """序列本身是右臂的，但引用的位点属于左臂 / 无标记 → 同样 409。"""
+        for waypoint in (
+            self._waypoint(name="L-target", arm="left_arm"),
+            {"name": "target", "named_joints": {"j1": 0.1, "j2": 0.1}},
+            # arm 字段被改成右臂但关节名是左臂的 → 交叉校验拒绝
+            self._waypoint(named_joints={"left_shoulder_pitch_joint": 0.1,
+                                         "left_elbow_joint": 0.1}),
+        ):
+            result, thread, _ = self._run_sequence_in_sandbox(
+                self._sequence(), waypoint)
+            self.assertEqual(result.status_code, 409, waypoint)
+            thread.assert_not_called()
 
 
 if __name__ == "__main__":

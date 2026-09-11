@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from core import hand_poses
+from core import arm_assets, hand_poses
 from core.hand_runtime import (
     HandRuntime,
     build_hand_runtime_config,
@@ -24,19 +24,59 @@ class HandPosesCrudTests(unittest.TestCase):
     def test_save_list_load_delete_roundtrip(self):
         item = hand_poses.save_pose(
             "旋钮-预抓取", [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
-            device_id="brainco_revo2", side="right",
+            device_id="brainco_revo2", side="right", arm="right_arm",
             combo={"arm": "right_arm", "hand_id": "qiangnao-1-right"},
             directory=self.dir)
-        self.assertTrue(item["file"].startswith("旋钮-预抓取_"))
+        # 落盘名字 / 文件名带臂前缀，并写入 arm 归属字段
+        self.assertEqual(item["name"], "R-旋钮-预抓取")
+        self.assertEqual(item["arm"], "right_arm")
+        self.assertTrue(item["file"].startswith("R-旋钮-预抓取_"))
         listed = hand_poses.list_poses(self.dir)
         self.assertEqual(len(listed), 1)
-        self.assertEqual(listed[0]["name"], "旋钮-预抓取")
+        self.assertEqual(listed[0]["name"], "R-旋钮-预抓取")
         self.assertEqual(listed[0]["recorded_combo"]["hand_id"],
                          "qiangnao-1-right")
         loaded = hand_poses.load_pose(item["file"], self.dir)
         self.assertEqual(loaded["positions"], [0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
         self.assertTrue(hand_poses.delete_pose(item["file"], self.dir))
         self.assertEqual(hand_poses.list_poses(self.dir), [])
+
+    def test_arm_filter_and_mismatch(self):
+        right = hand_poses.save_pose(
+            "右手位", [0.1] * 6, device_id="d", side="right",
+            arm="right_arm", directory=self.dir)
+        left = hand_poses.save_pose(
+            "左手位", [0.2] * 6, device_id="d", side="left",
+            arm="left_arm", directory=self.dir)
+        self.assertEqual(left["name"], "L-左手位")
+        # 已带同臂前缀的名字不会重复加前缀
+        again = hand_poses.save_pose(
+            "R-已带前缀", [0.3] * 6, device_id="d", side="right",
+            arm="right_arm", directory=self.dir)
+        self.assertEqual(again["name"], "R-已带前缀")
+        # 异臂前缀直接拒绝
+        with self.assertRaises(arm_assets.ArmMismatch):
+            hand_poses.save_pose("L-错臂", [0] * 6, device_id="d",
+                                 side="right", arm="right_arm",
+                                 directory=self.dir)
+        # 无归属的旧文件：任何臂都看不到
+        (self.dir / "legacy_20260101_000000.json").write_text(
+            '{"name": "legacy", "positions": [0,0,0,0,0,0]}',
+            encoding="utf-8")
+        names = lambda arm: {  # noqa: E731
+            p["name"] for p in hand_poses.list_poses(self.dir, arm=arm)}
+        self.assertEqual(names("left_arm"), {"L-左手位"})
+        self.assertEqual(names("right_arm"), {"R-已带前缀", "R-右手位"})
+        # 加载 / 删除按臂校验
+        with self.assertRaises(arm_assets.ArmMismatch):
+            hand_poses.load_pose(right["file"], self.dir, arm="left_arm")
+        with self.assertRaises(arm_assets.ArmMismatch):
+            hand_poses.load_pose("legacy_20260101_000000.json", self.dir,
+                                 arm="right_arm")
+        with self.assertRaises(arm_assets.ArmMismatch):
+            hand_poses.delete_pose(right["file"], self.dir, arm="left_arm")
+        self.assertTrue(hand_poses.delete_pose(right["file"], self.dir,
+                                               arm="right_arm"))
 
     def test_positions_validation(self):
         with self.assertRaises(ValueError):
@@ -50,10 +90,13 @@ class HandPosesCrudTests(unittest.TestCase):
     def test_name_validation_and_traversal_guard(self):
         with self.assertRaises(ValueError):
             hand_poses.save_pose("", [0] * 6, device_id="d", side="right",
-                                 directory=self.dir)
+                                 arm="right_arm", directory=self.dir)
         with self.assertRaises(ValueError):
             hand_poses.save_pose("a/b", [0] * 6, device_id="d", side="right",
-                                 directory=self.dir)
+                                 arm="right_arm", directory=self.dir)
+        with self.assertRaises(ValueError):
+            hand_poses.save_pose("x", [0] * 6, device_id="d", side="right",
+                                 arm="both_arms", directory=self.dir)
         self.assertIsNone(hand_poses.safe_pose_path("../x.json", self.dir))
         self.assertIsNone(hand_poses.safe_pose_path("x.txt", self.dir))
 
@@ -162,13 +205,27 @@ class ReachHandPoseEndpointTests(unittest.TestCase):
 
         item = hand_poses.save_pose(
             "旋钮-预抓取", [0.3, 0.86, 0.24, 0.82, 0.82, 0.82],
-            device_id="brainco_revo2", side="right")
+            device_id="brainco_revo2", side="right", arm="right_arm")
         result = reach_hand.dexterous_hand_pose({"file": item["file"]})
         self.assertTrue(result["ok"])
-        self.assertEqual(result["name"], "旋钮-预抓取")
+        self.assertEqual(result["name"], "R-旋钮-预抓取")
         _, payload = self.sent[0]
         self.assertEqual(payload["positions"],
                          [0.3, 0.86, 0.24, 0.82, 0.82, 0.82])
+
+    def test_pose_from_other_arm_is_409(self):
+        from adapters.reach import hand as reach_hand
+
+        item = hand_poses.save_pose(
+            "左臂手位", [0.3, 0.86, 0.24, 0.82, 0.82, 0.82],
+            device_id="brainco_revo2", side="left", arm="left_arm")
+        response = reach_hand.dexterous_hand_pose({"file": item["file"]})
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.sent, [])
+        # 列表端点只回本臂（right_arm）的手位
+        listed = reach_hand.dexterous_hand_poses()
+        self.assertEqual(listed["arm"], "right_arm")
+        self.assertEqual(listed["poses"], [])
 
     def test_pose_with_raw_positions(self):
         from adapters.reach import hand as reach_hand

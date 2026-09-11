@@ -210,28 +210,28 @@ class FlowCapabilityParamTests(unittest.TestCase):
     def test_injected_pose_pattern_overrides_builtin_family(self):
         client = mock.Mock()
         client.sequences.return_value = {"sequences": [
-            {"name": "0.50-起手式新",
-             "file": "0.50-起手式新_20260822_031632.json", "waypoints": []},
-            {"name": "0.50-新手型-起手式",
-             "file": "0.50-新手型-起手式_20260901_000000.json",
+            {"name": "R-0.50-起手式新", "arm": "right_arm",
+             "file": "R-0.50-起手式新_20260822_031632.json", "waypoints": []},
+            {"name": "R-0.50-新手型-起手式", "arm": "right_arm",
+             "file": "R-0.50-新手型-起手式_20260901_000000.json",
              "waypoints": []},
         ]}
         flow = SwitchFlow(
             client=client, site="factory", flip_kind="remote_to_close",
-            pose_pattern=r"^\s*(\d+(?:\.\d+)?)-新手型-起手式\s*$")
+            pose_pattern=r"^\s*(?:[LR]-)?(\d+(?:\.\d+)?)-新手型-起手式\s*$")
         pose = flow.choose_opening_pose(0.53)
-        self.assertEqual(pose["name"], "0.50-新手型-起手式")
+        self.assertEqual(pose["name"], "R-0.50-新手型-起手式")
 
     def test_without_pose_pattern_builtin_family_still_used(self):
         client = mock.Mock()
         client.sequences.return_value = {"sequences": [
-            {"name": "0.50-起手式新",
-             "file": "0.50-起手式新_20260822_031632.json", "waypoints": []},
+            {"name": "R-0.50-起手式新", "arm": "right_arm",
+             "file": "R-0.50-起手式新_20260822_031632.json", "waypoints": []},
         ]}
         flow = SwitchFlow(client=client, site="factory",
                           flip_kind="remote_to_close")
         self.assertEqual(flow.choose_opening_pose(0.53)["name"],
-                         "0.50-起手式新")
+                         "R-0.50-起手式新")
 
 
 class SequenceClaimFilterTests(unittest.TestCase):
@@ -241,20 +241,20 @@ class SequenceClaimFilterTests(unittest.TestCase):
     def _client():
         client = mock.Mock()
         client.sequences.return_value = {"sequences": [
-            {"name": "0.50-起手式新",
-             "file": "0.50-起手式新_20260822_031632.json", "waypoints": []},
-            {"name": "0.53-起手式新",
-             "file": "0.53-起手式新_20260822_031632.json", "waypoints": []},
+            {"name": "R-0.50-起手式新", "arm": "right_arm",
+             "file": "R-0.50-起手式新_20260822_031632.json", "waypoints": []},
+            {"name": "R-0.53-起手式新", "arm": "right_arm",
+             "file": "R-0.53-起手式新_20260822_031632.json", "waypoints": []},
         ]}
         return client
 
     def test_unclaimed_pose_excluded_from_gear_choice(self):
         flow = SwitchFlow(client=self._client(), site="factory",
                           flip_kind="remote_to_close",
-                          claimed_pose_names=["0.53-起手式新"])
+                          claimed_pose_names=["R-0.53-起手式新"])
         # 按距离本应选 0.50 档，但它未被认领 → 落到已认领的 0.53 档
         self.assertEqual(flow.choose_opening_pose(0.53)["name"],
-                         "0.53-起手式新")
+                         "R-0.53-起手式新")
 
     def test_nothing_claimed_fails_with_claim_hint(self):
         flow = SwitchFlow(client=self._client(), site="factory",
@@ -270,7 +270,7 @@ class SequenceClaimFilterTests(unittest.TestCase):
                           flip_kind="remote_to_close",
                           claimed_pose_names=None)
         self.assertEqual(flow.choose_opening_pose(0.53)["name"],
-                         "0.50-起手式新")
+                         "R-0.50-起手式新")
 
 
 class WaypointClaimGateTests(unittest.TestCase):
@@ -279,9 +279,9 @@ class WaypointClaimGateTests(unittest.TestCase):
     def test_unclaimed_waypoint_rejected_with_hint(self):
         flow = SwitchFlow(client=mock.Mock(), site="factory",
                           flip_kind="remote_to_close",
-                          claimed_waypoint_names=["录制点位1"])
+                          claimed_waypoint_names=["R-录制点位1"])
         with self.assertRaises(FlowError) as ctx:
-            flow._interp_to_waypoint("未认领位点", "测试")
+            flow._interp_to_waypoint("R-未认领位点", "测试")
         self.assertIn("生效位点", str(ctx.exception))
 
     def test_claimed_waypoint_passes_gate(self):
@@ -289,11 +289,42 @@ class WaypointClaimGateTests(unittest.TestCase):
         client.waypoints.return_value = {"waypoints": []}
         flow = SwitchFlow(client=client, site="factory",
                           flip_kind="remote_to_close",
-                          claimed_waypoint_names=["录制点位1"])
+                          claimed_waypoint_names=["R-录制点位1"])
         with self.assertRaises(FlowError) as ctx:
-            flow._interp_to_waypoint("录制点位1", "测试")
+            flow._interp_to_waypoint("R-录制点位1", "测试")
         # 过了认领门禁，报的是"找不到路点"（18001 没录）而非认领错误
         self.assertIn("找不到路点", str(ctx.exception))
+
+    def test_waypoint_of_other_arm_rejected_before_motion(self):
+        """位点文件的 arm 与执行臂不一致（或缺失）→ 拒绝，不下发任何运动。"""
+        for waypoint in (
+            {"name": "R-录制点位1", "arm": "left_arm",
+             "named_joints": {"j1": 0.0}},
+            {"name": "R-录制点位1", "named_joints": {"j1": 0.0}},
+        ):
+            client = mock.Mock()
+            client.waypoints.return_value = {"waypoints": [waypoint]}
+            flow = SwitchFlow(client=client, site="factory",
+                              flip_kind="remote_to_close")
+            with self.assertRaises(FlowError) as ctx:
+                flow._interp_to_waypoint("R-录制点位1", "测试")
+            self.assertEqual(ctx.exception.code, ErrorCode.EXEC_FAILED)
+            self.assertIn("已拒绝", str(ctx.exception))
+            client.joints.assert_not_called()
+            client.execute.assert_not_called()
+
+    def test_waypoint_with_other_arm_joint_names_rejected(self):
+        """arm 字段被手改成右臂、关节名却是左臂的 → 交叉校验拒绝。"""
+        client = mock.Mock()
+        client.waypoints.return_value = {"waypoints": [
+            {"name": "R-录制点位1", "arm": "right_arm",
+             "named_joints": {"left_shoulder_pitch_joint": 0.0}},
+        ]}
+        flow = SwitchFlow(client=client, site="factory",
+                          flip_kind="remote_to_close")
+        with self.assertRaises(FlowError):
+            flow._interp_to_waypoint("R-录制点位1", "测试")
+        client.execute.assert_not_called()
 
     def test_none_set_skips_gate(self):
         client = mock.Mock()

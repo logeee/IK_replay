@@ -32,7 +32,7 @@ from .client import ReachClient
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_WAYPOINT = ROOT / "data" / "waypoints" / "起手点测试_20260721_042250.json"
+DEFAULT_WAYPOINT = ROOT / "data" / "waypoints" / "R-起手点测试_20260721_042250.json"
 DEFAULT_CALIB = (
     Path("/home/robot/yx/project/calib/hand_eye_3D")
     / "handeye3d_data"

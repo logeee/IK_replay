@@ -63,19 +63,21 @@ class FlipIntentTests(unittest.TestCase):
         client.sequences.return_value = {
             "sequences": [
                 {
-                    "name": "0.50-起手式新",
-                    "file": "0.50-起手式新_20260822_031632.json",
+                    "name": "R-0.50-起手式新",
+                    "arm": "right_arm",
+                    "file": "R-0.50-起手式新_20260822_031632.json",
                     "waypoints": [
-                        "录制点位1_20260726_151627.json",
-                        "0.50-起手式新终点_20260822_031632.json",
+                        "R-录制点位1_20260726_151627.json",
+                        "R-0.50-起手式新终点_20260822_031632.json",
                     ],
                 },
                 {
-                    "name": "0.50-左-起手式",
-                    "file": "0.50-左-起手式_20260826_134700.json",
+                    "name": "R-0.50-左-起手式",
+                    "arm": "right_arm",
+                    "file": "R-0.50-左-起手式_20260826_134700.json",
                     "waypoints": [
-                        "录制点位1_20260726_151627.json",
-                        "0.50-左-终点_20260826_134700.json",
+                        "R-录制点位1_20260726_151627.json",
+                        "R-0.50-左-终点_20260826_134700.json",
                     ],
                 },
             ],
@@ -94,18 +96,77 @@ class FlipIntentTests(unittest.TestCase):
         right_pose = rightward.choose_opening_pose(0.53)
         left_pose = leftward.choose_opening_pose(0.53)
 
-        self.assertEqual(right_pose["name"], "0.50-左-起手式")
-        self.assertEqual(right_pose["endpoint_name"], "0.50-左-终点")
-        self.assertEqual(left_pose["name"], "0.50-起手式新")
-        self.assertEqual(left_pose["endpoint_name"], "0.50-起手式新终点")
+        self.assertEqual(right_pose["name"], "R-0.50-左-起手式")
+        self.assertEqual(right_pose["endpoint_name"], "R-0.50-左-终点")
+        self.assertEqual(left_pose["name"], "R-0.50-起手式新")
+        self.assertEqual(left_pose["endpoint_name"], "R-0.50-起手式新终点")
+
+    def test_opening_pose_skips_other_arm_and_unmarked_sequences(self):
+        client = mock.Mock()
+        client.sequences.return_value = {
+            "sequences": [
+                # 左臂的动作：右臂流程绝不能选
+                {"name": "L-0.50-起手式新", "arm": "left_arm",
+                 "file": "L-0.50-起手式新_20260822_031632.json",
+                 "waypoints": []},
+                # 无 arm 归属的旧文件：不可用
+                {"name": "0.50-起手式新",
+                 "file": "0.50-起手式新_20260822_031632.json",
+                 "waypoints": []},
+                # arm 与前缀矛盾：不可用
+                {"name": "L-0.50-起手式新", "arm": "right_arm",
+                 "file": "L-0.50-起手式新_20260822_031633.json",
+                 "waypoints": []},
+                {"name": "R-0.53-起手式新", "arm": "right_arm",
+                 "file": "R-0.53-起手式新_20260822_031632.json",
+                 "waypoints": []},
+            ],
+        }
+        flow = SwitchFlow(client=client, site="factory",
+                          flip_kind="remote_to_close")
+        flow._log = mock.Mock()
+        # 距离本应选 0.50 档，但只有 0.53 档属于右臂 → 选 0.53
+        self.assertEqual(flow.choose_opening_pose(0.53)["name"],
+                         "R-0.53-起手式新")
+        self.assertTrue(any("已排除" in str(call.args[0])
+                            for call in flow._log.call_args_list))
+
+        # 只剩别臂 / 无标记的动作 → 没有可用起手式
+        client.sequences.return_value["sequences"].pop()
+        with self.assertRaises(FlowError) as ctx:
+            flow.choose_opening_pose(0.53)
+        self.assertIn("R-0.46-起手式新", str(ctx.exception))
+
+    def test_left_arm_flow_uses_left_prefixed_assets(self):
+        client = mock.Mock()
+        client.sequences.return_value = {
+            "sequences": [
+                {"name": "R-0.50-起手式新", "arm": "right_arm",
+                 "file": "R-0.50-起手式新_20260822_031632.json",
+                 "waypoints": []},
+                {"name": "L-0.50-起手式新", "arm": "left_arm",
+                 "file": "L-0.50-起手式新_20260822_031632.json",
+                 "waypoints": []},
+            ],
+        }
+        flow = SwitchFlow(client=client, site="factory",
+                          flip_kind="remote_to_close", arm="left_arm")
+        flow._log = mock.Mock()
+        self.assertEqual(flow.choose_opening_pose(0.53)["name"],
+                         "L-0.50-起手式新")
+        self.assertEqual(flow.SEQ_START_WAYPOINT, "L-录制点位1")
+        self.assertEqual(flow.DESCEND_WAYPOINT, "L-起手点测试")
+        with self.assertRaises(ValueError):
+            SwitchFlow(client=mock.Mock(), arm="both_arms")
 
     def test_opening_pose_distance_is_rounded_to_nearest_higher_tie(self):
         client = mock.Mock()
         client.sequences.return_value = {
             "sequences": [
                 {
-                    "name": f"{distance:.2f}-左-起手式",
-                    "file": f"{distance:.2f}-左-起手式_20260826_144000.json",
+                    "name": f"R-{distance:.2f}-左-起手式",
+                    "arm": "right_arm",
+                    "file": f"R-{distance:.2f}-左-起手式_20260826_144000.json",
                     "waypoints": [],
                 }
                 for distance in (0.45, 0.46)
@@ -119,11 +180,11 @@ class FlipIntentTests(unittest.TestCase):
 
         self.assertEqual(
             flow.choose_opening_pose(0.486)["name"],
-            "0.46-左-起手式",
+            "R-0.46-左-起手式",
         )
         self.assertEqual(
             flow.choose_opening_pose(0.485)["name"],
-            "0.46-左-起手式",
+            "R-0.46-左-起手式",
         )
 
     def test_retry_uses_selected_left_pose_endpoint(self):
@@ -133,14 +194,14 @@ class FlipIntentTests(unittest.TestCase):
             flip_kind="close_to_remote",
         )
         flow._current_pose = {
-            "name": "0.50-左-起手式",
+            "name": "R-0.50-左-起手式",
         }
         flow._interp_to_waypoint = mock.Mock()
 
         flow._goto_endpoint("重试回位")
 
         flow._interp_to_waypoint.assert_called_once_with(
-            "0.50-左-终点",
+            "R-0.50-左-终点",
             "重试回位",
         )
 
@@ -149,8 +210,8 @@ class FlipIntentTests(unittest.TestCase):
         client.disarm.return_value = {"ok": True}
         flow = SwitchFlow(client=client)
         pose = {
-            "name": "0.50-左-起手式",
-            "endpoint_name": "0.50-左-终点",
+            "name": "R-0.50-左-起手式",
+            "endpoint_name": "R-0.50-左-终点",
         }
         flow._current_pose = pose
         flow._interp_to_waypoint = mock.Mock()
@@ -161,7 +222,7 @@ class FlipIntentTests(unittest.TestCase):
         self.assertEqual(
             flow._interp_to_waypoint.call_args_list,
             [
-                mock.call("0.50-左-终点", "收尾第一段"),
+                mock.call("R-0.50-左-终点", "收尾第一段"),
                 mock.call(
                     flow.DESCEND_WAYPOINT,
                     "收尾",
@@ -176,8 +237,8 @@ class FlipIntentTests(unittest.TestCase):
         client.disarm.return_value = {"ok": True}
         flow = SwitchFlow(client=client)
         flow._current_pose = {
-            "name": "0.50-左-起手式",
-            "endpoint_name": "0.50-左-终点",
+            "name": "R-0.50-左-起手式",
+            "endpoint_name": "R-0.50-左-终点",
         }
         flow._arm_moved = True
         flow._armed_by_flow = True
@@ -189,7 +250,7 @@ class FlipIntentTests(unittest.TestCase):
         self.assertEqual(
             flow._interp_to_waypoint.call_args_list,
             [
-                mock.call("0.50-左-终点", "失败收尾第一段"),
+                mock.call("R-0.50-左-终点", "失败收尾第一段"),
                 mock.call(
                     flow.DESCEND_WAYPOINT,
                     "失败收尾",
@@ -203,8 +264,8 @@ class FlipIntentTests(unittest.TestCase):
         client = mock.Mock()
         flow = SwitchFlow(client=client)
         flow._current_pose = {
-            "name": "0.50-左-起手式",
-            "endpoint_name": "0.50-左-终点",
+            "name": "R-0.50-左-起手式",
+            "endpoint_name": "R-0.50-左-终点",
         }
         flow._arm_moved = True
         flow._armed_by_flow = True
@@ -216,22 +277,22 @@ class FlipIntentTests(unittest.TestCase):
         flow._descend_on_failure()
 
         flow._interp_to_waypoint.assert_called_once_with(
-            "0.50-左-终点", "失败收尾第一段"
+            "R-0.50-左-终点", "失败收尾第一段"
         )
         client.disarm.assert_not_called()
 
     def test_reset_request_stops_flow_and_uses_left_safe_route(self):
         flow = SwitchFlow(client=mock.Mock())
         flow._current_pose = {
-            "name": "0.50-左-起手式",
-            "endpoint_name": "0.50-左-终点",
+            "name": "R-0.50-左-起手式",
+            "endpoint_name": "R-0.50-左-终点",
         }
 
         flow.request_reset_and_release()
 
         self.assertEqual(
             flow.safe_reset_waypoints(),
-            ["0.50-左-终点", flow.DESCEND_WAYPOINT],
+            ["R-0.50-左-终点", flow.DESCEND_WAYPOINT],
         )
         with self.assertRaisesRegex(FlowError, "复位并释放"):
             flow._check_abort()

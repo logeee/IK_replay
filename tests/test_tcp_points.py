@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from core import tcp_points  # noqa: E402
+from core import arm_assets, tcp_points  # noqa: E402
 
 # 平移 (0.1, 0.2, 0.3) + 绕 z 转 90°：x_hand -> y_wrist
 T_DEMO = [
@@ -31,41 +31,83 @@ class TcpPointsCrudTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_save_list_filter_by_hand(self):
-        tcp_points.save_point("捏合点", [0.01, -0.02, 0.03],
-                              hand_id="qiangnao-1-right",
-                              combo={"arm": "right_arm",
-                                     "hand_id": "qiangnao-1-right"},
-                              directory=self.dir)
+        item = tcp_points.save_point("捏合点", [0.01, -0.02, 0.03],
+                                     hand_id="qiangnao-1-right",
+                                     arm="right_arm",
+                                     combo={"arm": "right_arm",
+                                            "hand_id": "qiangnao-1-right"},
+                                     directory=self.dir)
+        self.assertEqual(item["name"], "R-捏合点")
+        self.assertEqual(item["arm"], "right_arm")
+        self.assertTrue(item["file"].startswith("R-捏合点_"))
         tcp_points.save_point("指尖", [0.0, 0.0, 0.1],
-                              hand_id="yinshi-right", directory=self.dir)
+                              hand_id="yinshi-right", arm="right_arm",
+                              directory=self.dir)
         mine = tcp_points.list_points("qiangnao-1-right", directory=self.dir)
-        self.assertEqual([p["name"] for p in mine], ["捏合点"])
+        self.assertEqual([p["name"] for p in mine], ["R-捏合点"])
         self.assertEqual(mine[0]["recorded_combo"]["arm"], "right_arm")
         everyone = tcp_points.list_points(directory=self.dir)
         self.assertEqual(len(everyone), 2)
 
+    def test_list_and_load_filter_by_arm(self):
+        right = tcp_points.save_point("右点", [0, 0, 0.01], hand_id="h",
+                                      arm="right_arm", directory=self.dir)
+        left = tcp_points.save_point("左点", [0, 0, 0.02], hand_id="h",
+                                     arm="left_arm", directory=self.dir)
+        self.assertEqual(left["name"], "L-左点")
+        # 无归属的旧文件：任何臂都看不到
+        (self.dir / "legacy_20260101_000000.json").write_text(
+            '{"name": "legacy", "hand_id": "h", "xyz_hand": [0, 0, 0.03]}',
+            encoding="utf-8")
+        self.assertEqual(
+            [p["name"] for p in tcp_points.list_points(
+                "h", directory=self.dir, arm="left_arm")],
+            ["L-左点"])
+        self.assertEqual(
+            [p["name"] for p in tcp_points.list_points(
+                "h", directory=self.dir, arm="right_arm")],
+            ["R-右点"])
+        with self.assertRaises(arm_assets.ArmMismatch):
+            tcp_points.load_point(right["file"], directory=self.dir,
+                                  arm="left_arm")
+        with self.assertRaises(arm_assets.ArmMismatch):
+            tcp_points.load_point("legacy_20260101_000000.json",
+                                  directory=self.dir, arm="right_arm")
+        with self.assertRaises(arm_assets.ArmMismatch):
+            tcp_points.save_point("L-错臂", [0, 0, 0.01], hand_id="h",
+                                  arm="right_arm", directory=self.dir)
+
     def test_update_keeps_file_and_created_at(self):
         item = tcp_points.save_point("旧名", [0, 0, 0.05],
-                                     hand_id="h", directory=self.dir)
+                                     hand_id="h", arm="right_arm",
+                                     directory=self.dir)
         updated = tcp_points.update_point(
             item["file"], name="新名", xyz_hand=[0.01, 0.02, 0.03],
             directory=self.dir)
         self.assertEqual(updated["file"], item["file"])
-        self.assertEqual(updated["name"], "新名")
+        # 改名保持臂前缀
+        self.assertEqual(updated["name"], "R-新名")
+        self.assertEqual(updated["arm"], "right_arm")
         self.assertEqual(updated["created_at"], item["created_at"])
         self.assertIn("updated_at", updated)
-        loaded = tcp_points.load_point(item["file"], directory=self.dir)
+        loaded = tcp_points.load_point(item["file"], directory=self.dir,
+                                       arm="right_arm")
         self.assertEqual(loaded["xyz_hand"], [0.01, 0.02, 0.03])
+        # 改成异臂前缀的名字拒绝
+        with self.assertRaises(arm_assets.ArmMismatch):
+            tcp_points.update_point(item["file"], name="L-新名",
+                                    directory=self.dir)
 
     def test_validate_rejects_bad_xyz(self):
         for bad in ([0, 0], "abc", [0, 0, float("nan")], [0, 0, 2.0]):
             with self.assertRaises(ValueError):
                 tcp_points.save_point("x", bad, hand_id="h",
-                                      directory=self.dir)
+                                      arm="right_arm", directory=self.dir)
 
     def test_default_lifecycle_and_delete_cleanup(self):
         item = tcp_points.save_point("p", [0, 0, 0.01],
-                                     hand_id="h", directory=self.dir)
+                                     hand_id="h", arm="right_arm",
+                                     directory=self.dir)
         self.assertIsNone(tcp_points.get_default("h", directory=self.dir))
         tcp_points.set_default("h", "custom", item["file"],
                                directory=self.dir)
@@ -159,12 +201,24 @@ class ReachTcpSelectTest(unittest.TestCase):
 
     def test_select_custom_transforms_to_wrist(self):
         item = tcp_points.save_point("捏合点", [0.05, -0.02, 0.11],
-                                     hand_id="qiangnao-1-right")
+                                     hand_id="qiangnao-1-right",
+                                     arm="right_arm")
         info = self.reach_tcp.apply_selection("custom", item["file"])
         self.assertAlmostEqual(self.state.p_tool[0], 0.12)
         self.assertAlmostEqual(self.state.p_tool[1], 0.25)
         self.assertAlmostEqual(self.state.p_tool[2], 0.41)
-        self.assertEqual(info["selection"]["label"], "捏合点")
+        self.assertEqual(info["selection"]["label"], "R-捏合点")
+
+    def test_reject_other_arms_point(self):
+        item = tcp_points.save_point("左臂点", [0.05, -0.02, 0.11],
+                                     hand_id="qiangnao-1-right",
+                                     arm="left_arm")
+        with self.assertRaises(arm_assets.ArmMismatch):
+            self.reach_tcp.apply_selection("custom", item["file"])
+        self.assertEqual(self.state.p_tool, [0.2, 0.0, 0.0])  # 没被污染
+        # 列表端点也看不到左臂的点
+        listed = self.reach_tcp.tcp_points_list()
+        self.assertEqual(listed["custom"], [])
 
     def test_select_calib_and_restore(self):
         self.reach_tcp.apply_selection("calib", "tip:index")
@@ -176,7 +230,7 @@ class ReachTcpSelectTest(unittest.TestCase):
 
     def test_reject_other_hands_point(self):
         item = tcp_points.save_point("别人的", [0, 0, 0.01],
-                                     hand_id="yinshi-right")
+                                     hand_id="yinshi-right", arm="right_arm")
         with self.assertRaises(ValueError):
             self.reach_tcp.apply_selection("custom", item["file"])
         self.assertEqual(self.state.p_tool, [0.2, 0.0, 0.0])  # 没被污染
@@ -188,7 +242,8 @@ class ReachTcpSelectTest(unittest.TestCase):
 
     def test_startup_default_applied(self):
         item = tcp_points.save_point("默认点", [0.0, 0.0, 0.1],
-                                     hand_id="qiangnao-1-right")
+                                     hand_id="qiangnao-1-right",
+                                     arm="right_arm")
         tcp_points.set_default("qiangnao-1-right", "custom", item["file"])
         note = self.reach_tcp.apply_startup_default()
         self.assertIn("默认 TCP 点已应用", note)

@@ -121,8 +121,8 @@ class DispatchDashboardTests(unittest.TestCase):
     def test_arm_stop_interrupts_flow_then_half_stiffness_resets_and_releases(self):
         flow = SwitchFlow(client=mock.Mock())
         flow._current_pose = {
-            "name": "0.50-左-起手式",
-            "endpoint_name": "0.50-左-终点",
+            "name": "R-0.50-左-起手式",
+            "endpoint_name": "R-0.50-左-终点",
         }
         task = {
             "state": "running",
@@ -140,11 +140,13 @@ class DispatchDashboardTests(unittest.TestCase):
         client.waypoints.return_value = {
             "waypoints": [
                 {
-                    "name": "0.50-左-终点",
+                    "name": "R-0.50-左-终点",
+                    "arm": "right_arm",
                     "named_joints": {"joint": 0.5},
                 },
                 {
-                    "name": "起手点测试",
+                    "name": "R-起手点测试",
+                    "arm": "right_arm",
                     "named_joints": {"joint": 0.0},
                 },
             ],
@@ -175,13 +177,59 @@ class DispatchDashboardTests(unittest.TestCase):
         self.assertTrue(flow.reset_complete.is_set())
         self.assertIsNone(task["prompt"])
         self.assertEqual(
-            result["route"], ["0.50-左-终点", "起手点测试"]
+            result["route"], ["R-0.50-左-终点", "R-起手点测试"]
         )
         self.assertEqual(client.execute.call_count, 2)
         for call in client.execute.call_args_list:
             self.assertEqual(call.kwargs["stiffness_scale"], 0.5)
             self.assertEqual(call.kwargs["max_speed_rad_s"], 0.15)
         client.disarm.assert_called_once_with()
+
+    def test_arm_stop_keeps_arm_armed_when_reset_waypoint_belongs_to_other_arm(self):
+        """复位位点不属于执行臂 → 不下发运动、不释放，保持接管待人工处置。"""
+        flow = SwitchFlow(client=mock.Mock())
+        flow._current_pose = {
+            "name": "R-0.50-左-起手式",
+            "endpoint_name": "R-0.50-左-终点",
+        }
+        task = {"state": "running", "flow": flow, "prompt": None, "log": []}
+        client = mock.Mock()
+        client.stop.return_value = {"ok": True}
+        client.exec_status.return_value = {
+            "ok": True, "running": False, "message": "完成（刚性保持）",
+        }
+        client.waypoints.return_value = {
+            "waypoints": [
+                # 名字对得上，但文件归属是左臂（或改名后 arm 丢了）
+                {"name": "R-0.50-左-终点", "arm": "left_arm",
+                 "named_joints": {"joint": 0.5}},
+                {"name": "R-起手点测试", "named_joints": {"joint": 0.0}},
+            ],
+        }
+        client.joints.return_value = {"ok": True, "named_joints": {"joint": 0.25}}
+        with dispatch._lock:
+            original_task = dispatch._task
+            dispatch._task = task
+        try:
+            with (
+                patch.object(dispatch, "_reach_alive", return_value=True),
+                patch.object(dispatch, "ReachClient", return_value=client),
+                patch.object(dispatch._http, "post"),
+            ):
+                result = dispatch.arm_stop()
+        finally:
+            with dispatch._lock:
+                dispatch._task = original_task
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["arm_released"])
+        self.assertIn("已拒绝", result["error"])
+        client.execute.assert_not_called()
+        client.disarm.assert_not_called()
+
+    def test_arm_reset_waypoint_name_follows_arm(self):
+        self.assertEqual(dispatch._arm_reset_waypoint("right_arm"), "R-起手点测试")
+        self.assertEqual(dispatch._arm_reset_waypoint("left_arm"), "L-起手点测试")
 
     def test_finished_task_is_counted_exactly_once(self):
         with dispatch._lock:
