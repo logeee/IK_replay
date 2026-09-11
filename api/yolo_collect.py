@@ -8,7 +8,13 @@
     · 只拍不点：按一下立即落盘（clicks 留空），几秒一张快速过完所有
       距离×角度组合，机器人尽早收工；之后进「补标注」模式逐张点击补全。
 
-每个样本（一张图）记录：
+第三种：**RGB-D 标定**（页面下方独立区块）——给 ``panel_anchor`` 自动选点
+模型采标定帧。每帧从 18001 拿对齐深度 + 内参，按 orbbec_rgbd_collector
+数据集格式落到 data/calibration_datasets/<会话>/；网页里按 1/3 选点位后点
+图，像素用同帧深度反投影成相机系 3D 点写 annotations.jsonl，然后跑
+``tools/calibrate_panel_anchor.py --dataset <会话目录> --write``。
+
+每个（图像层面）样本记录：
     · 相机帧（jpg，存 models/samples/images/）
     · 采集时刻的 distance_m / yaw_err_deg / pitch_err_deg（问 reach_server
       的 /perpendicular，和对中用的是同一套测量）
@@ -47,13 +53,23 @@ import requests
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
+from api.cabinet_panel_anchor import select_knob_detection
+from api.rgbd_dataset import (
+    DEFAULT_DATASET_ROOT,
+    ExportSession,
+    fetch_snapshot,
+    list_sessions,
+    run_yolo,
+)
+from api.switch_states import SCENE_LEFT, SCENE_RIGHT
+
 app = FastAPI(title="yolo-collect")
 
 # 只连本机 reach_server，绝不走系统代理——终端里设了坏代理也不受影响
 _http = requests.Session()
 _http.trust_env = False
 
-_reach_base = "http://127.0.0.1:8001"
+_reach_base = "http://127.0.0.1:18001"
 _samples_dir = Path(__file__).resolve().parent.parent / "models" / "samples"
 _default_model = Path(__file__).resolve().parent.parent / "models" / "Xuanniu_hhy.pt"
 _model = None          # ultralytics.YOLO 实例（可选）
@@ -396,6 +412,169 @@ def collect_stats():
     return {**_counts(), "model": _model_name or None, "dir": str(_samples_dir)}
 
 
+# --------------- RGB-D 标定采集（panel_anchor 标定用） ---------------
+#
+# 与上面「图像层面」样本互不干扰：这里每帧从 18001 拿对齐深度 + 内参，按
+# api.rgbd_dataset 格式落到 data/calibration_datasets/<会话>/；网页里点的像素
+# 用同帧深度反投影成相机系 3D 点写 annotations.jsonl，直接喂
+# tools/calibrate_panel_anchor.py。
+
+_rgbd_base = "http://127.0.0.1:18001"
+_dataset_root = DEFAULT_DATASET_ROOT
+_rgbd_session: ExportSession | None = None
+
+_SLOT_BY_KNOB = {SCENE_RIGHT: 1, SCENE_LEFT: 3}
+
+
+def _rgbd_state() -> dict:
+    session = _rgbd_session
+    if session is None:
+        return {"session": None}
+    frames = session.manifest_records()
+    annotated = session.load_annotations()
+    return {"session": {
+        "session_id": session.session_id, "name": session.name,
+        "path": str(session.path), "frames": len(frames),
+        "annotated_frames": len(annotated),
+        "points": sum(len(r.get("points") or {}) for r in annotated.values()),
+    }}
+
+
+def _knob_hint(boxes: list[dict]) -> dict:
+    try:
+        _, knob = select_knob_detection(boxes)
+    except ValueError:
+        return {"knob": None, "suggested_slot": None}
+    name = str(knob.get("name"))
+    return {"knob": name, "suggested_slot": _SLOT_BY_KNOB.get(name)}
+
+
+def _frame_view(record: dict, annotations: dict) -> dict:
+    frame_id = record["frame_id"]
+    boxes = None
+    boxes_path = _rgbd_session.frames_path / frame_id / "yolo_boxes.json"
+    if boxes_path.is_file():
+        try:
+            boxes = json.loads(boxes_path.read_text(encoding="utf-8")).get("boxes")
+        except (OSError, json.JSONDecodeError):
+            boxes = None
+    points = (annotations.get(frame_id) or {}).get("points") or {}
+    return {
+        "frame_id": frame_id, "sequence": record.get("sequence"),
+        "boxes": boxes or [],
+        "depth_valid_ratio": (record.get("depth_aligned") or {}).get("valid_ratio"),
+        "points": points,
+        **_knob_hint(boxes or []),
+    }
+
+
+@app.get("/api/rgbd/sessions")
+def rgbd_sessions():
+    return {"ok": True, "sessions": list_sessions(_dataset_root),
+            "root": str(_dataset_root), "rgbd_base": _rgbd_base, **_rgbd_state()}
+
+
+@app.post("/api/rgbd/session")
+def rgbd_session(body: dict):
+    """新建（name）或打开已有（session_id）数据集会话。"""
+    global _rgbd_session
+    with _lock:
+        try:
+            if body.get("session_id"):
+                sid = str(body["session_id"])
+                if "/" in sid or "\\" in sid or ".." in sid:
+                    raise ValueError("非法会话名")
+                _rgbd_session = ExportSession.open(_dataset_root / sid)
+            else:
+                _rgbd_session = ExportSession(_dataset_root, str(body.get("name") or "panel_calib"))
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return {"ok": True, **_rgbd_state()}
+
+
+@app.post("/api/rgbd/shoot")
+def rgbd_shoot():
+    """从 18001 抓一帧 RGB-D，YOLO（含 mask）后落盘，返回帧供点选。"""
+    if _rgbd_session is None:
+        return JSONResponse({"ok": False, "error": "先新建或选择一个会话"}, status_code=400)
+    try:
+        snapshot = fetch_snapshot(_rgbd_base)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"18001 抓 RGB-D 失败: {exc}"},
+                            status_code=502)
+    boxes: list[dict] = []
+    infer_error = None
+    if _model is not None:
+        import cv2
+        import numpy as np
+        try:
+            bgr = cv2.imdecode(np.frombuffer(snapshot["jpeg"], np.uint8), cv2.IMREAD_COLOR)
+            boxes = run_yolo(_model, bgr, _model_conf)
+        except Exception as exc:
+            infer_error = str(exc)
+    with _lock:
+        try:
+            record = _rgbd_session.save(snapshot, boxes, "manual")
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": f"落盘失败: {exc}"}, status_code=500)
+        view = _frame_view(record, {})
+    if infer_error:
+        view["infer_error"] = infer_error
+    return {"ok": True, "frame": view, **_rgbd_state()}
+
+
+@app.get("/api/rgbd/frames")
+def rgbd_frames():
+    if _rgbd_session is None:
+        return {"ok": True, "frames": [], **_rgbd_state()}
+    with _lock:
+        annotations = _rgbd_session.load_annotations()
+        frames = [_frame_view(r, annotations) for r in _rgbd_session.manifest_records()]
+    return {"ok": True, "frames": frames, **_rgbd_state()}
+
+
+@app.get("/api/rgbd/frame/{frame_id}.jpg")
+def rgbd_frame_image(frame_id: str):
+    if _rgbd_session is None or "/" in frame_id or "\\" in frame_id or ".." in frame_id:
+        return Response("没有这帧", status_code=404, media_type="text/plain")
+    path = _rgbd_session.frames_path / frame_id / "color.jpg"
+    if not path.is_file():
+        return Response("没有这帧", status_code=404, media_type="text/plain")
+    return Response(path.read_bytes(), media_type="image/jpeg",
+                    headers={"Cache-Control": "no-cache"})
+
+
+@app.post("/api/rgbd/annotate")
+def rgbd_annotate(body: dict):
+    """点击像素 → 深度反投影 → 写 annotations.jsonl（同帧同点位覆盖）。"""
+    if _rgbd_session is None:
+        return JSONResponse({"ok": False, "error": "没有打开的会话"}, status_code=400)
+    try:
+        frame_id = str(body["frame_id"])
+        slot = int(body["slot"])
+        u, v = float(body["u"]), float(body["v"])
+        if slot not in (1, 3):
+            raise ValueError("点位只能是 1（旋钮右）或 3（旋钮左）")
+        with _lock:
+            point = _rgbd_session.annotate(frame_id, slot, u, v,
+                                           window_px=int(body.get("window_px") or 5))
+    except (KeyError, TypeError, ValueError, FileNotFoundError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return {"ok": True, "slot": slot, "point": point, **_rgbd_state()}
+
+
+@app.post("/api/rgbd/unannotate")
+def rgbd_unannotate(body: dict):
+    if _rgbd_session is None:
+        return JSONResponse({"ok": False, "error": "没有打开的会话"}, status_code=400)
+    try:
+        with _lock:
+            _rgbd_session.remove_annotation(str(body["frame_id"]), int(body["slot"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return {"ok": True, **_rgbd_state()}
+
+
 # --------------- 页面 ---------------
 
 _PAGE = """<!DOCTYPE html>
@@ -434,6 +613,23 @@ _PAGE = """<!DOCTYPE html>
   .muted { color:#8a93a0; font-size:13px; }
   #meta { color:#9fd6a0; font-size:14px; min-height:22px; }
   .bar { margin:8px 0; }
+  .bar.rgbd { border-top:1px dashed #3d4a5c; padding-top:8px; }
+  .bar.rgbd b { color:#8ecbff; }
+  input[type=text] { width:120px; background:#1c2129; color:#dde3ea;
+           border:1px solid #3d4a5c; border-radius:4px; padding:4px 6px; }
+  select { background:#1c2129; color:#dde3ea; border:1px solid #3d4a5c;
+           border-radius:4px; padding:4px 6px; max-width:260px; }
+  button.slot-active { background:#2563eb; border-color:#2563eb; color:#fff; }
+  .masks { position:absolute; left:0; top:0; width:100%; height:100%; pointer-events:none; }
+  .mask { stroke-width:2; vector-effect:non-scaling-stroke; }
+  .mask.panel { fill:rgba(255,160,40,.22); stroke:#ffa028; }
+  .mask.knob  { fill:rgba(255,80,220,.30); stroke:#ff50dc; }
+  .pdot { position:absolute; width:12px; height:12px; transform:translate(-50%,-50%);
+          border-radius:50%; border:2px solid #fff; pointer-events:none; }
+  .pdot.s1 { background:rgba(255,92,92,.85); }
+  .pdot.s3 { background:rgba(60,170,255,.85); }
+  .pdot span { position:absolute; left:14px; top:-8px; font-size:11px; color:#fff;
+               background:rgba(20,23,28,.8); padding:0 4px; white-space:nowrap; }
 </style>
 </head>
 <body>
@@ -452,6 +648,26 @@ _PAGE = """<!DOCTYPE html>
     <button class="warn" onclick="skip()" id="skipBtn">跳过这张 (K)</button>
     <button class="warn" onclick="quitMark()">退出</button>
     <span class="muted" id="annPos"></span>
+  </div>
+  <div class="bar rgbd" id="rgbdBar">
+    <b>RGB-D 标定</b>（panel_anchor）
+    会话 <select id="rgbdSel" onchange="rgbdOpen(this.value)"><option value="">— 选择已有 —</option></select>
+    <input type="text" id="rgbdName" value="panel_calib" placeholder="新会话名">
+    <button onclick="rgbdNew()">新建会话</button>
+    <button class="primary" id="rgbdShootBtn" onclick="rgbdShoot()">🧊 拍 RGB-D 帧并点</button>
+    <button onclick="rgbdBrowse()">浏览 / 补点（平面图）</button>
+    <button onclick="window.open('http://' + location.hostname + ':18006/', '_blank')">🧭 在点云里点选 (18006)</button>
+    <span class="muted" id="rgbdStat">未选择会话</span>
+  </div>
+  <div class="bar rgbd" id="rgbdMarkBar" style="display:none">
+    点位：<button id="slotBtn1" onclick="setSlot(1)">1 · 旋钮右 (1)</button>
+    <button id="slotBtn3" onclick="setSlot(3)">3 · 旋钮左 (3)</button>
+    <button onclick="rgbdUndo()">删除当前点位 (Z)</button>
+    <button onclick="rgbdStep(-1)">← 上一帧</button>
+    <button onclick="rgbdStep(1)">下一帧 →</button>
+    <button class="primary" id="rgbdShootBtn2" onclick="rgbdShoot()">🧊 再拍一帧 (空格)</button>
+    <button class="warn" onclick="backLive('已退出 RGB-D 标定')">退出</button>
+    <span class="muted" id="rgbdPos"></span>
   </div>
   <div id="meta"></div>
   <div id="imgbox">
@@ -473,7 +689,9 @@ let todo = [], annIdx = 0;
 });
 
 $('view').addEventListener('error', () => {
-  if (mode === 'live') setTimeout(() => { $('view').src = '/cam?' + Date.now(); }, 2000);
+  if (mode !== 'live') return;
+  $('hint').textContent = '相机直播不可达（reach_server 没开或 --reach-base 端口不对），2 秒后重试…';
+  setTimeout(() => { $('view').src = '/cam?' + Date.now(); }, 2000);
 });
 
 async function refreshStats() {
@@ -565,7 +783,7 @@ function quitMark(msg) {
 
 function backLive(msg) {
   mode = 'live'; cur = null; clicks = []; todo = [];
-  clearOverlay('.box'); clearOverlay('.dot');
+  clearOverlay('.box'); clearOverlay('.masks'); clearOverlay('.dot'); clearOverlay('.pdot');
   $('imgbox').classList.remove('frozen');
   $('view').onload = null;
   $('view').src = '/cam?' + Date.now();
@@ -576,13 +794,15 @@ function backLive(msg) {
 
 function setBars() {
   $('liveBar').style.display = mode === 'live' ? '' : 'none';
-  $('markBar').style.display = mode === 'live' ? 'none' : '';
+  $('rgbdBar').style.display = mode === 'live' ? '' : 'none';
+  $('markBar').style.display = (mode === 'frozen' || mode === 'ann') ? '' : 'none';
+  $('rgbdMarkBar').style.display = mode === 'rgbd' ? '' : 'none';
   $('skipBtn').style.display = mode === 'ann' ? '' : 'none';
   $('annPos').textContent = mode === 'ann' ? $('annPos').textContent : '';
 }
 
 function showImage(src, boxes) {
-  clearOverlay('.box'); clearOverlay('.dot');
+  clearOverlay('.box'); clearOverlay('.masks'); clearOverlay('.dot'); clearOverlay('.pdot');
   $('imgbox').classList.add('frozen');
   const img = $('view');
   img.onload = () => drawBoxes(boxes || []);
@@ -590,9 +810,24 @@ function showImage(src, boxes) {
 }
 
 function drawBoxes(boxes) {
-  clearOverlay('.box');
+  clearOverlay('.box'); clearOverlay('.masks');
   const img = $('view');
   if (!img.naturalWidth) return;
+  // mask 多边形（RGB-D 模式的 YOLO 带 polygon）：SVG 铺满图像，viewBox 用原图像素
+  const withMask = boxes.filter(b => Array.isArray(b.polygon) && b.polygon.length >= 3);
+  if (withMask.length) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'masks');
+    svg.setAttribute('viewBox', `0 0 ${img.naturalWidth} ${img.naturalHeight}`);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    for (const b of withMask) {
+      const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+      poly.setAttribute('points', b.polygon.map(p => p.join(',')).join(' '));
+      poly.setAttribute('class', 'mask ' + (b.name === '面板' ? 'panel' : 'knob'));
+      svg.appendChild(poly);
+    }
+    $('imgbox').appendChild(svg);
+  }
   for (const b of boxes) {
     const [x1, y1, x2, y2] = b.xyxy;
     const el = document.createElement('div');
@@ -612,6 +847,7 @@ $('view').addEventListener('click', ev => {
   const rect = img.getBoundingClientRect();
   const fx = (ev.clientX - rect.left) / rect.width;
   const fy = (ev.clientY - rect.top) / rect.height;
+  if (mode === 'rgbd') { rgbdClick(fx * img.naturalWidth, fy * img.naturalHeight); return; }
   clicks.push({ u: Math.round(fx * img.naturalWidth),
                 v: Math.round(fy * img.naturalHeight) });
   const dot = document.createElement('div');
@@ -629,12 +865,148 @@ function undo() {
 document.addEventListener('keydown', ev => {
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
   if (/INPUT|TEXTAREA|SELECT/.test(ev.target.tagName)) return;
-  if (mode === 'live') return;   // 标注状态（拍并点冻结 / 补标注）才生效
+  if (mode === 'live') return;   // 标注状态（拍并点冻结 / 补标注 / RGB-D）才生效
   const k = ev.key.toLowerCase();
+  if (mode === 'rgbd') {
+    if (k === '1') setSlot(1);
+    else if (k === '3') setSlot(3);
+    else if (k === 'z') rgbdUndo();
+    else if (k === 'arrowleft') rgbdStep(-1);
+    else if (k === 'arrowright') rgbdStep(1);
+    else if (k === ' ') { ev.preventDefault(); rgbdShoot(); }
+    return;
+  }
   if (k === 'z') undo();
   else if (k === 's') save();
   else if (k === 'k' && mode === 'ann') skip();
 });
+
+// ---------------- RGB-D 标定（panel_anchor） ----------------
+// cur = 当前帧 {frame_id, boxes, points:{slot:{pixel,...}}, suggested_slot}
+let rgbdFrames = [], rgbdIdx = 0, rgbdSlot = 1;
+
+async function rgbdRefresh() {
+  try {
+    const d = await (await fetch('/api/rgbd/sessions')).json();
+    const sel = $('rgbdSel');
+    const curId = d.session ? d.session.session_id : '';
+    sel.innerHTML = '<option value="">— 选择已有 —</option>' + (d.sessions || []).map(s =>
+      `<option value="${s.session_id}" ${s.session_id === curId ? 'selected' : ''}>` +
+      `${s.session_id}（${s.frames} 帧 / ${s.points} 点）</option>`).join('');
+    rgbdStat(d);
+  } catch (e) {}
+}
+rgbdRefresh();
+
+function rgbdStat(d) {
+  const s = d && d.session;
+  $('rgbdStat').textContent = s
+    ? `${s.session_id}：${s.frames} 帧，已标 ${s.annotated_frames} 帧 / ${s.points} 点`
+    : '未选择会话';
+}
+
+async function rgbdNew() {
+  const d = await postJson('/api/rgbd/session', { name: $('rgbdName').value || 'panel_calib' });
+  if (!d.ok) { alert(d.error); return; }
+  await rgbdRefresh();
+}
+
+async function rgbdOpen(sid) {
+  if (!sid) return;
+  const d = await postJson('/api/rgbd/session', { session_id: sid });
+  if (!d.ok) { alert(d.error); return; }
+  rgbdStat(d);
+}
+
+async function rgbdShoot() {
+  const btns = [$('rgbdShootBtn'), $('rgbdShootBtn2')];
+  btns.forEach(b => b.disabled = true);
+  try {
+    const d = await postJson('/api/rgbd/shoot', {});
+    if (!d.ok) { alert(d.error); return; }
+    if (mode !== 'rgbd') { rgbdFrames = []; }
+    rgbdFrames.push(d.frame);
+    rgbdIdx = rgbdFrames.length - 1;
+    mode = 'rgbd';
+    rgbdShow();
+    rgbdStat(d);
+  } finally { btns.forEach(b => b.disabled = false); }
+}
+
+async function rgbdBrowse() {
+  const d = await (await fetch('/api/rgbd/frames')).json();
+  if (!d.ok) { alert(d.error); return; }
+  rgbdFrames = d.frames || [];
+  if (!rgbdFrames.length) { alert('会话里还没有帧，先拍'); return; }
+  // 默认跳到第一张没标的
+  rgbdIdx = Math.max(0, rgbdFrames.findIndex(f => !Object.keys(f.points || {}).length));
+  mode = 'rgbd';
+  rgbdShow();
+}
+
+function rgbdShow() {
+  cur = rgbdFrames[rgbdIdx];
+  setSlot(cur.suggested_slot || rgbdSlot);
+  showImage('/api/rgbd/frame/' + cur.frame_id + '.jpg', cur.boxes);
+  $('view').onload = () => { drawBoxes(cur.boxes || []); drawPoints(); };
+  const ratio = cur.depth_valid_ratio == null ? '?' : (cur.depth_valid_ratio * 100).toFixed(0) + '%';
+  $('meta').textContent = `帧 ${cur.frame_id} · 深度有效 ${ratio} · 框 ${(cur.boxes || []).length} 个 · ` +
+    `YOLO 旋钮「${cur.knob || '无'}」→ 建议点位 ${cur.suggested_slot || '?'}` +
+    (cur.infer_error ? `（推理失败: ${cur.infer_error}）` : '');
+  $('rgbdPos').textContent = `第 ${rgbdIdx + 1}/${rgbdFrames.length} 帧`;
+  setBars();
+  $('hint').textContent = 'RGB-D 标定：先选点位（1/3），再点图上的目标点；点击即保存（同点位重点覆盖）。' +
+    ' 空格再拍一帧，←/→ 翻帧。';
+}
+
+function setSlot(slot) {
+  rgbdSlot = slot === 3 ? 3 : 1;
+  $('slotBtn1').classList.toggle('slot-active', rgbdSlot === 1);
+  $('slotBtn3').classList.toggle('slot-active', rgbdSlot === 3);
+}
+
+function drawPoints() {
+  clearOverlay('.pdot');
+  const img = $('view');
+  if (!img.naturalWidth || !cur) return;
+  for (const [slot, p] of Object.entries(cur.points || {})) {
+    if (!p.pixel) continue;
+    const el = document.createElement('div');
+    el.className = 'pdot s' + slot;
+    el.style.left = (p.pixel[0] / img.naturalWidth * 100) + '%';
+    el.style.top = (p.pixel[1] / img.naturalHeight * 100) + '%';
+    el.innerHTML = `<span>点${slot} · ${p.depth_mm} mm</span>`;
+    $('imgbox').appendChild(el);
+  }
+}
+
+async function rgbdClick(u, v) {
+  const d = await postJson('/api/rgbd/annotate',
+    { frame_id: cur.frame_id, slot: rgbdSlot, u, v });
+  if (!d.ok) { alert(d.error); return; }
+  cur.points = cur.points || {};
+  cur.points[String(d.slot)] = d.point;
+  drawPoints();
+  const t = d.point.target_camera_m.map(x => (x * 1000).toFixed(1));
+  $('meta').textContent = `✔ 点${d.slot} 已存：像素 (${d.point.pixel}) 深度 ${d.point.depth_mm} mm` +
+    `（窗内极差 ${d.point.depth_window_spread_mm} mm）→ 相机系 [${t.join(', ')}] mm`;
+  rgbdStat(d);
+}
+
+async function rgbdUndo() {
+  if (!cur || !cur.points || !cur.points[String(rgbdSlot)]) return;
+  const d = await postJson('/api/rgbd/unannotate', { frame_id: cur.frame_id, slot: rgbdSlot });
+  if (!d.ok) { alert(d.error); return; }
+  delete cur.points[String(rgbdSlot)];
+  drawPoints();
+  rgbdStat(d);
+}
+
+function rgbdStep(delta) {
+  if (!rgbdFrames.length) return;
+  rgbdIdx = (rgbdIdx + delta + rgbdFrames.length) % rgbdFrames.length;
+  rgbdShow();
+}
 
 function metaText(d) {
   return `距离 ${d.distance_m ?? '?'} m · yaw ${d.yaw_err_deg ?? '?'}° · ` +
@@ -677,12 +1049,18 @@ def _lan_ip() -> str:
 
 def main() -> None:
     global _reach_base, _model, _model_name, _model_conf, _samples_dir
+    global _rgbd_base, _dataset_root
     import uvicorn
 
     parser = argparse.ArgumentParser(description="YOLO 取点样本采集台（7003）")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=7003)
-    parser.add_argument("--reach-base", default="http://127.0.0.1:8001")
+    parser.add_argument("--reach-base", default="http://127.0.0.1:18001",
+                        help="reach_server（直播流 / 距离角度测量）；老部署是 8001")
+    parser.add_argument("--rgbd-base", default=None,
+                        help="RGB-D 标定帧来源（rgbd_snapshot），默认同 --reach-base")
+    parser.add_argument("--dataset-root", default=None,
+                        help=f"RGB-D 标定数据集根目录（默认 {DEFAULT_DATASET_ROOT}）")
     parser.add_argument("--model", default=str(_default_model),
                         help=f"YOLO .pt 模型路径（默认 {_default_model}）")
     parser.add_argument("--conf", type=float, default=0.25, help="置信度阈值")
@@ -693,6 +1071,9 @@ def main() -> None:
     _model_conf = args.conf
     if args.out:
         _samples_dir = Path(args.out)
+    _rgbd_base = (args.rgbd_base or args.reach_base).rstrip("/")
+    if args.dataset_root:
+        _dataset_root = Path(args.dataset_root)
 
     if args.model:
         try:
@@ -708,6 +1089,7 @@ def main() -> None:
     print(f"[collect] 采集台已启动（进程常驻属正常）")
     print(f"[collect] 浏览器打开: http://{_lan_ip()}:{args.port}/")
     print(f"[collect] 样本目录: {_samples_dir}")
+    print(f"[collect] RGB-D 标定：帧来源 {_rgbd_base}，数据集根 {_dataset_root}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 
