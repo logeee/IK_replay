@@ -15,8 +15,33 @@
     }
   },
   "target_model": {
-    "method": "knob_mask_center",
-    "params": {}
+    "method": "panel_anchor",
+    "params": {
+      "plane_threshold_mm": 4.0,
+      "min_points": 300,
+      "min_inlier_ratio": 0.35,
+      "border_margin_px": 8,
+      "max_size_deviation_ratio": 0.15,
+      "anchor_offset_wall_mm": [
+        -87.5,
+        -6.03,
+        -62.22
+      ],
+      "point1_offset_wall_mm": [
+        48.19,
+        5.94,
+        -18.19
+      ],
+      "point3_offset_wall_mm": [
+        -48.19,
+        5.94,
+        -18.19
+      ],
+      "panel_size_mm": [
+        241.4,
+        182.0
+      ]
+    }
   },
   "hands": [
     {

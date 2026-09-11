@@ -235,6 +235,37 @@ def _stats(samples: np.ndarray) -> dict[str, Any]:
     return result
 
 
+def _report_reference_slots(
+        ref_samples: dict[int, list[tuple[str, np.ndarray]]]) -> dict[str, Any]:
+    """打印并返回参考点位（4~9）的稳定性：均值/std/LOO 以及残差最大的几帧。"""
+    result: dict[str, Any] = {}
+    for slot in sorted(ref_samples):
+        rows = ref_samples[slot]
+        arr = np.asarray([d for _, d in rows])
+        st = _stats(arr)
+        residual = (arr - arr.mean(axis=0)) * 1000.0
+        norms = np.linalg.norm(residual, axis=1)
+        order = np.argsort(-norms)
+        worst = [{"frame_id": rows[i][0],
+                  "residual_mm": residual[i].round(1).tolist(),
+                  "norm_mm": round(float(norms[i]), 1)} for i in order[:5]]
+        st["worst_frames"] = worst
+        st["residual_norm_p50_mm"] = round(float(np.median(norms)), 2)
+        st["residual_norm_p90_mm"] = round(float(np.percentile(norms, 90)), 2)
+        result[str(slot)] = st
+        loo = st.get("leave_one_out_rmse_mm")
+        print()
+        print(f"[calib] 参考点{slot}（不进模型，只评估面板中心稳定性）：{st['count']} 帧  "
+              f"面板中心→点 均值(mm) {st['mean_mm']}  std {st['std_mm']}  "
+              f"LOO-RMSE {loo if loo is None else round(loo, 2)}  "
+              f"残差 p50 {st['residual_norm_p50_mm']} / p90 {st['residual_norm_p90_mm']} mm")
+        for w in worst:
+            r = w["residual_mm"]
+            print(f"[calib]     最差 {w['frame_id'][:6]}  残差 [{r[0]:+.1f}, {r[1]:+.1f}, {r[2]:+.1f}] "
+                  f"|d| {w['norm_mm']}")
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--dataset", type=Path, required=True, help="数据集会话目录")
@@ -256,6 +287,9 @@ def main() -> int:
                         help="锚点来源：midpoint=点 1/点 3 均值的中点（默认，不依赖旋钮"
                              "几何，point3 ≡ -point1）；knob-mask=标定帧里旋钮 mask 拟合"
                              "中心的均值（物理旋钮中心，point1/point3 各自独立）")
+    parser.add_argument("--mirror-missing-slot", action="store_true",
+                        help="只标了一个点位时，另一点位按 0.2.0-s 的老约定由旋钮 mask 中心"
+                             "左右镜像得到（x 取反，y/z 不变）；隐含 --anchor knob-mask")
     parser.add_argument("--allow-single-slot", action="store_true",
                         help="只标了一个点位时也输出（midpoint 下锚点=该点，另一点位为 0；仅应急）")
     parser.add_argument("--write", action="store_true",
@@ -300,6 +334,9 @@ def main() -> int:
     print(f"[calib] 柜面坐标系方法 {cabinet_config['method']} ← {cabinet_source}")
 
     samples: dict[int, list[np.ndarray]] = {1: [], 3: []}
+    # 参考点位（4~9）：不进模型，只用来评估“面板中心”本身的稳定性——
+    # 选一个纹理明显、每次都能点准的地方，多帧重复点，看面板中心→该点的散布
+    ref_samples: dict[int, list[tuple[str, np.ndarray]]] = {}
     knob_centers: list[np.ndarray] = []      # 面板中心 → 旋钮 mask 中心（墙面系）
     sizes: list[tuple[float, float]] = []
     per_frame_rows: list[dict[str, Any]] = []
@@ -333,13 +370,13 @@ def main() -> int:
             "warnings": [],
         }
         for slot, target_cam in points.items():
-            if slot not in samples:
-                row["warnings"].append(f"点位 {slot} 不参与标定（只用 1/3）")
-                continue
             target_wall = (target_cam - analysis["origin"]) @ analysis["axes"].T
             delta = target_wall - analysis["reference_wall"]
-            samples[slot].append(delta)
             row["offsets_mm"][str(slot)] = (delta * 1000.0).round(2).tolist()
+            if slot not in samples:
+                ref_samples.setdefault(slot, []).append((frame_id, delta))
+                continue
+            samples[slot].append(delta)
             expected = SLOT_EXPECTED_KNOB[slot]
             if analysis["knob_name"] and analysis["knob_name"] != expected:
                 row["warnings"].append(
@@ -354,22 +391,42 @@ def main() -> int:
               f"{offsets_text}{warn}")
 
     stats = {slot: _stats(np.asarray(v)) for slot, v in samples.items() if v}
+    ref_stats = _report_reference_slots(ref_samples)
     if not stats:
+        if ref_stats:
+            out = dataset / "panel_anchor_reference_stability.json"
+            out.write_text(json.dumps({"dataset": str(dataset), "cabinet_frame": cabinet_config,
+                                       "reference_slot_stats": ref_stats,
+                                       "frames": per_frame_rows, "failures": failures},
+                                      ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            print(f"[calib] 只有参考点位，不生成模型参数；稳定性报告已写 {out}")
+            return 0
         print("[calib] 没有任何有效样本", file=sys.stderr)
         return 1
 
     knob_stats = _stats(np.asarray(knob_centers)) if knob_centers else None
     t1 = np.asarray(stats[1]["mean_mm"]) / 1000.0 if 1 in stats else None
     t3 = np.asarray(stats[3]["mean_mm"]) / 1000.0 if 3 in stats else None
-    if args.anchor == "knob-mask":
+    if args.anchor == "knob-mask" or args.mirror_missing_slot:
         if knob_stats is None:
-            print("[calib] --anchor knob-mask 需要至少一帧旋钮 mask 拟合成功", file=sys.stderr)
+            print("[calib] 旋钮 mask 中心锚点需要至少一帧旋钮 mask 拟合成功", file=sys.stderr)
             return 1
         anchor = np.asarray(knob_stats["mean_mm"]) / 1000.0
-        point1 = (t1 - anchor) if t1 is not None else np.zeros(3)
-        point3 = (t3 - anchor) if t3 is not None else np.zeros(3)
-        detail = ("点1/点3 各自独立" if (t1 is not None and t3 is not None)
-                  else "缺一个点位，其偏移为 0，需补标")
+        point1 = (t1 - anchor) if t1 is not None else None
+        point3 = (t3 - anchor) if t3 is not None else None
+        if point1 is not None and point3 is not None:
+            detail = "点1/点3 各自独立"
+        elif args.mirror_missing_slot:
+            # 0.2.0-s 的约定：两点关于旋钮中心左右镜像
+            mirror = np.array([-1.0, 1.0, 1.0])
+            if point1 is None:
+                point1, detail = point3 * mirror, "点1 = 点3 关于旋钮中心左右镜像"
+            else:
+                point3, detail = point1 * mirror, "点3 = 点1 关于旋钮中心左右镜像"
+        else:
+            detail = "缺一个点位，其偏移为 0，需补标（或加 --mirror-missing-slot 镜像）"
+            point1 = np.zeros(3) if point1 is None else point1
+            point3 = np.zeros(3) if point3 is None else point3
         mode = f"knob-mask-anchor（{knob_stats['count']} 帧旋钮 mask 中心均值；{detail}）"
     elif t1 is not None and t3 is not None:
         anchor = (t1 + t3) / 2.0
@@ -385,6 +442,7 @@ def main() -> int:
         mode = f"single-slot-{slot}（锚点=该点，另一点位为 0，需补标）"
     else:
         print("[calib] 只标了一个点位，锚点无法由中点定义；补标另一点位，"
+              "或加 --mirror-missing-slot（按旋钮中心镜像，0.2.0-s 老约定），"
               "或加 --allow-single-slot 应急输出", file=sys.stderr)
         return 1
 
@@ -419,6 +477,7 @@ def main() -> int:
             ((anchor - np.asarray(knob_stats["mean_mm"]) / 1000.0) * 1000.0).round(2).tolist()
             if knob_stats is not None else None),
         "target_model": config,
+        "reference_slot_stats": ref_stats,
         "frames": per_frame_rows,
         "failures": failures,
     }
