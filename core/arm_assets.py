@@ -58,6 +58,24 @@ def strip_arm_prefix(name: str) -> str:
     return NAME_PREFIX_RE.sub("", str(name or ""), count=1)
 
 
+def match_pose_pattern(pattern: "re.Pattern[str] | str",
+                       name: str) -> "re.Match[str] | None":
+    """用起手式正则匹配动作名，兼容迁移前写的、不含 ``(?:[LR]-)?`` 的自定义正则。
+
+    先按完整名字（含 ``R-``/``L-``）匹配，不中再按去掉前缀的名字匹配；
+    两者都不中返回 None。捕获组语义不变（第 1 组 = 档位距离）。
+    """
+    regex = re.compile(pattern) if isinstance(pattern, str) else pattern
+    text = str(name or "")
+    match = regex.match(text)
+    if match is not None:
+        return match
+    stripped = strip_arm_prefix(text)
+    if stripped == text:
+        return None
+    return regex.match(stripped)
+
+
 def prefixed_name(arm: str, name: str) -> str:
     """给名字加上该臂的前缀；已带同臂前缀则原样返回，带异臂前缀抛错。
 

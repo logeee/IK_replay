@@ -81,7 +81,6 @@ WAYPOINTS_SUBDIR = Path("data") / "waypoints"
 # **基础名**；落盘 / 认领时按臂加前缀（右臂 = R-录制点位1 / R-起手点测试）。
 # 迁移时给存量 flick 条目预置，新条目由用户在页面自行挑选
 FLOW_REQUIRED_WAYPOINT_BASES: tuple[str, ...] = ("录制点位1", "起手点测试")
-FLOW_REQUIRED_WAYPOINTS: tuple[str, ...] = FLOW_REQUIRED_WAYPOINT_BASES
 
 
 def flow_required_waypoints(arm: str) -> tuple[str, ...]:
@@ -772,7 +771,8 @@ def route_sequence_claim(registry: dict[str, Any], arm: str, hand_id: str,
         if not pattern:
             continue
         try:
-            if re.match(pattern, name):
+            # 兼容迁移前写的自定义正则（不含 (?:[LR]-)?）：去前缀再匹配一次
+            if arm_assets.match_pose_pattern(pattern, name):
                 matched.append(cap["id"])
         except re.error:
             continue

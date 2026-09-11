@@ -1243,7 +1243,8 @@ class SwitchFlow:
         poses: list[tuple[float, dict]] = []
         foreign_arm = 0
         for s in seqs:
-            m = pattern.match(str(s.get("name") or ""))
+            # 名字带 R-/L- 前缀；自定义正则若没写 (?:[LR]-)? 则去前缀再匹配
+            m = arm_assets.match_pose_pattern(pattern, str(s.get("name") or ""))
             if not m:
                 continue
             # 臂归属（安全）：只认本臂的动作文件（18001 列表已过滤，这里兜底）
