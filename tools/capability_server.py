@@ -97,6 +97,14 @@ def _registry_payload(registry: dict[str, Any]) -> dict[str, Any]:
             "cabinet_frame_method_labels": reg.CABINET_FRAME_METHOD_LABELS,
             "cabinet_frame_param_specs": reg.CABINET_FRAME_PARAM_SPECS,
             "cabinet_frame_default_method": reg.DEFAULT_CABINET_FRAME_METHOD,
+            "target_models": list(reg.TARGET_MODELS),
+            "target_model_labels": reg.TARGET_MODEL_LABELS,
+            "target_model_param_specs": reg.TARGET_MODEL_PARAM_SPECS,
+            "target_model_vector_params": {
+                method: reg.target_model_vector_params(method)
+                for method in reg.TARGET_MODELS},
+            "target_model_versions": reg.TARGET_MODEL_VERSIONS,
+            "target_model_default": reg.DEFAULT_TARGET_MODEL,
             "design_sides": list(reg.DESIGN_SIDES),
             "sites": list(reg.SITES),
             "directions": list(reg.DIRECTIONS),
@@ -250,6 +258,31 @@ async def cabinet_frame_set(request: Request):
             params = {**(previous.get("params") or {}),
                       **(params if isinstance(params, dict) else {})}
         registry["cabinet_frame"] = {"method": method, "params": params}
+        try:
+            registry = reg.save_registry(registry, REGISTRY_PATH)
+        except ValueError as exc:
+            return _error(str(exc))
+    return _registry_payload(registry)
+
+
+@app.post("/api/capability/target-model")
+async def target_model_set(request: Request):
+    """设置自动选点模型：body {method, params?}。
+
+    语义与 cabinet-frame 一致：同模型时 params 只覆盖给出的键；切换模型
+    不沿用旧参数。tools/calibrate_panel_anchor.py 标定完成后也调这里把
+    偏移写入。7005 重启后生效。
+    """
+    body = await _json_body(request)
+    with _lock:
+        registry = reg.load_registry(REGISTRY_PATH)
+        previous = registry.get("target_model") or {}
+        method = str(body.get("method") or previous.get("method") or "")
+        params = body.get("params")
+        if method == previous.get("method"):
+            params = {**(previous.get("params") or {}),
+                      **(params if isinstance(params, dict) else {})}
+        registry["target_model"] = {"method": method, "params": params}
         try:
             registry = reg.save_registry(registry, REGISTRY_PATH)
         except ValueError as exc:
@@ -454,5 +487,8 @@ if __name__ == "__main__":
     frame = reg.cabinet_frame_config(registry)
     print(f"[capability] 柜面坐标系方法: "
           f"{reg.CABINET_FRAME_METHOD_LABELS.get(frame['method'], frame['method'])}")
+    target_model = reg.target_model_config(registry)
+    print(f"[capability] 自动选点模型: "
+          f"{reg.TARGET_MODEL_LABELS.get(target_model['method'], target_model['method'])}")
     print(f"[capability] 浏览器打开: http://{_lan_ip()}:{args.port}/")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")

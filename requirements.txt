@@ -4,6 +4,6 @@ pydantic>=2.6
 PyYAML>=6.0
 numpy>=1.26
 scipy>=1.11
-opencv-python-headless>=4.8
+opencv-python-headless>=4.8,<5   # 5.x 的 Python 包缺 calibrateHandEye 等接口，与 hand_eye_2D 共用环境
 pyzmq>=25.1
 ultralytics

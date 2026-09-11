@@ -43,6 +43,18 @@ export interface CabinetFrameConfig {
   params: Record<string, number>;
 }
 
+/** 自动选点模型配置（粉点→绿点；7005 启动时读取）。标量参数 + 向量参数
+ *  （mm，墙面系 x右/y入墙/z上；panel_size_mm 为 [长, 短]） */
+export interface TargetModelConfig {
+  method: string;
+  params: Record<string, number | number[]>;
+}
+
+export interface VectorParamSpec {
+  label?: string;
+  length?: number;
+}
+
 /** 某能力条目的认领（严格：没认领的该条目不可用；拨/扭是不同条目，
  *  各认各的）。waypoint_names 只存手选位点；终点位点由已认领起手式推导 */
 export interface SequenceClaim {
@@ -81,6 +93,8 @@ export interface Registry {
   active: ActiveCombo | null;
   /** 旧注册表可能缺省：服务端会按方法一 + 默认参数补齐 */
   cabinet_frame?: CabinetFrameConfig;
+  /** 旧注册表可能缺省：服务端按 knob_mask_center 补齐 */
+  target_model?: TargetModelConfig;
   hands: Hand[];
   calibrations: unknown[];
   capabilities: Capability[];
@@ -129,6 +143,12 @@ export interface Meta {
   cabinet_frame_method_labels?: Record<string, string>;
   cabinet_frame_param_specs?: Record<string, Record<string, ParamSpec>>;
   cabinet_frame_default_method?: string;
+  target_models?: string[];
+  target_model_labels?: Record<string, string>;
+  target_model_param_specs?: Record<string, Record<string, ParamSpec>>;
+  target_model_vector_params?: Record<string, Record<string, VectorParamSpec>>;
+  target_model_versions?: Record<string, string>;
+  target_model_default?: string;
   design_sides: string[];
   sites: string[];
   directions: string[];

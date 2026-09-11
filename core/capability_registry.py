@@ -22,6 +22,10 @@ handeye3d_result.json。一二级组合相同则共用同一份标定。
 方法及其参数（枚举见 core/cabinet_frame_methods.py）。旧注册表没有该键
 时按方法一 + 默认参数补齐，行为与改造前完全一致；改配置后重启 7005 生效。
 
+自动选点模型（target_model，顶层键）：7005 从哪个参考点、按什么偏移算
+目的点（枚举见 core/target_models.py）。旧注册表没有该键时按
+knob_mask_center（0.2.0-s）补齐，行为不变；改配置后重启 7005 生效。
+
 左右臂归属（core/arm_assets.py）：动作 / 位点文件都带 ``arm`` 字段，名字以
 ``R-`` / ``L-`` 开头。能力条目只能认领与自己 ``arm`` 同臂的动作和位点
 （校验名字前缀；18000 保存认领时再对照池里文件的 ``arm``），左臂条目绝不
@@ -49,6 +53,16 @@ from core.cabinet_frame_methods import (  # noqa: F401
     CABINET_FRAME_PARAM_SPECS,
     DEFAULT_CABINET_FRAME_METHOD,
     validate_cabinet_frame_config,
+)
+# 自动选点模型枚举（顶层 target_model 键），同样 re-export 给 18000
+from core.target_models import (  # noqa: F401
+    DEFAULT_TARGET_MODEL,
+    TARGET_MODEL_LABELS,
+    TARGET_MODEL_PARAM_SPECS,
+    TARGET_MODEL_VERSIONS,
+    TARGET_MODELS,
+    target_model_vector_params,
+    validate_target_model_config,
 )
 from core import arm_assets
 
@@ -524,11 +538,15 @@ def validate_registry(payload: Any) -> dict[str, Any]:
     # 顶层 cabinet_frame：旧注册表没有该键 → 方法一 + 默认参数（行为不变）
     cabinet_frame = validate_cabinet_frame_config(
         payload.get("cabinet_frame"), "cabinet_frame")
+    # 顶层 target_model：旧注册表没有该键 → knob_mask_center（0.2.0-s，行为不变）
+    target_model = validate_target_model_config(
+        payload.get("target_model"), "target_model")
 
     return {
         "schema_version": 1,
         "active": active,
         "cabinet_frame": cabinet_frame,
+        "target_model": target_model,
         "hands": hands,
         "calibrations": calibrations,
         "capabilities": capabilities,
@@ -710,6 +728,12 @@ def cabinet_frame_config(registry: dict[str, Any] | None) -> dict[str, Any]:
     """柜面坐标系构建配置 {"method", "params"}；缺省按方法一默认值补齐。"""
     return validate_cabinet_frame_config(
         (registry or {}).get("cabinet_frame"), "cabinet_frame")
+
+
+def target_model_config(registry: dict[str, Any] | None) -> dict[str, Any]:
+    """自动选点模型配置 {"method", "params"}；缺省 knob_mask_center。"""
+    return validate_target_model_config(
+        (registry or {}).get("target_model"), "target_model")
 
 
 def enabled_capabilities(registry: dict[str, Any], arm: str,

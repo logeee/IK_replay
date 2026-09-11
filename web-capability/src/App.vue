@@ -6,6 +6,7 @@ import type {
   Hand,
   MotionBackend,
   Payload,
+  TargetModelConfig,
 } from "./lib/api";
 import { apiGet, apiPost } from "./lib/api";
 import ActiveCombo from "./components/ActiveCombo.vue";
@@ -17,6 +18,7 @@ import CapabilityList from "./components/CapabilityList.vue";
 import HandDialog from "./components/HandDialog.vue";
 import HandsPanel from "./components/HandsPanel.vue";
 import SequenceClaimPanel from "./components/SequenceClaimPanel.vue";
+import TargetModelPanel from "./components/TargetModelPanel.vue";
 
 const payload = ref<Payload | null>(null);
 const loadError = ref("");
@@ -123,6 +125,14 @@ async function saveCabinetFrame(config: CabinetFrameConfig) {
   );
 }
 
+async function saveTargetModel(config: TargetModelConfig) {
+  await mutate(
+    "/api/capability/target-model",
+    config,
+    "自动选点模型已保存（重启 7005 生效）",
+  );
+}
+
 async function saveSequenceClaims(
   capabilityId: string,
   names: string[],
@@ -159,6 +169,7 @@ onMounted(reload);
       <CalibPanel :payload="payload" @register="calibDialog = true" />
     </div>
     <CabinetFramePanel :payload="payload" :busy="busy" @save="saveCabinetFrame" />
+    <TargetModelPanel :payload="payload" :busy="busy" @save="saveTargetModel" />
     <CapabilityList
       :payload="payload"
       :busy="busy"

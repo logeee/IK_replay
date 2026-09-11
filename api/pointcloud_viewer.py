@@ -38,7 +38,15 @@ from core.capability_client import (
     describe_active,
     fetch_snapshot,
 )
-from core.capability_registry import cabinet_frame_config
+from core.capability_registry import cabinet_frame_config, target_model_config
+from core.target_models import (
+    PANEL_ANCHOR,
+    TARGET_MODEL_LABELS,
+    TARGET_MODEL_VERSIONS,
+    TARGET_MODELS,
+    default_target_model_config,
+    validate_target_model_config,
+)
 
 from .pointcloud_core import (
     PointCloud,
@@ -67,6 +75,9 @@ _capability_snapshot: dict[str, Any] | None = None   # 启动拜访 18000 的注
 # cabinet_frame（可被 --cabinet-frame-method 覆盖）；未启动 main() 时
 # （单测/直接 import）按方法一默认值，与改造前行为一致。
 _cabinet_frame_config: dict[str, Any] = default_cabinet_frame_config()
+# 自动选点模型配置 {"method", "params"}（core/target_models.py）：同样启动时
+# 取 18000 快照（可被 --target-model 覆盖）；默认 knob_mask_center = 0.2.0-s。
+_target_model_config: dict[str, Any] = default_target_model_config()
 _model = None
 _model_name = ""
 _model_error = ""
@@ -101,6 +112,12 @@ class Capture:
 
 
 _latest: Capture | None = None
+
+
+def _target_model_version() -> str:
+    """当前自动选点模型写进结果 / 存档的 model_version。"""
+    method = _target_model_config["method"]
+    return TARGET_MODEL_VERSIONS.get(method, method)
 
 
 def _set_capture_progress(
@@ -302,6 +319,13 @@ def status():
             "method_label": CABINET_FRAME_METHOD_LABELS.get(
                 _cabinet_frame_config["method"],
                 _cabinet_frame_config["method"]),
+        },
+        "target_model": {
+            **_target_model_config,
+            "method_label": TARGET_MODEL_LABELS.get(
+                _target_model_config["method"],
+                _target_model_config["method"]),
+            "model_version": _target_model_version(),
         },
         "semantic_mode": (
             "yolo_instance_mask_fallback_box"
@@ -799,11 +823,14 @@ def _save_pick_record(
             "auto_target": {k: auto.get(k) for k in
                             ("target_wall_m", "panel_center_wall_m",
                              "offset_wall_m", "wall_axes_camera",
-                             "panel_fit_quality")} if auto.get("ok") else None,
+                             "panel_fit_quality", "anchor_wall_m",
+                             "anchor_offset_wall_m", "point_offset_wall_m",
+                             "reference_source")} if auto.get("ok") else None,
             # 柜面坐标系用的是哪种构建方法（墙面系偏移标定与方法绑定，
-            # 回看记录时要能分辨）
+            # 回看记录时要能分辨）；自动选点模型同理
             "cabinet_frame_method": (
                 (capture_value.wall_plane or {}).get("method")),
+            "target_model": auto.get("target_model") if auto.get("ok") else None,
             "yolo_boxes": capture_value.boxes,
             "crop_radius_m": PICK_CROP_RADIUS_M,
         }
@@ -1003,9 +1030,6 @@ def auto_target(capture_id: str):
         panel_fit = None
         prediction = None
         try:
-            from .cabinet_panel_fit import analyze_yolo_mask_panel
-            from .cabinet_target_finder import predict_target
-
             wall_started = time.perf_counter()
             # 选点若先补算过柜面系，这里直接复用缓存，反之亦然。
             wall_plane = _ensure_wall_plane(capture_value)
@@ -1014,38 +1038,66 @@ def auto_target(capture_id: str):
             )
 
             panel_started = time.perf_counter()
-            panel_fit = analyze_yolo_mask_panel(
-                capture_value.cloud,
-                capture_value.boxes,
-                image_shape=capture_value.depth_mm.shape,
-                wall_plane=wall_plane,
-            )
-            timings["panel"] = round(
-                (time.perf_counter() - panel_started) * 1000.0, 1
-            )
-            if not panel_fit.get("available"):
-                fit_debug = panel_fit.get("debug") or {}
-                key_hints = "；".join(
-                    f"{key}：{fit_debug[key]}"
-                    for key in ("定向", "四边支持mm")
-                    if key in fit_debug
-                )
-                raise ValueError(
-                    "YOLO Mask 面板拟合失败"
-                    + (
-                        f"：{panel_fit.get('reason')}"
-                        if panel_fit.get("reason")
-                        else ""
-                    )
-                    + (
-                        f"（{key_hints}；逐段明细见 pointcloud_viewer.log）"
-                        if key_hints
-                        else ""
-                    )
+            method = _target_model_config["method"]
+            if method == PANEL_ANCHOR:
+                from .cabinet_panel_anchor import (
+                    fit_panel_reference,
+                    predict_target_panel_anchor,
+                    select_knob_detection,
                 )
 
-            predict_started = time.perf_counter()
-            prediction = predict_target(panel_fit, wall_plane)
+                params = _target_model_config["params"]
+                # 先定左右（旋钮类），再拟合面板：没旋钮就不必白跑拟合
+                _, knob_box = select_knob_detection(capture_value.boxes)
+                panel_fit = fit_panel_reference(
+                    capture_value.cloud,
+                    capture_value.boxes,
+                    capture_value.depth_mm.shape,
+                    wall_plane,
+                    params,
+                )
+                timings["panel"] = round(
+                    (time.perf_counter() - panel_started) * 1000.0, 1
+                )
+                predict_started = time.perf_counter()
+                prediction = predict_target_panel_anchor(
+                    panel_fit, str(knob_box.get("name", "")), wall_plane, params
+                )
+            else:
+                from .cabinet_panel_fit import analyze_yolo_mask_panel
+                from .cabinet_target_finder import predict_target
+
+                panel_fit = analyze_yolo_mask_panel(
+                    capture_value.cloud,
+                    capture_value.boxes,
+                    image_shape=capture_value.depth_mm.shape,
+                    wall_plane=wall_plane,
+                )
+                timings["panel"] = round(
+                    (time.perf_counter() - panel_started) * 1000.0, 1
+                )
+                if not panel_fit.get("available"):
+                    fit_debug = panel_fit.get("debug") or {}
+                    key_hints = "；".join(
+                        f"{key}：{fit_debug[key]}"
+                        for key in ("定向", "四边支持mm")
+                        if key in fit_debug
+                    )
+                    raise ValueError(
+                        "YOLO Mask 面板拟合失败"
+                        + (
+                            f"：{panel_fit.get('reason')}"
+                            if panel_fit.get("reason")
+                            else ""
+                        )
+                        + (
+                            f"（{key_hints}；逐段明细见 pointcloud_viewer.log）"
+                            if key_hints
+                            else ""
+                        )
+                    )
+                predict_started = time.perf_counter()
+                prediction = predict_target(panel_fit, wall_plane)
             timings["predict"] = round(
                 (time.perf_counter() - predict_started) * 1000.0, 1
             )
@@ -1065,6 +1117,7 @@ def auto_target(capture_id: str):
                 ],
                 "wall_coordinate": wall_plane,
                 "panel_fit": panel_fit,
+                "target_model": _target_model_config["method"],
                 "timings_ms": timings,
             }
             _save_panel_debug_image(
@@ -1079,7 +1132,8 @@ def auto_target(capture_id: str):
                 {
                     "ok": False,
                     "error": str(exc),
-                    "model_version": "0.2.0-s",
+                    "model_version": _target_model_version(),
+                    "target_model": _target_model_config["method"],
                     "timings_ms": {
                         **timings,
                         "total": round(
@@ -1098,7 +1152,8 @@ def auto_target(capture_id: str):
                 {
                     "ok": False,
                     "error": f"算法找点失败: {exc}",
-                    "model_version": "0.2.0-s",
+                    "model_version": _target_model_version(),
+                    "target_model": _target_model_config["method"],
                     "timings_ms": {
                         **timings,
                         "total": round(
@@ -1448,7 +1503,7 @@ def _lan_ip() -> str:
 
 def main() -> None:
     global _reach_base, _model, _model_name, _model_error, _names, _default_conf
-    global _capability_snapshot, _cabinet_frame_config
+    global _capability_snapshot, _cabinet_frame_config, _target_model_config
     import uvicorn
 
     parser = argparse.ArgumentParser(description="RGB/YOLO语义点云查看器（7005）")
@@ -1463,6 +1518,11 @@ def main() -> None:
                         choices=("auto", *CABINET_FRAME_METHODS),
                         help="柜面坐标系构建方法。auto=按 18000 cabinet_frame "
                              "配置（含参数）；显式指定则用该方法的默认参数")
+    parser.add_argument("--target-model", default="auto",
+                        choices=("auto", *TARGET_MODELS),
+                        help="自动选点模型。auto=按 18000 target_model 配置"
+                             "（含标定偏移）；显式指定 panel_anchor 时仍从 "
+                             "18000 取它的参数（偏移必须来自标定）")
     args = parser.parse_args()
     _reach_base = args.reach_base.rstrip("/")
     _default_conf = args.conf
@@ -1490,6 +1550,37 @@ def main() -> None:
         f"{CABINET_FRAME_METHOD_LABELS.get(_cabinet_frame_config['method'])}"
         f"（{source}）参数 {_cabinet_frame_config['params']}"
     )
+
+    # 自动选点模型：同样进程内固定。命令行指定的模型若与 18000 配置一致就
+    # 沿用 18000 参数（panel_anchor 的偏移只能来自标定），否则用该模型默认值。
+    registry_target_model = target_model_config(
+        _capability_snapshot.get("registry"))
+    if args.target_model in ("auto", registry_target_model["method"]):
+        _target_model_config = registry_target_model
+        source = "18000"
+    else:
+        _target_model_config = validate_target_model_config(
+            {"method": args.target_model})
+        source = "命令行（默认参数）"
+    print(
+        "[pointcloud] 自动选点模型: "
+        f"{TARGET_MODEL_LABELS.get(_target_model_config['method'])}"
+        f"（{source}，model_version {_target_model_version()}）"
+    )
+    if _target_model_config["method"] == PANEL_ANCHOR:
+        from core.target_models import panel_anchor_is_calibrated
+
+        p = _target_model_config["params"]
+        if panel_anchor_is_calibrated(p):
+            print(
+                "[pointcloud]   anchor(mm) "
+                f"{[round(v, 1) for v in p['anchor_offset_wall_mm']]} "
+                f"点1 {[round(v, 1) for v in p['point1_offset_wall_mm']]} "
+                f"点3 {[round(v, 1) for v in p['point3_offset_wall_mm']]}"
+            )
+        else:
+            print("[pointcloud]   ⚠ panel_anchor 偏移尚未标定（全 0），"
+                  "自动找点会一律失败，请先运行 tools/calibrate_panel_anchor.py")
 
     model_path = Path(args.model)
     _model_name = model_path.name
