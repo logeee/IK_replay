@@ -9,10 +9,11 @@
   内置常量；旋钮右 → 点 1，旋钮左 → 点 3。无可配参数。
 * panel_anchor —— 面板锚点法（``api/cabinet_panel_anchor.py``）：
   参考点 = YOLO「面板」类 mask 拟合矩形中心（与柜面系方法二同一套拟合），
-  两级偏移：面板中心 --anchor_offset--> 锚点（约定为点 1/点 3 中点，即旋钮
-  轴心）--point_offset--> 目的点。旋钮左/右类别仍决定去点 1 还是点 3，但
-  不再使用旋钮 mask 的几何。偏移由 ``tools/calibrate_panel_anchor.py`` 从
-  标定数据算出后写入 18000 注册表。
+  两级偏移：面板中心 --anchor_offset--> 锚点 --point{1,3}_offset--> 目的点。
+  锚点由标定脚本定义（默认点 1/点 3 均值的中点，或旋钮 mask 中心均值），
+  point1 / point3 是任意三维向量——两点**不要求**等高或对称。旋钮左/右
+  类别仍决定去点 1 还是点 3，但运行时不再使用旋钮 mask 的几何。偏移由
+  ``tools/calibrate_panel_anchor.py`` 从标定数据算出后写入 18000 注册表。
 
 本模块**不能**依赖 numpy/cv2：18000（core/capability_registry.py）和 7005
 都从这里取枚举，18000 进程不装视觉依赖。配置存在
@@ -70,7 +71,7 @@ TARGET_MODEL_PARAM_SPECS: dict[str, dict[str, dict[str, Any]]] = {
 _VECTOR_PARAMS: dict[str, dict[str, dict[str, Any]]] = {
     PANEL_ANCHOR: {
         "anchor_offset_wall_mm": {
-            "label": "面板矩形中心 → 锚点（旋钮轴心）偏移 (mm)",
+            "label": "面板矩形中心 → 锚点偏移 (mm)",
         },
         "point1_offset_wall_mm": {
             "label": "锚点 → 点 1（旋钮右）偏移 (mm)",

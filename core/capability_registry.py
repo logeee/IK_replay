@@ -569,6 +569,31 @@ def load_registry(path: str | Path = DEFAULT_REGISTRY_PATH) -> dict[str, Any]:
     return validate_registry(payload)
 
 
+def load_registry_live(capability_url: str,
+                       path: str | Path = DEFAULT_REGISTRY_PATH,
+                       timeout_s: float = 3.0) -> tuple[dict[str, Any], str]:
+    """优先向运行中的 18000 取注册表（与 7005 用同一份），拿不到再读文件。
+
+    返回 ``(registry, 来源说明)``。离线工具（标定脚本、点云点选页）用它，
+    保证柜面坐标系等配置与在线服务一致。
+    """
+    base = str(capability_url or "").rstrip("/")
+    if base:
+        try:
+            import requests
+
+            response = requests.get(f"{base}/api/capability/registry",
+                                    timeout=timeout_s)
+            payload = response.json()
+            if (response.ok and payload.get("ok")
+                    and isinstance(payload.get("registry"), dict)):
+                return validate_registry(payload["registry"]), f"在线 {base}"
+        except Exception:
+            pass
+    registry_path = Path(path).expanduser().resolve()
+    return load_registry(registry_path), f"文件 {registry_path}"
+
+
 def save_registry(payload: Any,
                   path: str | Path = DEFAULT_REGISTRY_PATH) -> dict[str, Any]:
     validated = validate_registry(payload)
