@@ -2,17 +2,21 @@
   "schema_version": 1,
   "active": {
     "arm": "left_arm",
-    "hand_id": "yinshi-1-left",
+    "hand_id": "qiangnao-revo2-left",
     "motion_backend": "pink"
   },
   "cabinet_frame": {
-    "method": "method1_plane_analysis",
+    "method": "method2_panel_edges",
     "params": {
-      "plane_threshold_mm": 8.0,
-      "stride": 3,
-      "min_plane_points": 300,
-      "plane_analysis_max_points": 200000
+      "plane_threshold_mm": 4.0,
+      "min_points": 100,
+      "min_inlier_ratio": 0.35,
+      "max_horizontal_tilt_deg": 30.0
     }
+  },
+  "target_model": {
+    "method": "knob_mask_center",
+    "params": {}
   },
   "hands": [
     {
@@ -39,6 +43,15 @@
       "design_side": "left",
       "tool_out_mm": 0.0,
       "hand_web_device_id": "inspire_dfx",
+      "tcp_point_id": "",
+      "notes": ""
+    },
+    {
+      "id": "qiangnao-revo2-left",
+      "name": "强脑-Revo2-左",
+      "design_side": "left",
+      "tool_out_mm": 0.0,
+      "hand_web_device_id": "brainco_revo2",
       "tcp_point_id": "",
       "notes": ""
     }
@@ -131,6 +144,32 @@
       },
       "enabled": true,
       "notes": ""
+    },
+    {
+      "id": "cap-a23d3003",
+      "arm": "left_arm",
+      "hand_id": "qiangnao-revo2-left",
+      "task": {
+        "name": "旋钮右到左",
+        "direction": "ccw",
+        "sites": [
+          "lab",
+          "factory"
+        ]
+      },
+      "method": "flick",
+      "method_params": {
+        "sidestep_cm": 10.0,
+        "push_force_n": 25.0,
+        "push_hold_s": 1.5,
+        "down_deg": 15.0
+      },
+      "assets": {
+        "pose_pattern": "",
+        "endpoint_pattern": ""
+      },
+      "enabled": true,
+      "notes": ""
     }
   ],
   "sequence_claims": [
@@ -195,6 +234,14 @@
       ],
       "waypoint_names": [
         "R-起手点测试"
+      ]
+    },
+    {
+      "capability_id": "cap-a23d3003",
+      "names": [],
+      "waypoint_names": [
+        "L-测试灵巧手-2",
+        "L-起手点测试"
       ]
     }
   ]
