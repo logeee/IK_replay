@@ -332,7 +332,7 @@ class PinkBackendOfflineTest(unittest.TestCase):
                          ("legacy", None))
         backend, err = execution._resolve_exec_backend("curobo")
         self.assertIsNone(backend)
-        self.assertIn("legacy 或 pink", err)
+        self.assertIn("legacy_timed", err)
         state.pink_runtime = None
         backend, err = execution._resolve_exec_backend("pink")
         self.assertIsNone(backend)
@@ -342,6 +342,7 @@ class PinkBackendOfflineTest(unittest.TestCase):
 
     def test_normalize_motion_backend(self) -> None:
         self.assertEqual(normalize_motion_backend(None), "legacy")
+        self.assertEqual(normalize_motion_backend(" LEGACY_TIMED "), "legacy_timed")
         self.assertEqual(normalize_motion_backend(" Pink "), "pink")
         with self.assertRaises(ValueError):
             normalize_motion_backend("curobo")

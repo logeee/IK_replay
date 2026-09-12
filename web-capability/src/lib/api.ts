@@ -32,7 +32,7 @@ export interface ActiveCombo {
   arm: string;
   hand_id: string;
   camera_role?: string;
-  /** 18001 运动后端：legacy=关节路点直发；pink=世界系 PINK 闭环跟踪（旧注册表可能缺省） */
+  /** 18001 运动后端（旧注册表可能缺省） */
   motion_backend?: MotionBackend;
 }
 
@@ -63,7 +63,7 @@ export interface CalibrationBinding {
   updated_at: string;
 }
 
-export type MotionBackend = "legacy" | "pink";
+export type MotionBackend = "legacy" | "legacy_timed" | "pink";
 
 /** 柜面坐标系构建配置（7005 启动时读取；改后重启 7005 生效） */
 export interface CabinetFrameConfig {

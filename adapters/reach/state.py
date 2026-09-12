@@ -102,8 +102,8 @@ class ReachState:
         self.last_settle_trim: dict | None = None   # 最近一次执行的修正结果（含偏置）
         self.execution_history: deque[dict[str, Any]] = deque(maxlen=30)
         self.execution_history_lock = threading.Lock()
-        # 运动后端：legacy=原按节拍下发路点；pink=世界系 PINK 闭环跟踪
-        # （adapters/reach/execution_pink.py）。
+        # 运动后端：legacy=稀疏路点追赶；legacy_timed=同一路径 50Hz 时间轨迹；
+        # pink=世界系 PINK 闭环跟踪（adapters/reach/execution_pink.py）。
         # motion_backend 是**默认**后端（18000 active.motion_backend / --motion-backend），
         # 每次 /execute 可用 body.motion_backend 单独指定；exec_backend 记录本次/上次
         # 实际使用的后端。pink_runtime 只要 pinocchio 可用就会建（只读 lowstate 订阅，

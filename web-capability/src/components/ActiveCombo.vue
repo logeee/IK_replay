@@ -13,9 +13,10 @@ const handId = ref("");
 const cameraRole = ref("head");
 const motionBackend = ref<MotionBackend>("legacy");
 
-const FALLBACK_BACKENDS: MotionBackend[] = ["legacy", "pink"];
+const FALLBACK_BACKENDS: MotionBackend[] = ["legacy", "legacy_timed", "pink"];
 const FALLBACK_BACKEND_LABELS: Record<string, string> = {
-  legacy: "原方案（关节路点直发）",
+  legacy: "原方案（稀疏关节路点追赶）",
+  legacy_timed: "原方案·50Hz 时间轨迹",
   pink: "PINK 世界系闭环跟踪",
 };
 const backends = computed(
@@ -125,7 +126,7 @@ const activeCapCount = computed(
           </option>
         </select>
       </label>
-      <label class="field" title="18001 执行路点的方式。pink：世界系 PINK 闭环跟踪，补偿执行中的躯干漂移，需要 pinocchio/pin-pink 且执行前先在 18001 页面锚定世界系；初始化失败会自动回退原方案">运动后端
+      <label class="field" title="18001 执行路点的方式。legacy_timed：保持原路径并生成 50Hz 时间轨迹；pink：世界系 PINK 闭环跟踪，执行前需锚定世界系">运动后端
         <select v-model="motionBackend">
           <option v-for="b in backends" :key="b" :value="b">
             {{ backendLabels[b] || b }}

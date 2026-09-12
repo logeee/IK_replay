@@ -15,6 +15,7 @@ import numpy as np
 from fastapi.responses import JSONResponse
 
 from core.pick_execution_archive import append_execution
+from control.timed_trajectory import build_timed_trajectory
 
 from .flip_verification import capture_manual_before, verify_manual_after
 from .state import (_read_joints, _read_torso, _torso_drift, _torso_rotation,
@@ -236,6 +237,7 @@ def _exec_status() -> dict:
 # 动作序列、前往路点、横移、拨旋等一律走原方案——它们的目标不是世界系里的一个点，
 # 也没有取点时刻的 world_T_root，在 pink 下的语义尚未验证。验证充分后删掉这个开关即可。
 PINK_ONLY_FOR_POINTCLOUD_PICK = True
+TIMED_ONLY_FOR_POINTCLOUD_PICK = True
 _PINK_ALLOWED_LABEL_PREFIX = "主轨迹"
 
 
@@ -255,16 +257,37 @@ def _pink_scope_error(label: str | None) -> str | None:
     return None
 
 
+def _timed_scope_error(label: str | None) -> str | None:
+    """验证期只让 7005 冻结点云生成的主轨迹使用时间参数化后端。"""
+    if not TIMED_ONLY_FOR_POINTCLOUD_PICK:
+        return None
+    if label is None or not str(label).startswith(_PINK_ALLOWED_LABEL_PREFIX):
+        return (f"验证期保护：legacy_timed 仅允许执行 7005 选点规划出的主轨迹，"
+                f"「{label or '序列/路点'}」请用 legacy 执行")
+    ctx = state.pick_context or {}
+    if ctx.get("selection_mode") != "frozen_rgbd_pointcloud":
+        return "验证期保护：legacy_timed 仅允许 7005 冻结点云选点，请用 legacy 执行"
+    return None
+
+
 def _resolve_exec_backend(requested, *, label: str | None = None,
-                          allow_pink: bool = True) -> tuple[str | None, str | None]:
+                          allow_pink: bool = True,
+                          allow_timed: bool = True) -> tuple[str | None, str | None]:
     """/execute、/sequences/run 的 body.motion_backend -> 实际后端；返回 (backend, error)。
 
     ``label``：本次执行段名（用于 pink 作用域保护）；``allow_pink=False`` 的入口
     （动作序列等）请求 pink 一律拒绝。
     """
     backend = str(requested or state.motion_backend or "legacy").strip().lower()
-    if backend not in ("legacy", "pink"):
-        return None, f"motion_backend 必须是 legacy 或 pink，收到 {requested!r}"
+    if backend not in ("legacy", "legacy_timed", "pink"):
+        return None, ("motion_backend 必须是 legacy、legacy_timed 或 pink，"
+                      f"收到 {requested!r}")
+    if backend == "legacy_timed":
+        if not allow_timed:
+            return None, "验证期保护：该入口（动作序列/路点）不允许 legacy_timed，请用 legacy 执行"
+        scope_error = _timed_scope_error(label)
+        if scope_error:
+            return None, scope_error
     if backend == "pink":
         rt = state.pink_runtime
         if rt is None:
@@ -428,11 +451,12 @@ def reach_execute(body: dict):
            "stiffness_scale": float?,
            "push": {"direction_root": [x,y,z], "force_n": float}?,
            "push_hold_s": float?,
-           "motion_backend": "legacy" | "pink"?,
+           "motion_backend": "legacy" | "legacy_timed" | "pink"?,
            "flip_evidence": {"record": str, "flip_from": str?}?}
 
     motion_backend（可选）：本次执行用哪个运动后端；缺省用 18000 配置的默认值。
-    pink 需要 pink 运行时可用且世界系已锚定，否则 409。执行中不可切换。
+    legacy_timed 仅用于 7005 主轨迹；pink 还需要世界系已锚定，否则 409。
+    执行中不可切换。
 
     label（可选）：段名，只用于 logs/reach 里区分主轨迹/横移/收回。
 
@@ -744,7 +768,10 @@ def _log_exec(kind: str, result: str, q_target, *, sag=None, settle_trim=None,
         rec["torso_trace"] = [dict(s) for s in list(trace)] if trace else None
         rec["motion_backend"] = state.exec_backend
         if extra:
-            rec["pink"] = extra
+            if state.exec_backend == "pink":
+                rec["pink"] = extra
+            elif state.exec_backend == "legacy_timed":
+                rec["timed_trajectory"] = extra
 
         rec = _json_safe_value(rec)
         with state.execution_history_lock:
@@ -1011,6 +1038,18 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
         # 调用方也可以按段指定（如收回段 0.4），都不超 --arm-max-speed 天花板
         if hasattr(ctl, "set_max_speed"):
             ctl.set_max_speed(max(0.4, speed) if push_tau is not None else speed)
+        if backend == "legacy_timed":
+            timed = build_timed_trajectory(
+                control_q_list,
+                duration,
+                float(ctl.max_speed),
+            )
+            control_q_list = timed.frames
+            duration = timed.duration_s
+            log["duration"] = duration
+            log["extra"] = timed.diagnostics
+            if duration > float(timed.diagnostics["requested_duration_s"]) + 1.0e-6:
+                state.exec_message = f"时长过短，50Hz 时间轨迹拉长到 {duration:.1f}s"
         n = len(control_q_list)
         # 时长下限：限速滑动（矢量同步）跑完全程所需时间。短于它路点节拍会
         # 一直超前于指令，falling-behind 的关节仍会扭曲路径，所以自动拉长。

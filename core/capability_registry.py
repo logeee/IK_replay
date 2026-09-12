@@ -115,11 +115,15 @@ CAMERA_CALIBRATION_TYPES = frozenset(("extrinsic", "intrinsic", "camera_transfor
 HAND_CALIBRATION_TYPES = frozenset(("hand_mount", "tcp_profile"))
 CALIBRATION_BINDING_TYPES = CALIBRATION_ARTIFACT_TYPES
 CALIBRATION_STATUSES = ("draft", "active", "superseded")
-# 18001 运动后端：legacy=原按节拍下发关节路点；pink=世界系 PINK 闭环跟踪
-# （补偿躯干漂移，需 pinocchio/pin-pink）。切换后重启 18001 生效。
-MOTION_BACKENDS = ("legacy", "pink")
-MOTION_BACKEND_LABELS = {"legacy": "原方案（关节路点直发）",
-                         "pink": "PINK 世界系闭环跟踪"}
+# 18001 运动后端：legacy=原按节拍下发稀疏关节路点；legacy_timed=沿同一
+# 关节路径生成 50Hz 时间轨迹；pink=世界系 PINK 闭环跟踪。切换后重启
+# 18001 生效。
+MOTION_BACKENDS = ("legacy", "legacy_timed", "pink")
+MOTION_BACKEND_LABELS = {
+    "legacy": "原方案（稀疏关节路点追赶）",
+    "legacy_timed": "原方案·50Hz 时间轨迹",
+    "pink": "PINK 世界系闭环跟踪",
+}
 DESIGN_SIDES = ("right", "left")
 SITES = ("lab", "factory")
 # 任务的物理方向：rtl=向左拨（右到左）、ltr=向右拨（左到右）、

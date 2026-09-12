@@ -36,7 +36,7 @@
             <span id="reachBadge" class="reach-badge">-</span>
             <span id="reachHandBadge" class="reach-badge hand">灵巧手：加载中</span>
             <span id="reachBackendBadge" class="reach-badge backend hidden"
-                  title="18000 激活组合的运动后端：legacy=关节路点直发；pink=世界系 PINK 闭环跟踪（补偿躯干漂移）">后端：-</span>
+                  title="18000 激活组合的运动后端：legacy=稀疏路点追赶；legacy_timed=50Hz 时间轨迹；pink=世界系闭环跟踪">后端：-</span>
             <button id="reachCollapseBtn" type="button" title="收起/展开">—</button>
           </header>
           <div id="reachBody" class="reach-body">
@@ -182,8 +182,9 @@
                 <button id="reachPlanLeftBtn" type="button" disabled
                         title="平移在先、进出在后：先竖直+水平对齐到目标正前方（保持当前深度），最后一段才沿机器人前后方向往里伸；往外拔则先拔出到目标深度再平移">左侧规划</button>
                 <select id="reachExecBackend" hidden
-                        title="本次执行用哪个运动后端（默认跟 18000 配置）。原方案：关节路点按节拍直发；PINK：把路点提升为世界系 TCP 轨迹、50Hz 闭环补偿躯干漂移，需先锚定世界系。规划过程两者完全相同，执行中不可切换">
+                        title="本次执行用哪个运动后端（默认跟 18000 配置）。legacy_timed：保持原关节路径并按 50Hz 连续下发；PINK：世界系闭环补偿躯干漂移，需先锚定。执行中不可切换">
                   <option value="legacy">本次：原方案</option>
+                  <option value="legacy_timed">本次：50Hz 时间轨迹（仅主轨迹）</option>
                   <option value="pink">本次：PINK（仅主轨迹）</option>
                 </select>
                 <button id="reachExecBtn" type="button" class="danger" disabled>真机执行</button>

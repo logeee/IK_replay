@@ -229,9 +229,10 @@ def main() -> int:
     parser.add_argument("--no-robot", action="store_true",
                         help="不连 DDS（纯模拟联调，页面上无法接管手臂）")
     parser.add_argument("--network-interface", default=None, help="DDS 网卡，如 enp86s0")
-    parser.add_argument("--motion-backend", choices=("auto", "legacy", "pink"), default="auto",
+    parser.add_argument("--motion-backend", choices=("auto", "legacy", "legacy_timed", "pink"), default="auto",
                         help="运动后端。auto=按 18000 active.motion_backend（默认 legacy）；"
-                             "legacy=原按节拍下发关节路点；pink=世界系 PINK 闭环跟踪"
+                             "legacy=原按节拍下发稀疏关节路点；"
+                             "legacy_timed=原路径生成 50Hz 时间轨迹；pink=世界系 PINK 闭环跟踪"
                              "（补偿躯干漂移，需要 pinocchio/pin-pink）。"
                              "pink 初始化失败会回退 legacy 并告警")
     parser.add_argument("--arm-max-speed", type=float, default=0.4,
@@ -643,6 +644,9 @@ def main() -> int:
         print("[reach] 默认运动后端 = pink（世界系 PINK 闭环跟踪）")
         print("[reach]   ⚠ 执行前必须先锚定世界系（页面「锚定世界系」/ POST /api/reach/pink/anchor），"
               "机器人双脚站定；走动后需重新锚定")
+    elif motion_backend == "legacy_timed":
+        reach.state.motion_backend = "legacy_timed"
+        print("[reach] 默认运动后端 = legacy_timed（原关节路径 · 50Hz 时间轨迹，仅 7005 主轨迹）")
     else:
         reach.state.motion_backend = "legacy"
         print("[reach] 默认运动后端 = legacy（关节路点按节拍直发）"

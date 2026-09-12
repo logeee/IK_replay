@@ -37,6 +37,106 @@ class _SequenceController:
 
 
 class ExecutionHandoffTests(unittest.TestCase):
+    def test_timed_backend_expands_sparse_targets_and_logs_diagnostics(self):
+        class ImmediateController:
+            def __init__(self):
+                self.max_speed = 0.4
+                self.targets = []
+                self.q = np.zeros(2)
+
+            def set_max_speed(self, value):
+                self.max_speed = float(value)
+
+            def enable_jog(self):
+                pass
+
+            def disable_jog(self):
+                pass
+
+            def set_target(self, value):
+                self.q = np.asarray(value, dtype=float).copy()
+                self.targets.append(self.q.copy())
+                return True
+
+            def read_measured(self):
+                return self.q.copy()
+
+            def status(self):
+                return {
+                    "desired_rad": self.q.tolist(),
+                    "cmd_rad": self.q.tolist(),
+                    "measured_rad": self.q.tolist(),
+                }
+
+            def stop(self):
+                pass
+
+        state = execution.state
+        saved = {name: getattr(state, name) for name in (
+            "controller", "motion_backend", "exec_backend", "exec_running",
+            "exec_phase", "settle_trim", "last_settle_trim",
+        )}
+        controller = ImmediateController()
+        stopped = threading.Event()
+        try:
+            state.controller = controller
+            state.motion_backend = "legacy"
+            state.exec_running = True
+            state.settle_trim = "off"
+            with (
+                mock.patch.object(execution, "_start_torso_trace", return_value=([], stopped)),
+                mock.patch.object(execution, "_finish_torso_diag", return_value=""),
+                mock.patch.object(execution, "_log_exec") as log_exec,
+            ):
+                execution._exec_loop(
+                    [np.zeros(2), np.array([0.001, 0.002])],
+                    0.1,
+                    speed=0.4,
+                    label="主轨迹",
+                    command_start_q=np.zeros(2),
+                    motion_backend="legacy_timed",
+                )
+
+            self.assertGreater(len(controller.targets), 2)
+            self.assertEqual(state.exec_backend, "legacy_timed")
+            self.assertFalse(state.exec_running)
+            diagnostics = log_exec.call_args.kwargs["extra"]
+            self.assertEqual(diagnostics["rate_hz"], 50.0)
+            self.assertEqual(diagnostics["timed_frame_count"], len(controller.targets))
+        finally:
+            for name, value in saved.items():
+                setattr(state, name, value)
+
+    def test_timed_backend_is_limited_to_7005_main_trajectory(self):
+        state = execution.state
+        saved_context = state.pick_context
+        try:
+            state.pick_context = {"selection_mode": "frozen_rgbd_pointcloud"}
+            self.assertEqual(
+                execution._resolve_exec_backend(
+                    "legacy_timed", label="主轨迹(精定位)"
+                ),
+                ("legacy_timed", None),
+            )
+            backend, error = execution._resolve_exec_backend(
+                "legacy_timed", label="左移3cm"
+            )
+            self.assertIsNone(backend)
+            self.assertIn("仅允许", error)
+            backend, error = execution._resolve_exec_backend(
+                "legacy_timed", label="主轨迹", allow_timed=False
+            )
+            self.assertIsNone(backend)
+            self.assertIn("不允许 legacy_timed", error)
+            state.pick_context = {"selection_mode": "live_rgb_depth"}
+            backend, error = execution._resolve_exec_backend(
+                "legacy_timed", label="主轨迹"
+            )
+            self.assertIsNone(backend)
+            self.assertIn("7005", error)
+        finally:
+            state.pick_context = saved_context
+
     def test_numpy_command_snapshot_is_json_serializable(self):
         snapshot = {
             "q_rad": np.array([0.15, -0.18]),

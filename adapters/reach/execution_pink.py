@@ -40,7 +40,7 @@ def _pelvis_pose_matrix(fb) -> np.ndarray:
     T[:3, 3] = np.asarray(fb.position_world, dtype=float)
     return T
 
-MOTION_BACKENDS = ("legacy", "pink")
+MOTION_BACKENDS = ("legacy", "legacy_timed", "pink")
 CONTROL_DT = 0.02
 HOLD_S = 1.0                     # 到位后世界系保持时长（同时测终态误差）
 RECOVERY_TIMEOUT_S = 10.0        # 自动恢复窗口，超时进 PAUSED_MANUAL 等人工 RESUME

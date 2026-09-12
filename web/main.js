@@ -2867,16 +2867,15 @@ async function stopReach() {
   }
 }
 
-// ---- pink 运动后端 ----
-// 18000 的 motion_backend 只是默认值；pink 运行时可用（status.pink_available）时，
-// 执行按钮旁出现「本次：原方案 / PINK」二选一，每次 /execute 带上所选后端。
-// 运行时不可用（没装 pinocchio 等）时只显示灰色徽章，其余全部隐藏，行为与以前完全一致。
+// ---- 运动后端选择 + pink 状态 ----
+// 18000 的 motion_backend 只是默认值；每次 /execute 仍带上本页选择的后端。
+// legacy_timed 总是可选；pink 运行时不可用时禁用对应选项和世界系控件。
 const pinkUi = { timer: null, defaultBackend: "legacy" };
 
 function execBackendChoice() {
   const sel = document.getElementById("reachExecBackend");
   if (!sel || sel.hidden) return pinkUi.defaultBackend;
-  return sel.value === "pink" ? "pink" : "legacy";
+  return ["legacy", "legacy_timed", "pink"].includes(sel.value) ? sel.value : "legacy";
 }
 
 function initPinkUi(status) {
@@ -2887,22 +2886,28 @@ function initPinkUi(status) {
   const backendSel = document.getElementById("reachExecBackend");
   if (!badge) return;
   const backend = status.motion_backend || status.exec?.motion_backend || "legacy";
-  pinkUi.defaultBackend = backend === "pink" ? "pink" : "legacy";
+  pinkUi.defaultBackend = ["legacy", "legacy_timed", "pink"].includes(backend)
+    ? backend : "legacy";
   badge.classList.remove("hidden");
   const available = Boolean(status.pink_available ?? status.exec?.pink_available ?? backend === "pink");
-  if (!available) {
-    badge.textContent = "后端：原方案";
-    return;
-  }
   if (backendSel) {
     backendSel.hidden = false;
+    const pinkOption = backendSel.querySelector('option[value="pink"]');
+    if (pinkOption) pinkOption.disabled = !available;
     backendSel.value = pinkUi.defaultBackend;
     backendSel.addEventListener("change", () => {
-      reachMsg(backendSel.value === "pink"
+      const note = backendSel.value === "pink"
         ? "本次执行改用 PINK 世界系跟踪（需已锚定；停止 = 世界系保持不撒手）"
-        : "本次执行改用原方案（关节路点按节拍直发）", "success");
+        : backendSel.value === "legacy_timed"
+          ? "本次执行改用 50Hz 时间轨迹（仅 7005 主轨迹）"
+          : "本次执行改用原方案（稀疏关节路点追赶）";
+      reachMsg(note, "success");
       refreshPinkStatus();
     });
+  }
+  if (!available) {
+    badge.textContent = backend === "legacy_timed" ? "后端：50Hz 时间轨迹" : "后端：原方案";
+    return;
   }
   badge.textContent = "后端：PINK（未锚定）";
   badge.classList.add("pink-warn");
@@ -3205,7 +3210,11 @@ async function refreshPinkStatus() {
   const session = st.session;
   const sup = session?.supervisor || null;
   const choice = execBackendChoice();
-  let text = choice === "pink" ? "本次：PINK" : `本次：原方案（PINK 可选`;
+  let text = choice === "pink"
+    ? "本次：PINK"
+    : choice === "legacy_timed"
+      ? "本次：50Hz 时间轨迹（PINK 可选"
+      : "本次：原方案（PINK 可选";
   let cls = "pink-ok";
   if (choice !== "pink") {
     text += wf.anchored ? "，已锚定）" : "，未锚定）";
