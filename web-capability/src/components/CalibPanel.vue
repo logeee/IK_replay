@@ -21,6 +21,14 @@ function residualText(value: ResidualMm | null | undefined): string | null {
   const rms = value?.rms;
   return typeof rms === "number" ? rms.toFixed(2) : null;
 }
+
+const TYPE_LABEL: Record<string, string> = {
+  extrinsic: "相机外参",
+  intrinsic: "相机内参",
+  camera_transform: "RGB-D 转换",
+  hand_mount: "手安装",
+  tcp_profile: "TCP",
+};
 </script>
 
 <template>
@@ -72,6 +80,29 @@ function residualText(value: ResidualMm | null | undefined): string | null {
       </li>
     </ul>
     <button class="btn" @click="emit('register')">＋ 登记 / 上传标定</button>
+    <h3 class="binding-title">workstation 独立产物绑定</h3>
+    <ul class="calib-list">
+      <li
+        v-for="binding in payload.registry.calibration_bindings"
+        :key="`${binding.arm}:${binding.hand_id}:${binding.camera_role}`"
+      >
+        <div class="combo">
+          <span class="combo-name">
+            {{ payload.meta.arm_labels[binding.arm] || binding.arm }} ·
+            {{ handName(binding.hand_id) }} · {{ binding.camera_role }}
+          </span>
+          <span class="badge ready">已绑定</span>
+        </div>
+        <div class="detail">
+          <span v-for="(id, type) in binding.artifacts" :key="type" class="dim">
+            {{ TYPE_LABEL[type] || type }}：<span class="mono">{{ id }}</span>
+          </span>
+        </div>
+      </li>
+      <li v-if="!payload.registry.calibration_bindings.length" class="dim empty">
+        尚未由标定工作站发布独立产物组合；运行时继续使用上方旧格式归档。
+      </li>
+    </ul>
   </section>
 </template>
 
@@ -126,6 +157,11 @@ function residualText(value: ResidualMm | null | undefined): string | null {
   border-radius: 999px;
   color: #62dca1;
   font-size: 11px;
+}
+
+.binding-title {
+  margin: 20px 0 10px;
+  font-size: 14px;
 }
 
 .empty {

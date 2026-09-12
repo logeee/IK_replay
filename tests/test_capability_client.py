@@ -79,6 +79,7 @@ class FetchSnapshotTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["registry"]["active"],
                          {"arm": "right_arm", "hand_id": "yinshi-1-right",
+                          "camera_role": "head",
                           "motion_backend": "legacy"})
         # registry 经过本地 validate_registry 重校验（缺省参数已补齐）
         cap = payload["registry"]["capabilities"][0]

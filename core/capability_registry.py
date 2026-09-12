@@ -108,6 +108,13 @@ LEGACY_CALIB_SOURCE = ("/home/robot/yx/project/calib/hand_eye_3D/"
 
 ARMS = ("right_arm", "left_arm")
 ARM_LABELS = {"right_arm": "右臂", "left_arm": "左臂"}
+CAMERA_ROLES = ("head", "waist")
+CALIBRATION_ARTIFACT_TYPES = (
+    "extrinsic", "intrinsic", "camera_transform", "hand_mount", "tcp_profile")
+CAMERA_CALIBRATION_TYPES = frozenset(("extrinsic", "intrinsic", "camera_transform"))
+HAND_CALIBRATION_TYPES = frozenset(("hand_mount", "tcp_profile"))
+CALIBRATION_BINDING_TYPES = CALIBRATION_ARTIFACT_TYPES
+CALIBRATION_STATUSES = ("draft", "active", "superseded")
 # 18001 运动后端：legacy=原按节拍下发关节路点；pink=世界系 PINK 闭环跟踪
 # （补偿躯干漂移，需 pinocchio/pin-pink）。切换后重启 18001 生效。
 MOTION_BACKENDS = ("legacy", "pink")
@@ -334,6 +341,107 @@ def _validate_calibration(raw: Any, index: int,
     }
 
 
+def _validate_calibration_artifact(raw: Any, index: int,
+                                   hand_ids: set[str]) -> dict[str, Any]:
+    field = f"calibration_artifacts[{index}]"
+    if not isinstance(raw, dict):
+        raise ValueError(f"{field} 必须是 JSON object")
+    artifact_id = str(raw.get("artifact_id") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", artifact_id):
+        raise ValueError(f"{field}.artifact_id 非法")
+    artifact_type = str(raw.get("type") or "").strip()
+    if artifact_type not in CALIBRATION_ARTIFACT_TYPES:
+        raise ValueError(f"{field}.type 只能是 {CALIBRATION_ARTIFACT_TYPES}")
+    subject = raw.get("subject")
+    if not isinstance(subject, dict):
+        raise ValueError(f"{field}.subject 必须是 JSON object")
+    normalized_subject: dict[str, Any] = {
+        "kind": "camera" if artifact_type in CAMERA_CALIBRATION_TYPES else "hand"
+    }
+    if artifact_type in CAMERA_CALIBRATION_TYPES:
+        role = str(subject.get("camera_role") or "").strip()
+        if role not in CAMERA_ROLES:
+            raise ValueError(f"{field}.subject.camera_role 只能是 {CAMERA_ROLES}")
+        normalized_subject.update({
+            "camera_role": role,
+            "camera_serial": str(subject.get("camera_serial") or "").strip() or None,
+        })
+        expected_key = role
+    else:
+        arm = _clean_arm(subject.get("arm"), f"{field}.subject.arm")
+        hand_id = str(subject.get("hand_id") or "").strip()
+        if hand_id not in hand_ids:
+            raise ValueError(f"{field}.subject.hand_id 指向不存在的手型号「{hand_id}」")
+        normalized_subject.update({
+            "arm": arm,
+            "hand_id": hand_id,
+            "hand_serial": str(subject.get("hand_serial") or "").strip() or None,
+        })
+        expected_key = f"{arm}__{hand_id}"
+    subject_key = str(raw.get("subject_key") or expected_key).strip()
+    if subject_key != expected_key:
+        raise ValueError(f"{field}.subject_key 与 subject 不一致")
+    run_id = str(raw.get("run_id") or "").strip()
+    if not run_id:
+        raise ValueError(f"{field}.run_id 不能为空")
+    status = str(raw.get("status") or "draft").strip()
+    if status not in CALIBRATION_STATUSES:
+        raise ValueError(f"{field}.status 只能是 {CALIBRATION_STATUSES}")
+    return {
+        "artifact_id": artifact_id,
+        "type": artifact_type,
+        "subject": normalized_subject,
+        "subject_key": subject_key,
+        "run_id": run_id,
+        "status": status,
+        "local_path": str(raw.get("local_path") or "").strip(),
+        "cloud_remote_id": raw.get("cloud_remote_id"),
+        "registered_at": str(raw.get("registered_at") or "").strip(),
+    }
+
+
+def _validate_calibration_binding(raw: Any, index: int, hand_ids: set[str],
+                                  artifacts_by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    field = f"calibration_bindings[{index}]"
+    if not isinstance(raw, dict):
+        raise ValueError(f"{field} 必须是 JSON object")
+    arm = _clean_arm(raw.get("arm"), f"{field}.arm")
+    hand_id = str(raw.get("hand_id") or "").strip()
+    if hand_id not in hand_ids:
+        raise ValueError(f"{field}.hand_id 指向不存在的手型号「{hand_id}」")
+    camera_role = str(raw.get("camera_role") or "head").strip()
+    if camera_role not in CAMERA_ROLES:
+        raise ValueError(f"{field}.camera_role 只能是 {CAMERA_ROLES}")
+    refs = raw.get("artifacts") or {}
+    if not isinstance(refs, dict):
+        raise ValueError(f"{field}.artifacts 必须是 JSON object")
+    normalized_refs: dict[str, str] = {}
+    for artifact_type, artifact_id_value in refs.items():
+        if artifact_type not in CALIBRATION_BINDING_TYPES:
+            raise ValueError(f"{field}.artifacts 包含未知类型「{artifact_type}」")
+        artifact_id = str(artifact_id_value or "").strip()
+        artifact = artifacts_by_id.get(artifact_id)
+        if artifact is None:
+            raise ValueError(f"{field}.artifacts.{artifact_type} 引用不存在的产物「{artifact_id}」")
+        if artifact["type"] != artifact_type:
+            raise ValueError(f"{field}.artifacts.{artifact_type} 引用了 {artifact['type']} 产物")
+        subject = artifact["subject"]
+        if artifact_type in CAMERA_CALIBRATION_TYPES:
+            compatible = subject["camera_role"] == camera_role
+        else:
+            compatible = subject["arm"] == arm and subject["hand_id"] == hand_id
+        if not compatible:
+            raise ValueError(f"{field}.artifacts.{artifact_type} 与绑定对象不兼容")
+        normalized_refs[artifact_type] = artifact_id
+    return {
+        "arm": arm,
+        "hand_id": hand_id,
+        "camera_role": camera_role,
+        "artifacts": normalized_refs,
+        "updated_at": str(raw.get("updated_at") or "").strip(),
+    }
+
+
 def _validate_capability(raw: Any, index: int,
                          hand_ids: set[str]) -> dict[str, Any]:
     if not isinstance(raw, dict):
@@ -486,6 +594,31 @@ def validate_registry(payload: Any) -> dict[str, Any]:
         combos.add(combo)
         calibrations.append(calib)
 
+    raw_artifacts = payload.get("calibration_artifacts") or []
+    if not isinstance(raw_artifacts, list):
+        raise ValueError("calibration_artifacts 必须是数组")
+    calibration_artifacts = []
+    artifacts_by_id: dict[str, dict[str, Any]] = {}
+    for i, raw in enumerate(raw_artifacts):
+        artifact = _validate_calibration_artifact(raw, i, hand_ids)
+        if artifact["artifact_id"] in artifacts_by_id:
+            raise ValueError(f"标定产物 id「{artifact['artifact_id']}」重复")
+        artifacts_by_id[artifact["artifact_id"]] = artifact
+        calibration_artifacts.append(artifact)
+
+    raw_bindings = payload.get("calibration_bindings") or []
+    if not isinstance(raw_bindings, list):
+        raise ValueError("calibration_bindings 必须是数组")
+    calibration_bindings = []
+    binding_keys: set[tuple[str, str, str]] = set()
+    for i, raw in enumerate(raw_bindings):
+        binding = _validate_calibration_binding(raw, i, hand_ids, artifacts_by_id)
+        key = (binding["arm"], binding["hand_id"], binding["camera_role"])
+        if key in binding_keys:
+            raise ValueError(f"标定生效组合重复：{' + '.join(key)}")
+        binding_keys.add(key)
+        calibration_bindings.append(binding)
+
     raw_caps = payload.get("capabilities")
     if raw_caps is None:
         raw_caps = []
@@ -532,7 +665,10 @@ def validate_registry(payload: Any) -> dict[str, Any]:
             raise ValueError(
                 f"active.motion_backend 必须是 {'/'.join(MOTION_BACKENDS)}，"
                 f"收到「{motion_backend}」")
-        active = {"arm": arm, "hand_id": hand_id,
+        camera_role = str(raw_active.get("camera_role") or "head").strip()
+        if camera_role not in CAMERA_ROLES:
+            raise ValueError(f"active.camera_role 必须是 {CAMERA_ROLES}")
+        active = {"arm": arm, "hand_id": hand_id, "camera_role": camera_role,
                   "motion_backend": motion_backend}
 
     # 顶层 cabinet_frame：旧注册表没有该键 → 方法一 + 默认参数（行为不变）
@@ -548,8 +684,27 @@ def validate_registry(payload: Any) -> dict[str, Any]:
         "target_model": target_model,
         "hands": hands,
         "calibrations": calibrations,
+        "calibration_artifacts": calibration_artifacts,
+        "calibration_bindings": calibration_bindings,
         "capabilities": capabilities,
         "sequence_claims": sequence_claims,
+    }
+
+
+def calibration_binding(registry: dict[str, Any], arm: str, hand_id: str,
+                        camera_role: str = "head") -> dict[str, Any] | None:
+    """Resolve one binding and embed the referenced artifact descriptors."""
+    binding = next((item for item in registry.get("calibration_bindings") or []
+                    if item["arm"] == arm and item["hand_id"] == hand_id
+                    and item["camera_role"] == camera_role), None)
+    if binding is None:
+        return None
+    by_id = {item["artifact_id"]: item
+             for item in registry.get("calibration_artifacts") or []}
+    return {
+        **binding,
+        "resolved": {artifact_type: by_id[artifact_id]
+                     for artifact_type, artifact_id in binding["artifacts"].items()},
     }
 
 

@@ -31,8 +31,36 @@ export interface Capability {
 export interface ActiveCombo {
   arm: string;
   hand_id: string;
+  camera_role?: string;
   /** 18001 运动后端：legacy=关节路点直发；pink=世界系 PINK 闭环跟踪（旧注册表可能缺省） */
   motion_backend?: MotionBackend;
+}
+
+export type CalibrationArtifactType =
+  | "extrinsic"
+  | "intrinsic"
+  | "camera_transform"
+  | "hand_mount"
+  | "tcp_profile";
+
+export interface CalibrationArtifact {
+  artifact_id: string;
+  type: CalibrationArtifactType;
+  subject_key: string;
+  subject: Record<string, unknown>;
+  run_id: string;
+  status: string;
+  local_path: string;
+  cloud_remote_id: string | number | null;
+  registered_at: string;
+}
+
+export interface CalibrationBinding {
+  arm: string;
+  hand_id: string;
+  camera_role: string;
+  artifacts: Partial<Record<CalibrationArtifactType, string>>;
+  updated_at: string;
 }
 
 export type MotionBackend = "legacy" | "pink";
@@ -99,6 +127,8 @@ export interface Registry {
   target_model?: TargetModelConfig;
   hands: Hand[];
   calibrations: unknown[];
+  calibration_artifacts: CalibrationArtifact[];
+  calibration_bindings: CalibrationBinding[];
   capabilities: Capability[];
   sequence_claims: SequenceClaim[];
 }
@@ -135,6 +165,8 @@ export interface ParamSpec {
 
 export interface Meta {
   arms: string[];
+  camera_roles?: string[];
+  calibration_artifact_types?: CalibrationArtifactType[];
   arm_labels: Record<string, string>;
   /** 名字 / 文件名的臂归属前缀：right_arm → "R-"、left_arm → "L-" */
   arm_prefixes?: Record<string, string>;

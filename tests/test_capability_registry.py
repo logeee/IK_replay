@@ -446,6 +446,7 @@ class SeedAndPersistenceTests(unittest.TestCase):
         seed = reg.seed_registry()
         self.assertEqual(seed["active"],
                          {"arm": "right_arm", "hand_id": "yinshi-1-right",
+                          "camera_role": "head",
                           "motion_backend": "legacy"})
         directions = {cap["task"]["direction"]
                       for cap in seed["capabilities"]}
@@ -561,6 +562,74 @@ class ValidationTests(unittest.TestCase):
 
 
 class CalibrationTests(unittest.TestCase):
+    @staticmethod
+    def _artifact(artifact_id, artifact_type, subject, subject_key):
+        return {
+            "artifact_id": artifact_id,
+            "type": artifact_type,
+            "subject": subject,
+            "subject_key": subject_key,
+            "run_id": "run-1",
+            "status": "active",
+            "local_path": f"/calibrations/{artifact_type}/{subject_key}/run-1",
+        }
+
+    def test_independent_artifacts_resolve_through_binding(self):
+        seed = reg.seed_registry()
+        hand_id = seed["active"]["hand_id"]
+        seed["calibration_artifacts"] = [
+            self._artifact(
+                "camera-extrinsic-1", "extrinsic",
+                {"kind": "camera", "camera_role": "head", "camera_serial": "CAM-1"},
+                "head",
+            ),
+            self._artifact(
+                "hand-mount-1", "hand_mount",
+                {"kind": "hand", "arm": "right_arm", "hand_id": hand_id},
+                f"right_arm__{hand_id}",
+            ),
+            self._artifact(
+                "tcp-profile-1", "tcp_profile",
+                {"kind": "hand", "arm": "right_arm", "hand_id": hand_id},
+                f"right_arm__{hand_id}",
+            ),
+        ]
+        seed["calibration_bindings"] = [{
+            "arm": "right_arm",
+            "hand_id": hand_id,
+            "camera_role": "head",
+            "artifacts": {
+                "extrinsic": "camera-extrinsic-1",
+                "hand_mount": "hand-mount-1",
+                "tcp_profile": "tcp-profile-1",
+            },
+        }]
+
+        registry = reg.validate_registry(seed)
+        binding = reg.calibration_binding(registry, "right_arm", hand_id, "head")
+
+        self.assertEqual(binding["resolved"]["extrinsic"]["subject_key"], "head")
+        self.assertEqual(binding["resolved"]["hand_mount"]["subject"]["arm"], "right_arm")
+
+    def test_binding_rejects_artifact_from_other_hand(self):
+        seed = reg.seed_registry()
+        seed["hands"].append({
+            "id": "other-right", "name": "另一只右手", "design_side": "right",
+            "tool_out_mm": 0, "hand_web_device_id": "", "tcp_point_id": "", "notes": "",
+        })
+        seed["calibration_artifacts"] = [self._artifact(
+            "other-mount", "hand_mount",
+            {"kind": "hand", "arm": "right_arm", "hand_id": "other-right"},
+            "right_arm__other-right",
+        )]
+        seed["calibration_bindings"] = [{
+            "arm": "right_arm", "hand_id": seed["active"]["hand_id"], "camera_role": "head",
+            "artifacts": {"hand_mount": "other-mount"},
+        }]
+
+        with self.assertRaisesRegex(ValueError, "不兼容"):
+            reg.validate_registry(seed)
+
     def test_calib_rel_path_is_combo_unique(self):
         self.assertEqual(
             reg.calib_rel_path("right_arm", "yinshi-1-right"),

@@ -17,6 +17,8 @@ config/hand_eye/{arm}__{hand_id}/handeye3d_result.json。
                                            （7005 重启后生效）
 - POST /api/capability/calibrations        登记标定（source_path 复制入库 或
                                            content 直接上传 JSON 内容）
+- POST /api/capability/calibration-artifacts 登记 workstation 独立产物引用
+- POST /api/capability/calibration-bindings  原子保存相机+手+TCP 生效组合
 - POST /api/capability/sequence-claims     整组保存某能力条目的认领
                                            （起手式动作名 + 手选位点名）
 - POST /api/capability/sequence-claims/add 录制上报（臂+手+动作名）：按各
@@ -87,6 +89,8 @@ def _registry_payload(registry: dict[str, Any]) -> dict[str, Any]:
         "waypoint_pool": reg.waypoint_pool(ROOT),
         "meta": {
             "arms": list(reg.ARMS),
+            "camera_roles": list(reg.CAMERA_ROLES),
+            "calibration_artifact_types": list(reg.CALIBRATION_ARTIFACT_TYPES),
             "arm_labels": reg.ARM_LABELS,
             # 名字 / 文件名的臂归属前缀（right_arm → "R-"），页面标注用
             "arm_prefixes": {arm: arm_assets.arm_prefix(arm) for arm in reg.ARMS},
@@ -168,6 +172,13 @@ async def hands_delete(request: Request):
         active = registry.get("active")
         if active and active.get("hand_id") == hand_id:
             return _error(f"手型号「{hand_id}」是当前激活组合，先切换激活组合")
+        calibration_refs = [
+            item["artifact_id"] for item in registry.get("calibration_artifacts") or []
+            if (item.get("subject") or {}).get("hand_id") == hand_id
+        ]
+        if calibration_refs:
+            return _error(
+                f"手型号「{hand_id}」被独立标定产物 {calibration_refs} 引用，先解除绑定并清理产物")
         registry["hands"] = [h for h in registry["hands"]
                              if h["id"] != hand_id]
         registry["calibrations"] = [c for c in registry["calibrations"]
@@ -231,9 +242,69 @@ async def active_set(request: Request):
         registry["active"] = {
             "arm": body.get("arm"),
             "hand_id": body.get("hand_id"),
+            "camera_role": body.get(
+                "camera_role", previous.get("camera_role", "head")),
             "motion_backend": body.get(
                 "motion_backend", previous.get("motion_backend", "legacy")),
         }
+        try:
+            registry = reg.save_registry(registry, REGISTRY_PATH)
+        except ValueError as exc:
+            return _error(str(exc))
+    return _registry_payload(registry)
+
+
+@app.post("/api/capability/calibration-artifacts")
+async def calibration_artifact_register(request: Request):
+    """Register one calib-manifest/2 artifact descriptor from workstation."""
+    body = await _json_body(request)
+    manifest = body.get("manifest")
+    if not isinstance(manifest, dict):
+        return _error("manifest 必须是 JSON object")
+    cloud = manifest.get("cloud") if isinstance(manifest.get("cloud"), dict) else {}
+    entry = {
+        "artifact_id": manifest.get("artifact_id"),
+        "type": manifest.get("type"),
+        "subject": manifest.get("subject"),
+        "subject_key": manifest.get("subject_key"),
+        "run_id": manifest.get("run_id"),
+        "status": manifest.get("status", "draft"),
+        "local_path": str(body.get("local_path") or manifest.get("path") or ""),
+        "cloud_remote_id": cloud.get("remote_id"),
+        "registered_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    with _lock:
+        registry = reg.load_registry(REGISTRY_PATH)
+        artifact_id = str(entry.get("artifact_id") or "").strip()
+        registry["calibration_artifacts"] = [
+            item for item in registry.get("calibration_artifacts") or []
+            if item.get("artifact_id") != artifact_id
+        ] + [entry]
+        try:
+            registry = reg.save_registry(registry, REGISTRY_PATH)
+        except ValueError as exc:
+            return _error(str(exc))
+    return _registry_payload(registry)
+
+
+@app.post("/api/capability/calibration-bindings")
+async def calibration_binding_set(request: Request):
+    """Atomically bind independent artifacts to an arm+hand+camera context."""
+    body = await _json_body(request)
+    entry = {
+        "arm": body.get("arm"),
+        "hand_id": body.get("hand_id"),
+        "camera_role": body.get("camera_role", "head"),
+        "artifacts": body.get("artifacts") or {},
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    with _lock:
+        registry = reg.load_registry(REGISTRY_PATH)
+        key = (str(entry["arm"]), str(entry["hand_id"]), str(entry["camera_role"]))
+        registry["calibration_bindings"] = [
+            item for item in registry.get("calibration_bindings") or []
+            if (item.get("arm"), item.get("hand_id"), item.get("camera_role")) != key
+        ] + [entry]
         try:
             registry = reg.save_registry(registry, REGISTRY_PATH)
         except ValueError as exc:

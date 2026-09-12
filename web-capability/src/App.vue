@@ -108,11 +108,12 @@ async function saveCalibration(body: Record<string, unknown>) {
 async function applyActive(
   arm: string,
   handId: string,
+  cameraRole: string,
   motionBackend: MotionBackend = "legacy",
 ) {
   await mutate(
     "/api/capability/active",
-    { arm, hand_id: handId, motion_backend: motionBackend },
+    { arm, hand_id: handId, camera_role: cameraRole, motion_backend: motionBackend },
     "激活组合已切换（重启 17001/18001 生效）",
   );
 }
