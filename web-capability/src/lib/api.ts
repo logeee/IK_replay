@@ -36,6 +36,12 @@ export interface ActiveCombo {
   motion_backend?: MotionBackend;
 }
 
+export interface RobotIdentity {
+  unit_code: string;
+  vendor: string;
+  model: string;
+}
+
 export type CalibrationArtifactType =
   | "extrinsic"
   | "intrinsic"
@@ -120,6 +126,8 @@ export interface WaypointPoolEntry {
 
 export interface Registry {
   schema_version: number;
+  /** 由 calib_workstation 登记；旧注册表在首次登记前为 null */
+  robot: RobotIdentity | null;
   active: ActiveCombo | null;
   /** 旧注册表可能缺省：服务端会按方法一 + 默认参数补齐 */
   cabinet_frame?: CabinetFrameConfig;

@@ -298,12 +298,15 @@ def _spawn_reach(task: dict) -> None:
     chain = "right_arm"
     calib = _args.calib
     camera_name = _args.camera_name
+    robot_model = "h2"
     tool_out_mm = _args.tool_out_mm
     use_artifact_binding = False
     ctx = _active_arm_context()
     if ctx is not None:
         chain = ctx["arm"]
         camera_name = ctx["camera_role"]
+        registry = _capability_registry() or {}
+        robot_model = str((registry.get("robot") or {}).get("model") or "h2")
         if ctx["tool_out_mm"] is not None:
             tool_out_mm = ctx["tool_out_mm"]
         if ctx["calibration_binding"] is not None:
@@ -325,6 +328,7 @@ def _spawn_reach(task: dict) -> None:
         sys.executable,
         str(ROOT / "reach_server.py"),
         "--port", str(_args.reach_port),
+        "--robot", robot_model,
         "--camera-source", "zmq",
         "--camera-host", _args.camera_host,
         "--camera-request-port", str(_args.camera_request_port),

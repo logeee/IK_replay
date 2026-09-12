@@ -141,6 +141,12 @@ The preferred source is the `calib-manifest/2` binding selected by
 `active.arm + active.hand_id + active.camera_role` in 18000. It independently
 loads and hash-checks `extrinsic`, `hand_mount`, and `tcp_profile`, then composes
 the existing runtime dictionary in memory. No second merged file is generated.
+The same registry also stores the physical robot identity
+(`robot.unit_code/vendor/model`), registered by calib_workstation. 18000 refuses
+artifacts from another unit or model, and 18001 verifies that identity again
+before loading a binding. Registries created before this field existed remain
+readable, but independent artifacts cannot be registered or used until the
+workstation has established the identity.
 
 For installations not yet migrated, the legacy merged result remains available at:
 

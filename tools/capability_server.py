@@ -8,6 +8,7 @@ config/hand_eye/{arm}__{hand_id}/handeye3d_result.json。
     python tools/capability_server.py --port 18000
 
 - GET  /api/capability/registry            注册表全量 + 各组合标定状态 + 枚举元数据
+- POST /api/capability/robot               登记本机整机编号/厂家/型号（登记后不可静默换机）
 - POST /api/capability/hands               新增/编辑手型号（body 带 id 即编辑）
 - POST /api/capability/hands/delete        删除手型号（被引用时拒绝）
 - POST /api/capability/capabilities        新增/编辑能力条目
@@ -254,6 +255,68 @@ async def active_set(request: Request):
     return _registry_payload(registry)
 
 
+@app.post("/api/capability/robot")
+async def robot_identity_set(request: Request):
+    """Register the one physical robot served by this local 18000 instance."""
+    body = await _json_body(request)
+    candidate = {
+        "unit_code": body.get("unit_code"),
+        "vendor": body.get("vendor"),
+        "model": body.get("model") or body.get("robot_model"),
+    }
+    try:
+        identity = reg.validate_robot_identity(candidate)
+    except ValueError as exc:
+        return _error(str(exc))
+    assert identity is not None
+    with _lock:
+        registry = reg.load_registry(REGISTRY_PATH)
+        existing = registry.get("robot")
+        if existing and existing["unit_code"] != identity["unit_code"]:
+            return _error(
+                f"18000 已绑定机器人 {existing['unit_code']}，拒绝静默切换为 "
+                f"{identity['unit_code']}；请先备份并显式清理该机的能力注册表",
+                409,
+            )
+        if existing and existing["model"] != identity["model"]:
+            return _error(
+                f"18000 已绑定型号 {existing['model']}，与 {identity['model']} 不一致",
+                409,
+            )
+        if existing and existing["vendor"].lower() != identity["vendor"].lower():
+            return _error(
+                f"18000 已绑定厂家 {existing['vendor']}，与 {identity['vendor']} 不一致",
+                409,
+            )
+        # 兼容身份功能上线前已经登记的描述符：从其本地产物 manifest
+        # 补齐单位身份，再由统一校验确认没有串机。
+        hydrated = []
+        for artifact in registry.get("calibration_artifacts") or []:
+            item = dict(artifact)
+            if not item.get("unit_code"):
+                path = Path(str(item.get("local_path") or "")) / "manifest.json"
+                try:
+                    manifest = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError) as exc:
+                    return _error(f"旧标定产物无法确认整机身份 {path}: {exc}", 409)
+                item.update({
+                    "unit_code": manifest.get("unit_code"),
+                    "vendor": manifest.get("vendor"),
+                    "robot_model": manifest.get("robot_model"),
+                })
+                subject = dict(item.get("subject") or {})
+                subject["unit_code"] = manifest.get("unit_code")
+                item["subject"] = subject
+            hydrated.append(item)
+        registry["robot"] = identity
+        registry["calibration_artifacts"] = hydrated
+        try:
+            registry = reg.save_registry(registry, REGISTRY_PATH)
+        except ValueError as exc:
+            return _error(str(exc), 409)
+    return _registry_payload(registry)
+
+
 @app.post("/api/capability/calibration-artifacts")
 async def calibration_artifact_register(request: Request):
     """Register one calib-manifest/2 artifact descriptor from workstation."""
@@ -264,6 +327,9 @@ async def calibration_artifact_register(request: Request):
     cloud = manifest.get("cloud") if isinstance(manifest.get("cloud"), dict) else {}
     entry = {
         "artifact_id": manifest.get("artifact_id"),
+        "unit_code": manifest.get("unit_code"),
+        "vendor": manifest.get("vendor"),
+        "robot_model": manifest.get("robot_model"),
         "type": manifest.get("type"),
         "subject": manifest.get("subject"),
         "subject_key": manifest.get("subject_key"),
@@ -275,6 +341,8 @@ async def calibration_artifact_register(request: Request):
     }
     with _lock:
         registry = reg.load_registry(REGISTRY_PATH)
+        if registry.get("robot") is None:
+            return _error("18000 尚未登记整机身份，请先由 calib_workstation 设置机器人", 409)
         artifact_id = str(entry.get("artifact_id") or "").strip()
         registry["calibration_artifacts"] = [
             item for item in registry.get("calibration_artifacts") or []

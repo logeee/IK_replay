@@ -156,6 +156,10 @@ onMounted(reload);
       四级：臂侧 → 手型号 → 任务配置 → 实现方式 ｜ 修改保存后重启 17001 / 18001 生效（柜面坐标系配置重启 7005）
     </span>
     <span class="spacer"></span>
+    <span v-if="payload?.registry.robot" class="robot-id">
+      {{ payload.registry.robot.unit_code }} · {{ payload.registry.robot.vendor }} / {{ payload.registry.robot.model.toUpperCase() }}
+    </span>
+    <span v-else-if="payload" class="robot-id missing">整机身份未登记</span>
   </div>
 
   <template v-if="payload">
@@ -232,5 +236,16 @@ onMounted(reload);
 .load-state.error p {
   color: #ffb4b4;
   margin-bottom: 16px;
+}
+
+.robot-id {
+  color: var(--accent);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: nowrap;
+}
+
+.robot-id.missing {
+  color: var(--amber);
 }
 </style>

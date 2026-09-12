@@ -307,6 +307,13 @@ def main() -> int:
         return 1
     capability_registry = capability_snapshot["registry"]
     print(f"[reach] 18000 {describe_active(capability_snapshot)}")
+    robot_identity = capability_registry.get("robot")
+    if robot_identity is not None and robot_identity.get("model") != str(args.robot).lower():
+        print(
+            f"[reach] !!! 18000 当前机器人型号 {robot_identity.get('model')} "
+            f"与 --robot {args.robot} 不一致，拒绝启动"
+        )
+        return 1
     active_combo = capability_registry.get("active") or {}
     active_hand = next(
         (
@@ -609,6 +616,7 @@ def main() -> int:
     )
     # 录制新序列时盖「来源组合」戳并自动认领给它（camera-only 时无组合）
     reach.state.active_combo = dict(active_combo) if active_combo else None
+    reach.state.robot_identity = dict(robot_identity) if robot_identity else None
 
     # ---- 运动后端 ----
     # 18000 active.motion_backend（可被 --motion-backend 覆盖）只是**默认**后端；

@@ -20,6 +20,7 @@ def _write_artifact(
     payload: dict,
     dependencies: list[dict] | None = None,
 ) -> dict:
+    subject = {**subject, "unit_code": "H2-1336"}
     directory = root / artifact_type / subject_key / "run-1"
     directory.mkdir(parents=True)
     raw = (json.dumps(payload, ensure_ascii=False) + "\n").encode()
@@ -28,6 +29,8 @@ def _write_artifact(
         "schema": "calib-manifest/2",
         "artifact_id": artifact_id,
         "unit_code": "H2-1336",
+        "vendor": "unitree",
+        "robot_model": "h2",
         "type": artifact_type,
         "subject": subject,
         "subject_key": subject_key,
@@ -44,6 +47,9 @@ def _write_artifact(
     (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return {
         "artifact_id": artifact_id,
+        "unit_code": "H2-1336",
+        "vendor": "unitree",
+        "robot_model": "h2",
         "type": artifact_type,
         "subject": subject,
         "subject_key": subject_key,
@@ -55,6 +61,7 @@ def _write_artifact(
 
 def _registry(tmp_path: Path) -> dict:
     registry = reg.seed_registry()
+    registry["robot"] = {"unit_code": "H2-1336", "vendor": "unitree", "model": "h2"}
     hand_id = registry["active"]["hand_id"]
     hand_key = f"right_arm__{hand_id}"
     artifacts = [

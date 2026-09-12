@@ -115,6 +115,8 @@ CAMERA_CALIBRATION_TYPES = frozenset(("extrinsic", "intrinsic", "camera_transfor
 HAND_CALIBRATION_TYPES = frozenset(("hand_mount", "tcp_profile"))
 CALIBRATION_BINDING_TYPES = CALIBRATION_ARTIFACT_TYPES
 CALIBRATION_STATUSES = ("draft", "active", "superseded")
+UNIT_CODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+ROBOT_MODEL_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,47}$")
 # 18001 运动后端：legacy=原按节拍下发稀疏关节路点；legacy_timed=沿同一
 # 关节路径生成 50Hz 时间轨迹；pink=世界系 PINK 闭环跟踪。切换后重启
 # 18001 生效。
@@ -345,8 +347,31 @@ def _validate_calibration(raw: Any, index: int,
     }
 
 
+def validate_robot_identity(raw: Any) -> dict[str, str] | None:
+    """Validate the physical robot hosting this 18000 instance.
+
+    Old registries have no identity and remain readable until calib_workstation
+    registers the unit. Once present, artifact registration is unit-scoped.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("robot 必须是 JSON object")
+    unit_code = str(raw.get("unit_code") or "").strip()
+    if not UNIT_CODE_RE.fullmatch(unit_code):
+        raise ValueError("robot.unit_code 只能由字母/数字/._- 组成")
+    model = str(raw.get("model") or raw.get("robot_model") or "").strip().lower()
+    if not ROBOT_MODEL_RE.fullmatch(model):
+        raise ValueError("robot.model 只能由小写字母/数字/._- 组成")
+    vendor = str(raw.get("vendor") or "").strip()
+    if not vendor:
+        raise ValueError("robot.vendor 不能为空")
+    return {"unit_code": unit_code, "vendor": vendor, "model": model}
+
+
 def _validate_calibration_artifact(raw: Any, index: int,
-                                   hand_ids: set[str]) -> dict[str, Any]:
+                                   hand_ids: set[str],
+                                   robot: dict[str, str] | None = None) -> dict[str, Any]:
     field = f"calibration_artifacts[{index}]"
     if not isinstance(raw, dict):
         raise ValueError(f"{field} 必须是 JSON object")
@@ -362,6 +387,26 @@ def _validate_calibration_artifact(raw: Any, index: int,
     normalized_subject: dict[str, Any] = {
         "kind": "camera" if artifact_type in CAMERA_CALIBRATION_TYPES else "hand"
     }
+    raw_unit_code = str(raw.get("unit_code") or "").strip() or None
+    subject_unit_code = str(subject.get("unit_code") or "").strip() or None
+    if raw_unit_code and subject_unit_code and raw_unit_code != subject_unit_code:
+        raise ValueError(f"{field}.unit_code 与 subject.unit_code 不一致")
+    unit_code = raw_unit_code or subject_unit_code
+    robot_model = str(raw.get("robot_model") or "").strip().lower() or None
+    vendor = str(raw.get("vendor") or "").strip() or None
+    if robot is not None:
+        if unit_code != robot["unit_code"]:
+            raise ValueError(
+                f"{field}.unit_code={unit_code!r} 与当前机器人 {robot['unit_code']!r} 不一致")
+        if robot_model != robot["model"]:
+            raise ValueError(
+                f"{field}.robot_model={robot_model!r} 与当前型号 {robot['model']!r} 不一致")
+        if not vendor:
+            raise ValueError(f"{field}.vendor 不能为空")
+        if vendor.lower() != robot["vendor"].lower():
+            raise ValueError(f"{field}.vendor 与当前机器人不一致")
+    if unit_code:
+        normalized_subject["unit_code"] = unit_code
     if artifact_type in CAMERA_CALIBRATION_TYPES:
         role = str(subject.get("camera_role") or "").strip()
         if role not in CAMERA_ROLES:
@@ -393,6 +438,9 @@ def _validate_calibration_artifact(raw: Any, index: int,
         raise ValueError(f"{field}.status 只能是 {CALIBRATION_STATUSES}")
     return {
         "artifact_id": artifact_id,
+        "unit_code": unit_code,
+        "vendor": vendor,
+        "robot_model": robot_model,
         "type": artifact_type,
         "subject": normalized_subject,
         "subject_key": subject_key,
@@ -565,6 +613,7 @@ def validate_registry(payload: Any) -> dict[str, Any]:
     version = int(payload.get("schema_version", -1))
     if version != 1:
         raise ValueError("注册表 schema_version 必须为 1")
+    robot = validate_robot_identity(payload.get("robot"))
 
     raw_hands = payload.get("hands")
     if raw_hands is None:
@@ -604,7 +653,7 @@ def validate_registry(payload: Any) -> dict[str, Any]:
     calibration_artifacts = []
     artifacts_by_id: dict[str, dict[str, Any]] = {}
     for i, raw in enumerate(raw_artifacts):
-        artifact = _validate_calibration_artifact(raw, i, hand_ids)
+        artifact = _validate_calibration_artifact(raw, i, hand_ids, robot)
         if artifact["artifact_id"] in artifacts_by_id:
             raise ValueError(f"标定产物 id「{artifact['artifact_id']}」重复")
         artifacts_by_id[artifact["artifact_id"]] = artifact
@@ -683,6 +732,7 @@ def validate_registry(payload: Any) -> dict[str, Any]:
         payload.get("target_model"), "target_model")
     return {
         "schema_version": 1,
+        "robot": robot,
         "active": active,
         "cabinet_frame": cabinet_frame,
         "target_model": target_model,

@@ -614,6 +614,26 @@ class CalibrationTests(unittest.TestCase):
         self.assertEqual(binding["resolved"]["extrinsic"]["subject_key"], "head")
         self.assertEqual(binding["resolved"]["hand_mount"]["subject"]["arm"], "right_arm")
 
+    def test_registered_robot_rejects_artifact_from_another_unit(self):
+        seed = reg.seed_registry()
+        seed["robot"] = {"unit_code": "H2-1336", "vendor": "unitree", "model": "h2"}
+        artifact = self._artifact(
+            "camera-extrinsic-1", "extrinsic",
+            {"kind": "camera", "unit_code": "H2-9999", "camera_role": "head"},
+            "head",
+        )
+        artifact.update({"unit_code": "H2-9999", "vendor": "unitree", "robot_model": "h2"})
+        seed["calibration_artifacts"] = [artifact]
+        with self.assertRaisesRegex(ValueError, "当前机器人"):
+            reg.validate_registry(seed)
+
+    def test_robot_identity_is_normalized(self):
+        seed = reg.seed_registry()
+        seed["robot"] = {"unit_code": "H2-1336", "vendor": "unitree", "model": "H2"}
+        self.assertEqual(reg.validate_registry(seed)["robot"], {
+            "unit_code": "H2-1336", "vendor": "unitree", "model": "h2",
+        })
+
     def test_binding_rejects_artifact_from_other_hand(self):
         seed = reg.seed_registry()
         seed["hands"].append({

@@ -36,17 +36,36 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _load_artifact(descriptor: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], Path]:
+def _load_artifact(
+    descriptor: dict[str, Any], robot: dict[str, str]
+) -> tuple[dict[str, Any], dict[str, Any], Path]:
     root = Path(str(descriptor.get("local_path") or "")).expanduser()
     if not root.is_absolute() or not root.is_dir():
         raise ValueError(
             f"产物 {descriptor.get('artifact_id')} 的 local_path 不可用: {root}")
     root = root.resolve()
     manifest = _read_json(root / "manifest.json", "manifest")
-    for field in ("artifact_id", "type", "subject_key", "run_id", "status"):
+    for field in (
+        "artifact_id", "unit_code", "vendor", "robot_model", "type", "subject_key",
+        "run_id", "status"
+    ):
         if str(manifest.get(field) or "") != str(descriptor.get(field) or ""):
             raise ValueError(
                 f"产物 {descriptor.get('artifact_id')} 的 manifest.{field} 与 18000 登记不一致")
+    if manifest.get("unit_code") != robot["unit_code"]:
+        raise ValueError(
+            f"产物 {descriptor.get('artifact_id')} 属于 {manifest.get('unit_code')}，"
+            f"当前机器人是 {robot['unit_code']}")
+    if str(manifest.get("robot_model") or "").lower() != robot["model"]:
+        raise ValueError(
+            f"产物 {descriptor.get('artifact_id')} 型号与当前机器人不一致")
+    if str(manifest.get("vendor") or "").lower() != robot["vendor"].lower():
+        raise ValueError(
+            f"产物 {descriptor.get('artifact_id')} 厂家与当前机器人不一致")
+    subject = manifest.get("subject") or {}
+    if subject.get("unit_code") != robot["unit_code"]:
+        raise ValueError(
+            f"产物 {descriptor.get('artifact_id')} 的 subject.unit_code 与当前机器人不一致")
     primary_name = str(manifest.get("primary_file") or "").strip()
     if not primary_name:
         raise ValueError(f"产物 {descriptor.get('artifact_id')} 缺少 primary_file")
@@ -73,6 +92,9 @@ def compose_bound_calibration(
     binding = calibration_binding(registry, arm, hand_id, camera_role)
     if binding is None:
         return None
+    robot = registry.get("robot")
+    if not isinstance(robot, dict):
+        raise ValueError("18000 独立标定绑定缺少整机身份，请先由 calib_workstation 登记")
     missing = [kind for kind in REQUIRED_RUNTIME_TYPES
                if kind not in binding.get("resolved", {})]
     if missing:
@@ -80,7 +102,7 @@ def compose_bound_calibration(
 
     loaded: dict[str, tuple[dict[str, Any], dict[str, Any], Path]] = {}
     for kind, descriptor in binding["resolved"].items():
-        loaded[kind] = _load_artifact(descriptor)
+        loaded[kind] = _load_artifact(descriptor, robot)
 
     extrinsic_manifest, extrinsic, _ = loaded["extrinsic"]
     mount_manifest, mount, _ = loaded["hand_mount"]
@@ -147,6 +169,8 @@ def compose_bound_calibration(
     }
     provenance = {
         "mode": "manifest_binding",
+        "unit_code": robot["unit_code"],
+        "robot_model": robot["model"],
         "arm": arm,
         "hand_id": hand_id,
         "camera_role": camera_role,
