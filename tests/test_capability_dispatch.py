@@ -138,6 +138,39 @@ class SpawnReachTests(_RegistryTestCase):
         self.assertEqual(cmd[cmd.index("--capability-url") + 1],
                          "http://127.0.0.1:18000")
 
+    def test_spawn_lets_reach_resolve_independent_artifact_binding(self):
+        registry = reg.seed_registry()
+        hand_id = registry["active"]["hand_id"]
+        hand_key = f"right_arm__{hand_id}"
+        registry["calibration_artifacts"] = [
+            {
+                "artifact_id": "extrinsic-1", "type": "extrinsic",
+                "subject": {"kind": "camera", "camera_role": "head"},
+                "subject_key": "head", "run_id": "run-1", "status": "active",
+                "local_path": "/calibrations/extrinsic/head/run-1",
+            },
+            {
+                "artifact_id": "mount-1", "type": "hand_mount",
+                "subject": {"kind": "hand", "arm": "right_arm", "hand_id": hand_id},
+                "subject_key": hand_key, "run_id": "run-1", "status": "active",
+                "local_path": f"/calibrations/hand_mount/{hand_key}/run-1",
+            },
+            {
+                "artifact_id": "tcp-1", "type": "tcp_profile",
+                "subject": {"kind": "hand", "arm": "right_arm", "hand_id": hand_id},
+                "subject_key": hand_key, "run_id": "run-1", "status": "active",
+                "local_path": f"/calibrations/tcp_profile/{hand_key}/run-1",
+            },
+        ]
+        registry["calibration_bindings"] = [{
+            "arm": "right_arm", "hand_id": hand_id, "camera_role": "head",
+            "artifacts": {"extrinsic": "extrinsic-1", "hand_mount": "mount-1", "tcp_profile": "tcp-1"},
+        }]
+        cmd, task = self._spawn(reg.validate_registry(registry), calib_status="ready")
+
+        self.assertNotIn("--calib", cmd)
+        self.assertTrue(any("独立标定产物绑定" in line for line in task["log"]))
+
     def test_spawn_fails_fast_when_capability_center_down(self):
         from core.capability_client import CapabilityUnavailable
 

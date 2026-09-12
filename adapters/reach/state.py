@@ -117,7 +117,8 @@ state = ReachState()
 
 
 def configure(*, camera, wrist_camera=None, robot_model, robot_id: str, chain_id: str,
-              calib_path: Path | None, camera_only: bool = False,
+              calib_path: Path | None, calibration: dict[str, Any] | None = None,
+              camera_only: bool = False,
               robot_only: bool = False,
               collision_checker=None, ik_solver=None, arm_factory=None,
               joints_reader=None, torso_reader=None, motors_reader=None,
@@ -125,7 +126,7 @@ def configure(*, camera, wrist_camera=None, robot_model, robot_id: str, chain_id
               yolo_base: str = "http://127.0.0.1:7004",
               gravity_profile: dict[str, Any] | None = None,
               settle_trim: str = "off") -> None:
-    """由 reach_server 调用。calib_path 是 handeye3d_result.json。
+    """由 reach_server 调用。calib_path 是旧合并文件；calibration 是绑定产物的内存组合。
 
     camera_only=True 时不加载手眼标定，只开放相机流与相机系深度观测；
     机器人坐标相关接口由 reach_server 的保护层禁用。
@@ -144,17 +145,23 @@ def configure(*, camera, wrist_camera=None, robot_model, robot_id: str, chain_id
     tcp_definition: dict[str, Any] = {"type": "calibration_reference"}
     wrist_link = None
     base_link = "torso_link"
+    applied_tool_out_mm = float(tool_out_mm)
     # 无标定降级模式：不是相机预览，但激活组合还没有手眼标定归档。机器人侧
     # （DDS 订阅、接管、关节录制 / 回放）照常可用；相机→机器人坐标全部为
     # None，TCP 退化为腕系原点（p_tool = 0），依赖标定的接口由 reach_server
     # 的保护层按 handeye_ready 拒绝
-    handeye_missing = (not camera_only) and calib_path is None
+    handeye_missing = (not camera_only) and calib_path is None and calibration is None
     if handeye_missing:
         p_tool = [0.0, 0.0, 0.0]
         tcp_definition = {"type": "wrist_origin_fallback"}
         wrist_link = chain_id.replace("_arm", "_wrist_yaw_link")
     elif not camera_only:
-        calib = json.loads(Path(calib_path).read_text())
+        calib = (dict(calibration) if calibration is not None
+                 else json.loads(Path(calib_path).read_text()))
+        # 新 tcp_profile 的点已经是模型特征点经 T_wrist2hand 得到的最终腕系
+        # TCP，不再叠加旧合并标定为“贴纸点→指尖”保留的 tool_out_mm。
+        if (calib.get("calibration_bundle") or {}).get("mode") == "manifest_binding":
+            applied_tool_out_mm = 0.0
         T_cam2torso = np.asarray(calib["T_cam2base"], dtype=float).reshape(4, 4)
         base_link = calib.get("base_link", "torso_link")
 
@@ -189,7 +196,7 @@ def configure(*, camera, wrist_camera=None, robot_model, robot_id: str, chain_id
         else:
             p_tool = [float(v) for v in calib["p_tool_wrist_m"]]
             tool_reference_marker = calib_reference_marker
-        p_tool[0] += float(tool_out_mm) / 1000.0
+        p_tool[0] += applied_tool_out_mm / 1000.0
         wrist_link = calib.get("wrist_link", chain_id.replace("_arm", "_wrist_yaw_link"))
 
     state.camera = camera
@@ -237,12 +244,15 @@ def configure(*, camera, wrist_camera=None, robot_model, robot_id: str, chain_id
     else:
         state.calib_meta = {
             "ready": True,
-            "path": str(calib_path),
+            "path": str(calib_path) if calib_path is not None else None,
+            "source": ((calib.get("calibration_bundle") or {}).get("mode")
+                       or "legacy_merged_file"),
+            "artifact_ids": (calib.get("calibration_bundle") or {}).get("artifact_ids"),
             "base_link": base_link,
             "solved_at": calib.get("solved_at"),
             "rms_mm": calib.get("residual_mm", {}).get("rms"),
             "num_samples": calib.get("num_samples"),
-            "tool_out_mm": float(tool_out_mm),
+            "tool_out_mm": applied_tool_out_mm,
             "wrist_link": wrist_link,
             "marker_count": len(p_tool_by_marker),
             "tool_reference_marker": tool_reference_marker,

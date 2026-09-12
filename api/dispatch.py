@@ -115,6 +115,7 @@ from core.capability_client import (
 from core.capability_registry import (
     ARM_LABELS,
     IMPLEMENTED_METHODS,
+    calibration_binding,
     calibration_info,
     capability_for,
     claimed_sequence_names,
@@ -229,6 +230,9 @@ def _active_arm_context() -> dict[str, Any] | None:
         return None
     hand = find_hand(registry, active["hand_id"]) or {}
     calib = calibration_info(registry, active["arm"], active["hand_id"])
+    camera_role = str(active.get("camera_role") or "head")
+    binding = calibration_binding(
+        registry, active["arm"], active["hand_id"], camera_role)
     return {
         "arm": active["arm"],
         "hand_id": active["hand_id"],
@@ -237,6 +241,8 @@ def _active_arm_context() -> dict[str, Any] | None:
         "calib_status": calib["status"],
         "calib_path": (str(ROOT / calib["path"])
                        if calib["status"] == "ready" else None),
+        "camera_role": camera_role,
+        "calibration_binding": binding,
     }
 
 
@@ -291,13 +297,21 @@ def _spawn_reach(task: dict) -> None:
     log_path = log_dir / f"dispatch_reach_{datetime.now():%Y%m%d_%H%M%S}.log"
     chain = "right_arm"
     calib = _args.calib
+    camera_name = _args.camera_name
     tool_out_mm = _args.tool_out_mm
+    use_artifact_binding = False
     ctx = _active_arm_context()
     if ctx is not None:
         chain = ctx["arm"]
+        camera_name = ctx["camera_role"]
         if ctx["tool_out_mm"] is not None:
             tool_out_mm = ctx["tool_out_mm"]
-        if ctx["calib_path"]:
+        if ctx["calibration_binding"] is not None:
+            use_artifact_binding = True
+            task["log"].append(
+                f"激活组合 {ARM_LABELS.get(chain, chain)}+{ctx['hand_name']}："
+                f"使用 18000 {ctx['camera_role']} 独立标定产物绑定")
+        elif ctx["calib_path"]:
             calib = ctx["calib_path"]
             task["log"].append(
                 f"激活组合 {ARM_LABELS.get(chain, chain)}+{ctx['hand_name']}："
@@ -314,15 +328,16 @@ def _spawn_reach(task: dict) -> None:
         "--camera-source", "zmq",
         "--camera-host", _args.camera_host,
         "--camera-request-port", str(_args.camera_request_port),
-        "--camera-name", _args.camera_name,
+        "--camera-name", camera_name,
         "--camera-rgbd-calib", _args.camera_rgbd_calib,
         "--network-interface", _args.network_interface,
         "--chain", chain,
-        "--calib", calib,
         "--tool-out-mm", str(tool_out_mm),
         "--yolo-base", _args.yolo,
         "--capability-url", _args.capability_url,
     ]
+    if not use_artifact_binding:
+        cmd.extend(["--calib", calib])
     if _args.camera_port is not None:
         cmd.extend(["--camera-port", str(_args.camera_port)])
     task["log"].append(f"启动 reach_server: {' '.join(cmd[1:])}")

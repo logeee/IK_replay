@@ -136,14 +136,20 @@ python reach_server.py --camera-only --camera-host 127.0.0.1
 
 The 18001 viewer resolves the hand from the 18000 capability registry; it does
 not choose a hand model independently. Each hand entry binds
-`hand_web_device_id` (for example `brainco_revo2`) and `tcp_point_id`. The
-active combination's merged 7015 result must be archived at:
+`hand_web_device_id` (for example `brainco_revo2`) and `tcp_point_id`.
+The preferred source is the `calib-manifest/2` binding selected by
+`active.arm + active.hand_id + active.camera_role` in 18000. It independently
+loads and hash-checks `extrinsic`, `hand_mount`, and `tcp_profile`, then composes
+the existing runtime dictionary in memory. No second merged file is generated.
+
+For installations not yet migrated, the legacy merged result remains available at:
 
 ```text
 config/hand_eye/<arm>__<hand_id>/handeye3d_result.json
 ```
 
-At startup, `reach_server.py` rejects arm, hand, design-side, wrist-link, or TCP
+An explicit `--calib` also remains a legacy/debug override. At startup,
+`reach_server.py` rejects arm, hand, design-side, wrist-link, or TCP
 feature-point mismatches. It also checks the physical camera serial and color
 profile before applying `T_cam2base`. It attaches the 18089 URDF to the robot
 wrist with `T_wrist2hand`, then reads normalized finger positions from the

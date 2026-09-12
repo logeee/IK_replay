@@ -291,6 +291,7 @@ def main() -> int:
     )
     from core.capability_registry import (
         calib_abs_path,
+        calibration_binding,
         claimed_sequence_names,
         claimed_waypoint_names,
         enabled_capabilities,
@@ -332,13 +333,40 @@ def main() -> int:
         print(f"[reach] 执行链 = {args.chain}（录制 / 回放只认该臂的 "
               f"{'R-' if args.chain == 'right_arm' else 'L-'} 文件）")
         calib_explicit = args.calib is not None
+        calibration = None
+        calibration_provenance = None
         if args.calib is None:
-            args.calib = calib_abs_path(
-                str(active_combo["arm"]), str(active_combo["hand_id"]))
+            camera_role = str(active_combo.get("camera_role") or "head")
+            binding = calibration_binding(
+                capability_registry, str(active_combo["arm"]),
+                str(active_combo["hand_id"]), camera_role)
+            if binding is not None:
+                # 独立绑定的 camera_role 同时决定运行流，避免 waist 外参被
+                # 静态默认的 head 流误用。显式 --calib 调试仍保留 CLI 选择。
+                args.camera_name = camera_role
+                from core.calibration_bundle import compose_bound_calibration
+                try:
+                    composed = compose_bound_calibration(
+                        capability_registry, str(active_combo["arm"]),
+                        str(active_combo["hand_id"]), camera_role)
+                    assert composed is not None
+                    calibration, calibration_provenance = composed
+                    print(
+                        f"[reach] 标定 = 18000 独立产物绑定 "
+                        f"({camera_role}, {len(calibration_provenance['artifact_ids'])} 项)"
+                    )
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    print(f"[reach] 18000 标定绑定无法加载，拒绝使用不完整标定: {exc}")
+                    return 1
+            else:
+                args.calib = calib_abs_path(
+                    str(active_combo["arm"]), str(active_combo["hand_id"]))
         if args.tool_out_mm is None:
             args.tool_out_mm = float(active_hand.get("tool_out_mm", 0.0))
     else:
         calib_explicit = False
+        calibration = None
+        calibration_provenance = None
         if args.tool_out_mm is None:
             args.tool_out_mm = 0.0
         if args.chain is None:
@@ -396,7 +424,8 @@ def main() -> int:
     # 手眼标定缺失 → 降级启动（不拒绝）：机器人侧照常，依赖标定的接口被保护层
     # 拒绝。显式 --calib 指向不存在的文件仍是错误（那是拼错路径，不是没标定）
     handeye_missing = False
-    if not args.camera_only and not args.calib.exists():
+    if (not args.camera_only and calibration is None
+            and (args.calib is None or not args.calib.exists())):
         if calib_explicit:
             print(f"[reach] !!! --calib 指定的标定文件不存在: {args.calib}")
             return 1
@@ -431,14 +460,14 @@ def main() -> int:
     )
 
     hand_runtime = None
-    calibration = None
     configure_hand_runtime(None)
     if handeye_missing:
         print("[reach] 灵巧手 18089 运行时依赖标定里的 T_wrist2hand / TCP，无标定模式不加载"
               "（本服务的手位下发不可用，请用 18003 配置页直接调手）")
     elif not args.camera_only:
         try:
-            calibration = json.loads(args.calib.read_text(encoding="utf-8"))
+            if calibration is None:
+                calibration = json.loads(args.calib.read_text(encoding="utf-8"))
             hand_config = build_hand_runtime_config(
                 registry=capability_registry,
                 calibration=calibration,
@@ -499,6 +528,7 @@ def main() -> int:
                 handeye_missing = True
                 args.calib = None
                 calibration = None
+                calibration_provenance = None
                 hand_runtime = None
                 configure_hand_runtime(None)
                 print("[reach] ⚠ 已按「无标定」降级启动：视觉选点 / 笛卡尔规划 / TCP 切换 / "
@@ -564,6 +594,7 @@ def main() -> int:
         robot_model=robot_model, robot_id=args.robot,
         chain_id=args.chain,
         calib_path=None if (args.camera_only or handeye_missing) else args.calib,
+        calibration=None if (args.camera_only or handeye_missing) else calibration,
         camera_only=args.camera_only,
         robot_only=args.robot_only,
         collision_checker=app_module.collision_checkers[args.robot],

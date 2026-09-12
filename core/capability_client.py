@@ -19,7 +19,12 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from core.capability_registry import ARM_LABELS, find_hand, validate_registry
+from core.capability_registry import (
+    ARM_LABELS,
+    calibration_binding,
+    find_hand,
+    validate_registry,
+)
 
 DEFAULT_CAPABILITY_URL = "http://127.0.0.1:18000"
 REGISTRY_ENDPOINT = "/api/capability/registry"
@@ -119,12 +124,17 @@ def describe_active(payload: dict[str, Any]) -> str:
     if not active:
         return "18000 未设置激活组合（臂+手型号）"
     hand = find_hand(registry, active["hand_id"]) or {}
-    status = next(
-        (item.get("status") for item in payload.get("calibrations") or []
-         if item.get("arm") == active.get("arm")
-         and item.get("hand_id") == active.get("hand_id")),
-        "missing",
-    )
+    role = str(active.get("camera_role") or "head")
+    binding = calibration_binding(registry, active["arm"], active["hand_id"], role)
+    if binding is not None:
+        status = f"bound:{role}"
+    else:
+        status = next(
+            (item.get("status") for item in payload.get("calibrations") or []
+             if item.get("arm") == active.get("arm")
+             and item.get("hand_id") == active.get("hand_id")),
+            "missing",
+        )
     backend = active.get("motion_backend") or "legacy"
     return (f"激活组合: {ARM_LABELS.get(active.get('arm'), active.get('arm'))}"
             f" + {hand.get('name') or active.get('hand_id')}（标定 {status}，"
