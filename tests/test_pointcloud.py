@@ -203,6 +203,28 @@ class SemanticColoringTest(unittest.TestCase):
             {(5, 5), (6, 5), (5, 6), (6, 6)}.issubset(sampled_pixels)
         )
 
+    def test_adaptive_limit_reduces_oversized_dense_region(self):
+        depth = np.full((20, 20), 1000, dtype=np.float32)
+        bgr = np.zeros((20, 20, 3), dtype=np.uint8)
+        box = {"cls": 2, "conf": 0.9, "xyxy": [0, 0, 19, 19]}
+
+        with self.assertRaisesRegex(ValueError, "超过上限"):
+            build_pointcloud(
+                depth, bgr, (100, 100, 10, 10), [box],
+                stride=8, max_points=100,
+            )
+
+        cloud = build_pointcloud(
+            depth, bgr, (100, 100, 10, 10), [box],
+            stride=8, max_points=100, adaptive_limit=True,
+        )
+
+        self.assertEqual(cloud.count, 100)
+        self.assertEqual(len(np.unique(cloud.pixels, axis=0)), 100)
+        self.assertTrue(np.all(cloud.class_ids == 2))
+        self.assertLess(int(cloud.pixels[:, 1].min()), 2)
+        self.assertGreater(int(cloud.pixels[:, 1].max()), 17)
+
     def test_dense_padding_does_not_expand_semantic_box_label(self):
         depth = np.full((8, 8), 1000, dtype=np.float32)
         bgr = np.zeros((8, 8, 3), dtype=np.uint8)

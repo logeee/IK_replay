@@ -84,6 +84,7 @@ _model_error = ""
 _names: dict[int, str] = {}
 _default_conf = 0.25
 _box_padding_ratio = 0.1
+_viewer_max_points = 350_000
 _model_lock = threading.Lock()
 _capture_lock = threading.Lock()
 _auto_target_lock = threading.Lock()
@@ -436,6 +437,8 @@ def capture(body: dict | None = None):
             stride=stride,
             z_min_m=z_min_m,
             z_max_m=z_max_m,
+            max_points=_viewer_max_points,
+            adaptive_limit=True,
             dense_box_sampling=True,
             box_padding_ratio=_box_padding_ratio,
             distortion=distortion,
@@ -482,6 +485,8 @@ def capture(body: dict | None = None):
         "data_url": f"/api/pointcloud/data/{capture_id}",
         "image_url": f"/api/pointcloud/image/{capture_id}",
         "point_count": cloud.count,
+        "point_limit": _viewer_max_points,
+        "adaptive_point_limit": True,
         "stride": stride,
         "dense_box_sampling": True,
         "box_padding_ratio": _box_padding_ratio,

@@ -130,6 +130,7 @@ def build_pointcloud(
     z_min_m: float = 0.15,
     z_max_m: float = 3.0,
     max_points: int = 350_000,
+    adaptive_limit: bool = False,
     dense_box_sampling: bool = True,
     box_padding_ratio: float = 0.1,
     distortion: np.ndarray | list[float] | tuple[float, ...] | None = None,
@@ -138,7 +139,9 @@ def build_pointcloud(
 
     The background uses ``stride`` sampling. By default, each valid YOLO box
     is expanded by ``box_padding_ratio`` and sampled at every pixel so that
-    interactive picking remains precise near detected targets.
+    interactive picking remains precise near detected targets. When
+    ``adaptive_limit`` is enabled, an oversized cloud is evenly reduced to
+    ``max_points`` instead of rejecting the capture.
     """
     depth = np.asarray(depth_mm)
     image = np.asarray(bgr)
@@ -184,11 +187,25 @@ def build_pointcloud(
     u = uu[valid].astype(np.uint16, copy=False)
     v = vv[valid].astype(np.uint16, copy=False)
     z_valid = z[valid]
-    count = int(z_valid.size)
-    if count > max_points:
+    candidate_count = int(z_valid.size)
+    if candidate_count > max_points and not adaptive_limit:
         raise ValueError(
-            f"点数 {count} 超过上限 {max_points}，请增大 stride 或缩小深度范围"
+            f"点数 {candidate_count} 超过上限 {max_points}，"
+            "请增大 stride 或缩小深度范围"
         )
+    if candidate_count > max_points:
+        # Row-major candidates cover the image from top to bottom. Selecting
+        # the centre of each equal-sized interval keeps spatial coverage and
+        # detection proportions deterministic without allocating a random
+        # permutation as large as the source frame.
+        keep = (
+            np.arange(max_points, dtype=np.int64) * candidate_count
+            + candidate_count // 2
+        ) // max_points
+        u = u[keep]
+        v = v[keep]
+        z_valid = z_valid[keep]
+    count = int(z_valid.size)
 
     positions = np.empty((count, 3), dtype="<f4")
     normalized = _normalized_pixels(u, v, intrinsics, distortion)
