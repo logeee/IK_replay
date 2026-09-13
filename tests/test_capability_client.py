@@ -149,6 +149,7 @@ class DescribeActiveTests(unittest.TestCase):
         self.assertIn("右臂", line)
         self.assertIn("因时-右-1", line)
         self.assertIn("ready", line)
+        self.assertIn("3D 标定实测", line)
 
     def test_no_active_combo(self):
         registry = reg.seed_registry()

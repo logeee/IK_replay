@@ -130,3 +130,39 @@ def test_robot_identity_hydrates_pre_identity_artifact(tmp_path: Path):
     saved = reg.load_registry(registry_path)
     assert saved["calibration_artifacts"][0]["unit_code"] == "H2-1336"
     assert saved["calibration_artifacts"][0]["subject"]["unit_code"] == "H2-1336"
+
+
+def test_active_combo_can_select_mount_profile(tmp_path: Path):
+    registry_path = tmp_path / "capability_registry.json"
+    registry = reg.seed_registry()
+    hand = registry["hands"][0]
+    hand["mount_profiles"].append({
+        "id": "cad_nominal",
+        "name": "CAD 名义装配",
+        "source": "fixed",
+        "hand_base_link": "base_link",
+        "model": {
+            "source": "project",
+            "root": "hands/revo2_left_cad",
+            "urdf": "revo2_left_cad.urdf",
+        },
+        "T_wrist2hand": [
+            [1, 0, 0, 0.1], [0, 1, 0, 0],
+            [0, 0, 1, 0], [0, 0, 0, 1],
+        ],
+    })
+    reg.save_registry(registry, registry_path)
+    client = TestClient(capability_server.app)
+
+    with patch.object(capability_server, "REGISTRY_PATH", registry_path):
+        response = client.post("/api/capability/active", json={
+            "arm": "right_arm",
+            "hand_id": hand["id"],
+            "camera_role": "head",
+            "motion_backend": "legacy",
+            "mount_profile_id": "cad_nominal",
+        })
+
+    assert response.status_code == 200, response.text
+    assert response.json()["registry"]["active"]["mount_profile_id"] == "cad_nominal"
+    assert reg.load_registry(registry_path)["active"]["mount_profile_id"] == "cad_nominal"
