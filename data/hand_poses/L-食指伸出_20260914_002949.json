@@ -1,0 +1,19 @@
+{
+  "name": "L-食指伸出",
+  "device_id": "brainco_revo2",
+  "side": "left",
+  "positions": [
+    1.0,
+    0.0,
+    0.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "created_at": "2026-09-14 00:29:49",
+  "arm": "left_arm",
+  "recorded_combo": {
+    "arm": "left_arm",
+    "hand_id": "qiangnao-revo2-left"
+  }
+}
