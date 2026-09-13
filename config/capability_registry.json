@@ -9,7 +9,8 @@
     "arm": "left_arm",
     "hand_id": "qiangnao-revo2-left",
     "camera_role": "head",
-    "motion_backend": "pink"
+    "motion_backend": "pink",
+    "mount_profile_id": "measured_3d"
   },
   "cabinet_frame": {
     "method": "method2_panel_edges",
@@ -84,30 +85,64 @@
       "tool_out_mm": 0.0,
       "hand_web_device_id": "brainco_revo2",
       "tcp_point_id": "",
+      "mount_profiles": [
+        {
+          "id": "measured_3d",
+          "name": "3D 标定实测",
+          "source": "calibration",
+          "hand_base_link": "base_link",
+          "model": {
+            "source": "device_default",
+            "root": "",
+            "urdf": ""
+          },
+          "T_wrist2hand": null,
+          "notes": "18005 实测安装位姿，使用现有 BrainCo Revo2 模型"
+        },
+        {
+          "id": "cad_nominal",
+          "name": "CAD 名义装配",
+          "source": "fixed",
+          "hand_base_link": "base_link",
+          "model": {
+            "source": "project",
+            "root": "hands/revo2_left_cad",
+            "urdf": "revo2_left_cad.urdf"
+          },
+          "T_wrist2hand": [
+            [
+              0.000001268272,
+              -0.999999682932,
+              -0.000796325701,
+              0.104597618523
+            ],
+            [
+              0.999998731728,
+              0.0,
+              0.001592652916,
+              0.0
+            ],
+            [
+              -0.001592652412,
+              -0.000796326711,
+              0.99999841466,
+              -0.00014865
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "notes": "同事 H2_handcart_tool_revo2_left 总装配中的 CAD 名义安装关系"
+        }
+      ],
       "notes": ""
     }
   ],
   "calibrations": [],
   "calibration_artifacts": [
-    {
-      "artifact_id": "ad69c53b-bfa4-5078-8116-b19cc23e6c8e",
-      "unit_code": "H2-1336",
-      "vendor": "unitree",
-      "robot_model": "h2",
-      "type": "intrinsic",
-      "subject": {
-        "kind": "camera",
-        "unit_code": "H2-1336",
-        "camera_role": "head",
-        "camera_serial": "CP0X663000B7"
-      },
-      "subject_key": "head",
-      "run_id": "Test-head-1",
-      "status": "active",
-      "local_path": "/home/robot/yx/project/calib/calib_workstation_data/H2-1336/calibrations/intrinsic/head/Test-head-1",
-      "cloud_remote_id": 3,
-      "registered_at": "2026-09-13T23:05:34"
-    },
     {
       "artifact_id": "78067c81-1206-5e6f-8317-89e885962553",
       "unit_code": "H2-1336",
@@ -128,25 +163,6 @@
       "registered_at": "2026-09-13T23:05:45"
     },
     {
-      "artifact_id": "1f3497ac-1ba5-50b4-a40f-a9b0707ea1c3",
-      "unit_code": "H2-1336",
-      "vendor": "unitree",
-      "robot_model": "h2",
-      "type": "extrinsic",
-      "subject": {
-        "kind": "camera",
-        "unit_code": "H2-1336",
-        "camera_role": "head",
-        "camera_serial": "CP0X663000B7"
-      },
-      "subject_key": "head",
-      "run_id": "Test-head-1",
-      "status": "active",
-      "local_path": "/home/robot/yx/project/calib/calib_workstation_data/H2-1336/calibrations/extrinsic/head/Test-head-1",
-      "cloud_remote_id": 4,
-      "registered_at": "2026-09-13T23:05:45"
-    },
-    {
       "artifact_id": "6a87f863-d075-5ac9-89de-3dc3fcfe2853",
       "unit_code": "H2-1336",
       "vendor": "unitree",
@@ -164,9 +180,100 @@
       "local_path": "/home/robot/yx/project/calib/calib_workstation_data/H2-1336/calibrations/extrinsic/waist/Test-yao-1",
       "cloud_remote_id": 2,
       "registered_at": "2026-09-13T23:05:45"
+    },
+    {
+      "artifact_id": "1f3497ac-1ba5-50b4-a40f-a9b0707ea1c3",
+      "unit_code": "H2-1336",
+      "vendor": "unitree",
+      "robot_model": "h2",
+      "type": "extrinsic",
+      "subject": {
+        "kind": "camera",
+        "unit_code": "H2-1336",
+        "camera_role": "head",
+        "camera_serial": "CP0X663000B7"
+      },
+      "subject_key": "head",
+      "run_id": "Test-head-1",
+      "status": "active",
+      "local_path": "/home/robot/yx/project/calib/calib_workstation_data/H2-1336/calibrations/extrinsic/head/Test-head-1",
+      "cloud_remote_id": 4,
+      "registered_at": "2026-09-13T23:19:21"
+    },
+    {
+      "artifact_id": "ad69c53b-bfa4-5078-8116-b19cc23e6c8e",
+      "unit_code": "H2-1336",
+      "vendor": "unitree",
+      "robot_model": "h2",
+      "type": "intrinsic",
+      "subject": {
+        "kind": "camera",
+        "unit_code": "H2-1336",
+        "camera_role": "head",
+        "camera_serial": "CP0X663000B7"
+      },
+      "subject_key": "head",
+      "run_id": "Test-head-1",
+      "status": "active",
+      "local_path": "/home/robot/yx/project/calib/calib_workstation_data/H2-1336/calibrations/intrinsic/head/Test-head-1",
+      "cloud_remote_id": 3,
+      "registered_at": "2026-09-13T23:19:21"
+    },
+    {
+      "artifact_id": "b61d23a3-a534-5b46-92ad-c71c8e002f3f",
+      "unit_code": "H2-1336",
+      "vendor": "unitree",
+      "robot_model": "h2",
+      "type": "hand_mount",
+      "subject": {
+        "kind": "hand",
+        "unit_code": "H2-1336",
+        "arm": "left_arm",
+        "hand_id": "qiangnao-revo2-left",
+        "hand_serial": "强脑-Revo2-左-安装方式一"
+      },
+      "subject_key": "left_arm__qiangnao-revo2-left",
+      "run_id": "mount-20260913-231748",
+      "status": "active",
+      "local_path": "/home/robot/yx/project/calib/calib_workstation_data/H2-1336/calibrations/hand_mount/left_arm__qiangnao-revo2-left/mount-20260913-231748",
+      "cloud_remote_id": 5,
+      "registered_at": "2026-09-13T23:19:21"
+    },
+    {
+      "artifact_id": "67369e4f-b861-5819-9688-5997bd1927f6",
+      "unit_code": "H2-1336",
+      "vendor": "unitree",
+      "robot_model": "h2",
+      "type": "tcp_profile",
+      "subject": {
+        "kind": "hand",
+        "unit_code": "H2-1336",
+        "arm": "left_arm",
+        "hand_id": "qiangnao-revo2-left",
+        "hand_serial": "强脑-Revo2-左-安装方式一"
+      },
+      "subject_key": "left_arm__qiangnao-revo2-left",
+      "run_id": "mount-20260913-231748",
+      "status": "active",
+      "local_path": "/home/robot/yx/project/calib/calib_workstation_data/H2-1336/calibrations/tcp_profile/left_arm__qiangnao-revo2-left/mount-20260913-231748",
+      "cloud_remote_id": 6,
+      "registered_at": "2026-09-13T23:19:21"
     }
   ],
-  "calibration_bindings": [],
+  "calibration_bindings": [
+    {
+      "arm": "left_arm",
+      "hand_id": "qiangnao-revo2-left",
+      "camera_role": "head",
+      "artifacts": {
+        "extrinsic": "1f3497ac-1ba5-50b4-a40f-a9b0707ea1c3",
+        "intrinsic": "ad69c53b-bfa4-5078-8116-b19cc23e6c8e",
+        "hand_mount": "b61d23a3-a534-5b46-92ad-c71c8e002f3f",
+        "tcp_profile": "67369e4f-b861-5819-9688-5997bd1927f6"
+      },
+      "updated_at": "2026-09-13T23:19:21"
+    }
+  ],
   "capabilities": [
     {
       "id": "cap-rtl-flick",
@@ -191,7 +298,7 @@
         "pose_pattern": "^\\s*(?:[LR]-)?(\\d+(?:\\.\\d+)?)-起手式新\\s*$",
         "endpoint_pattern": ""
       },
-      "enabled": true,
+      "enabled": false,
       "notes": "真机已验证"
     },
     {
@@ -216,7 +323,7 @@
         "pose_pattern": "^\\s*(?:[LR]-)?(\\d+(?:\\.\\d+)?)-左-起手式\\s*$",
         "endpoint_pattern": ""
       },
-      "enabled": true,
+      "enabled": false,
       "notes": "真机已验证（工厂柜）"
     },
     {
@@ -237,7 +344,7 @@
         "pose_pattern": "",
         "endpoint_pattern": ""
       },
-      "enabled": true,
+      "enabled": false,
       "notes": ""
     },
     {

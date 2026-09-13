@@ -110,11 +110,18 @@ async function applyActive(
   handId: string,
   cameraRole: string,
   motionBackend: MotionBackend = "legacy",
+  mountProfileId = "",
 ) {
   await mutate(
     "/api/capability/active",
-    { arm, hand_id: handId, camera_role: cameraRole, motion_backend: motionBackend },
-    "激活组合已切换（重启 17001/18001 生效）",
+    {
+      arm,
+      hand_id: handId,
+      camera_role: cameraRole,
+      motion_backend: motionBackend,
+      mount_profile_id: mountProfileId,
+    },
+    "激活组合已切换（重启 17001/18001/18003 生效）",
   );
 }
 
@@ -153,7 +160,7 @@ onMounted(reload);
   <div class="topbar">
     <span class="brand">能力配置中心<span class="dot">·</span>18000</span>
     <span class="hint">
-      四级：臂侧 → 手型号 → 任务配置 → 实现方式 ｜ 修改保存后重启 17001 / 18001 生效（柜面坐标系配置重启 7005）
+      四级：臂侧 → 手型号 → 任务配置 → 实现方式 ｜ 安装方案修改后重启 17001 / 18001 / 18003 生效（柜面坐标系配置重启 7005）
     </span>
     <span class="spacer"></span>
     <span v-if="payload?.registry.robot" class="robot-id">

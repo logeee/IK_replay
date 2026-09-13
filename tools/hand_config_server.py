@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
@@ -47,6 +46,9 @@ from core.hand_runtime import (  # noqa: E402
     _DEFAULT_PREVIEWS,
     _default_fetch_json,
     _default_post_json,
+    apply_mount_profile,
+    build_hand_model_descriptor,
+    selected_mount_profile,
 )
 
 PAGE_PATH = ROOT / "web" / "hand-config.html"
@@ -56,6 +58,9 @@ DEFAULT_HAND_ASSETS_ROOT = Path("/home/robot/eai-teleop-studio/assets")
 app = FastAPI(title="灵巧手配置（18003）")
 # 三维视图要用 three.js（/web/vendor）；/assets 在 main() 里按参数挂载
 app.mount("/web", StaticFiles(directory=ROOT / "web"), name="web")
+# CAD 安装方案随 IK_replay 入库；与 18089 自带手模型的 /assets 分开挂载。
+app.mount("/project-assets", StaticFiles(directory=ROOT / "assets"),
+          name="project-assets")
 
 # main() 启动时按 18000 激活组合填好
 CONTEXT: dict[str, Any] = {}
@@ -85,19 +90,16 @@ def index() -> FileResponse:
 
 def _model_info() -> dict[str, Any] | None:
     """三维视图的模型描述：URDF 地址 + 归一化关节映射（同 18001）。"""
-    preview = _DEFAULT_PREVIEWS.get(str(CONTEXT.get("device_id") or ""))
-    if not preview:
+    device_id = str(CONTEXT.get("device_id") or "")
+    if device_id not in _DEFAULT_PREVIEWS:
         return None
-    preview = deepcopy(preview)
-    model_root = str(preview.get("model_root") or "").rstrip("/")
-    urdf = str(preview.get("urdf") or "").format(side=CONTEXT["side"])
-    if not model_root or not urdf:
-        return None
-    return {
-        "urdf_url": f"{model_root}/{urdf}",
-        "mesh_base_url": f"{model_root}/",
-        "preview": preview,
-    }
+    return build_hand_model_descriptor(
+        device_id=device_id,
+        side=CONTEXT["side"],
+        profile=CONTEXT["mount_profile"],
+        device_base_url="/assets",
+        project_base_url="/project-assets",
+    )
 
 
 @app.get("/api/hand/info")
@@ -109,6 +111,10 @@ def hand_info() -> dict:
         "device_id": CONTEXT["device_id"],
         "side": CONTEXT["side"],
         "service_url": CONTEXT["service_url"],
+        "mount_profile": {
+            key: CONTEXT["mount_profile"].get(key)
+            for key in ("id", "name", "source")
+        },
         "model": _model_info(),
     }
 
@@ -396,30 +402,51 @@ def main() -> int:
         device_id=device_id,
         side=str(hand.get("design_side") or "right"),
         service_url=args.hand_service_url,
+        mount_profile=selected_mount_profile(
+            registry, str(active.get("hand_id") or "")),
     )
 
     # 手眼标定：T_wrist2hand（手系点→腕系）与标定指尖点。缺标定时
     # TCP 点仍可在手坐标系里取/存，只是没有腕系换算与标定点列表。
     import json as _json
 
-    from core.capability_registry import calib_abs_path
+    from core.capability_registry import calib_abs_path, calibration_binding
 
-    calib_file = calib_abs_path(
-        str(active.get("arm")), str(active.get("hand_id")))
+    arm_id = str(active.get("arm"))
+    hand_id = str(active.get("hand_id"))
+    camera_role = str(active.get("camera_role") or "head")
+    calib_file = calib_abs_path(arm_id, hand_id)
     CONTEXT["T_wrist2hand"] = None
     CONTEXT["calib_tcp_points"] = []
-    if calib_file.is_file():
-        try:
+    try:
+        calib = None
+        binding = calibration_binding(registry, arm_id, hand_id, camera_role)
+        if binding is not None:
+            from core.calibration_bundle import compose_bound_calibration
+
+            composed = compose_bound_calibration(
+                registry, arm_id, hand_id, camera_role)
+            if composed is not None:
+                calib, _ = composed
+        elif calib_file.is_file():
             calib = _json.loads(calib_file.read_text(encoding="utf-8"))
+        # fixed CAD 方案即使没有旧合并标定，也能提供手系→腕系安装矩阵；
+        # 这里只负责 18003 显示/取点，不因此宣称相机外参已就绪。
+        if calib is None and CONTEXT["mount_profile"].get("source") == "fixed":
+            calib = {"arm": arm_id, "hand_id": hand_id}
+        if calib is not None:
+            calib, profile = apply_mount_profile(registry, calib)
+            CONTEXT["mount_profile"] = profile
             CONTEXT["T_wrist2hand"] = calib.get("T_wrist2hand")
             CONTEXT["calib_tcp_points"] = tcp_points.calib_tcp_points(calib)
-        except (ValueError, OSError) as exc:
-            print(f"[手配置] 标定文件解析失败（TCP 腕系换算不可用）: {exc}")
-    else:
+    except (ValueError, OSError) as exc:
+        print(f"[手配置] 安装方案/标定解析失败（TCP 腕系换算不可用）: {exc}")
+    if CONTEXT["T_wrist2hand"] is None:
         print(f"[手配置] 该组合还没有手眼标定: {calib_file}")
 
     print(f"[手配置] 激活组合: {CONTEXT['hand_name']}"
-          f"（{device_id} · {CONTEXT['side']}）")
+          f"（{device_id} · {CONTEXT['side']}）· 安装方案 "
+          f"{CONTEXT['mount_profile']['name']}")
     print(f"[手配置] 姿态库: {hand_poses.POSES_DIR} · "
           f"TCP 点库: {tcp_points.POINTS_DIR}"
           f"（标定点 {len(CONTEXT['calib_tcp_points'])} 个）")

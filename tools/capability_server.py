@@ -144,8 +144,16 @@ async def hands_upsert(request: Request):
         hand_id = str(body.get("id") or "").strip()
         hands = registry["hands"]
         if hand_id and any(h["id"] == hand_id for h in hands):
-            hands = [dict(body, id=hand_id) if h["id"] == hand_id else h
-                     for h in hands]
+            hands = [
+                dict(
+                    body,
+                    id=hand_id,
+                    # 普通“编辑手型号”弹窗不负责维护安装方案；旧前端未传
+                    # mount_profiles 时必须保留，避免一次改名把 CAD 方案删掉。
+                    mount_profiles=body.get("mount_profiles", h.get("mount_profiles")),
+                ) if h["id"] == hand_id else h
+                for h in hands
+            ]
         else:
             hands = hands + [body]
         registry["hands"] = hands
@@ -247,6 +255,10 @@ async def active_set(request: Request):
                 "camera_role", previous.get("camera_role", "head")),
             "motion_backend": body.get(
                 "motion_backend", previous.get("motion_backend", "legacy")),
+            "mount_profile_id": body.get(
+                "mount_profile_id",
+                previous.get("mount_profile_id")
+                if body.get("hand_id") == previous.get("hand_id") else None),
         }
         try:
             registry = reg.save_registry(registry, REGISTRY_PATH)

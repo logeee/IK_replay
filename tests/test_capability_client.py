@@ -80,7 +80,8 @@ class FetchSnapshotTests(unittest.TestCase):
         self.assertEqual(payload["registry"]["active"],
                          {"arm": "right_arm", "hand_id": "yinshi-1-right",
                           "camera_role": "head",
-                          "motion_backend": "legacy"})
+                          "motion_backend": "legacy",
+                          "mount_profile_id": "measured_3d"})
         # registry 经过本地 validate_registry 重校验（缺省参数已补齐）
         cap = payload["registry"]["capabilities"][0]
         self.assertIn("sidestep_cm", cap["method_params"])

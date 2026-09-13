@@ -99,6 +99,7 @@ class HandRuntimeConfig:
     p_tool_wrist_m: list[float] | None
     service_url: str
     assets_root: Path
+    mount_profile: dict[str, Any]
 
 
 def _default_fetch_json(url: str, timeout: float, verify_tls: bool) -> Any:
@@ -186,6 +187,117 @@ def _valid_preview(value: Any) -> bool:
     return True
 
 
+def selected_mount_profile(registry: dict[str, Any], hand_id: str) -> dict[str, Any]:
+    """Resolve the active mount profile, including legacy registries."""
+    from core.capability_registry import find_mount_profile
+
+    active = registry.get("active") or {}
+    profile = find_mount_profile(
+        registry, hand_id, str(active.get("mount_profile_id") or ""))
+    if profile is None:
+        raise ValueError(f"手型号 {hand_id!r} 没有可用安装方案")
+    return deepcopy(profile)
+
+
+def apply_mount_profile(
+    registry: dict[str, Any], calibration: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Apply the selected nominal/measured mount while preserving hand-frame TCPs.
+
+    Custom TCPs are stored in the canonical hand URDF root.  When switching to a
+    fixed CAD mount, wrist-frame fallback points from the calibration bundle are
+    reprojected through that same hand frame so they cannot silently stay attached
+    to the old measured transform.
+    """
+    active = registry.get("active") or {}
+    hand_id = str(active.get("hand_id") or calibration.get("hand_id") or "")
+    profile = selected_mount_profile(registry, hand_id)
+    result = deepcopy(calibration)
+    already_applied = (
+        isinstance(result.get("mount_profile"), dict)
+        and result["mount_profile"].get("id") == profile.get("id")
+    )
+    if already_applied:
+        return result, profile
+    old_transform = result.get("T_wrist2hand")
+    if profile.get("source") == "fixed":
+        new_transform = _matrix4(
+            profile.get("T_wrist2hand"),
+            f"安装方案 {profile.get('id')} 的 T_wrist2hand",
+        )
+        if old_transform is not None:
+            from core.tcp_points import hand_to_wrist, wrist_to_hand
+
+            old_transform = _matrix4(old_transform, "原 T_wrist2hand")
+
+            def reproject(xyz: Any) -> Any:
+                if not isinstance(xyz, list) or len(xyz) != 3:
+                    return xyz
+                return hand_to_wrist(
+                    new_transform, wrist_to_hand(old_transform, xyz))
+
+            if result.get("p_tool_wrist_m") is not None:
+                result["p_tool_wrist_m"] = reproject(result["p_tool_wrist_m"])
+            for point in result.get("tcp_points_wrist_m") or []:
+                if isinstance(point, dict) and point.get("p_wrist_m") is not None:
+                    point["p_wrist_m"] = reproject(point["p_wrist_m"])
+            marker_points = result.get("p_tool_wrist_m_by_marker")
+            if isinstance(marker_points, dict):
+                result["p_tool_wrist_m_by_marker"] = {
+                    key: reproject(value) for key, value in marker_points.items()
+                }
+        result["T_wrist2hand"] = new_transform
+        if profile.get("hand_base_link"):
+            result["hand_base_link"] = profile["hand_base_link"]
+    result["mount_profile"] = {
+        "id": profile.get("id"),
+        "name": profile.get("name"),
+        "source": profile.get("source"),
+    }
+    provenance = result.get("calibration_bundle")
+    if isinstance(provenance, dict):
+        provenance["mount_profile"] = deepcopy(result["mount_profile"])
+    return result, profile
+
+
+def build_hand_model_descriptor(
+    *,
+    device_id: str,
+    side: str,
+    profile: dict[str, Any],
+    device_base_url: str,
+    project_base_url: str,
+    live_preview: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a browser model URL for either 18089 assets or project CAD assets."""
+    preview = deepcopy(_DEFAULT_PREVIEWS[device_id])
+    model = profile.get("model") or {}
+    model_source = str(model.get("source") or "device_default")
+    if model_source == "device_default":
+        if _valid_preview(live_preview):
+            preview = deepcopy(live_preview)
+        asset_dir = Path(str(preview.get("model_root") or "")).name
+        urdf = Path(str(preview.get("urdf") or "")).name.format(side=side)
+        base_url = f"{device_base_url.rstrip('/')}/{asset_dir}/"
+    elif model_source == "project":
+        asset_dir = str(model.get("root") or "").strip("/")
+        urdf = str(model.get("urdf") or "").format(side=side)
+        if not asset_dir or not urdf:
+            raise ValueError(f"安装方案 {profile.get('id')} 缺少项目模型路径")
+        base_url = f"{project_base_url.rstrip('/')}/{asset_dir}/"
+        preview["model_root"] = base_url.rstrip("/")
+        preview["urdf"] = urdf
+    else:
+        raise ValueError(f"未知手模型来源 {model_source!r}")
+    return {
+        "key": f"{device_id}:{side}:{profile.get('id')}:{urdf}",
+        "device_id": device_id,
+        "urdf_url": f"{base_url}{urdf}",
+        "mesh_base_url": base_url,
+        "preview": preview,
+    }
+
+
 def build_hand_runtime_config(
     *,
     registry: dict[str, Any],
@@ -211,6 +323,7 @@ def build_hand_runtime_config(
         raise ValueError(
             f"18000 手型号设计侧 {side!r} 与激活臂 {chain_id!r} 不一致")
 
+    calibration, mount_profile = apply_mount_profile(registry, calibration)
     calib_arm = str(calibration.get("arm") or "")
     calib_hand = str(calibration.get("hand_id") or "")
     wrist_link = str(
@@ -255,6 +368,7 @@ def build_hand_runtime_config(
         p_tool_wrist_m=_selected_tcp(calibration, tcp_point_id),
         service_url=service_url.rstrip("/") + "/",
         assets_root=Path(assets_root).expanduser().resolve(),
+        mount_profile=mount_profile,
     )
 
 
@@ -307,25 +421,14 @@ class HandRuntime:
         )
 
     def _model(self, catalog_device: dict[str, Any] | None) -> dict[str, Any]:
-        preview = deepcopy(_DEFAULT_PREVIEWS[self.config.device_id])
-        live_preview = (catalog_device or {}).get("preview")
-        if _valid_preview(live_preview):
-            preview = deepcopy(live_preview)
-        asset_dir = Path(str(preview.get("model_root") or "")).name
-        urdf_template = Path(str(preview.get("urdf") or "")).name
-        if not asset_dir or not urdf_template:
-            raise ValueError("18089 设备目录缺少 preview.model_root/urdf")
-        urdf = urdf_template.format(side=self.config.side)
-        base_url = f"/api/reach/hand/assets/{asset_dir}/"
-        preview["model_root"] = base_url.rstrip("/")
-        preview["urdf"] = urdf
-        return {
-            "key": f"{self.config.device_id}:{self.config.side}:{urdf}",
-            "device_id": self.config.device_id,
-            "urdf_url": f"{base_url}{urdf}",
-            "mesh_base_url": base_url,
-            "preview": preview,
-        }
+        return build_hand_model_descriptor(
+            device_id=self.config.device_id,
+            side=self.config.side,
+            profile=self.config.mount_profile,
+            device_base_url="/api/reach/hand/assets",
+            project_base_url="/assets",
+            live_preview=(catalog_device or {}).get("preview"),
+        )
 
     def snapshot(self) -> dict[str, Any]:
         catalog_device = None
@@ -405,6 +508,10 @@ class HandRuntime:
             "T_wrist2hand": self.config.T_wrist2hand,
             "tcp_point_id": self.config.tcp_point_id,
             "p_tool_wrist_m": self.config.p_tool_wrist_m,
+            "mount_profile": {
+                key: self.config.mount_profile.get(key)
+                for key in ("id", "name", "source")
+            },
             "model": model,
             "service": {
                 "url": self.config.service_url.rstrip("/"),

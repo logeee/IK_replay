@@ -7,6 +7,21 @@ export interface Hand {
   tool_out_mm: number;
   hand_web_device_id: string;
   tcp_point_id: string;
+  mount_profiles: MountProfile[];
+  notes: string;
+}
+
+export interface MountProfile {
+  id: string;
+  name: string;
+  source: "calibration" | "fixed";
+  hand_base_link: string;
+  model: {
+    source: "device_default" | "project";
+    root: string;
+    urdf: string;
+  };
+  T_wrist2hand: number[][] | null;
   notes: string;
 }
 
@@ -34,6 +49,8 @@ export interface ActiveCombo {
   camera_role?: string;
   /** 18001 运动后端（旧注册表可能缺省） */
   motion_backend?: MotionBackend;
+  /** 同一物理手下选中的安装矩阵 + 可视模型方案 */
+  mount_profile_id?: string;
 }
 
 export interface RobotIdentity {

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from core.hand_runtime import (
     HandRuntime,
+    apply_mount_profile,
     build_hand_runtime_config,
     configure_hand_runtime,
     hand_connect,
@@ -97,6 +98,57 @@ class HandRuntimeConfigTests(unittest.TestCase):
                 service_url="https://127.0.0.1:18089",
                 assets_root=Path("/tmp"),
             )
+
+    def test_fixed_cad_profile_replaces_mount_and_reprojects_tcp(self):
+        registry = _registry()
+        registry["active"]["mount_profile_id"] = "cad_nominal"
+        registry["hands"][0]["mount_profiles"] = [{
+            "id": "measured_3d",
+            "name": "3D 标定实测",
+            "source": "calibration",
+            "model": {"source": "device_default", "root": "", "urdf": ""},
+        }, {
+            "id": "cad_nominal",
+            "name": "CAD 名义装配",
+            "source": "fixed",
+            "hand_base_link": "base_link",
+            "model": {
+                "source": "project",
+                "root": "hands/revo2_left_cad",
+                "urdf": "revo2_left_cad.urdf",
+            },
+            "T_wrist2hand": [
+                [1, 0, 0, 0.2], [0, 1, 0, 0],
+                [0, 0, 1, 0], [0, 0, 0, 1],
+            ],
+        }]
+        calibration, profile = apply_mount_profile(registry, _calibration())
+        self.assertEqual(profile["id"], "cad_nominal")
+        self.assertEqual(calibration["T_wrist2hand"][0][3], 0.2)
+        # 原 TCP 比原手根多 0.13m；换安装后仍是同一个手系点。
+        self.assertAlmostEqual(
+            calibration["tcp_points_wrist_m"][0]["p_wrist_m"][0], 0.33)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            config = build_hand_runtime_config(
+                registry=registry,
+                calibration=calibration,
+                chain_id="right_arm",
+                expected_wrist_link="right_wrist_yaw_link",
+                service_url="https://127.0.0.1:18089",
+                assets_root=Path(temporary),
+            )
+            assert config is not None
+            runtime = HandRuntime(
+                config,
+                fetch_json=lambda *_: {"devices": []},
+            )
+            snapshot = runtime.snapshot()
+        self.assertEqual(snapshot["mount_profile"]["id"], "cad_nominal")
+        self.assertEqual(
+            snapshot["model"]["urdf_url"],
+            "/assets/hands/revo2_left_cad/revo2_left_cad.urdf",
+        )
 
 
 class CameraIdentityTests(unittest.TestCase):

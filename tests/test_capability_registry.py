@@ -447,7 +447,8 @@ class SeedAndPersistenceTests(unittest.TestCase):
         self.assertEqual(seed["active"],
                          {"arm": "right_arm", "hand_id": "yinshi-1-right",
                           "camera_role": "head",
-                          "motion_backend": "legacy"})
+                          "motion_backend": "legacy",
+                          "mount_profile_id": "measured_3d"})
         directions = {cap["task"]["direction"]
                       for cap in seed["capabilities"]}
         self.assertEqual(directions, {"rtl", "ltr"})
@@ -548,6 +549,39 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(reg.validate_registry(seed)["active"]["motion_backend"], "legacy_timed")
         seed["active"] = {"arm": "right_arm", "hand_id": hand_id, "motion_backend": "curobo"}
         with self.assertRaises(ValueError):
+            reg.validate_registry(seed)
+
+    def test_mount_profile_defaults_and_fixed_transform_validation(self):
+        seed = self._seed()
+        hand = seed["hands"][0]
+        self.assertEqual(hand["mount_profiles"][0]["id"], "measured_3d")
+        hand["mount_profiles"].append({
+            "id": "cad_nominal",
+            "name": "CAD 名义装配",
+            "source": "fixed",
+            "hand_base_link": "base_link",
+            "model": {
+                "source": "project",
+                "root": "hands/revo2_left_cad",
+                "urdf": "revo2_left_cad.urdf",
+            },
+            "T_wrist2hand": [
+                [1, 0, 0, 0.1], [0, 1, 0, 0],
+                [0, 0, 1, 0], [0, 0, 0, 1],
+            ],
+        })
+        seed["active"]["mount_profile_id"] = "cad_nominal"
+        validated = reg.validate_registry(seed)
+        self.assertEqual(validated["active"]["mount_profile_id"], "cad_nominal")
+        self.assertEqual(
+            reg.find_mount_profile(validated, hand["id"])["model"]["source"],
+            "project",
+        )
+
+    def test_active_rejects_unknown_mount_profile(self):
+        seed = self._seed()
+        seed["active"]["mount_profile_id"] = "ghost"
+        with self.assertRaisesRegex(ValueError, "安装方案"):
             reg.validate_registry(seed)
 
     def test_twist_method_has_empty_params(self):

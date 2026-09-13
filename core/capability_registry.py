@@ -125,6 +125,8 @@ MOTION_BACKEND_LABELS = {
     "legacy_timed": "原方案·50Hz 时间轨迹",
     "pink": "PINK 世界系闭环跟踪",
 }
+MOUNT_PROFILE_SOURCES = ("calibration", "fixed")
+MOUNT_MODEL_SOURCES = ("device_default", "project")
 DESIGN_SIDES = ("right", "left")
 SITES = ("lab", "factory")
 # 任务的物理方向：rtl=向左拨（右到左）、ltr=向右拨（左到右）、
@@ -302,6 +304,81 @@ def _clean_pose_pattern(value: Any, field: str) -> str:
     return pattern
 
 
+def _default_mount_profile() -> dict[str, Any]:
+    """Legacy-compatible profile: use the bound 18005 mount and device model."""
+    return {
+        "id": "measured_3d",
+        "name": "3D 标定实测",
+        "source": "calibration",
+        "hand_base_link": "",
+        "model": {"source": "device_default", "root": "", "urdf": ""},
+        "T_wrist2hand": None,
+        "notes": "",
+    }
+
+
+def _clean_relative_asset_path(value: Any, field: str, *, required: bool) -> str:
+    text = str(value or "").strip().replace("\\", "/").strip("/")
+    if not text:
+        if required:
+            raise ValueError(f"{field} 不能为空")
+        return ""
+    parts = text.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        raise ValueError(f"{field} 必须是 assets 下的安全相对路径")
+    return text
+
+
+def _clean_matrix4(value: Any, field: str) -> list[list[float]]:
+    if (not isinstance(value, list) or len(value) != 4
+            or any(not isinstance(row, list) or len(row) != 4 for row in value)):
+        raise ValueError(f"{field} 必须是 4x4 数组")
+    result = [[float(item) for item in row] for row in value]
+    if not all(math.isfinite(item) for row in result for item in row):
+        raise ValueError(f"{field} 包含非有限数值")
+    if any(abs(result[3][idx] - expected) > 1e-8
+           for idx, expected in enumerate((0.0, 0.0, 0.0, 1.0))):
+        raise ValueError(f"{field} 最后一行必须是 [0, 0, 0, 1]")
+    return result
+
+
+def _validate_mount_profile(raw: Any, hand_index: int, index: int) -> dict[str, Any]:
+    field = f"hands[{hand_index}].mount_profiles[{index}]"
+    if not isinstance(raw, dict):
+        raise ValueError(f"{field} 必须是 JSON object")
+    profile_id = _clean_id(raw.get("id"), f"{field}.id", "mount")
+    source = str(raw.get("source") or "calibration").strip().lower()
+    if source not in MOUNT_PROFILE_SOURCES:
+        raise ValueError(f"{field}.source 只能是 {MOUNT_PROFILE_SOURCES}")
+    model = raw.get("model") or {}
+    if not isinstance(model, dict):
+        raise ValueError(f"{field}.model 必须是 JSON object")
+    model_source = str(model.get("source") or "device_default").strip().lower()
+    if model_source not in MOUNT_MODEL_SOURCES:
+        raise ValueError(f"{field}.model.source 只能是 {MOUNT_MODEL_SOURCES}")
+    custom_model = model_source == "project"
+    transform = raw.get("T_wrist2hand")
+    if source == "fixed":
+        transform = _clean_matrix4(transform, f"{field}.T_wrist2hand")
+    else:
+        transform = None
+    return {
+        "id": profile_id,
+        "name": _clean_name(raw.get("name"), f"{field}.name"),
+        "source": source,
+        "hand_base_link": str(raw.get("hand_base_link") or "").strip(),
+        "model": {
+            "source": model_source,
+            "root": _clean_relative_asset_path(
+                model.get("root"), f"{field}.model.root", required=custom_model),
+            "urdf": _clean_relative_asset_path(
+                model.get("urdf"), f"{field}.model.urdf", required=custom_model),
+        },
+        "T_wrist2hand": transform,
+        "notes": str(raw.get("notes") or "").strip(),
+    }
+
+
 def _validate_hand(raw: Any, index: int) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError(f"hands[{index}] 必须是 JSON object")
@@ -315,6 +392,18 @@ def _validate_hand(raw: Any, index: int) -> dict[str, Any]:
         raise ValueError(
             f"hands[{index}].hand_web_device_id 只能含小写字母、数字、_、-")
     tcp_point_id = str(raw.get("tcp_point_id") or "").strip()
+    raw_profiles = raw.get("mount_profiles")
+    if raw_profiles is None:
+        raw_profiles = [_default_mount_profile()]
+    if not isinstance(raw_profiles, list) or not raw_profiles:
+        raise ValueError(f"hands[{index}].mount_profiles 必须是非空数组")
+    mount_profiles = [
+        _validate_mount_profile(item, index, profile_index)
+        for profile_index, item in enumerate(raw_profiles)
+    ]
+    profile_ids = [item["id"] for item in mount_profiles]
+    if len(set(profile_ids)) != len(profile_ids):
+        raise ValueError(f"hands[{index}].mount_profiles.id 不能重复")
     return {
         "id": _clean_id(raw.get("id"), f"hands[{index}].id", "hand"),
         "name": _clean_name(raw.get("name"), f"hands[{index}].name"),
@@ -324,6 +413,7 @@ def _validate_hand(raw: Any, index: int) -> dict[str, Any]:
             f"hands[{index}].tool_out_mm", 0.0, 100.0),
         "hand_web_device_id": hand_web_device_id,
         "tcp_point_id": tcp_point_id,
+        "mount_profiles": mount_profiles,
         "notes": str(raw.get("notes") or "").strip(),
     }
 
@@ -720,8 +810,19 @@ def validate_registry(payload: Any) -> dict[str, Any]:
         camera_role = str(raw_active.get("camera_role") or "head").strip()
         if camera_role not in CAMERA_ROLES:
             raise ValueError(f"active.camera_role 必须是 {CAMERA_ROLES}")
+        hand = next(item for item in hands if item["id"] == hand_id)
+        profile_ids = {item["id"] for item in hand["mount_profiles"]}
+        mount_profile_id = str(
+            raw_active.get("mount_profile_id")
+            or hand["mount_profiles"][0]["id"]
+        ).strip()
+        if mount_profile_id not in profile_ids:
+            raise ValueError(
+                f"active.mount_profile_id 指向 {hand_id} 不存在的安装方案"
+                f"「{mount_profile_id}」")
         active = {"arm": arm, "hand_id": hand_id, "camera_role": camera_role,
-                  "motion_backend": motion_backend}
+                  "motion_backend": motion_backend,
+                  "mount_profile_id": mount_profile_id}
 
     # 顶层 cabinet_frame：旧注册表没有该键 → 方法一 + 默认参数（行为不变）
     cabinet_frame = validate_cabinet_frame_config(
@@ -942,6 +1043,23 @@ def find_hand(registry: dict[str, Any], hand_id: str) -> dict[str, Any] | None:
         if hand["id"] == hand_id:
             return hand
     return None
+
+
+def find_mount_profile(registry: dict[str, Any], hand_id: str,
+                       profile_id: str | None = None) -> dict[str, Any] | None:
+    """Return one hand's selected mount/model profile (legacy-safe)."""
+    hand = find_hand(registry, hand_id)
+    if hand is None:
+        return None
+    profiles = hand.get("mount_profiles") or [_default_mount_profile()]
+    requested = str(profile_id or "").strip()
+    if not requested:
+        active = registry.get("active") or {}
+        if active.get("hand_id") == hand_id:
+            requested = str(active.get("mount_profile_id") or "").strip()
+    if not requested:
+        return profiles[0]
+    return next((item for item in profiles if item.get("id") == requested), None)
 
 
 def find_capability(registry: dict[str, Any],

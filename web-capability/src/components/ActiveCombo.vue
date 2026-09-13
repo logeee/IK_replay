@@ -10,13 +10,20 @@ import { SIDE_LABELS } from "../lib/api";
 
 const props = defineProps<{ payload: Payload; busy: boolean }>();
 const emit = defineEmits<{
-  apply: [arm: string, handId: string, cameraRole: string, motionBackend: MotionBackend];
+  apply: [
+    arm: string,
+    handId: string,
+    cameraRole: string,
+    motionBackend: MotionBackend,
+    mountProfileId: string,
+  ];
 }>();
 
 const arm = ref("right_arm");
 const handId = ref("");
 const cameraRole = ref("head");
 const motionBackend = ref<MotionBackend>("legacy");
+const mountProfileId = ref("");
 
 const FALLBACK_BACKENDS: MotionBackend[] = ["legacy", "legacy_timed", "pink"];
 const FALLBACK_BACKEND_LABELS: Record<string, string> = {
@@ -39,18 +46,32 @@ watch(
       handId.value = active.hand_id;
       cameraRole.value = active.camera_role ?? "head";
       motionBackend.value = active.motion_backend ?? "legacy";
+      mountProfileId.value = active.mount_profile_id ?? "";
     }
   },
   { immediate: true },
 );
 
 const hands = computed(() => props.payload.registry.hands);
+const mountProfiles = computed(
+  () => hands.value.find((hand) => hand.id === handId.value)?.mount_profiles ?? [],
+);
 
 watch(hands, (list) => {
   if (!list.some((h) => h.id === handId.value) && list.length) {
     handId.value = list[0]!.id;
   }
 });
+
+watch(
+  mountProfiles,
+  (list) => {
+    if (!list.some((profile) => profile.id === mountProfileId.value)) {
+      mountProfileId.value = list[0]?.id ?? "";
+    }
+  },
+  { immediate: true },
+);
 
 const calib = computed<CalibInfo | null>(
   () =>
@@ -105,7 +126,8 @@ const isCurrent = computed(() => {
     active.arm === arm.value &&
     active.hand_id === handId.value &&
     (active.camera_role ?? "head") === cameraRole.value &&
-    (active.motion_backend ?? "legacy") === motionBackend.value
+    (active.motion_backend ?? "legacy") === motionBackend.value &&
+    (active.mount_profile_id ?? mountProfiles.value[0]?.id ?? "") === mountProfileId.value
   );
 });
 
@@ -122,7 +144,7 @@ const activeCapCount = computed(
     <div class="head">
       <h2>激活组合 <span class="lvl-tag">一级 + 二级</span></h2>
       <p class="sub">
-        17001 派发与 18001 执行使用的当前组合；切换保存后重启 17001 / 18001 生效。
+        17001 派发、18001 执行与 18003 手/TCP 配置使用的当前组合；切换保存后重启三项服务生效。
       </p>
     </div>
     <div class="controls">
@@ -148,6 +170,13 @@ const activeCapCount = computed(
           </option>
         </select>
       </label>
+      <label class="field">安装方案
+        <select v-model="mountProfileId">
+          <option v-for="profile in mountProfiles" :key="profile.id" :value="profile.id">
+            {{ profile.name }}
+          </option>
+        </select>
+      </label>
       <label class="field" title="18001 执行路点的方式。legacy_timed：保持原路径并生成 50Hz 时间轨迹；pink：世界系 PINK 闭环跟踪，执行前需锚定世界系">运动后端
         <select v-model="motionBackend">
           <option v-for="b in backends" :key="b" :value="b">
@@ -169,7 +198,7 @@ const activeCapCount = computed(
       <button
         class="btn primary"
         :disabled="busy || isCurrent || !handId"
-        @click="emit('apply', arm, handId, cameraRole, motionBackend)"
+        @click="emit('apply', arm, handId, cameraRole, motionBackend, mountProfileId)"
       >
         {{ isCurrent ? "已是激活组合" : "切换激活组合" }}
       </button>

@@ -452,6 +452,27 @@ def main() -> int:
     if args.robot_only:
         print("[reach] 机器人控制模式：不连接相机，只开放 DDS 和手臂执行")
 
+    # 安装方案是同一物理手下的“模型 + T_wrist2hand”选择。先把它应用到
+    # 组合标定，再同时交给规划/TCP 与手模型运行时，保证 18001 不会出现
+    # 画面用 CAD、IK 仍用实测矩阵的分裂状态。
+    active_mount_profile = None
+    if not args.camera_only and not handeye_missing:
+        try:
+            if calibration is None:
+                assert args.calib is not None
+                calibration = json.loads(args.calib.read_text(encoding="utf-8"))
+            from core.hand_runtime import apply_mount_profile
+
+            calibration, active_mount_profile = apply_mount_profile(
+                capability_registry, calibration)
+            print(
+                f"[reach] 安装方案 = {active_mount_profile['name']} "
+                f"({active_mount_profile['id']}, {active_mount_profile['source']})"
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"[reach] 安装方案无法加载: {exc}")
+            return 1
+
     # 主应用（离线查看器 + IK/规划 API）原样加载
     import app as app_module
     from adapters import reach
@@ -474,8 +495,7 @@ def main() -> int:
               "（本服务的手位下发不可用，请用 18003 配置页直接调手）")
     elif not args.camera_only:
         try:
-            if calibration is None:
-                calibration = json.loads(args.calib.read_text(encoding="utf-8"))
+            assert calibration is not None
             hand_config = build_hand_runtime_config(
                 registry=capability_registry,
                 calibration=calibration,
