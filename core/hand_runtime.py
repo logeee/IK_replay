@@ -85,6 +85,25 @@ _DEFAULT_PREVIEWS = {
     "inspire_ftp": _INSPIRE_PREVIEW,
 }
 
+_BRAINCO_REVO2_SLAVE_IDS = {"left": 126, "right": 127}
+
+
+def build_hand_connection_request(device_id: str, side: str) -> dict[str, Any]:
+    """Build the 18089 connection payload for the selected hand side."""
+    payload: dict[str, Any] = {"device_id": device_id}
+    if device_id != "brainco_revo2":
+        return payload
+    if side not in _BRAINCO_REVO2_SLAVE_IDS:
+        raise ValueError(f"强脑 Revo2 侧别必须是 left/right，收到 {side!r}")
+    payload.update({
+        "transport": "modbus",
+        "options": {
+            "side": side,
+            "slave_id": _BRAINCO_REVO2_SLAVE_IDS[side],
+        },
+    })
+    return payload
+
 
 @dataclass(frozen=True)
 class HandRuntimeConfig:
@@ -540,7 +559,8 @@ class HandRuntime:
         url = urljoin(self.config.service_url, "api/connect")
         try:
             body = self.post_json(
-                url, {"device_id": self.config.device_id},
+                url, build_hand_connection_request(
+                    self.config.device_id, self.config.side),
                 self.connect_timeout_s, self.verify_tls)
         except HTTPError as exc:
             try:

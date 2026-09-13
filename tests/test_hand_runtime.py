@@ -7,6 +7,7 @@ from pathlib import Path
 from core.hand_runtime import (
     HandRuntime,
     apply_mount_profile,
+    build_hand_connection_request,
     build_hand_runtime_config,
     configure_hand_runtime,
     hand_connect,
@@ -280,9 +281,37 @@ class HandConnectTests(unittest.TestCase):
         self.assertEqual(result["hand_name"], "强脑-右-1")
         url, payload, timeout, verify_tls = calls[0]
         self.assertTrue(url.endswith("/api/connect"))
-        self.assertEqual(payload, {"device_id": "brainco_revo2"})
+        self.assertEqual(payload, {
+            "device_id": "brainco_revo2",
+            "transport": "modbus",
+            "options": {"side": "right", "slave_id": 127},
+        })
         self.assertEqual(timeout, 5.0)
         self.assertFalse(verify_tls)
+
+    def test_brainco_connection_selects_slave_id_by_side(self):
+        self.assertEqual(
+            build_hand_connection_request("brainco_revo2", "left"),
+            {
+                "device_id": "brainco_revo2",
+                "transport": "modbus",
+                "options": {"side": "left", "slave_id": 126},
+            },
+        )
+        self.assertEqual(
+            build_hand_connection_request("brainco_revo2", "right"),
+            {
+                "device_id": "brainco_revo2",
+                "transport": "modbus",
+                "options": {"side": "right", "slave_id": 127},
+            },
+        )
+
+    def test_other_hands_keep_18089_device_defaults(self):
+        self.assertEqual(
+            build_hand_connection_request("inspire_dfx", "left"),
+            {"device_id": "inspire_dfx"},
+        )
 
     def test_connect_propagates_service_refusal(self):
         def post(url, payload, timeout, verify_tls):

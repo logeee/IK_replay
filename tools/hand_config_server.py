@@ -47,6 +47,7 @@ from core.hand_runtime import (  # noqa: E402
     _default_fetch_json,
     _default_post_json,
     apply_mount_profile,
+    build_hand_connection_request,
     build_hand_model_descriptor,
     selected_mount_profile,
 )
@@ -135,7 +136,9 @@ def hand_connect_route() -> dict:
     try:
         body = _default_post_json(
             _service_url("api/connect"),
-            {"device_id": CONTEXT["device_id"]}, 8.0, False)
+            build_hand_connection_request(
+                CONTEXT["device_id"], CONTEXT["side"]),
+            8.0, False)
     except Exception as exc:  # noqa: BLE001
         return _proxy_error(exc)
     if not isinstance(body, dict) or body.get("ok") is False:
