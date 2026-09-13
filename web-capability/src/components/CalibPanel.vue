@@ -1,15 +1,14 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import type { CalibrationArtifact, Payload, ResidualMm } from "../lib/api";
+import type {
+  CalibrationArtifact,
+  CalibrationArtifactType,
+  CalibrationBinding,
+  Payload,
+} from "../lib/api";
 
 const props = defineProps<{ payload: Payload }>();
-const emit = defineEmits<{ register: [] }>();
-
-const CALIB_TEXT: Record<string, string> = {
-  ready: "就绪",
-  pending: "待补",
-  missing: "未登记",
-};
+defineEmits<{ register: [] }>();
 
 function handName(handId: string): string {
   return (
@@ -17,120 +16,114 @@ function handName(handId: string): string {
   );
 }
 
-function residualText(value: ResidualMm | null | undefined): string | null {
-  if (typeof value === "number") return value.toFixed(2);
-  const rms = value?.rms;
-  return typeof rms === "number" ? rms.toFixed(2) : null;
+function roleLabel(role: string): string {
+  return role === "head" ? "头部相机" : role === "waist" ? "腰部相机" : role;
 }
 
-const TYPE_LABEL: Record<string, string> = {
-  extrinsic: "相机外参",
-  intrinsic: "相机内参",
-  camera_transform: "RGB-D 转换",
-  hand_mount: "手安装",
-  tcp_profile: "TCP",
-};
+function cameraArtifact(role: string, type: CalibrationArtifactType) {
+  return props.payload.registry.calibration_artifacts.find(
+    (artifact) =>
+      artifact.type === type && String(artifact.subject.camera_role || "") === role,
+  );
+}
 
-const legacyCalibrations = computed(() =>
-  props.payload.calibrations.filter(
-    (calibration) =>
-      calibration.status !== "missing" ||
-      Boolean(calibration.source_path || calibration.registered_at),
-  ),
-);
+const cameraCalibrations = computed(() => {
+  const roles = props.payload.meta.camera_roles?.length
+    ? props.payload.meta.camera_roles
+    : ["head", "waist"];
+  return roles.map((role) => ({
+    role,
+    label: roleLabel(role),
+    extrinsic: cameraArtifact(role, "extrinsic"),
+    intrinsic: cameraArtifact(role, "intrinsic"),
+  }));
+});
 
-function artifactSubject(artifact: CalibrationArtifact): string {
-  const subject = artifact.subject;
-  if (subject.kind === "camera") {
-    const role = String(subject.camera_role || "");
-    return role === "head" ? "头部相机" : role === "waist" ? "腰部相机" : role;
+function bindingArtifact(
+  binding: CalibrationBinding,
+  type: CalibrationArtifactType,
+): CalibrationArtifact | undefined {
+  const id = binding.artifacts[type];
+  return props.payload.registry.calibration_artifacts.find(
+    (artifact) => artifact.artifact_id === id,
+  );
+}
+
+const toolCalibrations = computed(() => {
+  const grouped = new Map<string, {
+    arm: string;
+    handId: string;
+    mount?: CalibrationArtifact;
+    tcp?: CalibrationArtifact;
+  }>();
+  for (const binding of props.payload.registry.calibration_bindings) {
+    const key = `${binding.arm}:${binding.hand_id}`;
+    grouped.set(key, {
+      arm: binding.arm,
+      handId: binding.hand_id,
+      mount: bindingArtifact(binding, "hand_mount"),
+      tcp: bindingArtifact(binding, "tcp_profile"),
+    });
   }
-  const arm = String(subject.arm || "");
-  const handId = String(subject.hand_id || "");
-  return `${props.payload.meta.arm_labels[arm] || arm} · ${handName(handId)}`;
-}
+  return [...grouped.values()];
+});
 </script>
 
 <template>
   <section class="card">
-    <h2>独立标定产物 <span class="lvl-tag">当前架构</span></h2>
-    <p class="sub">
-      相机、手安装与 TCP 分别归档；运行时只组合引用，不生成合并标定文件。
-    </p>
+    <h2>标定</h2>
+    <h3 class="section-title">相机标定</h3>
     <ul class="calib-list">
-      <li
-        v-for="artifact in payload.registry.calibration_artifacts"
-        :key="artifact.artifact_id"
-      >
+      <li v-for="camera in cameraCalibrations" :key="camera.role">
         <div class="combo">
-          <span class="combo-name">
-            {{ TYPE_LABEL[artifact.type] || artifact.type }} ·
-            {{ artifactSubject(artifact) }}
-          </span>
-          <span class="badge" :class="artifact.status === 'active' ? 'ready' : artifact.status">
-            {{ artifact.status === "active" ? "生效中" : artifact.status }}
+          <span class="combo-name">{{ camera.label }}</span>
+          <span class="badge" :class="camera.extrinsic?.status === 'active' ? 'ready' : 'missing'">
+            {{ camera.extrinsic?.status === "active" ? "生效中" : "未标定" }}
           </span>
         </div>
-        <div class="detail">
-          <span class="dim">{{ artifact.run_id }}</span>
-          <span v-if="artifact.subject.camera_serial" class="dim mono">
-            {{ artifact.subject.camera_serial }}
-          </span>
+        <div class="calibration-lines">
+          <div>
+            <span class="line-label">外参</span>
+            <span>{{ camera.extrinsic?.run_id || "未标定" }}</span>
+          </div>
+          <div>
+            <span class="line-label">SDK内参存档</span>
+            <span>{{ camera.intrinsic ? "已记录" : "未记录" }}</span>
+          </div>
+          <div v-if="camera.extrinsic?.subject.camera_serial || camera.intrinsic?.subject.camera_serial" class="dim mono">
+            {{ camera.extrinsic?.subject.camera_serial || camera.intrinsic?.subject.camera_serial }}
+          </div>
         </div>
-      </li>
-      <li v-if="!payload.registry.calibration_artifacts.length" class="dim empty">
-        尚未由标定工作站发布独立产物
-      </li>
-    </ul>
-    <h3 class="binding-title">运行绑定</h3>
-    <ul class="calib-list">
-      <li
-        v-for="binding in payload.registry.calibration_bindings"
-        :key="`${binding.arm}:${binding.hand_id}:${binding.camera_role}`"
-      >
-        <div class="combo">
-          <span class="combo-name">
-            {{ payload.meta.arm_labels[binding.arm] || binding.arm }} ·
-            {{ handName(binding.hand_id) }} · {{ binding.camera_role }}
-          </span>
-          <span class="badge ready">已绑定</span>
-        </div>
-        <div class="detail">
-          <span v-for="(id, type) in binding.artifacts" :key="type" class="dim">
-            {{ TYPE_LABEL[type] || type }}：<span class="mono">{{ id }}</span>
-          </span>
-        </div>
-      </li>
-      <li v-if="!payload.registry.calibration_bindings.length" class="dim empty">
-        尚未完成手/工具安装与 TCP 标定，当前没有可用的运行组合。
       </li>
     </ul>
 
-    <details v-if="legacyCalibrations.length" class="legacy">
-      <summary>旧格式兼容归档（{{ legacyCalibrations.length }}）</summary>
-      <p class="sub">
-        旧格式把相机、手安装和 TCP 放在同一文件中，仅供迁移期间兼容。
-      </p>
-      <ul class="calib-list">
-        <li v-for="c in legacyCalibrations" :key="c.arm + c.hand_id">
-          <div class="combo">
-            <span class="combo-name">
-              {{ payload.meta.arm_labels[c.arm] || c.arm }} · {{ handName(c.hand_id) }}
-            </span>
-            <span class="badge" :class="c.status">{{ CALIB_TEXT[c.status] }}</span>
-          </div>
-          <div class="detail">
-            <span v-if="c.solved_at" class="dim">解算 {{ c.solved_at }}</span>
-            <span v-if="residualText(c.residual_mm)" class="dim">
-              残差 {{ residualText(c.residual_mm) }}mm
-            </span>
-            <span v-if="c.num_samples != null" class="dim">{{ c.num_samples }} 样本</span>
-            <span v-if="c.source_path" class="dim mono src">来源 {{ c.source_path }}</span>
-          </div>
-        </li>
-      </ul>
-      <button class="btn" @click="emit('register')">＋ 登记旧格式标定</button>
-    </details>
+    <h3 class="section-title">工具标定</h3>
+    <ul class="calib-list">
+      <li v-for="tool in toolCalibrations" :key="`${tool.arm}:${tool.handId}`">
+        <div class="combo">
+          <span class="combo-name">
+            {{ payload.meta.arm_labels[tool.arm] || tool.arm }} · {{ handName(tool.handId) }}
+          </span>
+          <span class="badge" :class="tool.mount && tool.tcp ? 'ready' : 'missing'">
+            {{ tool.mount && tool.tcp ? "生效中" : "未完成" }}
+          </span>
+        </div>
+        <div class="calibration-lines">
+          <div><span class="line-label">安装</span><span>{{ tool.mount?.run_id || "未标定" }}</span></div>
+          <div><span class="line-label">TCP</span><span>{{ tool.tcp?.run_id || "未标定" }}</span></div>
+        </div>
+      </li>
+      <li v-if="!toolCalibrations.length && payload.registry.active">
+        <div class="combo">
+          <span class="combo-name">
+            {{ payload.meta.arm_labels[payload.registry.active.arm] || payload.registry.active.arm }} ·
+            {{ handName(payload.registry.active.hand_id) }}
+          </span>
+          <span class="badge missing">未标定</span>
+        </div>
+      </li>
+      <li v-else-if="!toolCalibrations.length" class="dim empty">未选择工具</li>
+    </ul>
   </section>
 </template>
 
@@ -163,33 +156,30 @@ function artifactSubject(artifact: CalibrationArtifact): string {
   font-weight: 600;
 }
 
-.detail {
-  margin-top: 5px;
-  font-size: 12px;
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.src {
-  word-break: break-all;
-}
-
-.mount-detail {
-  align-items: center;
-}
-
-.mount-badge {
-  padding: 1px 7px;
-  border: 1px solid #2f5a46;
-  border-radius: 999px;
-  color: #62dca1;
-  font-size: 11px;
-}
-
-.binding-title {
+.section-title {
   margin: 20px 0 10px;
   font-size: 14px;
+}
+
+.section-title:first-of-type {
+  margin-top: 12px;
+}
+
+.calibration-lines {
+  margin-top: 8px;
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+}
+
+.calibration-lines > div {
+  display: flex;
+  gap: 10px;
+}
+
+.line-label {
+  min-width: 78px;
+  color: var(--text-dim);
 }
 
 .empty {
@@ -197,13 +187,4 @@ function artifactSubject(artifact: CalibrationArtifact): string {
   padding: 18px;
 }
 
-.legacy {
-  margin-top: 20px;
-}
-
-.legacy summary {
-  cursor: pointer;
-  color: var(--text-dim);
-  font-size: 13px;
-}
 </style>
