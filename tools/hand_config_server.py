@@ -360,8 +360,8 @@ def main() -> int:
     parser.add_argument("--capability-url", default=None,
                         help=f"18000 地址（默认 {DEFAULT_CAPABILITY_URL}）")
     parser.add_argument("--hand-service-url",
-                        default="https://127.0.0.1:18089",
-                        help="18089 hand_web 地址")
+                        default="http://127.0.0.1:18089",
+                        help="18089 hand_web 地址（本机默认使用HTTP）")
     parser.add_argument("--hand-assets-root", type=Path,
                         default=DEFAULT_HAND_ASSETS_ROOT,
                         help="URDF/STL 资产目录（三维视图用）")

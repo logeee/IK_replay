@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 18001 + 7004 + 7005 专用点云选点与拨动核验启动器。
+# 18003 + 18001 + 7004 + 7005 专用点云选点与拨动核验启动器。
 #
 # 启动：./prepare-pointcloud.sh
 # 状态：./prepare-pointcloud.sh status
@@ -16,8 +16,10 @@ PYTHON=${PYTHON:-/home/robot/miniconda3/envs/fastapi/bin/python}
 REACH_PORT=${REACH_PORT:-18001}
 YOLO_PORT=${YOLO_PORT:-7004}
 POINTCLOUD_PORT=${POINTCLOUD_PORT:-7005}
+HAND_CONFIG_PORT=${HAND_CONFIG_PORT:-18003}
 REACH_BASE="http://127.0.0.1:$REACH_PORT"
 YOLO_BASE="http://127.0.0.1:$YOLO_PORT"
+HAND_CONFIG_BASE="http://127.0.0.1:$HAND_CONFIG_PORT"
 NETWORK_INTERFACE=${NETWORK_INTERFACE:-enp86s0}
 CAMERA_HOST=${CAMERA_HOST:-127.0.0.1}
 # 默认留空：由 reach_server 严格读取 18000 当前激活臂+手型号的归档。
@@ -131,6 +133,11 @@ stop_owned() {
 }
 
 show_status() {
+    if healthy "$HAND_CONFIG_BASE/api/hand/info"; then
+        echo "[18003] 灵巧手配置页运行中"
+    else
+        echo "[18003] 灵巧手配置页未就绪"
+    fi
     if healthy "$REACH_BASE/api/reach/status"; then
         if owned_pid "$REACH_PID_FILE" "$REACH_TOKEN"; then
             echo "[18001] 运行中，由本脚本启动（pid $(<"$REACH_PID_FILE")）"
@@ -165,6 +172,7 @@ case "${1:-start}" in
         stop_owned "7005点云" "$VIEWER_PID_FILE" "$VIEWER_TOKEN" 20
         stop_owned "7004 YOLO" "$YOLO_PID_FILE" "$YOLO_TOKEN" 20
         stop_owned "18001 Reach" "$REACH_PID_FILE" "$REACH_TOKEN" 50
+        HAND_CONFIG_PORT="$HAND_CONFIG_PORT" ./hand-config.sh stop
         exit 0
         ;;
     status)
@@ -183,6 +191,14 @@ if [[ ! -x "$PYTHON" ]]; then
     echo "[启动失败] Python 不存在或不可执行: $PYTHON"
     exit 1
 fi
+
+# 18003 与18001共享18000当前激活的手型号和安装方案，但进程彼此独立。
+# 统一交给 hand-config.sh 管理，已运行时会直接复用。
+if ! HAND_CONFIG_PORT="$HAND_CONFIG_PORT" ./hand-config.sh; then
+    echo "[启动失败] 18003 灵巧手配置页启动失败" >&2
+    exit 1
+fi
+
 if [[ -n "$HAND_EYE_CALIB" && ! -f "$HAND_EYE_CALIB" ]]; then
     echo "[启动失败] 手眼标定文件不存在: $HAND_EYE_CALIB"
     exit 1
@@ -351,4 +367,5 @@ else
     echo "YOLO 核验服务:  $YOLO_BASE/"
 fi
 echo "点云选点页面: http://${IP:-127.0.0.1}:$POINTCLOUD_PORT/"
+echo "灵巧手配置页: http://${IP:-127.0.0.1}:$HAND_CONFIG_PORT/"
 echo "停止本脚本启动的服务: $0 stop"

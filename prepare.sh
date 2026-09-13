@@ -2,6 +2,7 @@
 # 拨闸服务预备脚本：一次拉起所有常驻服务，可重复执行（已在跑的自动跳过）。
 #
 #   能力   18000  能力配置中心（最先拉起；所有服务启动时都要拜访它）
+#   手配置 18003  灵巧手连接、调姿与姿态保存
 #   调度   17001  外部触发入口（按需自动开/关 18001 reach_server）
 #   YOLO    7004  常驻推理
 #   点云    7005  冻结 RGB-D、双视图选点与三维微调
@@ -48,6 +49,7 @@ if [[ "${1:-}" == "stop" ]]; then
     stop_one "点云 " 'python -m api\.pointcloud_viewer' 5
     stop_one "YOLO " 'python -m api\.yolo_server' 5
     stop_one "确认台" 'python -m api\.console' 5
+    ./hand-config.sh stop
     if ss -ltn 2>/dev/null | grep -q ":$REACH_PORT "; then
         echo "[reach] ⚠ $REACH_PORT 仍在监听——应该是手动启动的（谁启动谁负责关）。"
         echo "        如需一并关闭: pkill -f reach_server.py"
@@ -72,6 +74,11 @@ start_one() {   # 用法: start_one 名字 端口 日志文件 命令...
 # ---- 能力中心 18000：先于一切服务（各服务启动时都要拜访它，拿不到会拒绝启动） ----
 if ! ./capability.sh; then
     echo "[prepare] ✘ 18000 能力中心拉起失败，中止（所有服务启动都依赖它）" >&2
+    exit 1
+fi
+
+if ! ./hand-config.sh; then
+    echo "[prepare] ✘ 18003 灵巧手配置页拉起失败，中止" >&2
     exit 1
 fi
 
@@ -102,6 +109,7 @@ check() {   # 用法: check 名字 URL
 }
 echo "== 自检 =="
 check "能力   18000" "http://127.0.0.1:18000/api/capability/registry"
+check "手配置 18003" "http://127.0.0.1:18003/api/hand/info"
 check "调度   17001" "http://127.0.0.1:17001/task/status"
 check "YOLO   7004"  "http://127.0.0.1:7004/api/yolo/status"
 check "点云   7005"  "http://127.0.0.1:7005/api/pointcloud/status"
@@ -111,5 +119,6 @@ IP=$(ip route get 8.8.8.8 2>/dev/null | grep -oP 'src \K\S+')
 echo
 echo "对外入口: POST http://${IP:-<机器人IP>}:17001/task/flip"
 echo "流程监控: http://${IP:-<机器人IP>}:17001/"
+echo "灵巧手配置: http://${IP:-<机器人IP>}:18003/"
 echo "确认台:   http://${IP:-<机器人IP>}:7002/"
 echo "点云选点: http://${IP:-<机器人IP>}:7005/"
