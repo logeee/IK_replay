@@ -52,6 +52,19 @@ DEFAULT_GRAVITY_PROFILES = PROJECT_ROOT / "config" / "gravity_compensation.json"
 EXIT_CAMERA_MISMATCH = 3
 DEFAULT_HAND_ASSETS_ROOT = Path("/home/robot/eai-teleop-studio/assets")
 
+# 18000 使用稳定的业务角色名；teleimager 使用具体 ZMQ stream 名称。
+# 映射留在 IK_replay 消费端，避免要求推流项目迁就本项目的数据模型。
+CAMERA_ROLE_TO_RGBD_STREAM = {
+    "head": "head_rgbd_camera",
+    "waist": "torso_rgbd_camera",
+}
+
+
+def _camera_stream_name(role_or_stream: str) -> str:
+    """Translate a capability camera role while preserving explicit stream names."""
+    name = str(role_or_stream).strip()
+    return CAMERA_ROLE_TO_RGBD_STREAM.get(name, name)
+
 
 def _browser_urls(host: str, port: int) -> list[str]:
     """列出真实可访问地址，过滤 Docker/虚拟网桥。"""
@@ -280,6 +293,9 @@ def main() -> int:
                                  "（增益 0.35），最长 4s，进死区即停。"
                                  "同样带死区与偏置钳位，与 --settle-trim-discrete 互斥")
     args = parser.parse_args()
+    # api.dispatch 以及人工 CLI 都可能传业务角色名；进入相机后端前统一成
+    # teleimager stream 名，显式传入的其他 stream 名保持不变。
+    args.camera_name = _camera_stream_name(args.camera_name)
 
     settle_trim = ("discrete" if args.settle_trim_discrete
                    else "continuous" if args.settle_trim_continuous else "off")
@@ -350,8 +366,9 @@ def main() -> int:
                 str(active_combo["hand_id"]), camera_role)
             if binding is not None:
                 # 独立绑定的 camera_role 同时决定运行流，避免 waist 外参被
-                # 静态默认的 head 流误用。显式 --calib 调试仍保留 CLI 选择。
-                args.camera_name = camera_role
+                # 静态默认的 head 流误用。业务角色名在本项目内转换成
+                # teleimager 已有的 stream 名称，不修改推流项目。
+                args.camera_name = _camera_stream_name(camera_role)
                 from core.calibration_bundle import compose_bound_calibration
                 try:
                     composed = compose_bound_calibration(

@@ -11,7 +11,7 @@ from core.hand_runtime import (
     configure_hand_runtime,
     hand_connect,
 )
-from reach_server import _validate_camera_identity
+from reach_server import _camera_stream_name, _validate_camera_identity
 
 
 def _registry() -> dict:
@@ -152,6 +152,14 @@ class HandRuntimeConfigTests(unittest.TestCase):
 
 
 class CameraIdentityTests(unittest.TestCase):
+    def test_capability_camera_roles_map_to_teleimager_streams(self):
+        self.assertEqual(_camera_stream_name("head"), "head_rgbd_camera")
+        self.assertEqual(_camera_stream_name("waist"), "torso_rgbd_camera")
+
+    def test_explicit_teleimager_stream_name_is_preserved(self):
+        self.assertEqual(
+            _camera_stream_name("head_rgbd_camera"), "head_rgbd_camera")
+
     def test_accepts_matching_gemini_serial_and_profile(self):
         _validate_camera_identity(
             {"camera": {
