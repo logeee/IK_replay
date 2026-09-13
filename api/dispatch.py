@@ -340,7 +340,7 @@ def _spawn_reach(task: dict) -> None:
         "--yolo-base", _args.yolo,
         "--capability-url", _args.capability_url,
     ]
-    if not use_artifact_binding:
+    if not use_artifact_binding and calib:
         cmd.extend(["--calib", calib])
     if _args.camera_port is not None:
         cmd.extend(["--camera-port", str(_args.camera_port)])
@@ -1952,9 +1952,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--calib",
-        default=("/home/robot/yx/project/calib/hand_eye_3D/handeye3d_data/"
-                 "biaoding/handeye3d_result.json"),
-        help="reach_server 使用的手眼标定结果",
+        default=None,
+        help="兼容调试用合并标定文件；默认严格使用18000当前激活组合的产物绑定",
     )
     parser.add_argument("--tool-out-mm", type=float, default=15.0,
                         help="TCP 沿腕系 +x 方向额外外移毫米数")
@@ -1994,7 +1993,7 @@ def main() -> None:
     print(f"[dispatch] reach_server 按需拉起: {sys.executable} reach_server.py "
           f"--port {_args.reach_port} --camera-source zmq "
           f"--camera-host {_args.camera_host} --network-interface {_args.network_interface} "
-          f"--calib {_args.calib} --tool-out-mm {_args.tool_out_mm:g}")
+          f"--calib {_args.calib or '<18000绑定>'} --tool-out-mm {_args.tool_out_mm:g}")
     uvicorn.run(app, host=_args.host, port=_args.port, log_level="warning")
 
 

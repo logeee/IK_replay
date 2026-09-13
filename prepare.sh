@@ -18,7 +18,6 @@ cd "$(dirname "$0")"
 FASTAPI_PY=/home/robot/miniconda3/envs/fastapi/bin/python
 REACH_PORT=18001
 REACH_BASE=http://127.0.0.1:$REACH_PORT
-HAND_EYE_CALIB=/home/robot/yx/project/calib/hand_eye_3D/handeye3d_data/biaoding/handeye3d_result.json
 LOG_DIR=logs/service
 mkdir -p "$LOG_DIR"
 
@@ -80,7 +79,6 @@ start_one "调度 " 17001 dispatch.log "$FASTAPI_PY" -m api.dispatch \
     --reach-base "$REACH_BASE" \
     --reach-port "$REACH_PORT" \
     --camera-host 127.0.0.1 \
-    --calib "$HAND_EYE_CALIB" \
     --tool-out-mm 15
 start_one "YOLO " 7004 yolo_server.log "$FASTAPI_PY" -m api.yolo_server \
     --reach-base "$REACH_BASE" \

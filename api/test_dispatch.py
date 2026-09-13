@@ -33,12 +33,7 @@ from .client import ReachClient
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WAYPOINT = ROOT / "data" / "waypoints" / "R-起手点测试_20260721_042250.json"
-DEFAULT_CALIB = (
-    Path("/home/robot/yx/project/calib/hand_eye_3D")
-    / "handeye3d_data"
-    / "biaoding"
-    / "handeye3d_result.json"
-)
+DEFAULT_CALIB = None
 
 LANGUAGE_TASKS = {
     "change the switch from close to remote": "close_to_remote",
@@ -107,11 +102,11 @@ def _spawn_reach(task: dict[str, Any]) -> None:
         str(_args.reach_port),
         "--network-interface",
         _args.network_interface,
-        "--calib",
-        str(_args.calib),
         "--tool-out-mm",
         str(_args.tool_out_mm),
     ]
+    if _args.calib is not None:
+        cmd.extend(["--calib", str(_args.calib)])
     task["log"].append(f"启动 robot-only reach_server: {' '.join(cmd[1:])}")
     task["reach_log"] = str(log_path)
     task["reach_proc"] = subprocess.Popen(

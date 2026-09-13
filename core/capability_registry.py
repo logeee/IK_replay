@@ -102,9 +102,8 @@ def flow_required_waypoints(arm: str) -> tuple[str, ...]:
     return tuple(arm_assets.arm_asset_name(arm, base)
                  for base in FLOW_REQUIRED_WAYPOINT_BASES)
 
-# 种子迁移时尝试从旧的固定路径复制标定（只在机器人本机存在）
-LEGACY_CALIB_SOURCE = ("/home/robot/yx/project/calib/hand_eye_3D/"
-                       "handeye3d_data/biaoding/handeye3d_result.json")
+# 旧固定目录不再作为运行依赖；新标定由18005按manifest登记并绑定。
+LEGACY_CALIB_SOURCE = ""
 
 ARMS = ("right_arm", "left_arm")
 ARM_LABELS = {"right_arm": "右臂", "left_arm": "左臂"}

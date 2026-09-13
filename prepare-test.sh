@@ -16,7 +16,6 @@ PORT=17001
 REACH_PORT=18001
 REACH_BASE=http://127.0.0.1:$REACH_PORT
 WAYPOINT=/home/robot/yx/project/IK_replay/data/waypoints/起手点测试_20260721_042250.json
-CALIB=/home/robot/yx/project/calib/hand_eye_3D/handeye3d_data/biaoding/handeye3d_result.json
 LOG_DIR=logs/service
 LOG_FILE=$LOG_DIR/test_dispatch.log
 PID_FILE=$LOG_DIR/test_dispatch.pid
@@ -80,10 +79,6 @@ if [[ ! -f "$WAYPOINT" ]]; then
     echo "[测试API] 测试路点不存在: $WAYPOINT"
     exit 1
 fi
-if [[ ! -f "$CALIB" ]]; then
-    echo "[测试API] 标定文件不存在: $CALIB"
-    exit 1
-fi
 if ss -ltn 2>/dev/null | grep -q ":$PORT "; then
     echo "[测试API] 端口 $PORT 已被监听，测试服务与正式 prepare.sh 不能同时运行"
     echo "          请先关闭占用 $PORT 的服务"
@@ -95,7 +90,6 @@ nohup "$PYTHON" -m api.test_dispatch \
     --reach-base "$REACH_BASE" \
     --reach-port "$REACH_PORT" \
     --network-interface enp86s0 \
-    --calib "$CALIB" \
     --tool-out-mm 15 \
     --waypoint "$WAYPOINT" \
     --max-speed 0.2 \

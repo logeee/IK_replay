@@ -3,7 +3,7 @@
 
 不加任何参数时等价于原离线查看器（app.py），reach 面板不出现。
 生产相机从外部 teleimager ZMQ 只读获取；本项目不会启动或修改推流服务。
-Orbbec SDK 直连仅用于显式调试/标定，手臂控制模块仍复用 hand_eye_3D。
+Orbbec SDK 直连仅用于显式调试/标定，手臂控制模块复用统一标定工作站运行时。
 
 是否接管手臂（真机执行）由【前端页面按钮】决定：
 服务器启动时只做 rt/lowstate 只读订阅；页面上点「接管手臂」后才创建
@@ -40,10 +40,10 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-HAND_EYE_3D_ROOT = Path("/home/robot/yx/project/calib/hand_eye_3D")
+CALIB_WORKSTATION_ROOT = Path("/home/robot/yx/project/calib/calib_workstation")
 
 sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(HAND_EYE_3D_ROOT))
+sys.path.insert(0, str(CALIB_WORKSTATION_ROOT))
 
 DEFAULT_RGBD_CALIB = PROJECT_ROOT / "config" / "camera" / "orbbec_rgbd_calibration.json"
 DEFAULT_CAMERA_CONFIG_CACHE = PROJECT_ROOT / "config" / "camera" / "teleimager_config_cache.json"
@@ -514,7 +514,7 @@ def main() -> int:
             )
         else:
             # 只有显式选择 orbbec 才 import SDK 后端并可能打开本机设备。
-            from backend.camera import make_camera  # hand_eye_3D
+            from calib_workstation.calib3d.camera import make_camera
 
             camera = make_camera(args.camera_source, serial=args.camera_serial)
         try:
@@ -568,7 +568,7 @@ def main() -> int:
     arm_factory = None
     if not args.no_robot and not args.camera_only:
         try:
-            from backend.robot import H2PoseProvider  # hand_eye_3D（只读订阅）
+            from calib_workstation.calib3d.robot import H2PoseProvider
 
             provider = H2PoseProvider(network_interface=args.network_interface, arm=arm)
             joints_reader = provider.read_arm_q
@@ -579,7 +579,7 @@ def main() -> int:
             print(f"[reach] DDS 连接失败，退化为仅模拟模式: {exc}")
 
         if joints_reader is not None:
-            from backend.arm import H2ArmController  # hand_eye_3D
+            from calib_workstation.calib3d.arm import H2ArmController
 
             def arm_factory():
                 print(f"[reach] !!! 前端请求接管手臂：开始发布 rt/arm_sdk "

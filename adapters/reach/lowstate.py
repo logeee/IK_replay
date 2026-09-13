@@ -2,7 +2,7 @@
 
 现有 ``H2PoseProvider``/``H2ArmController`` 只暴露手臂 7 关节与腰/IMU 姿态，
 不含陀螺仪、``tick`` 与全身 ``dq``，所以浮动基座估计需要自己的只读订阅。
-DDS ChannelFactory 在进程内只初始化一次（``backend.dds.ensure_dds_initialized``），
+DDS ChannelFactory 在进程内只初始化一次（统一标定运行时的 ``ensure_dds_initialized``），
 多一个 subscriber 没有副作用，且**不创建任何 publisher**。
 
 ``MockLowStateSampler`` 用于 ``--no-robot`` 与离线回放：站立中性位 + 可注入的
@@ -42,7 +42,7 @@ class H2LowStateSampler(LowStateSampler):
         from unitree_sdk2py.core.channel import ChannelSubscriber
         from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
 
-        from backend.dds import ensure_dds_initialized  # hand_eye_3D
+        from calib_workstation.calib3d.dds import ensure_dds_initialized
 
         ensure_dds_initialized(network_interface)
         self._lock = threading.Lock()

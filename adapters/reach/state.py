@@ -21,7 +21,7 @@ class ReachState:
 
     def __init__(self):
         self.enabled = False
-        self.camera = None                 # hand_eye_3D 的 CameraBase
+        self.camera = None                 # 统一标定运行时的 CameraBase
         self.wrist_camera = None           # teleimager 右腕 JPEG，只用于拨动前核验
         self.yolo_base = "http://127.0.0.1:7004"
         self.last_flip_verification: dict[str, Any] | None = None
