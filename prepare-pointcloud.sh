@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 18003 + 18001 + 7004 + 7005 专用点云选点与拨动核验启动器。
+# 18000 + 18003 + 18001 + 7004 + 7005 点云选点与拨动核验启动器。
 #
 # 启动：./prepare-pointcloud.sh
 # 状态：./prepare-pointcloud.sh status
@@ -16,9 +16,11 @@ PYTHON=${PYTHON:-/home/robot/miniconda3/envs/fastapi/bin/python}
 REACH_PORT=${REACH_PORT:-18001}
 YOLO_PORT=${YOLO_PORT:-7004}
 POINTCLOUD_PORT=${POINTCLOUD_PORT:-7005}
+CAPABILITY_PORT=${CAPABILITY_PORT:-18000}
 HAND_CONFIG_PORT=${HAND_CONFIG_PORT:-18003}
 REACH_BASE="http://127.0.0.1:$REACH_PORT"
 YOLO_BASE="http://127.0.0.1:$YOLO_PORT"
+CAPABILITY_BASE="http://127.0.0.1:$CAPABILITY_PORT"
 HAND_CONFIG_BASE="http://127.0.0.1:$HAND_CONFIG_PORT"
 NETWORK_INTERFACE=${NETWORK_INTERFACE:-enp86s0}
 CAMERA_HOST=${CAMERA_HOST:-127.0.0.1}
@@ -133,6 +135,11 @@ stop_owned() {
 }
 
 show_status() {
+    if healthy "$CAPABILITY_BASE/api/capability/registry"; then
+        echo "[18000] 能力配置页运行中"
+    else
+        echo "[18000] 能力配置页未就绪"
+    fi
     if healthy "$HAND_CONFIG_BASE/api/hand/info"; then
         echo "[18003] 灵巧手配置页运行中"
     else
@@ -189,6 +196,12 @@ esac
 
 if [[ ! -x "$PYTHON" ]]; then
     echo "[启动失败] Python 不存在或不可执行: $PYTHON"
+    exit 1
+fi
+
+# 18000 是18003和18001的共同依赖；能力中心自身会判断“已运行则复用”。
+if ! CAPABILITY_PORT="$CAPABILITY_PORT" ./capability.sh; then
+    echo "[启动失败] 18000 能力配置页启动失败" >&2
     exit 1
 fi
 
@@ -367,5 +380,6 @@ else
     echo "YOLO 核验服务:  $YOLO_BASE/"
 fi
 echo "点云选点页面: http://${IP:-127.0.0.1}:$POINTCLOUD_PORT/"
+echo "能力配置页: http://${IP:-127.0.0.1}:$CAPABILITY_PORT/"
 echo "灵巧手配置页: http://${IP:-127.0.0.1}:$HAND_CONFIG_PORT/"
 echo "停止本脚本启动的服务: $0 stop"
