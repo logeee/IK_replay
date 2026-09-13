@@ -171,8 +171,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--hand-service-url",
-        default="https://127.0.0.1:18089",
-        help="灵巧手控制/状态服务地址",
+        default="http://127.0.0.1:18089",
+        help="灵巧手控制/状态服务地址（本机18089默认使用HTTP）",
     )
     parser.add_argument(
         "--hand-assets-root",
@@ -184,7 +184,7 @@ def main() -> int:
         "--hand-service-verify-tls",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="校验 18089 HTTPS 证书（本机自签名证书默认不校验）",
+        help="使用 HTTPS 地址时校验18089证书",
     )
     runtime_mode = parser.add_mutually_exclusive_group()
     runtime_mode.add_argument(

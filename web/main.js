@@ -4421,12 +4421,18 @@ function updateDexterousHandBadge(snapshot, error = null) {
   if (service.connected && service.compatible && snapshot.positions) {
     badge.textContent = `灵巧手：${snapshot.hand_name} 实时`;
     badge.classList.add("online");
-  } else if (service.compatible) {
-    badge.textContent = `灵巧手：${snapshot.hand_name} 静态`;
+  } else if (!service.available) {
+    badge.textContent = `灵巧手：${snapshot.hand_name} 服务未连接`;
+    badge.classList.add("error");
+  } else if (!service.compatible) {
+    badge.textContent = `灵巧手：${snapshot.hand_name} 型号不匹配`;
+    badge.classList.add("error");
+  } else if (!service.connected) {
+    badge.textContent = `灵巧手：${snapshot.hand_name} 未连接`;
     badge.classList.add("warn");
   } else {
-    badge.textContent = `灵巧手：${snapshot.hand_name} 数据不匹配`;
-    badge.classList.add("error");
+    badge.textContent = `灵巧手：${snapshot.hand_name} 无实时数据`;
+    badge.classList.add("warn");
   }
   badge.title = [
     `18000: ${snapshot.arm} + ${snapshot.hand_id}`,
