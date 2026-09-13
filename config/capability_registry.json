@@ -1,8 +1,14 @@
 {
   "schema_version": 1,
+  "robot": {
+    "unit_code": "H2-1336",
+    "vendor": "unitree",
+    "model": "h2"
+  },
   "active": {
     "arm": "left_arm",
     "hand_id": "qiangnao-revo2-left",
+    "camera_role": "head",
     "motion_backend": "pink"
   },
   "cabinet_frame": {
@@ -81,22 +87,86 @@
       "notes": ""
     }
   ],
-  "calibrations": [
+  "calibrations": [],
+  "calibration_artifacts": [
     {
-      "arm": "right_arm",
-      "hand_id": "yinshi-1-right",
-      "path": "config/hand_eye/right_arm__yinshi-1-right/handeye3d_result.json",
-      "source_path": "/home/robot/yx/project/calib/hand_eye_3D/handeye3d_data/biaoding/handeye3d_result.json",
-      "registered_at": "2026-09-01T15:46:43"
+      "artifact_id": "ad69c53b-bfa4-5078-8116-b19cc23e6c8e",
+      "unit_code": "H2-1336",
+      "vendor": "unitree",
+      "robot_model": "h2",
+      "type": "intrinsic",
+      "subject": {
+        "kind": "camera",
+        "unit_code": "H2-1336",
+        "camera_role": "head",
+        "camera_serial": "CP0X663000B7"
+      },
+      "subject_key": "head",
+      "run_id": "Test-head-1",
+      "status": "active",
+      "local_path": "/home/robot/yx/project/calib/calib_workstation_data/H2-1336/calibrations/intrinsic/head/Test-head-1",
+      "cloud_remote_id": 3,
+      "registered_at": "2026-09-13T23:05:34"
     },
     {
-      "arm": "right_arm",
-      "hand_id": "qiangnao-1-right",
-      "path": "config/hand_eye/right_arm__qiangnao-1-right/handeye3d_result.json",
-      "source_path": "/home/robot/yx/project/calib/hand_eye_3D/handeye3d_data/biaoding/handeye3d_result_mount.json",
-      "registered_at": "2026-09-03T18:22:00"
+      "artifact_id": "78067c81-1206-5e6f-8317-89e885962553",
+      "unit_code": "H2-1336",
+      "vendor": "unitree",
+      "robot_model": "h2",
+      "type": "intrinsic",
+      "subject": {
+        "kind": "camera",
+        "unit_code": "H2-1336",
+        "camera_role": "waist",
+        "camera_serial": "CP0X663000FH"
+      },
+      "subject_key": "waist",
+      "run_id": "Test-yao-1",
+      "status": "active",
+      "local_path": "/home/robot/yx/project/calib/calib_workstation_data/H2-1336/calibrations/intrinsic/waist/Test-yao-1",
+      "cloud_remote_id": 1,
+      "registered_at": "2026-09-13T23:05:45"
+    },
+    {
+      "artifact_id": "1f3497ac-1ba5-50b4-a40f-a9b0707ea1c3",
+      "unit_code": "H2-1336",
+      "vendor": "unitree",
+      "robot_model": "h2",
+      "type": "extrinsic",
+      "subject": {
+        "kind": "camera",
+        "unit_code": "H2-1336",
+        "camera_role": "head",
+        "camera_serial": "CP0X663000B7"
+      },
+      "subject_key": "head",
+      "run_id": "Test-head-1",
+      "status": "active",
+      "local_path": "/home/robot/yx/project/calib/calib_workstation_data/H2-1336/calibrations/extrinsic/head/Test-head-1",
+      "cloud_remote_id": 4,
+      "registered_at": "2026-09-13T23:05:45"
+    },
+    {
+      "artifact_id": "6a87f863-d075-5ac9-89de-3dc3fcfe2853",
+      "unit_code": "H2-1336",
+      "vendor": "unitree",
+      "robot_model": "h2",
+      "type": "extrinsic",
+      "subject": {
+        "kind": "camera",
+        "unit_code": "H2-1336",
+        "camera_role": "waist",
+        "camera_serial": "CP0X663000FH"
+      },
+      "subject_key": "waist",
+      "run_id": "Test-yao-1",
+      "status": "active",
+      "local_path": "/home/robot/yx/project/calib/calib_workstation_data/H2-1336/calibrations/extrinsic/waist/Test-yao-1",
+      "cloud_remote_id": 2,
+      "registered_at": "2026-09-13T23:05:45"
     }
   ],
+  "calibration_bindings": [],
   "capabilities": [
     {
       "id": "cap-rtl-flick",
