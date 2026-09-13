@@ -37,6 +37,7 @@ const state = {
   handMaterials: [],
   handModelKey: null,
   handPreview: null,
+  hiddenNativeHandLink: null,
   panels: {},
   sceneOffset: new THREE.Vector3(),
   activeTargetPanelId: null,
@@ -4143,6 +4144,11 @@ async function loadRobot(urdfUrl) {
 }
 
 function clearDexterousHand() {
+  if (state.hiddenNativeHandLink) {
+    const nativeHand = state.linkGroups.get(state.hiddenNativeHandLink);
+    if (nativeHand) nativeHand.visible = true;
+    state.hiddenNativeHandLink = null;
+  }
   if (state.handGroup) {
     state.handGroup.removeFromParent();
     state.handGroup.traverse((object) => {
@@ -4266,6 +4272,16 @@ async function loadDexterousHand(snapshot) {
   state.robotGroup?.updateMatrixWorld(true);
   // 手模型重建后腕部组可能换了对象，把 TCP 小球重新挂上
   if (reach.tcpPoints?.p_tool) updateReachTcpMarker(reach.tcpPoints.p_tool);
+  // 外接灵巧手已经安装到腕部后，隐藏主机器人 URDF 自带的同侧假手。
+  // 只改 Three.js 可视组，不删除 link，因此 FK、碰撞与标定链保持不变。
+  const nativeHandLink = snapshot.arm === "left_arm"
+    ? "left_hand_link"
+    : "right_hand_link";
+  const nativeHand = state.linkGroups.get(nativeHandLink);
+  if (nativeHand) {
+    nativeHand.visible = false;
+    state.hiddenNativeHandLink = nativeHandLink;
+  }
   publishRenderState("灵巧手模型已加载");
 
   function attachChildren(parentLinkName) {
