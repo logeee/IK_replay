@@ -1,14 +1,18 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import type {
   CalibrationArtifact,
   CalibrationArtifactType,
   CalibrationBinding,
+  MountProfile,
   Payload,
 } from "../lib/api";
 
-const props = defineProps<{ payload: Payload }>();
-defineEmits<{ register: [] }>();
+const props = defineProps<{ payload: Payload; busy: boolean }>();
+const emit = defineEmits<{
+  register: [];
+  applyMountProfile: [profileId: string];
+}>();
 
 function handName(handId: string): string {
   return (
@@ -54,7 +58,6 @@ const toolCalibrations = computed(() => {
     arm: string;
     handId: string;
     mount?: CalibrationArtifact;
-    tcp?: CalibrationArtifact;
   }>();
   for (const binding of props.payload.registry.calibration_bindings) {
     const key = `${binding.arm}:${binding.hand_id}`;
@@ -62,11 +65,81 @@ const toolCalibrations = computed(() => {
       arm: binding.arm,
       handId: binding.hand_id,
       mount: bindingArtifact(binding, "hand_mount"),
-      tcp: bindingArtifact(binding, "tcp_profile"),
     });
+  }
+  const active = props.payload.registry.active;
+  if (active) {
+    const key = `${active.arm}:${active.hand_id}`;
+    if (!grouped.has(key)) {
+      grouped.set(key, { arm: active.arm, handId: active.hand_id });
+    }
   }
   return [...grouped.values()];
 });
+
+const activeMountProfiles = computed<MountProfile[]>(() => {
+  const active = props.payload.registry.active;
+  if (!active) return [];
+  return props.payload.registry.hands.find((hand) => hand.id === active.hand_id)
+    ?.mount_profiles ?? [];
+});
+
+const selectedMountProfileId = ref("");
+
+watch(
+  () => [
+    props.payload.registry.active?.hand_id,
+    props.payload.registry.active?.mount_profile_id,
+    activeMountProfiles.value.map((profile) => profile.id).join("|"),
+  ],
+  () => {
+    const activeId = props.payload.registry.active?.mount_profile_id;
+    selectedMountProfileId.value = activeMountProfiles.value.some(
+      (profile) => profile.id === activeId,
+    )
+      ? activeId!
+      : activeMountProfiles.value[0]?.id ?? "";
+  },
+  { immediate: true },
+);
+
+const selectedMountProfile = computed(
+  () => activeMountProfiles.value.find(
+    (profile) => profile.id === selectedMountProfileId.value,
+  ) ?? null,
+);
+
+const mountProfileChanged = computed(
+  () => !!selectedMountProfileId.value
+    && selectedMountProfileId.value
+      !== props.payload.registry.active?.mount_profile_id,
+);
+
+function isActiveTool(tool: { arm: string; handId: string }): boolean {
+  const active = props.payload.registry.active;
+  return !!active && active.arm === tool.arm && active.hand_id === tool.handId;
+}
+
+function toolStatusClass(tool: {
+  arm: string;
+  handId: string;
+  mount?: CalibrationArtifact;
+}): "ready" | "pending" | "missing" {
+  if (isActiveTool(tool)) {
+    if (mountProfileChanged.value) return "pending";
+    if (selectedMountProfile.value?.source === "fixed") return "ready";
+  }
+  return tool.mount ? "ready" : "missing";
+}
+
+function toolStatusText(tool: {
+  arm: string;
+  handId: string;
+  mount?: CalibrationArtifact;
+}): string {
+  const status = toolStatusClass(tool);
+  return status === "ready" ? "生效中" : status === "pending" ? "待应用" : "未完成";
+}
 </script>
 
 <template>
@@ -104,13 +177,25 @@ const toolCalibrations = computed(() => {
           <span class="combo-name">
             {{ payload.meta.arm_labels[tool.arm] || tool.arm }} · {{ handName(tool.handId) }}
           </span>
-          <span class="badge" :class="tool.mount && tool.tcp ? 'ready' : 'missing'">
-            {{ tool.mount && tool.tcp ? "生效中" : "未完成" }}
+          <span class="badge" :class="toolStatusClass(tool)">
+            {{ toolStatusText(tool) }}
           </span>
         </div>
-        <div class="calibration-lines">
-          <div><span class="line-label">安装</span><span>{{ tool.mount?.run_id || "未标定" }}</span></div>
-          <div><span class="line-label">TCP</span><span>{{ tool.tcp?.run_id || "未标定" }}</span></div>
+        <div v-if="isActiveTool(tool) && activeMountProfiles.length" class="mount-selector">
+          <label class="field mount-field">安装方案
+            <select v-model="selectedMountProfileId">
+              <option v-for="profile in activeMountProfiles" :key="profile.id" :value="profile.id">
+                {{ profile.name }}
+              </option>
+            </select>
+          </label>
+          <button
+            class="btn primary"
+            :disabled="busy || !mountProfileChanged"
+            @click="emit('applyMountProfile', selectedMountProfileId)"
+          >
+            {{ mountProfileChanged ? "应用" : "当前方案" }}
+          </button>
         </div>
       </li>
       <li v-if="!toolCalibrations.length && payload.registry.active">
@@ -175,6 +260,21 @@ const toolCalibrations = computed(() => {
 .calibration-lines > div {
   display: flex;
   gap: 10px;
+}
+
+.mount-selector {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.mount-field {
+  flex: 1;
+}
+
+.mount-selector .btn {
+  white-space: nowrap;
 }
 
 .line-label {

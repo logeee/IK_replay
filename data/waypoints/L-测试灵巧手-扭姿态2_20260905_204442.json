@@ -1,0 +1,20 @@
+{
+  "name": "L-测试灵巧手-扭姿态2",
+  "chain_id": "left_arm",
+  "named_joints": {
+    "left_shoulder_pitch_joint": -1.026207685470581,
+    "left_shoulder_roll_joint": 0.051885705441236496,
+    "left_shoulder_yaw_joint": -0.1880205124616623,
+    "left_elbow_joint": 0.12574449181556702,
+    "left_wrist_roll_joint": 1.5299601554870605,
+    "left_wrist_pitch_joint": 0.3859040439128876,
+    "left_wrist_yaw_joint": 0.08115717768669128
+  },
+  "created_at": "2026-09-14 01:52:34",
+  "arm": "left_arm",
+  "mirrored_from": "R-测试灵巧手-扭姿态2_20260905_204442.json",
+  "recorded_combo": {
+    "arm": "left_arm",
+    "hand_id": "qiangnao-revo2-left"
+  }
+}

@@ -18,63 +18,7 @@ controls.dampingFactor = 0.08;
 controls.target.set(0, 0, -1);
 controls.update();
 
-const cameraAxes = new THREE.AxesHelper(0.25);
-cameraAxes.material.transparent = true;
-cameraAxes.material.opacity = 0.32;
-scene.add(cameraAxes);
-
-const cabinetFrameGroup = new THREE.Group();
-const cabinetAxisSpecs = [
-  { name: "X 右", color: 0xffa447 },
-  { name: "Y 入", color: 0x36d5f2 },
-  { name: "Z 上", color: 0x65e6a5 },
-];
-function cabinetAxisLabel(text, color) {
-  const canvas = document.createElement("canvas");
-  canvas.width = 192;
-  canvas.height = 72;
-  const context = canvas.getContext("2d");
-  context.fillStyle = "rgba(7, 15, 24, 0.88)";
-  context.beginPath();
-  context.roundRect(3, 3, 186, 66, 18);
-  context.fill();
-  context.strokeStyle = `#${color.toString(16).padStart(6, "0")}`;
-  context.lineWidth = 4;
-  context.stroke();
-  context.fillStyle = context.strokeStyle;
-  context.font = '700 31px Inter, "Noto Sans SC", sans-serif';
-  context.textAlign = "center";
-  context.textBaseline = "middle";
-  context.fillText(text, 96, 37);
-  const material = new THREE.SpriteMaterial({
-    map: new THREE.CanvasTexture(canvas),
-    transparent: true,
-    depthTest: false,
-  });
-  const sprite = new THREE.Sprite(material);
-  sprite.scale.set(0.052, 0.0195, 1);
-  sprite.renderOrder = 1202;
-  return sprite;
-}
-const cabinetAxisVisuals = cabinetAxisSpecs.map((spec) => {
-  const arrow = new THREE.ArrowHelper(
-    new THREE.Vector3(1, 0, 0),
-    new THREE.Vector3(0, 0, 0),
-    0.105,
-    spec.color,
-    0.018,
-    0.011,
-  );
-  arrow.line.material.depthTest = false;
-  arrow.cone.material.depthTest = false;
-  arrow.line.renderOrder = 1200;
-  arrow.cone.renderOrder = 1201;
-  const label = cabinetAxisLabel(spec.name, spec.color);
-  cabinetFrameGroup.add(arrow, label);
-  return { arrow, label };
-});
-cabinetFrameGroup.visible = false;
-scene.add(cabinetFrameGroup);
+scene.add(new THREE.AxesHelper(0.25));
 const raycaster = new THREE.Raycaster();
 raycaster.params.Points.threshold = 0.02;
 const pointer = new THREE.Vector2();
@@ -162,7 +106,6 @@ let restoringState = false;
 let autoTargetPending = false;
 let capturePending = false;
 let panelCenterCamera = null;
-let offsetPresets = [];
 const STORAGE_KEY = "ik-replay-pointcloud-state-v1";
 
 function resize() {
@@ -231,7 +174,6 @@ function setViewMode(mode) {
   $("rgbMode").classList.toggle("active", mode === "rgb");
   $("semanticMode").classList.toggle("active", mode === "semantic");
   $("axisNote").classList.toggle("hidden", !pointcloud);
-  updateAxisNote();
   $("viewerHelp").textContent = live
     ? "实时 ZMQ 彩色画面 · 点击“拍一下”生成点云"
     : snapshot
@@ -325,7 +267,6 @@ function installCloud(decoded, { preserveView = false } = {}) {
   scene.add(points);
   marker.visible = false;
   panelCenterMarker.visible = false;
-  clearCabinetFrame();
   panelCenterCamera = null;
   selection = null;
   replacementArmed = false;
@@ -354,49 +295,6 @@ function setPanelCenterMarker(point) {
     -panelCenterCamera[2],
   );
   panelCenterMarker.visible = true;
-}
-
-function updateAxisNote() {
-  const note = $("axisNote");
-  const hasCabinetFrame = cabinetFrameGroup.visible;
-  note.classList.toggle("cabinet-active", hasCabinetFrame);
-  note.textContent = hasCabinetFrame
-    ? "柜面坐标系（面板中心）：X 右=橙　Y 入墙=青　Z 上=绿｜原点淡色三轴为相机显示轴"
-    : "淡色原点三轴为相机显示轴；运行“算法找点”后显示柜面 X / Y / Z";
-}
-
-function clearCabinetFrame() {
-  cabinetFrameGroup.visible = false;
-  updateAxisNote();
-}
-
-function setCabinetFrame(centerCamera, axesCamera) {
-  const isVector3 = (value) => Array.isArray(value) && value.length === 3
-    && value.every((component) => Number.isFinite(Number(component)));
-  if (!isVector3(centerCamera)
-      || !Array.isArray(axesCamera)
-      || axesCamera.length !== 3
-      || !axesCamera.every(isVector3)) {
-    clearCabinetFrame();
-    return;
-  }
-  cabinetFrameGroup.position.set(
-    Number(centerCamera[0]),
-    -Number(centerCamera[1]),
-    -Number(centerCamera[2]),
-  );
-  axesCamera.forEach((axis, index) => {
-    const direction = new THREE.Vector3(
-      Number(axis[0]),
-      -Number(axis[1]),
-      -Number(axis[2]),
-    ).normalize();
-    const visual = cabinetAxisVisuals[index];
-    visual.arrow.setDirection(direction);
-    visual.label.position.copy(direction).multiplyScalar(0.128);
-  });
-  cabinetFrameGroup.visible = true;
-  updateAxisNote();
 }
 
 function updateAutoTargetButton() {
@@ -659,10 +557,6 @@ async function loadCapture(meta, { restore = false, reportProgress = false } = {
     ? (stored.panelCenterCamera || recovered?.panelCenterCamera)
     : recovered?.panelCenterCamera;
   setPanelCenterMarker(recoveredCenter);
-  setCabinetFrame(
-    recovered?.panelCenterCamera || recoveredCenter,
-    recovered?.wallAxesCamera,
-  );
   if (recovered) {
     selection = recovered;
     renderSelection();
@@ -894,11 +788,10 @@ async function autoTarget() {
       throw new Error("算法找点响应缺少有效三维坐标或柜面轴");
     }
     setPanelCenterMarker(result.panel_center_camera_m);
-    setCabinetFrame(result.panel_center_camera_m, result.wall_axes_camera);
     setSelection(
       result.target_camera_m,
       null,
-      result.selection_source || `target-finder/${result.model_version || "unknown"}`,
+      "target-finder/0.2.0-s",
       -1,
       result.matched_detection_name,
       {
@@ -1093,187 +986,6 @@ function nudgeSelection(code) {
   return true;
 }
 
-function algorithmWallAxes() {
-  const algorithmSelection = selection
-    && typeof selection.source === "string"
-    && selection.source.startsWith("target-finder/");
-  const axes = selection?.wallAxesCamera;
-  return algorithmSelection
-    && Array.isArray(axes)
-    && axes.length === 3
-    && axes.every(
-      (axis) => Array.isArray(axis) && axis.length === 3
-        && axis.every((value) => Number.isFinite(Number(value))),
-    ) ? axes : null;
-}
-
-function selectedOffsetPreset() {
-  const name = $("offsetPresetSelect").value;
-  return offsetPresets.find((preset) => preset.name === name) || null;
-}
-
-function renderOffsetPresets(selectedName = "") {
-  const select = $("offsetPresetSelect");
-  select.innerHTML = '<option value="">（选择偏移预设）</option>'
-    + offsetPresets.map((preset) => {
-      const option = document.createElement("option");
-      option.value = preset.name;
-      option.textContent = `${preset.name} · 右${Number(preset.offset_mm.x) >= 0 ? "+" : ""}`
-        + `${Number(preset.offset_mm.x).toFixed(1)}`
-        + ` / 上${Number(preset.offset_mm.z) >= 0 ? "+" : ""}`
-        + `${Number(preset.offset_mm.z).toFixed(1)}`
-        + ` / 入${Number(preset.offset_mm.y) >= 0 ? "+" : ""}`
-        + `${Number(preset.offset_mm.y).toFixed(1)}`;
-      return option.outerHTML;
-    }).join("");
-  if (offsetPresets.some((preset) => preset.name === selectedName)) {
-    select.value = selectedName;
-  }
-  const selected = selectedOffsetPreset();
-  $("applyOffsetPreset").disabled = !selected;
-  $("deleteOffsetPreset").disabled = !selected;
-}
-
-function populateOffsetPresetEditor() {
-  const preset = selectedOffsetPreset();
-  $("applyOffsetPreset").disabled = !preset;
-  $("deleteOffsetPreset").disabled = !preset;
-  if (!preset) return;
-  $("offsetPresetName").value = preset.name;
-  $("offsetPresetX").value = String(preset.offset_mm.x);
-  $("offsetPresetY").value = String(preset.offset_mm.y);
-  $("offsetPresetZ").value = String(preset.offset_mm.z);
-}
-
-async function refreshOffsetPresets(selectedName = "") {
-  try {
-    const response = await fetch("/api/pointcloud/offset-presets", {
-      cache: "no-store",
-    });
-    const result = await response.json();
-    if (!response.ok || !result.ok) {
-      throw new Error(result.error || `HTTP ${response.status}`);
-    }
-    offsetPresets = Array.isArray(result.presets) ? result.presets : [];
-    renderOffsetPresets(selectedName);
-  } catch (error) {
-    setStatus(`偏移预设加载失败：${error.message || error}`, "error");
-  }
-}
-
-function offsetPresetPayload() {
-  const name = $("offsetPresetName").value.trim();
-  if (!name) throw new Error("请填写预设名称");
-  const offsetMm = {
-    x: Number($("offsetPresetX").value),
-    y: Number($("offsetPresetY").value),
-    z: Number($("offsetPresetZ").value),
-  };
-  if (!Object.values(offsetMm).every(Number.isFinite)) {
-    throw new Error("三个方向的偏移都必须是数字");
-  }
-  if (Object.values(offsetMm).some((value) => Math.abs(value) > 500)) {
-    throw new Error("单轴偏移不能超过 ±500 mm");
-  }
-  return { name, offset_mm: offsetMm };
-}
-
-async function saveOffsetPreset() {
-  let payload;
-  try {
-    payload = offsetPresetPayload();
-  } catch (error) {
-    setStatus(error.message || String(error), "error");
-    return;
-  }
-  try {
-    const response = await fetch("/api/pointcloud/offset-presets", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const result = await response.json();
-    if (!response.ok || !result.ok) {
-      throw new Error(result.error || `HTTP ${response.status}`);
-    }
-    offsetPresets = result.presets || [];
-    renderOffsetPresets(payload.name);
-    setStatus(`${result.replaced ? "已更新" : "已保存"}偏移预设「${payload.name}」`, "ok");
-  } catch (error) {
-    setStatus(`偏移预设保存失败：${error.message || error}`, "error");
-  }
-}
-
-async function deleteOffsetPreset() {
-  const preset = selectedOffsetPreset();
-  if (!preset) return;
-  if (!window.confirm(`确认删除偏移预设「${preset.name}」？`)) return;
-  try {
-    const response = await fetch("/api/pointcloud/offset-presets/delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: preset.name }),
-    });
-    const result = await response.json();
-    if (!response.ok || !result.ok) {
-      throw new Error(result.error || `HTTP ${response.status}`);
-    }
-    offsetPresets = result.presets || [];
-    renderOffsetPresets();
-    setStatus(`已删除偏移预设「${preset.name}」`, "ok");
-  } catch (error) {
-    setStatus(`偏移预设删除失败：${error.message || error}`, "error");
-  }
-}
-
-function applyOffsetPreset() {
-  const preset = selectedOffsetPreset();
-  if (!preset) {
-    setStatus("请先选择偏移预设", "error");
-    return;
-  }
-  if (!selection) {
-    setStatus("请先使用“算法找点”选择目标", "error");
-    return;
-  }
-  const wallAxes = algorithmWallAxes();
-  if (!wallAxes) {
-    setStatus("偏移预设只支持带柜面坐标轴的算法找点", "error");
-    return;
-  }
-  const values = ["x", "y", "z"].map(
-    (axis) => Number(preset.offset_mm[axis]) / 1000,
-  );
-  const deltaCamera = [0, 1, 2].map((cameraAxis) => values.reduce(
-    (sum, value, wallAxis) => sum
-      + value * Number(wallAxes[wallAxis][cameraAxis]),
-    0,
-  ));
-  const next = selection.pCamera.map(
-    (value, index) => Number(value) + deltaCamera[index],
-  );
-  if (next[2] <= 0.05) {
-    setStatus("应用预设后 Z 深度将小于 50 mm，已拒绝", "error");
-    return;
-  }
-  selection.pCamera = next;
-  if (!Array.isArray(selection.adjustment) || selection.adjustment.length !== 3) {
-    selection.adjustment = [0, 0, 0];
-  }
-  selection.adjustment = selection.adjustment.map(
-    (value, index) => Number(value) + deltaCamera[index],
-  );
-  selection.confirmed = null;
-  renderSelection();
-  setStatus(
-    `已叠加「${preset.name}」：右${Number(preset.offset_mm.x) >= 0 ? "+" : ""}`
-      + `${Number(preset.offset_mm.x).toFixed(1)} / 上`
-      + `${Number(preset.offset_mm.z) >= 0 ? "+" : ""}${Number(preset.offset_mm.z).toFixed(1)}`
-      + ` / 入墙${Number(preset.offset_mm.y) >= 0 ? "+" : ""}${Number(preset.offset_mm.y).toFixed(1)} mm`,
-    "ok",
-  );
-}
-
 async function confirmTarget() {
   if (!selection || !captureMeta) {
     setStatus("请先选择目标", "error");
@@ -1415,10 +1127,6 @@ $("captureBtn").addEventListener("click", capture);
 $("autoTarget").addEventListener("click", autoTarget);
 $("snapshotImage").addEventListener("click", selectSnapshotPixel);
 $("confirmTarget").addEventListener("click", confirmTarget);
-$("offsetPresetSelect").addEventListener("change", populateOffsetPresetEditor);
-$("applyOffsetPreset").addEventListener("click", applyOffsetPreset);
-$("saveOffsetPreset").addEventListener("click", saveOffsetPreset);
-$("deleteOffsetPreset").addEventListener("click", deleteOffsetPreset);
 $("liveMode").addEventListener("click", showLive);
 $("snapshotMode").addEventListener("click", showSnapshot);
 $("rgbMode").addEventListener("click", () => setColorMode("rgb"));
@@ -1513,5 +1221,4 @@ async function initialize() {
 
 setViewMode(viewMode);
 updateSelectionLock();
-refreshOffsetPresets();
 initialize();

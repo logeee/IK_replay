@@ -137,6 +137,16 @@ const activeCapCount = computed(
       (c) => c.arm === arm.value && c.hand_id === handId.value && c.enabled,
     ).length,
 );
+
+const activeMountProfileName = computed(() => {
+  const active = props.payload.registry.active;
+  if (!active) return "未选择";
+  const hand = hands.value.find((item) => item.id === active.hand_id);
+  const profile = hand?.mount_profiles.find(
+    (item) => item.id === active.mount_profile_id,
+  ) ?? hand?.mount_profiles[0];
+  return profile?.name ?? "未配置";
+});
 </script>
 
 <template>
@@ -170,13 +180,6 @@ const activeCapCount = computed(
           </option>
         </select>
       </label>
-      <label class="field">安装方案
-        <select v-model="mountProfileId">
-          <option v-for="profile in mountProfiles" :key="profile.id" :value="profile.id">
-            {{ profile.name }}
-          </option>
-        </select>
-      </label>
       <label class="field" title="18001 执行路点的方式。legacy_timed：保持原路径并生成 50Hz 时间轨迹；pink：世界系 PINK 闭环跟踪，执行前需锚定世界系">运动后端
         <select v-model="motionBackend">
           <option v-for="b in backends" :key="b" :value="b">
@@ -192,6 +195,7 @@ const activeCapCount = computed(
           </template>
         </span>
         <span v-if="isCurrent" class="badge on">当前激活</span>
+        <span class="badge plain off">安装：{{ activeMountProfileName }}</span>
         <span v-if="motionBackend === 'pink'" class="badge plain off">pink：执行前需锚定世界系</span>
         <span class="badge plain off">{{ activeCapCount }} 项已启用能力</span>
       </div>

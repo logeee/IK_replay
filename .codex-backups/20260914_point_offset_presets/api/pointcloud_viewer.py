@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import io
 import json
-import math
 import re
 import shutil
 import threading
@@ -64,8 +63,6 @@ WEB_DIR = ROOT / "web"
 SCENE_MISMATCH_TRAINING_DIR = (
     ROOT / "data" / "training_samples" / "scene_mismatch"
 )
-OFFSET_PRESETS_PATH = ROOT / "data" / "point_offset_presets.json"
-OFFSET_PRESET_LIMIT_MM = 500.0
 
 app = FastAPI(title="pointcloud-viewer")
 app.mount("/web", StaticFiles(directory=WEB_DIR), name="pointcloud-web")
@@ -93,7 +90,6 @@ _capture_lock = threading.Lock()
 _auto_target_lock = threading.Lock()
 _wall_plane_lock = threading.Lock()
 _capture_progress_lock = threading.Lock()
-_offset_presets_lock = threading.Lock()
 _capture_progress: dict[str, dict[str, Any]] = {}
 
 
@@ -338,131 +334,6 @@ def status():
             else "manual_pointcloud_no_yolo"
         ),
     }
-
-
-def _normalize_offset_preset(raw: Any) -> dict[str, Any]:
-    if not isinstance(raw, dict):
-        raise ValueError("偏移预设必须是 JSON object")
-    name = str(raw.get("name") or "").strip()
-    if not name:
-        raise ValueError("预设名称不能为空")
-    if len(name) > 60:
-        raise ValueError("预设名称不能超过 60 个字符")
-    if any(ord(char) < 32 for char in name):
-        raise ValueError("预设名称不能包含控制字符")
-    offset = raw.get("offset_mm")
-    if not isinstance(offset, dict):
-        raise ValueError("offset_mm 必须包含 x / y / z")
-    normalized: dict[str, float] = {}
-    for axis in ("x", "y", "z"):
-        try:
-            value = float(offset.get(axis))
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"{axis} 偏移必须是数字") from exc
-        if not math.isfinite(value):
-            raise ValueError(f"{axis} 偏移必须是有限数字")
-        if abs(value) > OFFSET_PRESET_LIMIT_MM:
-            raise ValueError(
-                f"{axis} 偏移超出 ±{OFFSET_PRESET_LIMIT_MM:g} mm"
-            )
-        normalized[axis] = round(value, 4)
-    return {"name": name, "offset_mm": normalized}
-
-
-def _load_offset_presets() -> list[dict[str, Any]]:
-    if not OFFSET_PRESETS_PATH.is_file():
-        return []
-    payload = json.loads(OFFSET_PRESETS_PATH.read_text(encoding="utf-8"))
-    raw_presets = payload.get("presets") if isinstance(payload, dict) else None
-    if not isinstance(raw_presets, list):
-        raise ValueError("偏移预设文件格式错误：缺少 presets 数组")
-    presets: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for raw in raw_presets:
-        preset = _normalize_offset_preset(raw)
-        if preset["name"] in seen:
-            continue
-        seen.add(preset["name"])
-        presets.append(preset)
-    return presets
-
-
-def _save_offset_presets(presets: list[dict[str, Any]]) -> None:
-    OFFSET_PRESETS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temporary = OFFSET_PRESETS_PATH.with_suffix(".json.tmp")
-    temporary.write_text(
-        json.dumps(
-            {"schema_version": 1, "presets": presets},
-            ensure_ascii=False,
-            indent=2,
-        ) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(OFFSET_PRESETS_PATH)
-
-
-@app.get("/api/pointcloud/offset-presets")
-def offset_presets_list():
-    try:
-        with _offset_presets_lock:
-            presets = _load_offset_presets()
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return JSONResponse(
-            {"ok": False, "error": f"读取偏移预设失败：{exc}"},
-            status_code=500,
-        )
-    return {"ok": True, "presets": presets}
-
-
-@app.post("/api/pointcloud/offset-presets")
-def offset_presets_save(body: dict[str, Any]):
-    try:
-        preset = _normalize_offset_preset(body)
-        with _offset_presets_lock:
-            presets = _load_offset_presets()
-            replaced = False
-            for index, current in enumerate(presets):
-                if current["name"] == preset["name"]:
-                    presets[index] = preset
-                    replaced = True
-                    break
-            if not replaced:
-                presets.append(preset)
-            _save_offset_presets(presets)
-    except ValueError as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
-    except (OSError, json.JSONDecodeError) as exc:
-        return JSONResponse(
-            {"ok": False, "error": f"保存偏移预设失败：{exc}"},
-            status_code=500,
-        )
-    return {"ok": True, "preset": preset, "presets": presets,
-            "replaced": replaced}
-
-
-@app.post("/api/pointcloud/offset-presets/delete")
-def offset_presets_delete(body: dict[str, Any]):
-    name = str(body.get("name") or "").strip()
-    if not name:
-        return JSONResponse(
-            {"ok": False, "error": "预设名称不能为空"}, status_code=422
-        )
-    try:
-        with _offset_presets_lock:
-            presets = _load_offset_presets()
-            remaining = [item for item in presets if item["name"] != name]
-            if len(remaining) == len(presets):
-                return JSONResponse(
-                    {"ok": False, "error": f"偏移预设不存在：{name}"},
-                    status_code=404,
-                )
-            _save_offset_presets(remaining)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return JSONResponse(
-            {"ok": False, "error": f"删除偏移预设失败：{exc}"},
-            status_code=500,
-        )
-    return {"ok": True, "presets": remaining}
 
 
 @app.post("/api/pointcloud/capture")

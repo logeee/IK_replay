@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RGB / YOLO 语义点云</title>
-    <link rel="stylesheet" href="/web/pointcloud.css?v=20260914-3" />
+    <link rel="stylesheet" href="/web/pointcloud.css?v=20260822-1" />
     <script type="importmap">
       {
         "imports": {
@@ -72,37 +72,6 @@
           </label>
         </div>
         <div id="keyHelp" class="key-help">相机轴微调　R：解锁一次重新选点　A/D：X−/X+　W/S：Y−/Y+　Q/E：Z−/Z+</div>
-        <div class="offset-presets">
-          <div class="offset-preset-heading">
-            <span>一键偏移</span>
-            <small>柜面轴 · mm</small>
-          </div>
-          <div class="offset-preset-apply">
-            <select id="offsetPresetSelect" title="已保存的柜面轴偏移预设">
-              <option value="">（选择偏移预设）</option>
-            </select>
-            <button id="applyOffsetPreset" type="button" disabled>一键叠加</button>
-          </div>
-          <input id="offsetPresetName" type="text" maxlength="60"
-                 placeholder="预设名称，例如：右25 下15 内20" />
-          <div class="offset-preset-axes">
-            <label><span class="offset-axis-label"><b>X</b>右 / 左</span>
-              <input id="offsetPresetX" type="number" min="-500" max="500" step="0.1" value="0" />
-            </label>
-            <label><span class="offset-axis-label"><b>Z</b>上 / 下</span>
-              <input id="offsetPresetZ" type="number" min="-500" max="500" step="0.1" value="0" />
-            </label>
-            <label><span class="offset-axis-label"><b>Y</b>入墙 / 离墙</span>
-              <input id="offsetPresetY" type="number" min="-500" max="500" step="0.1" value="0" />
-            </label>
-          </div>
-          <div class="offset-positive-help"><span>＋ 正方向</span>右 · 上 · 入墙</div>
-          <div class="offset-preset-actions">
-            <button id="saveOffsetPreset" type="button">保存 / 更新</button>
-            <button id="deleteOffsetPreset" type="button" disabled>删除</button>
-          </div>
-          <div class="offset-preset-help">预设只用于算法找点；点击后叠加在当前微调值上，不会替换已有偏移。</div>
-        </div>
         <div id="selectionLock" class="selection-lock ready">首次选点：直接点击点云或RGB图像</div>
         <button id="confirmTarget" class="primary" disabled>确定目标并发送到 18001</button>
       </section>
@@ -129,9 +98,9 @@
       <div id="viewport" class="hidden"></div>
       <div id="semanticLabels" class="semantic-labels"></div>
       <div id="viewerHelp" class="viewer-help">图片默认隐藏 · 点击左侧按钮才显示图片</div>
-      <div id="axisNote" class="axis-note hidden">淡色原点三轴为相机显示轴；运行“算法找点”后显示柜面 X / Y / Z</div>
+      <div id="axisNote" class="axis-note hidden">显示坐标：X 右，Y 上，视线向前；数值返回彩色相机系 X右/Y下/Z前</div>
     </main>
 
-    <script type="module" src="/web/pointcloud.js?v=20260914-3"></script>
+    <script type="module" src="/web/pointcloud.js?v=20260903-1"></script>
   </body>
 </html>

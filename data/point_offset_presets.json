@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "presets": [
+    {
+      "name": "Debug左到右",
+      "offset_mm": {
+        "x": 25.0,
+        "y": 10.0,
+        "z": -15.0
+      }
+    }
+  ]
+}

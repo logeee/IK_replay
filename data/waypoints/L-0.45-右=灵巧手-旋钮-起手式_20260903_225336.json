@@ -1,0 +1,20 @@
+{
+  "name": "L-0.45-右=灵巧手-旋钮-起手式",
+  "chain_id": "left_arm",
+  "named_joints": {
+    "left_shoulder_pitch_joint": -0.6141771245776485,
+    "left_shoulder_roll_joint": 0.05288071593101386,
+    "left_shoulder_yaw_joint": -0.14250306232780005,
+    "left_elbow_joint": -0.343848491755809,
+    "left_wrist_roll_joint": -0.20401530433686463,
+    "left_wrist_pitch_joint": 0.09540647093864427,
+    "left_wrist_yaw_joint": 0.1383163446739829
+  },
+  "created_at": "2026-09-14 01:52:34",
+  "arm": "left_arm",
+  "mirrored_from": "R-0.45-右=灵巧手-旋钮-起手式_20260903_225336.json",
+  "recorded_combo": {
+    "arm": "left_arm",
+    "hand_id": "qiangnao-revo2-left"
+  }
+}

@@ -109,127 +109,6 @@ input, select {
 }
 .target-controls { margin: 10px 0 8px; }
 .key-help { margin-bottom: 9px; color: #8fa0b7; font-size: 11px; line-height: 1.5; }
-.offset-presets {
-  margin: 0 0 9px;
-  padding: 11px;
-  border: 1px solid #38506b;
-  border-radius: 10px;
-  background:
-    linear-gradient(145deg, rgba(34, 55, 79, .38), rgba(8, 14, 22, .55));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .025);
-}
-.offset-preset-heading {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  margin-bottom: 9px;
-}
-.offset-preset-heading span {
-  color: #dcecff;
-  font-size: 13px;
-  font-weight: 700;
-}
-.offset-preset-heading small {
-  color: #7790ac;
-  font-size: 10px;
-}
-.offset-preset-apply {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 7px;
-  margin-bottom: 8px;
-}
-.offset-preset-apply select { margin: 0; min-height: 36px; }
-.offset-preset-apply button {
-  min-width: 88px;
-  white-space: nowrap;
-  border-color: #417db0;
-  background: #1b5f93;
-  color: #f1f8ff;
-  font-weight: 700;
-}
-.offset-preset-apply button:hover:not(:disabled) { background: #2475ad; }
-.offset-presets > input {
-  min-height: 36px;
-  margin: 0 0 9px;
-  padding-inline: 10px;
-}
-.offset-preset-axes {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 7px;
-}
-.offset-preset-axes label {
-  min-width: 0;
-  padding: 7px;
-  border: 1px solid #2e4055;
-  border-radius: 8px;
-  background: rgba(9, 17, 27, .72);
-}
-.offset-axis-label {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  min-height: 18px;
-  color: #a9bbcf;
-  font-size: 10px;
-  line-height: 1.15;
-  white-space: nowrap;
-}
-.offset-axis-label b {
-  display: inline-grid;
-  width: 18px;
-  height: 18px;
-  place-items: center;
-  border-radius: 5px;
-  background: #213c58;
-  color: #8fc8ff;
-  font-size: 10px;
-}
-.offset-preset-axes input {
-  min-height: 32px;
-  margin-top: 6px;
-  padding: 6px 7px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-.offset-positive-help {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin-top: 7px;
-  color: #7f91a8;
-  font-size: 10px;
-}
-.offset-positive-help span {
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: rgba(65, 125, 176, .18);
-  color: #8fc8ff;
-}
-.offset-preset-actions {
-  display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(0, .65fr);
-  gap: 7px;
-  margin-top: 9px;
-}
-.offset-preset-actions button { min-height: 36px; }
-#saveOffsetPreset {
-  border-color: #3a79a9;
-  background: #1c4e76;
-  color: #eaf6ff;
-  font-weight: 700;
-}
-#saveOffsetPreset:hover { background: #245f8d; }
-#deleteOffsetPreset:not(:disabled) { color: #f0a7a7; }
-.offset-preset-help {
-  margin-top: 9px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(93, 119, 148, .2);
-  color: #7f91a8;
-  font-size: 10px;
-  line-height: 1.45;
-}
 .selection-lock {
   margin-bottom: 9px;
   padding: 7px 8px;
@@ -363,11 +242,6 @@ input, select {
 }
 .viewer-help { top: 12px; left: 12px; }
 .axis-note { bottom: 12px; left: 12px; }
-.axis-note.cabinet-active {
-  border: 1px solid rgba(54, 213, 242, .34);
-  background: rgba(7, 15, 24, .9);
-  color: #c9e8f2;
-}
 
 @media (max-width: 800px) {
   body { grid-template-columns: 280px 1fr; }

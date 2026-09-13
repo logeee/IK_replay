@@ -125,6 +125,22 @@ async function applyActive(
   );
 }
 
+async function applyMountProfile(mountProfileId: string) {
+  const active = payload.value?.registry.active;
+  if (!active) return;
+  await mutate(
+    "/api/capability/active",
+    {
+      arm: active.arm,
+      hand_id: active.hand_id,
+      camera_role: active.camera_role ?? "head",
+      motion_backend: active.motion_backend ?? "legacy",
+      mount_profile_id: mountProfileId,
+    },
+    "安装方案已切换（重启 18001/18003 生效）",
+  );
+}
+
 async function saveCabinetFrame(config: CabinetFrameConfig) {
   await mutate(
     "/api/capability/cabinet-frame",
@@ -178,7 +194,12 @@ onMounted(reload);
         @edit="(hand) => (handDialog = { hand })"
         @remove="removeHand"
       />
-      <CalibPanel :payload="payload" @register="calibDialog = true" />
+      <CalibPanel
+        :payload="payload"
+        :busy="busy"
+        @register="calibDialog = true"
+        @apply-mount-profile="applyMountProfile"
+      />
     </div>
     <CabinetFramePanel :payload="payload" :busy="busy" @save="saveCabinetFrame" />
     <TargetModelPanel :payload="payload" :busy="busy" @save="saveTargetModel" />

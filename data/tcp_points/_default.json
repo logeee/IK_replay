@@ -2,5 +2,9 @@
   "qiangnao-1-right": {
     "kind": "custom",
     "key": "R-扭姿态2-TCP点_20260905_204315.json"
+  },
+  "qiangnao-revo2-left": {
+    "kind": "custom",
+    "key": "L-从左到右扭食指工作点_20260914_005540.json"
   }
 }
