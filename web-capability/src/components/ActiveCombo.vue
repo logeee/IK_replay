@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import type { CalibInfo, MotionBackend, Payload } from "../lib/api";
+import type {
+  CalibrationArtifactType,
+  CalibInfo,
+  MotionBackend,
+  Payload,
+} from "../lib/api";
 import { SIDE_LABELS } from "../lib/api";
 
 const props = defineProps<{ payload: Payload; busy: boolean }>();
@@ -54,14 +59,31 @@ const calib = computed<CalibInfo | null>(
     ) ?? null,
 );
 
-const calibStatus = computed(() => calib.value?.status ?? "missing");
 const binding = computed(() =>
   props.payload.registry.calibration_bindings.find(
     (item) => item.arm === arm.value && item.hand_id === handId.value
       && item.camera_role === cameraRole.value,
   ) ?? null,
 );
-const boundCount = computed(() => Object.keys(binding.value?.artifacts ?? {}).length);
+const REQUIRED_BOUND_ARTIFACTS: CalibrationArtifactType[] = [
+  "extrinsic",
+  "hand_mount",
+  "tcp_profile",
+];
+const bindingReady = computed(() => {
+  if (!binding.value) return false;
+  return REQUIRED_BOUND_ARTIFACTS.every((type) => {
+    const artifactId = binding.value?.artifacts[type];
+    if (!artifactId) return false;
+    return props.payload.registry.calibration_artifacts.some(
+      (artifact) => artifact.artifact_id === artifactId && artifact.status === "active",
+    );
+  });
+});
+const calibStatus = computed(() => {
+  if (binding.value) return bindingReady.value ? "ready" : "pending";
+  return calib.value?.status ?? "missing";
+});
 
 const CALIB_TEXT: Record<string, string> = {
   ready: "标定就绪",
@@ -141,9 +163,6 @@ const activeCapCount = computed(
           </template>
         </span>
         <span v-if="isCurrent" class="badge on">当前激活</span>
-        <span class="badge plain" :class="binding ? 'on' : 'off'">
-          {{ binding ? `独立产物 ${boundCount} 项` : '尚无独立产物绑定（兼容旧标定）' }}
-        </span>
         <span v-if="motionBackend === 'pink'" class="badge plain off">pink：执行前需锚定世界系</span>
         <span class="badge plain off">{{ activeCapCount }} 项已启用能力</span>
       </div>
