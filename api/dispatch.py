@@ -1,8 +1,8 @@
 """17001 任务调度服务——外部系统触发拨闸流程的唯一入口。
 
 部署形态（谁常驻、谁按需）：
-    · 本服务 17001：常驻。外部系统（导航栈把机器人开到电柜前后）只需
-      POST /task/flip，然后轮询 GET /task/status 拿结果。
+    · 本服务 17001：常驻。外部系统只需带 hand + task 调 POST /task/flip，
+      然后轮询 GET /task/status 拿结果；左右手任务严格串行。
     · yolo_server 7004 / console 7002：常驻（不占相机）。
     · reach_server 18001：平时关着。本服务收到任务时子进程拉起；它只读订阅
       外部 teleimager ZMQ，不会启动本机相机。任务结束（无论成败）后 SIGINT
@@ -28,7 +28,8 @@
                           相机：passed 且 need_flip → 保持开启留给紧接着的
                           /task/flip 复用；失败或无需拨动 → 立即关（外部手动
                           启动的 18001 除外，成败都不动）。
-    POST /task/flip    → body {"language": "<固定指令，必填>",
+    POST /task/flip    → 推荐 body {"hand":"left|right", "task":"..."}。
+                          旧调用方仍可使用 body {"language": "<固定指令>",
                                 "retries": 3,   # 可选，最大尝试轮数（VLA 后端忽略）
                                 "manual": false,  # 可选，手动确认模式（见下）
                                 "workflow_mode": "dexterous_ltr_v1",
@@ -58,7 +59,7 @@
                           POST /config/offset-presets[/delete] 管理）
                           返回 {"ok": true, "task_id": "..."}；执行中再触发 → 409
 
-方向：language 唯一决定——「远方→就地」向左拨（右→左），「就地→远方」
+左手兼容路径的方向由 language 决定——「远方→就地」向左拨（右→左），「就地→远方」
     向右拨（左→右）；两边使用相同位移、下倾、重试和收尾逻辑，推力可
     按方向分别配置。YOLO（Xuanniu_hhy.pt 旋钮类）识别开关物理指向「旋钮左/右」，
     任何现场一致；site 只决定该柜验证过哪些动作（能力注册表 task.sites），
@@ -66,7 +67,7 @@
     GET  /task/status  → 状态机 idle/starting/running/done + 流程日志尾部
                           + 最终结果（错误码见 api.flow.ErrorCode）
                           + step_times 分步耗时 + prompt 当前等待确认的步骤
-    POST /task/abort   → 急停正在执行的动作并强制结束任务（= /emergency/stop）
+    POST /task/abort   → 左手任务可急停；右手 8876 未提供取消接口时返回 501
 
 手动确认模式（网页 http://<机器人IP>:17001/ 上可视化操作）：
     /task/flip 带 "manual": true 后，流程在每个主要步骤（接管/场景判断/
@@ -83,7 +84,7 @@
                           交还本体）→ 关掉自己拉起的 reach_server（放相机/DDS）。
                           用于"别的程序要接管、必须马上让我们松手"的场合。
 
-language 逐字固定（大小写/空格容错，多余的不认）：
+兼容接口的 language 逐字固定（大小写/空格容错，多余的不认）：
     "Change the switch from close to remote"   就地 → 远方（向右拨，工厂柜验证）
     "Change the switch from remote to close"   远方 → 就地（向左拨，两柜验证）
 """
@@ -146,6 +147,7 @@ from core.dispatch_defaults import (
 
 from .client import ReachClient
 from .console_client import ConsoleClient
+from .handcart_client import HandcartClient
 from .flow import (
     FLIP_KIND_STATES,
     KIND_DIRECTIONS,
@@ -185,6 +187,18 @@ _task_stats = {
     "failed": 0,
     "rejected_busy": 0,
 }
+
+# 17001 对外只暴露手和任务；这里负责翻译各执行程序自己的术语。
+PUBLIC_LEFT_TASKS = {
+    "left_to_right": "close_to_remote",
+    "right_to_left": "remote_to_close",
+}
+HANDCART_TASKS = {
+    # 8876 的 left/right 表示电机转向，不表示左右手。
+    "counterclockwise": "left",
+    "clockwise": "right",
+}
+HANDCART_TERMINAL_STATES = frozenset({"DONE", "FAILED", "PAUSED", "CANCELED"})
 
 
 def _service_stats_locked() -> dict[str, Any]:
@@ -717,6 +731,131 @@ def _run_task(task: dict) -> None:
             _count_finished_task_locked(task)
 
 
+def _handcart_base() -> str:
+    return str(
+        getattr(_args, "handcart_base", "http://127.0.0.1:8876")
+    ).rstrip("/")
+
+
+def _run_handcart_task(task: dict) -> None:
+    """启动并轮询 8876 作业；它和机械臂任务共用 17001 的全局任务锁。"""
+    global _check_reach_proc
+    try:
+        with _lock:
+            leftover, _check_reach_proc = _check_reach_proc, None
+        if leftover is not None and leftover.poll() is None:
+            holder = {"log": task["log"], "reach_proc": leftover}
+            _stop_reach(holder)
+            task["log"].append("右手任务不使用相机，已关闭站位检查留下的 reach_server")
+
+        client = HandcartClient(_handcart_base())
+        task["log"].append(
+            f"向 8876 下发手车电机动作 motor_action={task['motor_action']}"
+        )
+        started = client.start(task["motor_action"])
+        job_id = str(started.get("job_id") or "").strip()
+        if not job_id:
+            raise RuntimeError(f"8876 启动响应缺少 job_id: {started!r}")
+        task["downstream_job_id"] = job_id
+        task["downstream"] = deepcopy(started)
+        task["state"] = "running"
+        task["log"].append(f"8876 已接受任务，job_id={job_id}")
+
+        last_state = ""
+        while True:
+            status = client.status(job_id)
+            task["downstream"] = deepcopy(status)
+            downstream_state = str(status.get("state") or "").strip().upper()
+            if not downstream_state:
+                raise RuntimeError(f"8876 状态响应缺少 state: {status!r}")
+            if downstream_state != last_state:
+                task["log"].append(f"8876 状态: {downstream_state}")
+                last_state = downstream_state
+            if downstream_state in HANDCART_TERMINAL_STATES:
+                ok = downstream_state == "DONE"
+                code_name = {
+                    "DONE": "SUCCESS",
+                    "FAILED": "HANDCART_FAILED",
+                    "PAUSED": "HANDCART_PAUSED",
+                    "CANCELED": "ABORTED",
+                }[downstream_state]
+                message = str(
+                    status.get("message")
+                    or status.get("error")
+                    or ("手车电机任务完成" if ok else f"手车电机任务 {downstream_state}")
+                )
+                task["result"] = {
+                    "ok": ok,
+                    "code": 0 if ok else -1,
+                    "code_name": code_name,
+                    "message": message,
+                    "detail": {"downstream": deepcopy(status)},
+                }
+                break
+            time.sleep(1.0)
+    except Exception as exc:
+        task["log"].append(f"✘ 8876 调度失败: {exc}")
+        task["result"] = {
+            "ok": False,
+            "code": -1,
+            "code_name": "HANDCART_DISPATCH_ERROR",
+            "message": str(exc),
+            "detail": {},
+        }
+    finally:
+        with _lock:
+            task["state"] = "done"
+            task["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            _count_finished_task_locked(task)
+
+
+def _submit_handcart_task(public_task: str):
+    """接受右手简化请求，并保持与所有 17001 作业严格串行。"""
+    global _task
+    motor_action = HANDCART_TASKS[public_task]
+    with _lock:
+        if _task is not None and _task["state"] != "done":
+            _task_stats["rejected_busy"] += 1
+            return JSONResponse(
+                {"ok": False, "error": "已有任务在执行",
+                 "task_id": _task["id"], "state": _task["state"]},
+                status_code=409,
+            )
+        if _check is not None and _check["state"] == "running":
+            _task_stats["rejected_busy"] += 1
+            return JSONResponse(
+                {"ok": False, "error": "站位检查（/check/flip）执行中，请等它返回再触发任务"},
+                status_code=409,
+            )
+        now = datetime.now().isoformat(timespec="seconds")
+        _task = {
+            "id": uuid.uuid4().hex[:10],
+            "state": "starting",
+            "hand": "right",
+            "public_task": public_task,
+            "backend": "handcart_8876",
+            "motor_action": motor_action,
+            "downstream_job_id": None,
+            "downstream": None,
+            "started_at": now,
+            "finished_at": None,
+            "result": None,
+            "flow": None,
+            "manual": False,
+            "prompt": None,
+            "log": [
+                f"统一指令: hand=right, task={public_task} "
+                f"→ 8876 motor_action={motor_action}"
+            ],
+            "stats_counted": False,
+        }
+        _task_stats["accepted"] += 1
+        threading.Thread(
+            target=_run_handcart_task, args=(_task,), daemon=True
+        ).start()
+        return {"ok": True, "task_id": _task["id"]}
+
+
 # ------------------------------------------------------------ 站位检查
 
 CHECK_DMIN, CHECK_DMAX = 0.4, 1.0        # 平面拟合深度范围（同 flip 流程）
@@ -1224,7 +1363,44 @@ def _unsupported_message(kind: str, site: str) -> str:
 @app.post("/task/flip")
 def task_submit(body: dict | None = None):
     global _task
-    language = str((body or {}).get("language") or "").strip()
+    body = dict(body or {})
+    public_request = "hand" in body or "task" in body
+    public_hand = str(body.get("hand") or "").strip().lower()
+    public_task = str(body.get("task") or "").strip().lower()
+    if public_request:
+        if not public_hand or not public_task:
+            return JSONResponse(
+                {"ok": False, "error": "hand 和 task 必须同时提供"},
+                status_code=422,
+            )
+        if public_hand not in ("left", "right"):
+            return JSONResponse(
+                {"ok": False, "error": "hand 只能是 left 或 right"},
+                status_code=422,
+            )
+        supported_tasks = (
+            PUBLIC_LEFT_TASKS if public_hand == "left" else HANDCART_TASKS
+        )
+        if public_task not in supported_tasks:
+            return JSONResponse(
+                {"ok": False,
+                 "error": f"hand={public_hand} 不支持 task={public_task!r}",
+                 "supported_tasks": list(supported_tasks)},
+                status_code=422,
+            )
+        if public_hand == "right":
+            return _submit_handcart_task(public_task)
+
+        kind_from_public = PUBLIC_LEFT_TASKS[public_task]
+        body["language"] = {
+            "close_to_remote": "Change the switch from close to remote",
+            "remote_to_close": "Change the switch from remote to close",
+        }[kind_from_public]
+        # 灵巧手新流程当前只实现左→右；右→左仍走已存在的旧流程。
+        if public_task == "right_to_left":
+            body["workflow_mode"] = "legacy"
+
+    language = str(body.get("language") or "").strip()
     if not language:
         return JSONResponse(
             {"ok": False, "error": "缺少必填字段 language",
@@ -1239,14 +1415,14 @@ def task_submit(body: dict | None = None):
                            "Change the switch from remote to close"]},
             status_code=422)
     try:
-        retries = int((body or {}).get("retries") or 3)
+        retries = int(body.get("retries") or 3)
     except (TypeError, ValueError):
         return JSONResponse({"ok": False, "error": "retries 必须是整数"},
                             status_code=422)
     if not 1 <= retries <= 20:
         return JSONResponse({"ok": False, "error": "retries 取值范围 1~20"},
                             status_code=422)
-    manual = bool((body or {}).get("manual"))
+    manual = bool(body.get("manual"))
     defaults = _current_defaults()
     try:
         workflow_mode, dexterous_config, workflow_source = (
@@ -1346,7 +1522,12 @@ def task_submit(body: dict | None = None):
         push_force_note = (
             f"，拨动推力 {push_force_n:g} N（{push_force_source}）"
         )
+        resolved_public_task = public_task or (
+            "left_to_right" if kind == "close_to_remote" else "right_to_left"
+        )
         _task = {"id": uuid.uuid4().hex[:10], "state": "starting",
+                 "hand": "left", "public_task": resolved_public_task,
+                 "backend": "dexterous_arm",
                  "language": language, "kind": kind, "retries": retries,
                  "manual": manual, "site": site,
                  "workflow_mode": workflow_mode,
@@ -1416,9 +1597,30 @@ def task_status():
         return {**common, "state": "idle", "task_id": None,
                 "reach_alive": _reach_alive(0.5), "log": [], "result": None,
                 "manual": False, "prompt": None, "step_times": []}
+    if t.get("backend") == "handcart_8876":
+        return {
+            **common,
+            "state": t["state"],
+            "task_id": t["id"],
+            "hand": t["hand"],
+            "task": t["public_task"],
+            "backend": t["backend"],
+            "started_at": t["started_at"],
+            "finished_at": t["finished_at"],
+            "downstream_job_id": t.get("downstream_job_id"),
+            "downstream": deepcopy(t.get("downstream")),
+            "result": deepcopy(t.get("result")),
+            "log": list(t["log"])[-120:],
+            "manual": False,
+            "prompt": None,
+            "step_times": [],
+        }
     flow: SwitchFlow | None = t.get("flow")
     log = list(t["log"]) + (list(flow.log_lines) if flow is not None else [])
     return {**common, "state": t["state"], "task_id": t["id"],
+            "hand": t.get("hand") or "left",
+            "task": t.get("public_task"),
+            "backend": t.get("backend") or "dexterous_arm",
             "language": t.get("language"), "retries": t.get("retries"),
             "workflow_mode": t.get("workflow_mode") or "legacy",
             "workflow_source": t.get("workflow_source") or "",
@@ -1654,6 +1856,25 @@ def _emergency_stop(reason: str) -> dict:
     每一步都尽力做完，前一步失败不影响后一步——目标只有一个：让我们这边
     彻底不再给机器人发指令，把控制权交还本体，好让别的程序安全接手。
     """
+    with _lock:
+        active_task = _task
+    if (active_task is not None and active_task.get("state") != "done"
+            and active_task.get("backend") == "handcart_8876"):
+        message = (
+            "8876 尚未提供停止/取消接口，17001 不能宣称已停止右手任务；"
+            "任务仍将继续轮询"
+        )
+        active_task["log"].append(f"⚠ {message}")
+        return {
+            "ok": False,
+            "reason": reason,
+            "actions": [],
+            "arm_released": False,
+            "task_state": active_task["state"],
+            "error": "HANDCART_ABORT_UNAVAILABLE",
+            "message": message,
+        }
+
     _estop.set()
     base = _reach_base()
     actions: list[str] = []
@@ -1916,6 +2137,9 @@ def task_abort():
     with _lock:
         t = _task
     res = _emergency_stop("task/abort")
+    if (t is not None and t.get("state") != "done"
+            and t.get("backend") == "handcart_8876"):
+        return JSONResponse(res, status_code=501)
     if t is None or t["state"] == "done":
         res["message"] = "没有正在执行的任务；已按强制停止处理（急停+释放手臂）"
     else:
@@ -1951,11 +2175,19 @@ def service_info():
     return {"service": "flip-dispatch",
             "usage": {"check": 'POST /check/flip  body={"language": "..."}'
                                '（站位检查，同步，客户端超时建议 ≥300s）',
-                      "start": 'POST /task/flip  body={"language": "..."}',
+                      "start": 'POST /task/flip  body={"hand":"left|right",'
+                               '"task":"..."}',
                       "status": "GET /task/status",
                       "abort": "POST /task/abort",
                       "arm_stop": "POST /arm/stop（中断流程→半刚度安全回位→释放）",
                       "estop": "POST /emergency/stop（任何状态：急停+释放手臂）"},
+            "public_tasks": {
+                "left": list(PUBLIC_LEFT_TASKS),
+                "right": list(HANDCART_TASKS),
+            },
+            "serial": True,
+            "busy_http_status": 409,
+            "handcart_abort_available": False,
             "languages": ["Change the switch from close to remote",
                           "Change the switch from remote to close"],
             "workflow_modes": {
@@ -2019,6 +2251,8 @@ def main() -> None:
                         help="不用点云算法取点，退回 YOLO 框偏移法")
     parser.add_argument("--capability-url", default=DEFAULT_CAPABILITY_URL,
                         help="18000 能力中心地址（启动拜访，必须可达）")
+    parser.add_argument("--handcart-base", default="http://127.0.0.1:8876",
+                        help="右手手车电机作业服务地址")
     _args = parser.parse_args()
     _args.reach_base = _args.reach_base.rstrip("/")
 
@@ -2038,7 +2272,8 @@ def main() -> None:
     print(f"[dispatch] 调度服务已启动（常驻属正常）: http://{_lan_ip()}:{_args.port}/")
     print(f"[dispatch] 18000 {describe_active(snapshot)}"
           "；可接任务由 18000 注册表推导")
-    print(f"[dispatch] 外部触发: POST /task/flip （body 带 language）→ 轮询 GET /task/status")
+    print("[dispatch] 外部触发: POST /task/flip "
+          "（body 带 hand + task）→ 轮询 GET /task/status")
     print(f"[dispatch] reach_server 按需拉起: {sys.executable} reach_server.py "
           f"--port {_args.reach_port} --camera-source zmq "
           f"--camera-host {_args.camera_host} --network-interface {_args.network_interface} "
