@@ -33,17 +33,20 @@ class HandcartDispatchTests(unittest.TestCase):
             response = dispatch.task_submit({
                 "hand": "right",
                 "task": "counterclockwise",
+                "retries": 5,
             })
 
         self.assertTrue(response["ok"])
         self.assertEqual(dispatch._task["backend"], "handcart_8876")
         self.assertEqual(dispatch._task["motor_action"], "left")
+        self.assertEqual(dispatch._task["retries"], 5)
         thread.return_value.start.assert_called_once_with()
 
     def test_right_clockwise_maps_to_motor_right(self) -> None:
         with mock.patch.object(dispatch.threading, "Thread"):
             dispatch.task_submit({"hand": "right", "task": "clockwise"})
         self.assertEqual(dispatch._task["motor_action"], "right")
+        self.assertEqual(dispatch._task["retries"], 3)
 
     def test_second_task_is_rejected_while_handcart_runs(self) -> None:
         dispatch._task = {
@@ -69,6 +72,9 @@ class HandcartDispatchTests(unittest.TestCase):
         task = {
             "state": "starting",
             "motor_action": "left",
+            "retries": 3,
+            "attempt": 0,
+            "downstream_job_ids": [],
             "log": [],
             "result": None,
             "finished_at": None,
@@ -87,7 +93,60 @@ class HandcartDispatchTests(unittest.TestCase):
         self.assertEqual(task["state"], "done")
         self.assertTrue(task["result"]["ok"])
         self.assertEqual(task["result"]["code_name"], "SUCCESS")
+        self.assertEqual(task["result"]["detail"]["attempts"], 1)
         self.assertEqual(dispatch._task_stats["succeeded"], 1)
+
+    def test_handcart_retries_only_after_explicit_failed(self) -> None:
+        client = mock.Mock()
+        client.start.side_effect = [
+            {"job_id": "job-1"},
+            {"job_id": "job-2"},
+        ]
+        client.status.side_effect = [
+            {"job_id": "job-1", "state": "FAILED"},
+            {"job_id": "job-2", "state": "DONE"},
+        ]
+        task = {
+            "state": "starting",
+            "motor_action": "right",
+            "retries": 3,
+            "attempt": 0,
+            "downstream_job_ids": [],
+            "log": [],
+            "result": None,
+            "finished_at": None,
+            "stats_counted": False,
+        }
+
+        with mock.patch.object(dispatch, "HandcartClient", return_value=client):
+            dispatch._run_handcart_task(task)
+
+        self.assertEqual(client.start.call_count, 2)
+        self.assertEqual(task["downstream_job_ids"], ["job-1", "job-2"])
+        self.assertEqual(task["result"]["detail"]["attempts"], 2)
+        self.assertTrue(task["result"]["ok"])
+
+    def test_handcart_does_not_retry_paused_job(self) -> None:
+        client = mock.Mock()
+        client.start.return_value = {"job_id": "job-1"}
+        client.status.return_value = {"job_id": "job-1", "state": "PAUSED"}
+        task = {
+            "state": "starting",
+            "motor_action": "right",
+            "retries": 3,
+            "attempt": 0,
+            "downstream_job_ids": [],
+            "log": [],
+            "result": None,
+            "finished_at": None,
+            "stats_counted": False,
+        }
+
+        with mock.patch.object(dispatch, "HandcartClient", return_value=client):
+            dispatch._run_handcart_task(task)
+
+        client.start.assert_called_once_with("right")
+        self.assertEqual(task["result"]["code_name"], "HANDCART_PAUSED")
 
     def test_status_exposes_unified_hand_and_task(self) -> None:
         dispatch._task = {
@@ -96,9 +155,12 @@ class HandcartDispatchTests(unittest.TestCase):
             "hand": "right",
             "public_task": "clockwise",
             "backend": "handcart_8876",
+            "retries": 3,
+            "attempt": 1,
             "started_at": "now",
             "finished_at": None,
             "downstream_job_id": "job-1",
+            "downstream_job_ids": ["job-1"],
             "downstream": {"state": "RUNNING"},
             "result": None,
             "log": [],
@@ -107,11 +169,23 @@ class HandcartDispatchTests(unittest.TestCase):
         self.assertEqual(status["hand"], "right")
         self.assertEqual(status["task"], "clockwise")
         self.assertEqual(status["state"], "running")
+        self.assertEqual(status["retries"], 3)
+        self.assertEqual(status["attempt"], 1)
 
     def test_hand_and_task_are_both_required(self) -> None:
         response = dispatch.task_submit({"hand": "left"})
         self.assertIsInstance(response, JSONResponse)
         self.assertEqual(response.status_code, 422)
+
+    def test_retries_must_be_between_one_and_twenty(self) -> None:
+        for value in (0, 21, "bad"):
+            response = dispatch.task_submit({
+                "hand": "right",
+                "task": "clockwise",
+                "retries": value,
+            })
+            self.assertIsInstance(response, JSONResponse)
+            self.assertEqual(response.status_code, 422)
 
     def test_client_sends_fixed_process_restart_false(self) -> None:
         response = mock.Mock()

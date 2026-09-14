@@ -1,6 +1,6 @@
 # 17001 统一 Flip API
 
-外部系统只需要指定两项：使用哪只手、执行什么任务。所有任务严格串行；已有任务运行时，新请求返回 HTTP 409。
+外部系统指定使用哪只手、执行什么任务；可选指定最多执行次数。所有任务严格串行；已有任务运行时，新请求返回 HTTP 409。
 
 ## 1. 开始任务
 
@@ -9,26 +9,28 @@
 左手灵巧手，旋钮从左到右：
 
 ```json
-{"hand":"left","task":"left_to_right"}
+{"hand":"left","task":"left_to_right","retries":3}
 ```
 
 左手灵巧手，旋钮从右到左：
 
 ```json
-{"hand":"left","task":"right_to_left"}
+{"hand":"left","task":"right_to_left","retries":3}
 ```
 
 右手手车电机，逆时针旋转：
 
 ```json
-{"hand":"right","task":"counterclockwise"}
+{"hand":"right","task":"counterclockwise","retries":3}
 ```
 
 右手手车电机，顺时针旋转：
 
 ```json
-{"hand":"right","task":"clockwise"}
+{"hand":"right","task":"clockwise","retries":3}
 ```
+
+`retries` 可不传，默认值为 `3`，取值范围为 `1`～`20`，表示包含第一次执行在内的最多执行次数。右手仅在 8876 明确返回 `FAILED` 时重试；`PAUSED` 和 `CANCELED` 不重试。
 
 成功接收：
 
@@ -55,6 +57,8 @@
   "task_id": "a1b2c3d4e5",
   "hand": "right",
   "task": "counterclockwise",
+  "retries": 3,
+  "attempt": 1,
   "result": {
     "ok": true,
     "code_name": "SUCCESS",
@@ -71,7 +75,7 @@
 TASK_JSON=$(curl -sS --max-time 10 \
   -X POST 'http://127.0.0.1:17001/task/flip' \
   -H 'Content-Type: application/json' \
-  -d '{"hand":"right","task":"counterclockwise"}')
+  -d '{"hand":"right","task":"counterclockwise","retries":3}')
 
 TASK_ID=$(echo "$TASK_JSON" | jq -r '.task_id')
 

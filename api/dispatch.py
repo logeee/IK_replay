@@ -28,7 +28,8 @@
                           相机：passed 且 need_flip → 保持开启留给紧接着的
                           /task/flip 复用；失败或无需拨动 → 立即关（外部手动
                           启动的 18001 除外，成败都不动）。
-    POST /task/flip    → 推荐 body {"hand":"left|right", "task":"..."}。
+    POST /task/flip    → 推荐 body {"hand":"left|right", "task":"...",
+                                        "retries":3}（可选，默认 3，范围 1~20）。
                           旧调用方仍可使用 body {"language": "<固定指令>",
                                 "retries": 3,   # 可选，最大尝试轮数（VLA 后端忽略）
                                 "manual": false,  # 可选，手动确认模式（见下）
@@ -749,50 +750,67 @@ def _run_handcart_task(task: dict) -> None:
             task["log"].append("右手任务不使用相机，已关闭站位检查留下的 reach_server")
 
         client = HandcartClient(_handcart_base())
-        task["log"].append(
-            f"向 8876 下发手车电机动作 motor_action={task['motor_action']}"
-        )
-        started = client.start(task["motor_action"])
-        job_id = str(started.get("job_id") or "").strip()
-        if not job_id:
-            raise RuntimeError(f"8876 启动响应缺少 job_id: {started!r}")
-        task["downstream_job_id"] = job_id
-        task["downstream"] = deepcopy(started)
-        task["state"] = "running"
-        task["log"].append(f"8876 已接受任务，job_id={job_id}")
+        max_attempts = int(task["retries"])
+        for attempt in range(1, max_attempts + 1):
+            task["attempt"] = attempt
+            task["log"].append(
+                f"向 8876 下发手车电机动作 motor_action={task['motor_action']}"
+                f"（第 {attempt}/{max_attempts} 次）"
+            )
+            started = client.start(task["motor_action"])
+            job_id = str(started.get("job_id") or "").strip()
+            if not job_id:
+                raise RuntimeError(f"8876 启动响应缺少 job_id: {started!r}")
+            task["downstream_job_id"] = job_id
+            task["downstream_job_ids"].append(job_id)
+            task["downstream"] = deepcopy(started)
+            task["state"] = "running"
+            task["log"].append(f"8876 已接受任务，job_id={job_id}")
 
-        last_state = ""
-        while True:
-            status = client.status(job_id)
-            task["downstream"] = deepcopy(status)
-            downstream_state = str(status.get("state") or "").strip().upper()
-            if not downstream_state:
-                raise RuntimeError(f"8876 状态响应缺少 state: {status!r}")
-            if downstream_state != last_state:
-                task["log"].append(f"8876 状态: {downstream_state}")
-                last_state = downstream_state
-            if downstream_state in HANDCART_TERMINAL_STATES:
-                ok = downstream_state == "DONE"
-                code_name = {
-                    "DONE": "SUCCESS",
-                    "FAILED": "HANDCART_FAILED",
-                    "PAUSED": "HANDCART_PAUSED",
-                    "CANCELED": "ABORTED",
-                }[downstream_state]
-                message = str(
-                    status.get("message")
-                    or status.get("error")
-                    or ("手车电机任务完成" if ok else f"手车电机任务 {downstream_state}")
+            last_state = ""
+            while True:
+                status = client.status(job_id)
+                task["downstream"] = deepcopy(status)
+                downstream_state = str(status.get("state") or "").strip().upper()
+                if not downstream_state:
+                    raise RuntimeError(f"8876 状态响应缺少 state: {status!r}")
+                if downstream_state != last_state:
+                    task["log"].append(f"8876 状态: {downstream_state}")
+                    last_state = downstream_state
+                if downstream_state in HANDCART_TERMINAL_STATES:
+                    break
+                time.sleep(1.0)
+
+            if downstream_state == "FAILED" and attempt < max_attempts:
+                task["log"].append(
+                    f"8876 第 {attempt} 次执行失败，创建下一次重试作业"
                 )
-                task["result"] = {
-                    "ok": ok,
-                    "code": 0 if ok else -1,
-                    "code_name": code_name,
-                    "message": message,
-                    "detail": {"downstream": deepcopy(status)},
-                }
-                break
-            time.sleep(1.0)
+                continue
+
+            ok = downstream_state == "DONE"
+            code_name = {
+                "DONE": "SUCCESS",
+                "FAILED": "HANDCART_FAILED",
+                "PAUSED": "HANDCART_PAUSED",
+                "CANCELED": "ABORTED",
+            }[downstream_state]
+            message = str(
+                status.get("message")
+                or status.get("error")
+                or ("手车电机任务完成" if ok else f"手车电机任务 {downstream_state}")
+            )
+            task["result"] = {
+                "ok": ok,
+                "code": 0 if ok else -1,
+                "code_name": code_name,
+                "message": message,
+                "detail": {
+                    "attempts": attempt,
+                    "downstream_job_ids": list(task["downstream_job_ids"]),
+                    "downstream": deepcopy(status),
+                },
+            }
+            break
     except Exception as exc:
         task["log"].append(f"✘ 8876 调度失败: {exc}")
         task["result"] = {
@@ -809,7 +827,7 @@ def _run_handcart_task(task: dict) -> None:
             _count_finished_task_locked(task)
 
 
-def _submit_handcart_task(public_task: str):
+def _submit_handcart_task(public_task: str, retries: int):
     """接受右手简化请求，并保持与所有 17001 作业严格串行。"""
     global _task
     motor_action = HANDCART_TASKS[public_task]
@@ -835,7 +853,10 @@ def _submit_handcart_task(public_task: str):
             "public_task": public_task,
             "backend": "handcart_8876",
             "motor_action": motor_action,
+            "retries": retries,
+            "attempt": 0,
             "downstream_job_id": None,
+            "downstream_job_ids": [],
             "downstream": None,
             "started_at": now,
             "finished_at": None,
@@ -845,7 +866,7 @@ def _submit_handcart_task(public_task: str):
             "prompt": None,
             "log": [
                 f"统一指令: hand=right, task={public_task} "
-                f"→ 8876 motor_action={motor_action}"
+                f"→ 8876 motor_action={motor_action}，最多 {retries} 次"
             ],
             "stats_counted": False,
         }
@@ -1364,6 +1385,15 @@ def _unsupported_message(kind: str, site: str) -> str:
 def task_submit(body: dict | None = None):
     global _task
     body = dict(body or {})
+    try:
+        raw_retries = body.get("retries")
+        retries = 3 if raw_retries is None else int(raw_retries)
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "retries 必须是整数"},
+                            status_code=422)
+    if not 1 <= retries <= 20:
+        return JSONResponse({"ok": False, "error": "retries 取值范围 1~20"},
+                            status_code=422)
     public_request = "hand" in body or "task" in body
     public_hand = str(body.get("hand") or "").strip().lower()
     public_task = str(body.get("task") or "").strip().lower()
@@ -1389,7 +1419,7 @@ def task_submit(body: dict | None = None):
                 status_code=422,
             )
         if public_hand == "right":
-            return _submit_handcart_task(public_task)
+            return _submit_handcart_task(public_task, retries)
 
         kind_from_public = PUBLIC_LEFT_TASKS[public_task]
         body["language"] = {
@@ -1414,14 +1444,6 @@ def task_submit(body: dict | None = None):
              "supported": ["Change the switch from close to remote",
                            "Change the switch from remote to close"]},
             status_code=422)
-    try:
-        retries = int(body.get("retries") or 3)
-    except (TypeError, ValueError):
-        return JSONResponse({"ok": False, "error": "retries 必须是整数"},
-                            status_code=422)
-    if not 1 <= retries <= 20:
-        return JSONResponse({"ok": False, "error": "retries 取值范围 1~20"},
-                            status_code=422)
     manual = bool(body.get("manual"))
     defaults = _current_defaults()
     try:
@@ -1605,9 +1627,12 @@ def task_status():
             "hand": t["hand"],
             "task": t["public_task"],
             "backend": t["backend"],
+            "retries": t["retries"],
+            "attempt": t.get("attempt", 0),
             "started_at": t["started_at"],
             "finished_at": t["finished_at"],
             "downstream_job_id": t.get("downstream_job_id"),
+            "downstream_job_ids": list(t.get("downstream_job_ids") or []),
             "downstream": deepcopy(t.get("downstream")),
             "result": deepcopy(t.get("result")),
             "log": list(t["log"])[-120:],
@@ -2176,7 +2201,7 @@ def service_info():
             "usage": {"check": 'POST /check/flip  body={"language": "..."}'
                                '（站位检查，同步，客户端超时建议 ≥300s）',
                       "start": 'POST /task/flip  body={"hand":"left|right",'
-                               '"task":"..."}',
+                               '"task":"...","retries":3}',
                       "status": "GET /task/status",
                       "abort": "POST /task/abort",
                       "arm_stop": "POST /arm/stop（中断流程→半刚度安全回位→释放）",
