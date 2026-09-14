@@ -24,9 +24,10 @@ from core.dispatch_defaults import (
 
 def _config(**overrides):
     payload = {
-        "schema_version": 6,
+        "schema_version": 7,
         "defaults": {
             "site": "factory",
+            "workflow_mode": "legacy",
             "offset_preset_by_kind": {
                 "close_to_remote": "",
                 "remote_to_close": "",
@@ -144,7 +145,8 @@ class DispatchDefaultsTest(unittest.TestCase):
                 {"name": "旧配置", "offset_mm": {"x": 3}},
             ],
         })
-        self.assertEqual(migrated["schema_version"], 6)
+        self.assertEqual(migrated["schema_version"], 7)
+        self.assertEqual(migrated["defaults"]["workflow_mode"], "legacy")
         self.assertEqual(
             migrated["defaults"]["offset_preset_by_kind"],
             {"close_to_remote": "旧配置", "remote_to_close": "旧配置"},
@@ -324,6 +326,21 @@ class DispatchDefaultsTest(unittest.TestCase):
             validate_push_force_n(41)
         with self.assertRaisesRegex(ValueError, "数字"):
             validate_push_force_n("很大")
+
+    def test_repository_config_enables_dexterous_ltr_workflow(self):
+        config = load_dispatch_defaults(DEFAULT_DISPATCH_DEFAULTS_PATH)
+        defaults = config["defaults"]
+        self.assertEqual(defaults["workflow_mode"], "dexterous_ltr_v1")
+        dexterous = defaults["dexterous_ltr_v1"]
+        self.assertEqual(dexterous["main_motion_backend"], "legacy_timed")
+        self.assertEqual(dexterous["return_pose_gap_s"], 0.5)
+        self.assertEqual(dexterous["sidestep_cm"], 10.0)
+        self.assertEqual(dexterous["push_force_n"], 25.0)
+        self.assertEqual(
+            dexterous["approach_waypoints"],
+            [{"distance_m": 0.43,
+              "waypoint": "L-0.43-测试灵巧手-2"}],
+        )
 
 
 if __name__ == "__main__":

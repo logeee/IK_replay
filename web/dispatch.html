@@ -472,6 +472,10 @@
         <option value="lab">实验室柜</option>
       </select>
       <select id="manualLanguage"></select>
+      <select id="manualWorkflow" title="legacy=原起手轨迹；dexterous_ltr_v1=左手灵巧手固定路点新流程">
+        <option value="dexterous_ltr_v1">灵巧手新模式（左→右）</option>
+        <option value="legacy">旧模式</option>
+      </select>
       <span id="manualDirectionHint" class="hint"></span>
       <label title="勾选后每个主要步骤执行前都会在下方等待确认">
         <input id="manualStep" type="checkbox" checked />每步手动确认
@@ -613,6 +617,12 @@
       <select id="defaultSite">
         <option value="factory">工厂柜（支持双向）</option>
         <option value="lab">实验室柜（远方 → 就地）</option>
+      </select>
+    </label>
+    <label class="modal-field">默认流程模式
+      <select id="defaultWorkflow">
+        <option value="dexterous_ltr_v1">灵巧手新模式（目前仅旋钮左→右）</option>
+        <option value="legacy">旧模式（固定手姿+距离起手轨迹）</option>
       </select>
     </label>
     <label class="modal-field">远方 → 就地默认偏移（向左拨）
@@ -1217,6 +1227,7 @@ let offsetPresets = [];
 let defaultsLoadedOnce = false;
 let currentDefaults = {
   site: "factory",
+  workflow_mode: "dexterous_ltr_v1",
   offset_preset_by_kind: { close_to_remote: "", remote_to_close: "" },
   first_round_offset_wall_mm_by_kind: {
     close_to_remote: { x: 0, y: 0, z: 0 },
@@ -1344,6 +1355,7 @@ function renderConfigSummary() {
   const firstByKind = currentDefaults.first_round_offset_wall_mm_by_kind || {};
   $("configSummary").textContent =
     `默认现场：${SITE_LABELS[currentDefaults.site] || currentDefaults.site}`
+    + ` ｜ 流程：${currentDefaults.workflow_mode === "dexterous_ltr_v1" ? "灵巧手新模式" : "旧模式"}`
     + ` ｜ 远→就偏移：${rtlPreset ? `「${rtlPreset.name}」` : "无"}`
     + ` ｜ 就→远偏移：${ltrPreset ? `「${ltrPreset.name}」` : "无"}`
     + ` ｜ 首轮额外 远→就：${offsetText(firstByKind.remote_to_close || {})}`
@@ -1400,6 +1412,7 @@ async function loadDefaultsConfig() {
     const legacyPushForce = Number(savedDefaults.push_force_n ?? 15);
     currentDefaults = {
       site: savedDefaults.site || "factory",
+      workflow_mode: savedDefaults.workflow_mode || "legacy",
       offset_preset_by_kind: savedDefaults.offset_preset_by_kind
         || { close_to_remote: "", remote_to_close: "" },
       first_round_offset_wall_mm_by_kind:
@@ -1417,6 +1430,7 @@ async function loadDefaultsConfig() {
     if (wasFirstLoad) {
       // 手动测试默认跟随已保存现场；工厂柜会立即显示两个可执行方向。
       $("manualSite").value = currentDefaults.site;
+      $("manualWorkflow").value = currentDefaults.workflow_mode;
       syncLanguageOptions();
       fillManualDirectionDefaults();
       // 手动栏的上抬输入首次按保存的默认值预填，之后不覆盖手填值
@@ -1482,6 +1496,7 @@ $("manualPreset").addEventListener("change", () => {
 // ---- 弹窗一：修改默认 ----
 $("editDefaults").addEventListener("click", () => {
   $("defaultSite").value = currentDefaults.site;
+  $("defaultWorkflow").value = currentDefaults.workflow_mode;
   fillPresetSelect(
     $("defaultPresetRemoteToClose"),
     "无",
@@ -1523,6 +1538,7 @@ $("defaultPresetCloseToRemote").addEventListener("change", renderDefaultPresetPr
 $("saveDefaults").addEventListener("click", async () => {
   const data = await postJson("/config/defaults", {
     site: $("defaultSite").value,
+    workflow_mode: $("defaultWorkflow").value,
     offset_preset_by_kind: {
       remote_to_close: $("defaultPresetRemoteToClose").value,
       close_to_remote: $("defaultPresetCloseToRemote").value,
@@ -1872,6 +1888,7 @@ $("manualStart").addEventListener("click", async () => {
   const language = $("manualLanguage").value;
   const retries = Math.min(20, Math.max(1, Number($("manualRetries").value) || 3));
   const manual = $("manualStep").checked;
+  const workflowMode = $("manualWorkflow").value;
   const offset = { x: readOffsetMm("offsetX"), y: readOffsetMm("offsetY"), z: readOffsetMm("offsetZ") };
   const firstOffset = readOffsetInputs(
     "firstOffsetX",
@@ -1889,12 +1906,13 @@ $("manualStart").addEventListener("click", async () => {
   const firstOffsetNote = (firstOffset.x || firstOffset.y || firstOffset.z)
     ? `\n首轮额外偏置：右${firstOffset.x}mm / 上${firstOffset.z}mm / 入墙${firstOffset.y}mm`
     : "\n首轮额外偏置：无";
-  if (!confirm(`确认启动拨闸流程？\n现场：${SITE_LABELS[site]}\n指令：${language}\n${mode}，最多 ${retries} 轮${offsetNote}${firstOffsetNote}\n拨点上抬：${liftText(lift)}\n拨动推力：${pushForce} N`)) return;
+  if (!confirm(`确认启动拨闸流程？\n现场：${SITE_LABELS[site]}\n指令：${language}\n流程：${workflowMode === "dexterous_ltr_v1" ? "灵巧手新模式" : "旧模式"}\n${mode}，最多 ${retries} 轮${offsetNote}${firstOffsetNote}\n拨点上抬：${liftText(lift)}\n拨动推力：${pushForce} N`)) return;
   const taskBody = {
     language,
     retries,
     manual,
     site,
+    workflow_mode: workflowMode,
     first_round_offset_wall_mm: firstOffset,
     lift_mm: lift,
     push_force_n: pushForce,

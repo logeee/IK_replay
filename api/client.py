@@ -81,6 +81,17 @@ class ReachClient:
     def disarm(self) -> dict:
         return self.post("/disarm")
 
+    def hand_poses(self) -> dict:
+        """当前激活臂的灵巧手姿态库。"""
+        return self.get("/hand/poses")
+
+    def hand_pose(self, file: str, duration_ms: int = 500) -> dict:
+        """下发一个已保存手势；该 HTTP 通道可与手臂轨迹并行。"""
+        return self.post(
+            "/hand/pose",
+            {"file": file, "duration_ms": int(duration_ms)},
+        )
+
     def pick(self, u: int, v: int, **kwargs: Any) -> dict:
         """像素取点 → 3D 目标（p_root 等），不含规划。"""
         return self.post("/pick", {"u": u, "v": v, **kwargs}, timeout_s=30.0)

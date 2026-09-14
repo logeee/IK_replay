@@ -353,7 +353,7 @@
       "hand_id": "qiangnao-revo2-left",
       "task": {
         "name": "旋钮左到右",
-        "direction": "ccw",
+        "direction": "ltr",
         "sites": [
           "lab",
           "factory"
@@ -442,7 +442,7 @@
       "capability_id": "cap-a23d3003",
       "names": [],
       "waypoint_names": [
-        "L-测试灵巧手-2",
+        "L-0.43-测试灵巧手-2",
         "L-起手点测试"
       ]
     }

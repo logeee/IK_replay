@@ -1,4 +1,4 @@
-"""17001 外部调用默认配置：现场、目的点偏移、上抬和拨动推力。
+"""17001 外部调用默认配置：流程模式、现场、偏移、上抬和推力。
 
 外部平台调 /task/flip、/check/flip 时通常只带 language；这里保存的默认
 现场（lab/factory）和默认偏移配置（墙面系 mm，如「右手偏移配置-1」）
@@ -39,11 +39,29 @@ DEFAULT_LIFT_MM: dict[str, float] = {"base": 10.0, "step": 10.0, "max": 30.0}
 DEFAULT_PUSH_FORCE_N = 15.0
 FLIP_KINDS = ("close_to_remote", "remote_to_close")
 ZERO_OFFSET_MM: dict[str, float] = {"x": 0.0, "y": 0.0, "z": 0.0}
+WORKFLOW_MODES = ("legacy", "dexterous_ltr_v1")
+DEFAULT_DEXTEROUS_LTR_V1: dict[str, Any] = {
+    "fist_pose": "L-握拳起收",
+    "prepare_pose": "L-预备抓取",
+    "grasp_pose": "L-完全捏住",
+    "start_waypoint": "L-起手点测试",
+    # 当前只有 0.43 m 一档；后续录入其他距离后，流程会按实测距离选最近档。
+    "approach_waypoints": [
+        {"distance_m": 0.43, "waypoint": "L-0.43-测试灵巧手-2"},
+    ],
+    "main_motion_backend": "legacy_timed",
+    "hand_duration_ms": 500,
+    "return_pose_gap_s": 0.5,
+    "sidestep_cm": 10.0,
+    "push_force_n": 25.0,
+}
 
 DEFAULT_DISPATCH_DEFAULTS: dict[str, Any] = {
-    "schema_version": 6,
+    "schema_version": 7,
     "defaults": {
         "site": "factory",
+        "workflow_mode": "dexterous_ltr_v1",
+        "dexterous_ltr_v1": deepcopy(DEFAULT_DEXTEROUS_LTR_V1),
         # 两个任务方向独立标定；"" = 不套偏移配置。
         "offset_preset_by_kind": {
             "close_to_remote": "",
@@ -193,8 +211,8 @@ def validate_dispatch_defaults(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("默认配置必须是 JSON object")
     version = int(payload.get("schema_version", -1))
-    if version not in (1, 2, 3, 4, 5, 6):
-        raise ValueError("默认配置 schema_version 必须为 1、2、3、4、5 或 6")
+    if version not in (1, 2, 3, 4, 5, 6, 7):
+        raise ValueError("默认配置 schema_version 必须为 1~7")
 
     raw_presets = payload.get("offset_presets")
     if raw_presets is None:
@@ -248,6 +266,79 @@ def validate_dispatch_defaults(payload: Any) -> dict[str, Any]:
     site = str(raw_defaults.get("site") or "").strip().lower()
     if site not in SITES:
         raise ValueError("defaults.site 只能是 lab 或 factory")
+    # v1~v6 没有流程模式，读取时保持旧行为；本仓库的 v7 配置
+    # 显式选择 dexterous_ltr_v1。
+    workflow_mode = str(
+        raw_defaults.get("workflow_mode") or "legacy"
+    ).strip().lower()
+    if workflow_mode not in WORKFLOW_MODES:
+        raise ValueError(
+            "defaults.workflow_mode 只能是 legacy 或 dexterous_ltr_v1"
+        )
+    raw_dexterous = raw_defaults.get("dexterous_ltr_v1")
+    if raw_dexterous is None:
+        raw_dexterous = deepcopy(DEFAULT_DEXTEROUS_LTR_V1)
+    if not isinstance(raw_dexterous, dict):
+        raise ValueError("defaults.dexterous_ltr_v1 必须是对象")
+    dexterous = deepcopy(DEFAULT_DEXTEROUS_LTR_V1)
+    dexterous.update(raw_dexterous)
+    for key in ("fist_pose", "prepare_pose", "grasp_pose", "start_waypoint"):
+        value = str(dexterous.get(key) or "").strip()
+        if not value:
+            raise ValueError(f"defaults.dexterous_ltr_v1.{key} 不能为空")
+        dexterous[key] = value
+    backend = str(dexterous.get("main_motion_backend") or "").strip().lower()
+    if backend != "legacy_timed":
+        raise ValueError(
+            "defaults.dexterous_ltr_v1.main_motion_backend 当前只能是 legacy_timed"
+        )
+    dexterous["main_motion_backend"] = backend
+    raw_approach = dexterous.get("approach_waypoints")
+    if not isinstance(raw_approach, list) or not raw_approach:
+        raise ValueError(
+            "defaults.dexterous_ltr_v1.approach_waypoints 必须是非空数组"
+        )
+    approach_waypoints: list[dict[str, Any]] = []
+    seen_distances: set[float] = set()
+    for index, item in enumerate(raw_approach):
+        if not isinstance(item, dict):
+            raise ValueError(f"approach_waypoints[{index}] 必须是对象")
+        try:
+            distance = float(item.get("distance_m"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"approach_waypoints[{index}].distance_m 必须是数字"
+            ) from exc
+        waypoint = str(item.get("waypoint") or "").strip()
+        if not math.isfinite(distance) or not 0.3 <= distance <= 1.0:
+            raise ValueError(
+                f"approach_waypoints[{index}].distance_m 必须在 0.3~1.0 m"
+            )
+        if distance in seen_distances:
+            raise ValueError(f"approach_waypoints 距离 {distance:g} m 重复")
+        if not waypoint:
+            raise ValueError(f"approach_waypoints[{index}].waypoint 不能为空")
+        seen_distances.add(distance)
+        approach_waypoints.append({"distance_m": distance, "waypoint": waypoint})
+    dexterous["approach_waypoints"] = sorted(
+        approach_waypoints, key=lambda item: item["distance_m"]
+    )
+    numeric_limits = {
+        "hand_duration_ms": (50.0, 5000.0),
+        "return_pose_gap_s": (0.0, 5.0),
+        "sidestep_cm": (0.5, 30.0),
+        "push_force_n": (0.0, PUSH_FORCE_LIMIT_N),
+    }
+    for key, (minimum, maximum) in numeric_limits.items():
+        try:
+            number = float(dexterous.get(key))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"defaults.dexterous_ltr_v1.{key} 必须是数字") from exc
+        if not math.isfinite(number) or not minimum <= number <= maximum:
+            raise ValueError(
+                f"defaults.dexterous_ltr_v1.{key} 必须在 {minimum:g}~{maximum:g}"
+            )
+        dexterous[key] = int(number) if key == "hand_duration_ms" else number
     # v1 只有一个 offset_preset；迁移时先让两个方向都沿用它，避免旧配置失效。
     legacy_preset = str(raw_defaults.get("offset_preset") or "").strip()
     raw_by_kind = raw_defaults.get("offset_preset_by_kind")
@@ -298,9 +389,11 @@ def validate_dispatch_defaults(payload: Any) -> dict[str, Any]:
     }
 
     return {
-        "schema_version": 6,
+        "schema_version": 7,
         "defaults": {
             "site": site,
+            "workflow_mode": workflow_mode,
+            "dexterous_ltr_v1": dexterous,
             "offset_preset_by_kind": preset_by_kind,
             "first_round_offset_wall_mm_by_kind": first_by_kind,
             "lift_mm": lift_mm,

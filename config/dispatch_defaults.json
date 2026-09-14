@@ -1,7 +1,25 @@
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "defaults": {
     "site": "factory",
+    "workflow_mode": "dexterous_ltr_v1",
+    "dexterous_ltr_v1": {
+      "fist_pose": "L-握拳起收",
+      "prepare_pose": "L-预备抓取",
+      "grasp_pose": "L-完全捏住",
+      "start_waypoint": "L-起手点测试",
+      "approach_waypoints": [
+        {
+          "distance_m": 0.43,
+          "waypoint": "L-0.43-测试灵巧手-2"
+        }
+      ],
+      "main_motion_backend": "legacy_timed",
+      "hand_duration_ms": 500,
+      "return_pose_gap_s": 0.5,
+      "sidestep_cm": 10.0,
+      "push_force_n": 25.0
+    },
     "offset_preset_by_kind": {
       "close_to_remote": "向右-降低10cm后",
       "remote_to_close": "摔手后"

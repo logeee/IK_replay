@@ -31,6 +31,10 @@
     POST /task/flip    → body {"language": "<固定指令，必填>",
                                 "retries": 3,   # 可选，最大尝试轮数（VLA 后端忽略）
                                 "manual": false,  # 可选，手动确认模式（见下）
+                                "workflow_mode": "dexterous_ltr_v1",
+                                # 可选：legacy=旧起手轨迹；
+                                # dexterous_ltr_v1=左手灵巧手新流程，
+                                # 目前仅支持旋钮左→右
                                 "site": "lab",  # 可选，现场：lab=实验室柜（默认）
                                                 # factory=工厂柜；只影响该柜
                                                 # 已验证动作的筛选，不影响方向
@@ -123,6 +127,7 @@ from core.capability_registry import (
     find_hand,
 )
 from core.dispatch_defaults import (
+    DEFAULT_DEXTEROUS_LTR_V1,
     DEFAULT_DISPATCH_DEFAULTS,
     DEFAULT_LIFT_MM,
     DEFAULT_PUSH_FORCE_N,
@@ -136,6 +141,7 @@ from core.dispatch_defaults import (
     validate_offset_keyframes,
     validate_offset_mm,
     validate_push_force_n,
+    WORKFLOW_MODES,
 )
 
 from .client import ReachClient
@@ -593,7 +599,6 @@ def _run_task(task: dict) -> None:
             params = capability["method_params"]
             capability_kwargs = {
                 "sidestep_cm": params["sidestep_cm"],
-                "push_force_n": params["push_force_n"],
                 "push_hold_s": params["push_hold_s"],
                 "sidestep_down_deg": params["down_deg"],
                 "pose_pattern": capability["assets"]["pose_pattern"] or None,
@@ -675,7 +680,9 @@ def _run_task(task: dict) -> None:
                           first_round_offset_wall_m=tuple(
                               v / 1000.0 for v in
                               (task.get("first_round_offset_wall_mm")
-                               or [0.0, 0.0, 0.0])))
+                               or [0.0, 0.0, 0.0])),
+                          workflow_mode=task.get("workflow_mode") or "legacy",
+                          dexterous_config=task.get("dexterous_config") or {})
         task["flow"] = flow
         if task.get("manual"):
             gate = _ManualGate(task)
@@ -1047,6 +1054,19 @@ def _resolve_site(body: dict | None, defaults: dict) -> tuple[str | None, str]:
     return (raw if raw in SITES else None), "请求指定"
 
 
+def _resolve_workflow_mode(
+    body: dict | None, defaults: dict
+) -> tuple[str, dict[str, Any], str]:
+    """流程模式可按次覆盖；新模式的资产和时序始终取 17001 配置。"""
+    raw = str((body or {}).get("workflow_mode") or "").strip().lower()
+    source = "请求指定" if raw else "默认配置"
+    mode = raw or str(defaults["defaults"].get("workflow_mode") or "legacy")
+    if mode not in WORKFLOW_MODES:
+        raise ValueError("workflow_mode 只能是 legacy 或 dexterous_ltr_v1")
+    cfg = defaults["defaults"].get("dexterous_ltr_v1")
+    return mode, deepcopy(cfg or DEFAULT_DEXTEROUS_LTR_V1), source
+
+
 def _resolve_lift(body: dict | None, defaults: dict) -> tuple[dict, str]:
     """拨点上抬判定：请求显式给了 lift_mm 用请求的，否则用默认配置。
 
@@ -1228,6 +1248,18 @@ def task_submit(body: dict | None = None):
                             status_code=422)
     manual = bool((body or {}).get("manual"))
     defaults = _current_defaults()
+    try:
+        workflow_mode, dexterous_config, workflow_source = (
+            _resolve_workflow_mode(body, defaults)
+        )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+    if workflow_mode == "dexterous_ltr_v1" and kind != "close_to_remote":
+        return JSONResponse(
+            {"ok": False,
+             "error": "灵巧手新模式目前只支持旋钮左→右（close_to_remote）"},
+            status_code=422,
+        )
     site, site_source = _resolve_site(body, defaults)
     if site is None:
         return JSONResponse(
@@ -1248,6 +1280,9 @@ def task_submit(body: dict | None = None):
             defaults,
             kind,
         )
+        if workflow_mode == "dexterous_ltr_v1":
+            push_force_n = float(dexterous_config["push_force_n"])
+            push_force_source = "灵巧手新模式配置"
         offsets_to_check = [
             (offset_mm, None)
         ] if not offset_keyframes else [
@@ -1314,6 +1349,9 @@ def task_submit(body: dict | None = None):
         _task = {"id": uuid.uuid4().hex[:10], "state": "starting",
                  "language": language, "kind": kind, "retries": retries,
                  "manual": manual, "site": site,
+                 "workflow_mode": workflow_mode,
+                 "workflow_source": workflow_source,
+                 "dexterous_config": deepcopy(dexterous_config),
                  "direction": intent["direction"],
                  "flip_from": intent["flip_from"], "flip_to": intent["flip_to"],
                  "prompt": None, "gate": None,
@@ -1334,7 +1372,8 @@ def task_submit(body: dict | None = None):
                          f"{intent['flip_from']}→{intent['flip_to']}，"
                          f"{'向左拨' if intent['direction'] == 'rtl' else '向右拨'}，"
                          f"现场 {SITE_LABELS[site]}"
-                         f"·{site_source}，最多 {retries} 轮"
+                         f"·{site_source}，流程 {workflow_mode}"
+                         f"·{workflow_source}，最多 {retries} 轮"
                          f"{'，手动确认模式' if manual else ''}"
                          f"{offset_note}{first_offset_note}{lift_note}"
                          f"{push_force_note}）"],
@@ -1381,6 +1420,8 @@ def task_status():
     log = list(t["log"]) + (list(flow.log_lines) if flow is not None else [])
     return {**common, "state": t["state"], "task_id": t["id"],
             "language": t.get("language"), "retries": t.get("retries"),
+            "workflow_mode": t.get("workflow_mode") or "legacy",
+            "workflow_source": t.get("workflow_source") or "",
             "site": t.get("site") or "lab",
             "kind": t.get("kind"), "direction": t.get("direction"),
             "flip_from": t.get("flip_from"), "flip_to": t.get("flip_to"),
@@ -1500,6 +1541,10 @@ def config_defaults_set(body: dict | None = None):
     cfg = _current_defaults()
     if "site" in body:
         cfg["defaults"]["site"] = body.get("site")
+    if "workflow_mode" in body:
+        cfg["defaults"]["workflow_mode"] = body.get("workflow_mode")
+    if "dexterous_ltr_v1" in body:
+        cfg["defaults"]["dexterous_ltr_v1"] = body.get("dexterous_ltr_v1")
     if "offset_preset_by_kind" in body:
         cfg["defaults"]["offset_preset_by_kind"] = (
             body.get("offset_preset_by_kind")
@@ -1913,6 +1958,10 @@ def service_info():
                       "estop": "POST /emergency/stop（任何状态：急停+释放手臂）"},
             "languages": ["Change the switch from close to remote",
                           "Change the switch from remote to close"],
+            "workflow_modes": {
+                "legacy": "旧起手轨迹流程",
+                "dexterous_ltr_v1": "左手灵巧手新流程（仅旋钮左→右）",
+            },
             "capability": capability}
 
 

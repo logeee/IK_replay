@@ -247,7 +247,11 @@ class SwitchFlow:
                  target_offset_keyframes: list[dict[str, Any]] | None = None,
                  target_offset_preset_name: str = "",
                  # 仅第1轮在上述基础偏移之上额外叠加；第2轮起自动归零。
-                 first_round_offset_wall_m: tuple[float, float, float] = (0.0, 0.0, 0.0)):
+                 first_round_offset_wall_m: tuple[float, float, float] = (0.0, 0.0, 0.0),
+                 # 17001 任务级流程模式；新模式绕过按距离起手轨迹，
+                 # 改用固定安全路点 + 灵巧手手势时序。
+                 workflow_mode: str = "legacy",
+                 dexterous_config: dict[str, Any] | None = None):
         self.client = client or ReachClient()
         self.console = console
         self.yolo = yolo
@@ -269,6 +273,9 @@ class SwitchFlow:
         self.first_round_offset_wall_m = tuple(
             float(v) for v in first_round_offset_wall_m
         )
+        self.workflow_mode = str(workflow_mode or "legacy")
+        self.dexterous_config = dict(dexterous_config or {})
+        self._hand_pose_files: dict[str, str] | None = None
         self.coarse_target_deg = coarse_target_deg
         self.coarse_accept_min_deg = (
             coarse_target_deg - coarse_tol_deg
@@ -300,6 +307,9 @@ class SwitchFlow:
         self.dmax = dmax
         self.approach_offset_m = approach_offset_m
         self.reach_duration_s = reach_duration_s
+        if self.workflow_mode == "dexterous_ltr_v1":
+            sidestep_cm = float(self.dexterous_config.get("sidestep_cm", 10.0))
+            push_force_n = float(self.dexterous_config.get("push_force_n", 25.0))
         self.sidestep_distance_cm = abs(float(sidestep_cm))
         self.push_force_n = push_force_n
         self.push_hold_s = None if push_hold_s is None else float(push_hold_s)
@@ -385,6 +395,9 @@ class SwitchFlow:
 
     def safe_reset_waypoints(self) -> list[str]:
         """当前姿态到释放点的安全路径；左-起手式先经过配套终点。"""
+        if self.workflow_mode == "dexterous_ltr_v1":
+            start = str(self.dexterous_config.get("start_waypoint") or "")
+            return [start] if start else [self.DESCEND_WAYPOINT]
         route: list[str] = []
         pose = self._current_pose
         if self._is_left_start_pose(pose):
@@ -510,6 +523,9 @@ class SwitchFlow:
             distance_m = self.measure_distance()
             self._measured_distance_m = distance_m
             self._log(f"距柜面 {distance_m:.3f} m")
+
+            if self.workflow_mode == "dexterous_ltr_v1":
+                return self._run_dexterous_ltr(t0, distance_m)
 
             last_error: FlowError | None = None
             for round_no in range(1, self.max_flip_rounds + 1):
@@ -652,6 +668,117 @@ class SwitchFlow:
             self._log_step_summary()
             return FlowResult(ok=False, code=exc.code, message=exc.message,
                               detail={"elapsed_s": round(time.monotonic() - t0, 1)})
+
+    def _run_dexterous_ltr(self, t0: float, distance_m: float) -> FlowResult:
+        """17001 左手灵巧手新流程：目前只支持旋钮左→右。"""
+        if self.arm != "left_arm" or self.flip_direction != "ltr":
+            raise FlowError(
+                ErrorCode.NOT_IMPLEMENTED,
+                "灵巧手新模式目前只支持左臂执行旋钮左→右",
+            )
+        cfg = self.dexterous_config
+        self._log("灵巧手新模式：固定安全路点 + 7005 新算法 + 50Hz 主轨迹")
+        self._confirm("dexterous_prepare", "即将握拳并依次前往起手点和当前距离准备位")
+        self._step_begin("5️⃣ 灵巧手与固定准备位")
+        self._set_hand_pose(str(cfg["fist_pose"]))
+        self._interp_to_waypoint(str(cfg["start_waypoint"]), "新模式起手点")
+        approach = self._choose_dexterous_approach(distance_m)
+        self._current_pose = {
+            "name": approach["waypoint"],
+            "endpoint_name": approach["waypoint"],
+            "dexterous": True,
+        }
+        self._interp_to_waypoint(
+            approach["waypoint"],
+            f"新模式 {approach['distance_m']:.2f}m 准备位",
+        )
+
+        last_error: FlowError | None = None
+        for round_no in range(1, self.max_flip_rounds + 1):
+            self._check_abort()
+            if round_no > 1:
+                self._step_begin(f"5️⃣ 回准备位（第{round_no}轮）")
+                self._interp_to_waypoint(
+                    approach["waypoint"], f"新模式重试第{round_no}轮"
+                )
+            try:
+                # 下发后不等手势完成、不 sleep，直接进入现有腰关节+IMU判稳。
+                self._set_hand_pose(str(cfg["prepare_pose"]))
+                self._confirm("detect_points", "即将进入机器人判稳，通过后立即冻结 RGB-D 并用新算法取点")
+                self._step_begin(f"7️⃣ 判稳与新算法取点（第{round_no}轮）")
+                points = self.detect_points(round_no)
+                self._log(f"点位: {self._points_brief(points)}")
+
+                self._confirm(
+                    "flip",
+                    "即将用 50Hz 主轨迹到达目标，到位立即捏住并向右拨动",
+                )
+                self._step_begin(f"8️⃣ 50Hz到位、捏住与右拨（第{round_no}轮）")
+                self.flip_switch(points, round_no)
+
+                self._step_begin(f"9️⃣ 拨动复核（第{round_no}轮）")
+                if self.verify_flip():
+                    self._log("旋钮已从左拨到右 ✔")
+                    self._step_begin("🔟 灵巧手收尾回位与释放")
+                    self._dexterous_return_and_release()
+                    return self._done(
+                        t0, "旋钮左到右拨动成功",
+                        rounds=round_no, distance_m=distance_m,
+                        approach_waypoint=approach["waypoint"],
+                    )
+                last_error = FlowError(ErrorCode.VERIFY_FAILED, "复核仍为旋钮左")
+                self._log("复核未通过，回准备位重试")
+            except FlowError as exc:
+                if exc.code in (
+                    ErrorCode.NOT_IMPLEMENTED,
+                    ErrorCode.ALIGN_FAILED,
+                    ErrorCode.ABORTED,
+                ):
+                    raise
+                last_error = exc
+                self._log(f"本轮失败（{exc.code.name}: {exc.message}）")
+        raise last_error or FlowError(ErrorCode.VERIFY_FAILED, "重试轮数耗尽")
+
+    def _choose_dexterous_approach(self, distance_m: float) -> dict[str, Any]:
+        """当前配置只有 0.43m 一档；后续加档后无需改流程代码。"""
+        entries = list(self.dexterous_config.get("approach_waypoints") or [])
+        if not entries:
+            raise FlowError(ErrorCode.POSE_UNAVAILABLE, "新模式没有配置距离准备位")
+        selected = min(
+            entries,
+            key=lambda item: abs(float(item["distance_m"]) - distance_m),
+        )
+        self._log(
+            f"实测 {distance_m:.3f}m，选择 {float(selected['distance_m']):.2f}m "
+            f"准备位「{selected['waypoint']}」"
+        )
+        return dict(selected)
+
+    def _set_hand_pose(self, name: str) -> None:
+        if self._hand_pose_files is None:
+            response = self.client.hand_poses()
+            if not response.get("ok"):
+                raise FlowError(
+                    ErrorCode.PRECONDITION,
+                    f"读取灵巧手姿态库失败: {response.get('error')}",
+                )
+            self._hand_pose_files = {
+                str(item.get("name") or ""): str(item.get("file") or "")
+                for item in response.get("poses") or []
+            }
+        filename = self._hand_pose_files.get(name)
+        if not filename:
+            raise FlowError(ErrorCode.PRECONDITION, f"找不到灵巧手姿态「{name}」")
+        result = self.client.hand_pose(
+            filename,
+            int(self.dexterous_config.get("hand_duration_ms") or 500),
+        )
+        if not result.get("ok"):
+            raise FlowError(
+                ErrorCode.EXEC_FAILED,
+                f"灵巧手切换「{name}」失败: {result.get('error')}",
+            )
+        self._log(f"灵巧手已下发「{name}」")
 
     # ------------------------------------------------------------ 已就绪的步骤
 
@@ -927,13 +1054,30 @@ class SwitchFlow:
 
             self._arm_moved = True
             self._check_abort()
-            res = self.client.execute(
-                waypoints=[f["named_joints"] for f in frames],
-                duration=self.reach_duration_s, label="flow_reach")
+            execute_kwargs: dict[str, Any] = {
+                "waypoints": [f["named_joints"] for f in frames],
+                "duration": self.reach_duration_s,
+                "label": "flow_reach",
+                "motion_backend": "legacy",
+            }
+            if self.workflow_mode == "dexterous_ltr_v1":
+                # 18001 的验证期保护只允许 7005 冻结点云的“主轨迹”
+                # 使用 50Hz 时间轨迹；起手路点和后续拨动仍走 legacy。
+                execute_kwargs.update({
+                    "label": "主轨迹:17001灵巧手到位",
+                    "motion_backend": self.dexterous_config[
+                        "main_motion_backend"
+                    ],
+                })
+            res = self.client.execute(**execute_kwargs)
             if not res.get("ok"):
                 raise FlowError(ErrorCode.EXEC_FAILED,
                                 f"{tag} 到位执行被拒: {res.get('error')}")
             self._wait_exec(f"{tag} 到位")
+
+            if self.workflow_mode == "dexterous_ltr_v1":
+                # 主轨迹到位边界立即下发捏住，不额外 sleep；随后进入右拨。
+                self._set_hand_pose(str(self.dexterous_config["grasp_pose"]))
 
             # 横移（拨动本体）之前存一帧证据：此刻开关还是拨前状态
             self._last_pick_record = picked.get("record")
@@ -995,6 +1139,8 @@ class SwitchFlow:
         body: dict[str, Any] = {
             "waypoints": [f["named_joints"] for f in seg["waypoints"]],
             "label": f"flow_flick{self.sidestep_cm:+.0f}cm",
+            # 50Hz 只用于到目标的主轨迹，拨动段保持原控制。
+            "motion_backend": "legacy",
             # 带推力时快拨（0.06 m/s）；无推力保持慢滑（0.02 m/s）
             "duration": (max(1.0, dist / self.SIDESTEP_PUSH_SPEED)
                          if self.push_force_n > 0 else max(2.0, dist / 0.02)),
@@ -1043,7 +1189,8 @@ class SwitchFlow:
 
     def _interp_to_waypoint(self, wp_name: str, tag: str,
                             only_if_beyond_rad: float = 0.0,
-                            speed_rad_s: float | None = None) -> None:
+                            speed_rad_s: float | None = None,
+                            after_start: Any = None) -> None:
         """关节空间插值到指定名字的已录路点。
 
         直接把 [当前姿态, 目标姿态] 交给 /execute 做关节插值，不走
@@ -1087,10 +1234,13 @@ class SwitchFlow:
         self._check_abort()
         res = self.client.execute(waypoints=[cur, end], duration=duration,
                                   max_speed_rad_s=speed,
-                                  label=f"flow_goto_{wp_name}"[:32])
+                                  label=f"flow_goto_{wp_name}"[:32],
+                                  motion_backend="legacy")
         if not res.get("ok"):
             raise FlowError(ErrorCode.EXEC_FAILED,
                             f"{tag} 回「{wp_name}」被拒: {res.get('error')}")
+        if after_start is not None:
+            after_start()
         self._wait_exec(f"{tag} 插值到「{wp_name}」")
 
     def _wait_exec(self, label: str) -> None:
@@ -1328,7 +1478,9 @@ class SwitchFlow:
                                  only_if_beyond_rad=0.4)
         self._arm_moved = True
         self._check_abort()
-        res = self.client.run_sequence(pose["file"])
+        res = self.client.run_sequence(
+            pose["file"], motion_backend="legacy"
+        )
         if not res.get("ok"):
             raise FlowError(ErrorCode.EXEC_FAILED,
                             f"起手式序列启动失败: {res.get('error')}")
@@ -1340,7 +1492,9 @@ class SwitchFlow:
                       f"（{res.get('frames')} 帧，约 {res.get('duration_s')}s），"
                       f"继续执行")
             self._check_abort()
-            res = self.client.run_sequence(pose["file"])
+            res = self.client.run_sequence(
+                pose["file"], motion_backend="legacy"
+            )
             if not res.get("ok") or res.get("preview"):
                 raise FlowError(ErrorCode.EXEC_FAILED,
                                 f"起手式回放失败: {res.get('error') or '仍在 preview'}")
@@ -1841,6 +1995,9 @@ class SwitchFlow:
         self, pose: dict | None, tag: str
     ) -> None:
         """按起手式选择安全收尾路径；本方法不释放手臂。"""
+        if self.workflow_mode == "dexterous_ltr_v1":
+            self._dexterous_return_to_start(tag)
+            return
         if self._is_left_start_pose(pose):
             selected = pose or self._current_pose or {}
             endpoint_name = self._pose_endpoint_name(selected)
@@ -1854,6 +2011,39 @@ class SwitchFlow:
             tag,
             speed_rad_s=self.DESCEND_SPEED_RAD_S,
         )
+
+    def _dexterous_return_to_start(self, tag: str) -> None:
+        """回程与手势并行：预备抓取，0.5s 后握拳，到起手点才可释放。"""
+        cfg = self.dexterous_config
+        self._set_hand_pose(str(cfg["prepare_pose"]))
+        hand_error: list[FlowError] = []
+
+        def close_during_return() -> None:
+            time.sleep(float(cfg.get("return_pose_gap_s", 0.5)))
+            try:
+                self._set_hand_pose(str(cfg["fist_pose"]))
+            except FlowError as exc:
+                # 手臂已开始回程：先等它安全到起手点，再向上层报错。
+                hand_error.append(exc)
+
+        self._interp_to_waypoint(
+            str(cfg["start_waypoint"]),
+            tag,
+            speed_rad_s=self.DESCEND_SPEED_RAD_S,
+            after_start=close_during_return,
+        )
+        if hand_error:
+            raise hand_error[0]
+
+    def _dexterous_return_and_release(self) -> None:
+        self._dexterous_return_to_start("新模式收尾")
+        self._log("手臂已到起手点测试，释放手臂与灵巧手")
+        result = self.client.disarm()
+        if not result.get("ok"):
+            raise FlowError(
+                ErrorCode.EXEC_FAILED,
+                f"释放手臂失败: {result.get('error')}",
+            )
 
     def descend_fast(self, pose: dict | None) -> None:
         """安全收尾到「起手点测试」；左-起手式先回配套终点。"""

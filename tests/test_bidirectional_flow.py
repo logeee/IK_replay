@@ -58,6 +58,113 @@ class FlipIntentTests(unittest.TestCase):
         self.assertEqual(left.push_force_n, 15.0)
         self.assertEqual(right.push_force_n, 15.0)
 
+    @staticmethod
+    def _dexterous_config():
+        return {
+            "fist_pose": "L-握拳起收",
+            "prepare_pose": "L-预备抓取",
+            "grasp_pose": "L-完全捏住",
+            "start_waypoint": "L-起手点测试",
+            "approach_waypoints": [
+                {"distance_m": 0.43,
+                 "waypoint": "L-0.43-测试灵巧手-2"},
+            ],
+            "main_motion_backend": "legacy_timed",
+            "hand_duration_ms": 500,
+            "return_pose_gap_s": 0.5,
+            "sidestep_cm": 10.0,
+            "push_force_n": 25.0,
+        }
+
+    def test_dexterous_main_uses_50hz_then_grasps_before_flick(self):
+        client = mock.Mock()
+        client.joints.return_value = {"ok": True, "named_joints": {"j": 0.0}}
+        client.plan_axis_last.return_value = {
+            "ok": True,
+            "waypoints": [
+                {"named_joints": {"j": 0.0}},
+                {"named_joints": {"j": 1.0}},
+            ],
+            "max_ik_error_mm": 1.0,
+        }
+        client.execute.return_value = {"ok": True}
+        flow = SwitchFlow(
+            client=client,
+            arm="left_arm",
+            site="factory",
+            flip_kind="close_to_remote",
+            workflow_mode="dexterous_ltr_v1",
+            dexterous_config=self._dexterous_config(),
+        )
+        events = []
+        flow._wait_exec = mock.Mock(side_effect=lambda _label: events.append("arrived"))
+        flow._set_hand_pose = mock.Mock(side_effect=lambda name: events.append(name))
+        flow._flip_evidence_before = mock.Mock()
+        flow._sidestep_flick = mock.Mock(side_effect=lambda *_args: events.append("flick"))
+
+        flow.flip_switch([{"p_root": [0.1, 0.2, 0.3]}])
+
+        execute = client.execute.call_args.kwargs
+        self.assertEqual(execute["motion_backend"], "legacy_timed")
+        self.assertTrue(execute["label"].startswith("主轨迹"))
+        self.assertEqual(events, ["arrived", "L-完全捏住", "flick"])
+        self.assertEqual(flow.sidestep_cm, -10.0)
+        self.assertEqual(flow.push_force_n, 25.0)
+
+    def test_dexterous_prepare_goes_directly_into_stability_pick(self):
+        flow = SwitchFlow(
+            client=mock.Mock(),
+            arm="left_arm",
+            site="factory",
+            flip_kind="close_to_remote",
+            workflow_mode="dexterous_ltr_v1",
+            dexterous_config=self._dexterous_config(),
+            max_flip_rounds=1,
+        )
+        events = []
+        flow._set_hand_pose = mock.Mock(side_effect=lambda name: events.append(name))
+        flow._interp_to_waypoint = mock.Mock()
+        flow.detect_points = mock.Mock(
+            side_effect=lambda _round: events.append("stability+capture")
+            or [{"p_root": [0.1, 0.2, 0.3]}]
+        )
+        flow.flip_switch = mock.Mock()
+        flow.verify_flip = mock.Mock(return_value=True)
+        flow._dexterous_return_and_release = mock.Mock()
+
+        flow._run_dexterous_ltr(0.0, 0.47)
+
+        prepare_index = events.index("L-预备抓取")
+        self.assertEqual(events[prepare_index + 1], "stability+capture")
+
+    def test_dexterous_return_waits_half_second_between_hand_commands(self):
+        flow = SwitchFlow(
+            client=mock.Mock(),
+            arm="left_arm",
+            site="factory",
+            flip_kind="close_to_remote",
+            workflow_mode="dexterous_ltr_v1",
+            dexterous_config=self._dexterous_config(),
+        )
+        events = []
+        flow._set_hand_pose = mock.Mock(side_effect=lambda name: events.append(name))
+
+        def interp(_waypoint, _tag, **kwargs):
+            events.append("arm-started")
+            kwargs["after_start"]()
+            events.append("arm-arrived")
+
+        flow._interp_to_waypoint = mock.Mock(side_effect=interp)
+        with mock.patch("api.flow.time.sleep",
+                        side_effect=lambda seconds: events.append(("sleep", seconds))):
+            flow._dexterous_return_to_start("收尾")
+
+        self.assertEqual(
+            events,
+            ["L-预备抓取", "arm-started", ("sleep", 0.5),
+             "L-握拳起收", "arm-arrived"],
+        )
+
     def test_rightward_flip_selects_left_prefixed_opening_pose(self):
         client = mock.Mock()
         client.sequences.return_value = {
