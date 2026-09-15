@@ -1174,7 +1174,9 @@ function renderManual(data) {
   }
 }
 
-// 工厂柜双向开放；实验室柜反向动作尚未现场验收。
+const DEXTEROUS_LTR_LANGUAGE = "Change the switch from close to remote";
+
+// 旧模式保留现场能力差异；新模式在两个现场都固定执行左→右。
 const SITE_LANGUAGE_OPTIONS = {
   lab: [
     { value: "Change the switch from remote to close", label: "远方 → 就地（向左拨）" },
@@ -1188,16 +1190,25 @@ const SITE_LANGUAGE_OPTIONS = {
 
 function syncLanguageOptions() {
   const site = $("manualSite").value;
-  const options = SITE_LANGUAGE_OPTIONS[site] || SITE_LANGUAGE_OPTIONS.lab;
+  const dexterous = $("manualWorkflow").value === "dexterous_ltr_v1";
+  const options = dexterous
+    ? [{ value: DEXTEROUS_LTR_LANGUAGE, label: "旋钮左 → 右（新模式固定）" }]
+    : (SITE_LANGUAGE_OPTIONS[site] || SITE_LANGUAGE_OPTIONS.lab);
   $("manualLanguage").innerHTML = options.map((option) =>
     `<option value="${escapeHtml(option.value)}"${option.disabled ? " disabled" : ""}>`
     + `${escapeHtml(option.label)}</option>`
   ).join("");
-  $("manualDirectionHint").textContent = site === "factory"
-    ? "工厂双向：远→就向左 / 就→远向右"
-    : "实验室：当前仅支持就→远";
+  $("manualDirectionHint").textContent = dexterous
+    ? `${SITE_LABELS[site]}仅作现场记录；新模式固定左→右`
+    : (site === "factory"
+      ? "旧模式·工厂双向：远→就向左 / 就→远向右"
+      : "旧模式·实验室：当前仅支持远→就向左");
 }
 $("manualSite").addEventListener("change", () => {
+  syncLanguageOptions();
+  if (defaultsLoadedOnce) fillManualDirectionDefaults();
+});
+$("manualWorkflow").addEventListener("change", () => {
   syncLanguageOptions();
   if (defaultsLoadedOnce) fillManualDirectionDefaults();
 });
@@ -1885,10 +1896,11 @@ loadDefaultsConfig();
 
 $("manualStart").addEventListener("click", async () => {
   const site = $("manualSite").value;
-  const language = $("manualLanguage").value;
+  const workflowMode = $("manualWorkflow").value;
+  const language = workflowMode === "dexterous_ltr_v1"
+    ? DEXTEROUS_LTR_LANGUAGE : $("manualLanguage").value;
   const retries = Math.min(20, Math.max(1, Number($("manualRetries").value) || 3));
   const manual = $("manualStep").checked;
-  const workflowMode = $("manualWorkflow").value;
   const offset = { x: readOffsetMm("offsetX"), y: readOffsetMm("offsetY"), z: readOffsetMm("offsetZ") };
   const firstOffset = readOffsetInputs(
     "firstOffsetX",
