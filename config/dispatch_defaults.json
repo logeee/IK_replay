@@ -10,8 +10,68 @@
       "start_waypoint": "L-起手点测试",
       "approach_waypoints": [
         {
+          "distance_m": 0.4,
+          "waypoint": "L-0.40-测试灵巧手-2"
+        },
+        {
+          "distance_m": 0.41,
+          "waypoint": "L-0.41-测试灵巧手-2"
+        },
+        {
+          "distance_m": 0.42,
+          "waypoint": "L-0.42-测试灵巧手-2"
+        },
+        {
           "distance_m": 0.43,
           "waypoint": "L-0.43-测试灵巧手-2"
+        },
+        {
+          "distance_m": 0.44,
+          "waypoint": "L-0.44-测试灵巧手-2"
+        },
+        {
+          "distance_m": 0.45,
+          "waypoint": "L-0.45-测试灵巧手-2"
+        },
+        {
+          "distance_m": 0.46,
+          "waypoint": "L-0.46-测试灵巧手-2"
+        },
+        {
+          "distance_m": 0.47,
+          "waypoint": "L-0.47-测试灵巧手-2"
+        },
+        {
+          "distance_m": 0.48,
+          "waypoint": "L-0.48-测试灵巧手-2"
+        },
+        {
+          "distance_m": 0.49,
+          "waypoint": "L-0.49-测试灵巧手-2"
+        },
+        {
+          "distance_m": 0.5,
+          "waypoint": "L-0.50-测试灵巧手-2"
+        },
+        {
+          "distance_m": 0.51,
+          "waypoint": "L-0.51-测试灵巧手-2"
+        },
+        {
+          "distance_m": 0.52,
+          "waypoint": "L-0.52-测试灵巧手-2"
+        },
+        {
+          "distance_m": 0.53,
+          "waypoint": "L-0.53-测试灵巧手-2"
+        },
+        {
+          "distance_m": 0.54,
+          "waypoint": "L-0.54-测试灵巧手-2"
+        },
+        {
+          "distance_m": 0.55,
+          "waypoint": "L-0.55-测试灵巧手-2"
         }
       ],
       "main_motion_backend": "legacy_timed",

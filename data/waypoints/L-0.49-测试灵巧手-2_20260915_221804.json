@@ -1,0 +1,59 @@
+{
+  "name": "L-0.49-测试灵巧手-2",
+  "chain_id": "left_arm",
+  "named_joints": {
+    "left_shoulder_pitch_joint": -0.9510239528345154,
+    "left_shoulder_roll_joint": 0.1696091789994794,
+    "left_shoulder_yaw_joint": -0.06874545670295926,
+    "left_elbow_joint": 0.2783876405161742,
+    "left_wrist_roll_joint": 0.26871117707533176,
+    "left_wrist_pitch_joint": -0.25737462735955907,
+    "left_wrist_yaw_joint": 0.5290938172867855
+  },
+  "created_at": "2026-09-15 22:20:26",
+  "arm": "left_arm",
+  "distance_m": 0.49,
+  "generated_from": "L-0.43-测试灵巧手-2_20260904_010938.json",
+  "reference_distance_m": 0.43,
+  "offset_root_m": [
+    0.06,
+    0.0,
+    0.0
+  ],
+  "tcp_pose": {
+    "xyz": [
+      0.44935085040654954,
+      0.13480259269477302,
+      0.5574080417139383
+    ],
+    "rpy": [
+      0.051872751166595725,
+      -1.0401065691978573,
+      0.3011653500797804
+    ]
+  },
+  "tcp_offset": {
+    "xyz": [
+      0.08,
+      0.0,
+      0.0
+    ],
+    "rpy": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "ik": {
+    "mode": "strict_orientation",
+    "error_mm": 0.0010833851926648167,
+    "error_rotation_deg": 0.0003352347548863872,
+    "collision_status": "safe",
+    "minimum_model_clearance_mm": 59.78985940890694
+  },
+  "recorded_combo": {
+    "arm": "left_arm",
+    "hand_id": "yinshi-1-left"
+  },
+  "arrival_speed_rad_s": 2.0
+}

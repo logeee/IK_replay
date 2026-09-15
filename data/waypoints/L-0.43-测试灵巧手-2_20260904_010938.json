@@ -12,9 +12,11 @@
   },
   "created_at": "2026-09-11 22:59:56",
   "arm": "left_arm",
+  "distance_m": 0.43,
   "mirrored_from": "R-测试灵巧手-2_20260904_010938.json",
   "recorded_combo": {
     "arm": "left_arm",
     "hand_id": "yinshi-1-left"
-  }
+  },
+  "arrival_speed_rad_s": 2.0
 }

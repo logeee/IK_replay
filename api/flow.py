@@ -747,7 +747,7 @@ class SwitchFlow:
         raise last_error or FlowError(ErrorCode.VERIFY_FAILED, "重试轮数耗尽")
 
     def _choose_dexterous_approach(self, distance_m: float) -> dict[str, Any]:
-        """当前配置只有 0.43m 一档；后续加档后无需改流程代码。"""
+        """从已配置的距离准备位中选择最接近实测距离的一档。"""
         entries = list(self.dexterous_config.get("approach_waypoints") or [])
         if not entries:
             raise FlowError(ErrorCode.POSE_UNAVAILABLE, "新模式没有配置距离准备位")

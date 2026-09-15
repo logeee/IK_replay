@@ -342,8 +342,13 @@ class DispatchDefaultsTest(unittest.TestCase):
         self.assertEqual(dexterous["push_force_n"], 25.0)
         self.assertEqual(
             dexterous["approach_waypoints"],
-            [{"distance_m": 0.43,
-              "waypoint": "L-0.43-测试灵巧手-2"}],
+            [
+                {
+                    "distance_m": distance / 100,
+                    "waypoint": f"L-0.{distance:02d}-测试灵巧手-2",
+                }
+                for distance in range(40, 56)
+            ],
         )
 
     def test_dexterous_waypoint_speeds_validate_range(self):

@@ -1907,19 +1907,22 @@ function reachLibraryItems() {
 }
 
 function reachLibraryDistance(item) {
-  const text = String(item?.name || item?.file || "").trim();
+  const text = String(item?.name || item?.file || "")
+    .trim()
+    .replace(/^[LR]-/i, "");
   const match = text.match(/^(\d+(?:\.\d+)?)/);
   return match ? Number(match[1]) : null;
 }
 
 function reachLibraryGroupOf(item) {
+  // 左/右分组特指“已标定距离的左/右臂资产”；
+  // 普通手势即使已标 arm，也应归入“其他”。
+  if (reachLibraryDistance(item) === null) return "other";
+  if (item?.arm === "left_arm") return "left";
+  if (item?.arm === "right_arm") return "right";
   const text = `${item?.name || ""} ${item?.file || ""}`;
-  if (text.includes("左")) return "left";
-  if (text.includes("右")) return "right";
-  // 早期右侧数据没有写“右”，名称是“0.50-起手式新/终点”等。
-  if (reachLibraryDistance(item) !== null && /(起手式|终点|避障)/.test(text)) {
-    return "right";
-  }
+  if (/\bL-/.test(text)) return "left";
+  if (/\bR-/.test(text)) return "right";
   return "other";
 }
 
