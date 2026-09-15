@@ -863,7 +863,7 @@ def _run_task(task: dict) -> None:
 
 def _handcart_base() -> str:
     return str(
-        getattr(_args, "handcart_base", "http://192.168.61.137:8876")
+        getattr(_args, "handcart_base", "http://192.168.124.137:8876")
     ).rstrip("/")
 
 
@@ -2489,7 +2489,7 @@ def main() -> None:
                         help="不用点云算法取点，退回 YOLO 框偏移法")
     parser.add_argument("--capability-url", default=DEFAULT_CAPABILITY_URL,
                         help="18000 能力中心地址（启动拜访，必须可达）")
-    parser.add_argument("--handcart-base", default="http://192.168.61.137:8876",
+    parser.add_argument("--handcart-base", default="http://192.168.124.137:8876",
                         help="右手手车电机作业服务地址")
     parser.add_argument(
         "--task-state-file",

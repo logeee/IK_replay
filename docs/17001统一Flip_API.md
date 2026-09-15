@@ -101,7 +101,7 @@ done
 - `right + counterclockwise`：8876 的 `motor_action=left`。
 - `right + clockwise`：8876 的 `motor_action=right`。
 - 转发给 8876 时，`process_restart` 固定为 `false`。
-- 8876 默认地址为 `http://192.168.61.137:8876`，可用 17001 启动参数 `--handcart-base` 覆盖。
+- 8876 默认使用有线地址 `http://192.168.124.137:8876`，可用 17001 启动参数 `--handcart-base` 覆盖。
 
 右手任务可通过 `POST /task/abort` 终止；17001 会调用 8876 的 `POST /v1/handcart/jobs/{job_id}/terminate`，并继续轮询到终态。
 
