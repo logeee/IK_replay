@@ -4,6 +4,13 @@
 - `ik-capability.service`：18000 能力配置中心，常驻 + 崩溃自动拉活（先装这个）
 - `ik-replay.service`：拨闸服务组（调度17001 / YOLO7004 / 点云7005 / 确认台7002）
 
+推荐使用一键安装脚本（安装、启用、立即启动并探活）：
+
+```bash
+cd /home/robot/yx/project/IK_replay
+sudo ./deploy/install-autostart.sh
+```
+
 ## 能力配置中心 18000（ik-capability.service）
 
 18000 是全组的启动依赖——17001 / 18001 启动第一步都要拜访它，机器重启后
@@ -49,6 +56,8 @@ sudo systemctl enable --now ik-replay.service
 
 `enable --now` = 注册开机自启 + 立刻启动一次。如果当前服务已经在跑，
 `prepare.sh` 会看到端口被占用而逐个跳过，不会起重复进程。
+`ik-replay.service` 显式依赖 `ik-capability.service`，因此 18000 会先启动并
+通过探活，随后才启动 17001 服务组。
 
 ## 验证
 

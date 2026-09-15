@@ -12,8 +12,10 @@
 [Unit]
 Description=IK_replay 拨闸服务组（调度17001 / YOLO7004 / 点云7005 / 确认台7002）
 # 等网络就绪再启动，否则脚本末尾探活和取本机 IP 可能失败
-After=network-online.target
+After=network-online.target ik-capability.service
 Wants=network-online.target
+# 17001 启动时必须成功读取 18000 的能力注册表。
+Requires=ik-capability.service
 
 [Service]
 # prepare.sh 用 nohup 拉起各服务后自己退出：oneshot + RemainAfterExit
