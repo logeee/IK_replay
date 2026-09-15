@@ -217,6 +217,7 @@ async function initReach() {
     handMove: document.getElementById("reachHandMoveBtn"),
     record: document.getElementById("reachRecordBtn"),
     delWp: document.getElementById("reachDelWpBtn"),
+    waypointSpeed: document.getElementById("reachWaypointSpeedBtn"),
     stepLen: document.getElementById("reachStepLen"),
     pushForce: document.getElementById("reachPushForce"),
     pushHold: document.getElementById("reachPushHold"),
@@ -264,6 +265,11 @@ async function initReach() {
     libraryConfirm: document.getElementById("reachLibraryConfirmBtn"),
     libraryCancel: document.getElementById("reachLibraryCancelBtn"),
     libraryClose: document.getElementById("reachLibraryCloseBtn"),
+    waypointSpeedModal: document.getElementById("reachWaypointSpeedModal"),
+    waypointSpeedList: document.getElementById("reachWaypointSpeedList"),
+    waypointSpeedSave: document.getElementById("reachWaypointSpeedSaveBtn"),
+    waypointSpeedCancel: document.getElementById("reachWaypointSpeedCancelBtn"),
+    waypointSpeedClose: document.getElementById("reachWaypointSpeedCloseBtn"),
   };
   const d = reach.dom;
   d.panel.classList.remove("hidden");
@@ -311,6 +317,7 @@ async function initReach() {
     });
   }
   d.record.addEventListener("click", () => recordWaypoint());
+  d.waypointSpeed.addEventListener("click", () => openWaypointSpeedModal());
   d.delWp.addEventListener("click", () => deleteWaypoint());
   d.addVia.addEventListener("click", () => addViaWaypoint());
   d.gotoPick.addEventListener("click", () => openReachLibrary("waypoint"));
@@ -331,9 +338,18 @@ async function initReach() {
   d.libraryModal.addEventListener("click", (event) => {
     if (event.target === d.libraryModal) closeReachLibrary();
   });
+  d.waypointSpeedSave.addEventListener("click", () => saveWaypointSpeeds());
+  d.waypointSpeedCancel.addEventListener("click", () => closeWaypointSpeedModal());
+  d.waypointSpeedClose.addEventListener("click", () => closeWaypointSpeedModal());
+  d.waypointSpeedModal.addEventListener("click", (event) => {
+    if (event.target === d.waypointSpeedModal) closeWaypointSpeedModal();
+  });
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !d.libraryModal.classList.contains("hidden")) {
       closeReachLibrary();
+    }
+    if (event.key === "Escape" && !d.waypointSpeedModal.classList.contains("hidden")) {
+      closeWaypointSpeedModal();
     }
   });
   // 路点当终点：不从图像取点，从当前姿态直接去选中路点（关节插值，无 IK）
@@ -1804,6 +1820,18 @@ async function moveToWaypoint(wp, options = {}) {
     return false;
   }
   const verb = options.verb || `前往「${wp.name}」`;
+  const configuredSpeed = Number(
+    options.maxSpeed ?? wp.arrival_speed_rad_s ?? 0.4,
+  );
+  const requestedSpeed = Number.isFinite(configuredSpeed) && configuredSpeed >= 0.05
+    ? configuredSpeed : 0.4;
+  const effectiveSpeed = Math.min(2.0, Math.max(0.05, requestedSpeed));
+  if (st.armed && requestedSpeed > 2.0 && !window.confirm(
+    `位点「${wp.name}」配置速度 ${requestedSpeed} rad/s，超过 18001 上限 2.0 rad/s。\n\n`
+    + "确认使用最高 2.0 rad/s 执行？",
+  )) {
+    return false;
+  }
   reachMsg(`${verb}规划中…`);
   let joints = readJointInputs(panel);
   try {
@@ -1857,7 +1885,7 @@ async function moveToWaypoint(wp, options = {}) {
         motion_backend: "legacy",   // 验证期保护：非主轨迹一律原方案（服务端同样拦截）
         waypoints: seg.waypoints.map((frame) => frame.named_joints),
         duration: options.duration ?? 2.5,
-        max_speed_rad_s: options.maxSpeed ?? 0.4,  // 回放段精度要求低，放行到快档
+        max_speed_rad_s: effectiveSpeed,
         label: options.label || `前往:${wp.name}`,
       }),
     });
@@ -1973,7 +2001,10 @@ function updateReachLibraryHint() {
   const position = [...d.libraryItem.options].findIndex(
     (option) => option.value === item.file,
   ) + 1;
-  d.libraryHint.textContent = `已按距离从近到远排序 · 第 ${position}/${d.libraryItem.options.length} 项 · ${item.file}`;
+  const speed = reach.libraryMode === "waypoint"
+    ? ` · 到达速度 ${Number(item.arrival_speed_rad_s ?? 0.4)} rad/s`
+    : "";
+  d.libraryHint.textContent = `已按距离从近到远排序 · 第 ${position}/${d.libraryItem.options.length} 项${speed} · ${item.file}`;
 }
 
 function confirmReachLibrarySelection() {
@@ -2389,7 +2420,7 @@ async function refreshWaypoints() {
   const fill = (sel, placeholder) => {
     const prev = sel.value;
     sel.innerHTML = `<option value="">${placeholder}</option>` + regularWaypoints
-      .map((w) => `<option value="${w.file}">${w.name} · ${w.created_at || w.file}</option>`)
+      .map((w) => `<option value="${w.file}">${w.name} · ${Number(w.arrival_speed_rad_s ?? 0.4)} rad/s · ${w.created_at || w.file}</option>`)
       .join("");
     if ([...sel.options].some((o) => o.value === prev)) {
       sel.value = prev;
@@ -2399,6 +2430,7 @@ async function refreshWaypoints() {
   fill(reach.dom.endSel, "（不收回）");
   fill(reach.dom.gotoSel, "（路点终点）");
   reach.dom.delWp.disabled = !regularWaypoints.length;
+  reach.dom.waypointSpeed.disabled = !(reach.waypoints || []).length;
   reach.dom.startTest.disabled = !startTestWaypoint();
   updateReachLibraryTriggerLabels();
   // 路点文件可能被删除，清掉队列里的失效项
@@ -2418,6 +2450,75 @@ function selectedWaypoint() {
 
 function selectedEndWaypoint() {
   return waypointByFile(reach.dom.endSel.value);
+}
+
+function closeWaypointSpeedModal() {
+  reach.dom.waypointSpeedModal.classList.add("hidden");
+}
+
+function updateWaypointSpeedLimitStyle(input) {
+  input.closest(".reach-waypoint-speed-row")?.classList.toggle(
+    "over-limit", Number(input.value) > 2.0,
+  );
+}
+
+function openWaypointSpeedModal() {
+  const list = [...(reach.waypoints || [])].sort(compareReachLibraryItems);
+  const box = reach.dom.waypointSpeedList;
+  box.innerHTML = "";
+  for (const waypoint of list) {
+    const row = document.createElement("label");
+    row.className = "reach-waypoint-speed-row";
+    row.dataset.file = waypoint.file;
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = waypoint.name || waypoint.file;
+    name.title = waypoint.file;
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "0.05";
+    input.step = "0.05";
+    input.value = String(Number(waypoint.arrival_speed_rad_s ?? 0.4));
+    input.addEventListener("input", () => updateWaypointSpeedLimitStyle(input));
+    const unit = document.createElement("span");
+    unit.className = "unit";
+    unit.textContent = "rad/s";
+    row.append(name, input, unit);
+    box.append(row);
+    updateWaypointSpeedLimitStyle(input);
+  }
+  reach.dom.waypointSpeedModal.classList.remove("hidden");
+  box.querySelector("input")?.focus();
+}
+
+async function saveWaypointSpeeds() {
+  const rows = [...reach.dom.waypointSpeedList.querySelectorAll(
+    ".reach-waypoint-speed-row",
+  )];
+  const items = rows.map((row) => ({
+    file: row.dataset.file,
+    arrival_speed_rad_s: Number(row.querySelector("input").value),
+  }));
+  if (items.some((item) => !Number.isFinite(item.arrival_speed_rad_s)
+      || item.arrival_speed_rad_s < 0.05)) {
+    reachMsg("点位速度必须是至少 0.05 rad/s 的数字", "error");
+    return;
+  }
+  reach.dom.waypointSpeedSave.disabled = true;
+  try {
+    await fetchJson("/api/reach/waypoints/speeds", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
+    });
+    await refreshWaypoints();
+    closeWaypointSpeedModal();
+    reachMsg(`已保存 ${items.length} 个点位的到达速度`, "success");
+  } catch (error) {
+    reachMsg(`点位速度保存失败: ${error.message}`, "error");
+  } finally {
+    reach.dom.waypointSpeedSave.disabled = false;
+  }
 }
 
 // ---- 经由队列：按加入顺序依次经过（空队列时退化为下拉框单选） ----

@@ -807,6 +807,60 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.reach-waypoint-speed-card {
+  width: min(680px, 100%);
+}
+
+.reach-waypoint-speed-list {
+  max-height: min(60vh, 560px);
+  margin-top: 12px;
+  overflow: auto;
+  border: 1px solid #d2dce5;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.reach-waypoint-speed-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 130px 50px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e5ebf0;
+}
+
+.reach-waypoint-speed-row:last-child {
+  border-bottom: 0;
+}
+
+.reach-waypoint-speed-row .name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+}
+
+.reach-waypoint-speed-row input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 8px;
+  border: 1px solid #b9c7d3;
+  border-radius: 6px;
+  background: #fff;
+  color: #172636;
+}
+
+.reach-waypoint-speed-row.over-limit input {
+  border-color: #d97706;
+  background: #fff7ed;
+}
+
+.reach-waypoint-speed-row .unit {
+  color: #607387;
+  font-size: 12px;
+}
+
 @media (max-width: 620px) {
   .reach-library-fields {
     grid-template-columns: 1fr;

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import math
 import multiprocessing as mp
 import threading
 import time
@@ -180,6 +181,7 @@ def reach_record_waypoint(body: dict):
         "arm": _own_arm(),
         "chain_id": state.chain_id,
         "named_joints": dict(zip(state.joint_names, q)),
+        "arrival_speed_rad_s": 0.4,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     combo = _recorded_combo_stamp()
@@ -191,6 +193,55 @@ def reach_record_waypoint(body: dict):
     path.write_text(json.dumps(item, ensure_ascii=False, indent=2))
     item["file"] = path.name
     return {"ok": True, "waypoint": item}
+
+
+@router.post("/waypoints/speeds")
+def reach_save_waypoint_speeds(body: dict):
+    """批量保存位点的到达速度。
+
+    ``arrival_speed_rad_s`` 绑定在位点本身；允许保存高于当前执行器天花板的
+    调试意图，真正执行时仍由 ``--arm-max-speed`` 硬限幅。
+    Body: {"items": [{"file": str, "arrival_speed_rad_s": float}, ...]}
+    """
+    items = body.get("items")
+    if not isinstance(items, list) or not items:
+        return JSONResponse(
+            {"ok": False, "error": "items 至少需要一个位点"}, status_code=400)
+    updates: list[tuple[Path, dict]] = []
+    seen: set[str] = set()
+    try:
+        for raw in items:
+            if not isinstance(raw, dict):
+                raise ValueError("每个速度配置必须是 JSON object")
+            filename = str(raw.get("file") or "")
+            if filename in seen:
+                raise ValueError(f"位点文件重复: {filename}")
+            seen.add(filename)
+            speed = float(raw.get("arrival_speed_rad_s"))
+            if not math.isfinite(speed) or not 0.05 <= speed <= 20.0:
+                raise ValueError(
+                    f"{filename or '位点'} 的速度必须在 0.05~20.0 rad/s")
+            data = _load_waypoint_for_arm(filename)
+            path = _safe_waypoint_file(filename)
+            assert path is not None
+            data.pop("file", None)
+            data["arrival_speed_rad_s"] = speed
+            updates.append((path, data))
+    except arm_assets.ArmMismatch as exc:
+        return _arm_reject(exc)
+    except (OSError, TypeError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    for path, data in updates:
+        path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    return {
+        "ok": True,
+        "updated": len(updates),
+        "waypoints": [dict(data, file=path.name) for path, data in updates],
+    }
 
 
 @router.delete("/waypoints/{filename}")

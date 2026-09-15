@@ -171,6 +171,30 @@ class WaypointVisibilityTests(_StateSandbox):
         self.assertEqual(res["arm"], "left_arm")
         self.assertEqual(res["arm_hidden"]["foreign_arm"], 3)
 
+    def test_waypoint_arrival_speeds_are_saved_and_can_exceed_runtime_ceiling(self):
+        result = recordings.reach_save_waypoint_speeds({"items": [{
+            "file": "R-a_20260101_000000.json",
+            "arrival_speed_rad_s": 2.5,
+        }]})
+        self.assertTrue(result["ok"])
+        saved = json.loads(
+            (state.waypoints_dir / "R-a_20260101_000000.json").read_text())
+        self.assertEqual(saved["arrival_speed_rad_s"], 2.5)
+        listed = recordings.reach_waypoints()
+        configured = next(item for item in listed["waypoints"]
+                          if item["file"] == "R-a_20260101_000000.json")
+        self.assertEqual(configured["arrival_speed_rad_s"], 2.5)
+
+    def test_waypoint_arrival_speed_rejects_invalid_value_without_writing(self):
+        result = recordings.reach_save_waypoint_speeds({"items": [{
+            "file": "R-a_20260101_000000.json",
+            "arrival_speed_rad_s": 0,
+        }]})
+        self.assertEqual(result.status_code, 400)
+        saved = json.loads(
+            (state.waypoints_dir / "R-a_20260101_000000.json").read_text())
+        self.assertNotIn("arrival_speed_rad_s", saved)
+
 
 class RecordStampTests(_StateSandbox):
     def test_new_waypoint_carries_recorded_combo(self):
@@ -199,6 +223,7 @@ class RecordStampTests(_StateSandbox):
             (state.waypoints_dir / wp["file"]).read_text(encoding="utf-8"))
         self.assertEqual(on_disk["arm"], "right_arm")
         self.assertEqual(on_disk["name"], "R-新位点")
+        self.assertEqual(on_disk["arrival_speed_rad_s"], 0.4)
         # 刚录的即刻出现在本臂列表里
         listed = recordings.reach_waypoints()
         self.assertEqual([w["name"] for w in listed["waypoints"]],

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>双臂 IK 调试回放台</title>
-    <link rel="stylesheet" href="/web/style.css?v=70" />
+    <link rel="stylesheet" href="/web/style.css?v=71" />
     <script type="importmap">
       {
         "imports": {
@@ -108,6 +108,8 @@
               <div class="reach-actions">
                 <button id="reachHandMoveBtn" type="button" disabled>卸力摆位</button>
                 <button id="reachRecordBtn" type="button" disabled>录制路点</button>
+                <button id="reachWaypointSpeedBtn" type="button" disabled
+                        title="给每个位点设置从当前姿态到达它时使用的关节速度">点位速度…</button>
                 <button id="reachDelWpBtn" type="button" disabled>删路点</button>
               </div>
             </div>
@@ -229,6 +231,24 @@
                     title="在画面里再点一个点，从当前姿态直接规划过去（不经过经由路点），到位后回到本弹窗">再次选点</button>
             <button id="reachNextReturnBtn" type="button">收回到结束位点</button>
             <button id="reachNextDoneBtn" type="button" class="ghost">结束</button>
+          </div>
+        </div>
+
+        <div id="reachWaypointSpeedModal" class="reach-library-modal hidden"
+             role="dialog" aria-modal="true" aria-labelledby="reachWaypointSpeedTitle">
+          <div class="reach-library-card reach-waypoint-speed-card">
+            <div class="reach-library-header">
+              <strong id="reachWaypointSpeedTitle">设置点位到达速度</strong>
+              <button id="reachWaypointSpeedCloseBtn" type="button" aria-label="关闭">×</button>
+            </div>
+            <div class="reach-library-hint">
+              速度绑定到目标位点。超过 2.0 rad/s 可以保存；真机执行前会再次确认，并按最高 2.0 rad/s 执行。
+            </div>
+            <div id="reachWaypointSpeedList" class="reach-waypoint-speed-list"></div>
+            <div class="reach-library-actions">
+              <button id="reachWaypointSpeedCancelBtn" type="button">取消</button>
+              <button id="reachWaypointSpeedSaveBtn" type="button" class="primary">保存速度</button>
+            </div>
           </div>
         </div>
 
@@ -365,6 +385,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=112"></script>
+    <script type="module" src="/web/main.js?v=113"></script>
   </body>
 </html>
