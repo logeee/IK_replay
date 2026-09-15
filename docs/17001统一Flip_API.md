@@ -69,6 +69,12 @@
 
 状态只有四种：`idle`、`starting`、`running`、`done`。
 
+## 3. 终止任务
+
+`POST http://<机器人IP>:17001/task/abort`
+
+左手任务会停止并释放机械臂；右手任务会调用 8876 的 `/terminate`，之后继续通过状态接口观察，直到 `state=done` 且 `result.code_name=ABORTED`。
+
 ## curl 示例
 
 ```bash
@@ -95,7 +101,8 @@ done
 - `right + counterclockwise`：8876 的 `motor_action=left`。
 - `right + clockwise`：8876 的 `motor_action=right`。
 - 转发给 8876 时，`process_restart` 固定为 `false`。
+- 8876 默认地址为 `http://192.168.61.137:8876`，可用 17001 启动参数 `--handcart-base` 覆盖。
 
-注意：当前收到的 8876 资料没有停止/取消接口，因此右手任务运行期间，17001 无法真正停止它；`POST /task/abort` 会返回 HTTP 501，而不会假装停止成功。补充 8876 的取消接口后再接入统一急停。
+右手任务可通过 `POST /task/abort` 终止；17001 会调用 8876 的 `POST /v1/handcart/jobs/{job_id}/terminate`，并继续轮询到终态。
 
-右手任务运行时不要重启 17001；8876 当前资料也没有提供“查询全部运行中任务”的恢复接口。
+最近任务保存在 `logs/service/dispatch_task_state.json`。17001 重启时，如果右手任务已经取得 8876 `job_id`，会恢复轮询并继续保持全局互斥；尚未取得 `job_id` 的右手任务以及执行中的左手任务无法安全续接，会保留原 `task_id` 并标记为 `DISPATCH_ERROR`。

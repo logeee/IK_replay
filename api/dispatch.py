@@ -68,7 +68,7 @@
     GET  /task/status  → 状态机 idle/starting/running/done + 流程日志尾部
                           + 最终结果（错误码见 api.flow.ErrorCode）
                           + step_times 分步耗时 + prompt 当前等待确认的步骤
-    POST /task/abort   → 左手任务可急停；右手 8876 未提供取消接口时返回 501
+    POST /task/abort   → 左手任务急停释放；右手调用 8876 /terminate 并轮询终态
 
 手动确认模式（网页 http://<机器人IP>:17001/ 上可视化操作）：
     /task/flip 带 "manual": true 后，流程在每个主要步骤（接管/场景判断/
@@ -93,6 +93,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import signal
 import subprocess
@@ -173,6 +174,7 @@ _http.trust_env = False   # 只连本机服务，不走系统代理
 _args: argparse.Namespace | None = None
 _lock = threading.Lock()
 _task: dict[str, Any] | None = None   # 当前/最近一次任务
+_task_state_file: Path | None = None  # main() 启用；测试导入时默认不落盘
 _check: dict[str, Any] | None = None  # 当前/最近一次站位检查（/check/flip）
 # 站位检查通过后留下的 reach 子进程——交给紧接着的 /task/flip 认领，
 # 它任务结束后负责关；下一次 /check/flip 也可认领（失败时就能关掉它）
@@ -200,6 +202,128 @@ HANDCART_TASKS = {
     "clockwise": "right",
 }
 HANDCART_TERMINAL_STATES = frozenset({"DONE", "FAILED", "PAUSED", "CANCELED"})
+_TASK_RUNTIME_KEYS = frozenset({
+    "flow", "gate", "reach_proc", "abort_event",
+})
+
+
+def _task_document(task: dict[str, Any]) -> dict[str, Any]:
+    """去掉线程、进程等运行时对象，生成可恢复的 JSON 任务快照。"""
+    document: dict[str, Any] = {}
+    for key, value in task.items():
+        if key in _TASK_RUNTIME_KEYS:
+            continue
+        try:
+            json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            continue
+        document[key] = deepcopy(value)
+    return document
+
+
+def _save_task_state_locked() -> None:
+    """原子保存最近任务。调用者必须持有 _lock。"""
+    if _task_state_file is None or _task is None:
+        return
+    try:
+        _task_state_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary = _task_state_file.with_suffix(_task_state_file.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(
+                {"schema_version": 1, "task": _task_document(_task)},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        temporary.replace(_task_state_file)
+    except OSError as exc:
+        print(f"[dispatch] 保存任务状态失败: {exc}")
+
+
+def _persist_task(task: dict[str, Any]) -> None:
+    with _lock:
+        if _task is task:
+            _save_task_state_locked()
+
+
+def _restore_task_state() -> str:
+    """恢复最近任务；右手在途作业可凭 job_id 继续轮询。"""
+    global _task
+    if _task_state_file is None:
+        return "disabled"
+    try:
+        raw = json.loads(_task_state_file.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return "empty"
+    except (OSError, ValueError) as exc:
+        print(f"[dispatch] 读取任务状态失败，忽略旧文件: {exc}")
+        return "invalid"
+    document = raw.get("task") if isinstance(raw, dict) else None
+    if not isinstance(document, dict) or not document.get("id"):
+        return "invalid"
+
+    restored = deepcopy(document)
+    restored.update(flow=None, gate=None, reach_proc=None, reach_external=False)
+    restored.setdefault("log", [])
+    restored.setdefault("result", None)
+    restored.setdefault("finished_at", None)
+    restored.setdefault("stats_counted", False)
+    active = restored.get("state") in {"starting", "running"}
+    resume_handcart = bool(
+        active
+        and restored.get("backend") == "handcart_8876"
+        and restored.get("downstream_job_id")
+    )
+    if restored.get("backend") == "handcart_8876":
+        restored.setdefault("retries", 3)
+        restored.setdefault("attempt", 1)
+        restored.setdefault("downstream_job_ids", [])
+        current_job = str(restored.get("downstream_job_id") or "")
+        if current_job and current_job not in restored["downstream_job_ids"]:
+            restored["downstream_job_ids"].append(current_job)
+        restored["abort_event"] = threading.Event()
+        if restored.get("abort_requested"):
+            restored["abort_event"].set()
+        restored["terminate_sent"] = False
+
+    with _lock:
+        _task = restored
+        if active:
+            _task_stats["accepted"] += 1
+        if active and not resume_handcart:
+            restored["state"] = "done"
+            restored["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            was_aborted = bool(restored.get("abort_requested"))
+            restored["result"] = {
+                "ok": False,
+                "code": 9 if was_aborted else -1,
+                "code_name": "ABORTED" if was_aborted else "DISPATCH_ERROR",
+                "message": (
+                    "任务已终止"
+                    if was_aborted
+                    else "17001 重启，原任务无法安全续接"
+                ),
+                "detail": {"restored_after_restart": True},
+            }
+            restored["log"].append(
+                "17001 重启："
+                + ("终止请求已保留" if was_aborted else "原任务无法安全续接，已标记失败")
+            )
+            _count_finished_task_locked(restored)
+            _save_task_state_locked()
+
+    if resume_handcart:
+        restored["log"].append("17001 重启：检测到在途 8876 job，恢复状态轮询")
+        _persist_task(restored)
+        threading.Thread(
+            target=_run_handcart_task,
+            args=(restored, True),
+            name=f"handcart-resume-{restored['id']}",
+            daemon=True,
+        ).start()
+        return "resumed_handcart"
+    return "interrupted" if active else "restored_done"
 
 
 def _service_stats_locked() -> dict[str, Any]:
@@ -421,6 +545,7 @@ def _shutdown_cleanup() -> None:
     with _lock:
         leftover, _check_reach_proc = _check_reach_proc, None
         task = _task
+        _save_task_state_locked()
     if leftover is not None and leftover.poll() is None:
         holder = {"log": [], "reach_proc": leftover}
         _stop_reach(holder)
@@ -577,6 +702,7 @@ def _run_task(task: dict) -> None:
                 task["reach_proc"] = None
             task["reach_external"] = False
             task["state"] = "starting"
+            _persist_task(task)
             _spawn_reach(task)
             _wait_reach_ready(task)
 
@@ -712,6 +838,7 @@ def _run_task(task: dict) -> None:
             if task.get("reset_result") is not None:
                 flow.finish_reset_and_release(task["reset_result"])
         task["state"] = "running"
+        _persist_task(task)
         result = flow.run()
         task["result"] = {"ok": result.ok, "code": int(result.code),
                           "code_name": result.code.name,
@@ -730,17 +857,20 @@ def _run_task(task: dict) -> None:
             task["state"] = "done"
             task["finished_at"] = datetime.now().isoformat(timespec="seconds")
             _count_finished_task_locked(task)
+            if _task is task:
+                _save_task_state_locked()
 
 
 def _handcart_base() -> str:
     return str(
-        getattr(_args, "handcart_base", "http://127.0.0.1:8876")
+        getattr(_args, "handcart_base", "http://192.168.61.137:8876")
     ).rstrip("/")
 
 
-def _run_handcart_task(task: dict) -> None:
+def _run_handcart_task(task: dict, resume_current: bool = False) -> None:
     """启动并轮询 8876 作业；它和机械臂任务共用 17001 的全局任务锁。"""
     global _check_reach_proc
+    abort_event: threading.Event = task.setdefault("abort_event", threading.Event())
     try:
         with _lock:
             leftover, _check_reach_proc = _check_reach_proc, None
@@ -751,24 +881,51 @@ def _run_handcart_task(task: dict) -> None:
 
         client = HandcartClient(_handcart_base())
         max_attempts = int(task["retries"])
-        for attempt in range(1, max_attempts + 1):
+        first_attempt = max(1, int(task.get("attempt") or 1)) if resume_current else 1
+        for attempt in range(first_attempt, max_attempts + 1):
+            if abort_event.is_set():
+                task["result"] = {
+                    "ok": False, "code": 9, "code_name": "ABORTED",
+                    "message": "任务已终止", "detail": {"attempts": attempt - 1},
+                }
+                break
             task["attempt"] = attempt
-            task["log"].append(
-                f"向 8876 下发手车电机动作 motor_action={task['motor_action']}"
-                f"（第 {attempt}/{max_attempts} 次）"
-            )
-            started = client.start(task["motor_action"])
-            job_id = str(started.get("job_id") or "").strip()
-            if not job_id:
-                raise RuntimeError(f"8876 启动响应缺少 job_id: {started!r}")
-            task["downstream_job_id"] = job_id
-            task["downstream_job_ids"].append(job_id)
-            task["downstream"] = deepcopy(started)
-            task["state"] = "running"
-            task["log"].append(f"8876 已接受任务，job_id={job_id}")
+            if resume_current:
+                job_id = str(task.get("downstream_job_id") or "").strip()
+                if not job_id:
+                    raise RuntimeError("恢复右手任务时缺少 downstream_job_id")
+                task["state"] = "running"
+                task["log"].append(
+                    f"17001 重启后恢复轮询第 {attempt}/{max_attempts} 次作业，"
+                    f"job_id={job_id}"
+                )
+                resume_current = False
+            else:
+                task["log"].append(
+                    f"向 8876 下发手车电机动作 motor_action={task['motor_action']}"
+                    f"（第 {attempt}/{max_attempts} 次）"
+                )
+                started = client.start(task["motor_action"])
+                job_id = str(started.get("job_id") or "").strip()
+                if not job_id:
+                    raise RuntimeError(f"8876 启动响应缺少 job_id: {started!r}")
+                task["downstream_job_id"] = job_id
+                task["downstream_job_ids"].append(job_id)
+                task["downstream"] = deepcopy(started)
+                task["state"] = "running"
+                task["log"].append(f"8876 已接受任务，job_id={job_id}")
+            _persist_task(task)
 
             last_state = ""
             while True:
+                if abort_event.is_set() and not task.get("terminate_sent"):
+                    try:
+                        client.terminate(job_id)
+                        task["terminate_sent"] = True
+                        task["log"].append(f"8876 已接受终止请求，job_id={job_id}")
+                        _persist_task(task)
+                    except Exception as exc:
+                        task["log"].append(f"8876 终止请求暂未确认: {exc}")
                 status = client.status(job_id)
                 task["downstream"] = deepcopy(status)
                 downstream_state = str(status.get("state") or "").strip().upper()
@@ -777,14 +934,31 @@ def _run_handcart_task(task: dict) -> None:
                 if downstream_state != last_state:
                     task["log"].append(f"8876 状态: {downstream_state}")
                     last_state = downstream_state
+                    _persist_task(task)
                 if downstream_state in HANDCART_TERMINAL_STATES:
                     break
                 time.sleep(1.0)
+
+            if abort_event.is_set() or downstream_state == "CANCELED":
+                task["result"] = {
+                    "ok": False,
+                    "code": 9,
+                    "code_name": "ABORTED",
+                    "message": "任务已终止",
+                    "detail": {
+                        "attempts": attempt,
+                        "downstream_job_ids": list(task["downstream_job_ids"]),
+                        "downstream": deepcopy(status),
+                    },
+                }
+                break
 
             if downstream_state == "FAILED" and attempt < max_attempts:
                 task["log"].append(
                     f"8876 第 {attempt} 次执行失败，创建下一次重试作业"
                 )
+                task["terminate_sent"] = False
+                _persist_task(task)
                 continue
 
             ok = downstream_state == "DONE"
@@ -810,6 +984,7 @@ def _run_handcart_task(task: dict) -> None:
                     "downstream": deepcopy(status),
                 },
             }
+            _persist_task(task)
             break
     except Exception as exc:
         task["log"].append(f"✘ 8876 调度失败: {exc}")
@@ -825,6 +1000,8 @@ def _run_handcart_task(task: dict) -> None:
             task["state"] = "done"
             task["finished_at"] = datetime.now().isoformat(timespec="seconds")
             _count_finished_task_locked(task)
+            if _task is task:
+                _save_task_state_locked()
 
 
 def _submit_handcart_task(public_task: str, retries: int):
@@ -858,6 +1035,8 @@ def _submit_handcart_task(public_task: str, retries: int):
             "downstream_job_id": None,
             "downstream_job_ids": [],
             "downstream": None,
+            "abort_event": threading.Event(),
+            "terminate_sent": False,
             "started_at": now,
             "finished_at": None,
             "result": None,
@@ -871,6 +1050,7 @@ def _submit_handcart_task(public_task: str, retries: int):
             "stats_counted": False,
         }
         _task_stats["accepted"] += 1
+        _save_task_state_locked()
         threading.Thread(
             target=_run_handcart_task, args=(_task,), daemon=True
         ).start()
@@ -1583,6 +1763,7 @@ def task_submit(body: dict | None = None):
                  "reach_proc": None, "reach_external": False,
                  "stats_counted": False}
         _task_stats["accepted"] += 1
+        _save_task_state_locked()
         if not _kind_supported(site, kind):
             # 该柜没验证过这个方向，快速失败不启动硬件
             # ——平台仍按统一的轮询路径拿到结果，错误码 NOT_IMPLEMENTED
@@ -1593,6 +1774,7 @@ def task_submit(body: dict | None = None):
                 "message": _unsupported_message(kind, site),
                 "detail": {}}
             _count_finished_task_locked(_task)
+            _save_task_state_locked()
             return {"ok": True, "task_id": _task["id"]}
         threading.Thread(target=_run_task, args=(_task,), daemon=True).start()
         return {"ok": True, "task_id": _task["id"]}
@@ -1885,18 +2067,49 @@ def _emergency_stop(reason: str) -> dict:
         active_task = _task
     if (active_task is not None and active_task.get("state") != "done"
             and active_task.get("backend") == "handcart_8876"):
-        message = (
-            "8876 尚未提供停止/取消接口，17001 不能宣称已停止右手任务；"
-            "任务仍将继续轮询"
+        abort_event: threading.Event = active_task.setdefault(
+            "abort_event", threading.Event()
         )
-        active_task["log"].append(f"⚠ {message}")
+        abort_event.set()
+        active_task["abort_requested"] = True
+        job_id = str(active_task.get("downstream_job_id") or "")
+        active_task["log"].append("收到右手任务终止请求")
+        _persist_task(active_task)
+        terminate_confirmed = False
+        error = ""
+        if job_id:
+            try:
+                HandcartClient(_handcart_base()).terminate(job_id)
+                active_task["terminate_sent"] = True
+                terminate_confirmed = True
+                active_task["log"].append(
+                    f"8876 已接受终止请求，job_id={job_id}"
+                )
+            except Exception as exc:
+                error = str(exc)
+                active_task["log"].append(
+                    f"8876 终止请求暂未确认，后台将继续尝试: {exc}"
+                )
+        _persist_task(active_task)
+        message = (
+            "已向 8876 下发终止请求，等待任务进入终态"
+            if terminate_confirmed
+            else (
+                "已登记终止；8876 作业创建后将立即终止"
+                if not job_id
+                else "已登记终止；首次下发未确认，后台将继续尝试"
+            )
+        )
         return {
-            "ok": False,
+            "ok": True,
             "reason": reason,
-            "actions": [],
+            "actions": [message],
             "arm_released": False,
             "task_state": active_task["state"],
-            "error": "HANDCART_ABORT_UNAVAILABLE",
+            "task_id": active_task["id"],
+            "downstream_job_id": job_id or None,
+            "terminate_confirmed": terminate_confirmed,
+            **({"warning": error} if error else {}),
             "message": message,
         }
 
@@ -2164,7 +2377,7 @@ def task_abort():
     res = _emergency_stop("task/abort")
     if (t is not None and t.get("state") != "done"
             and t.get("backend") == "handcart_8876"):
-        return JSONResponse(res, status_code=501)
+        return res
     if t is None or t["state"] == "done":
         res["message"] = "没有正在执行的任务；已按强制停止处理（急停+释放手臂）"
     else:
@@ -2212,7 +2425,7 @@ def service_info():
             },
             "serial": True,
             "busy_http_status": 409,
-            "handcart_abort_available": False,
+            "handcart_abort_available": True,
             "languages": ["Change the switch from close to remote",
                           "Change the switch from remote to close"],
             "workflow_modes": {
@@ -2276,10 +2489,17 @@ def main() -> None:
                         help="不用点云算法取点，退回 YOLO 框偏移法")
     parser.add_argument("--capability-url", default=DEFAULT_CAPABILITY_URL,
                         help="18000 能力中心地址（启动拜访，必须可达）")
-    parser.add_argument("--handcart-base", default="http://127.0.0.1:8876",
+    parser.add_argument("--handcart-base", default="http://192.168.61.137:8876",
                         help="右手手车电机作业服务地址")
+    parser.add_argument(
+        "--task-state-file",
+        default=str(ROOT / "logs" / "service" / "dispatch_task_state.json"),
+        help="17001 最近任务持久化文件",
+    )
     _args = parser.parse_args()
     _args.reach_base = _args.reach_base.rstrip("/")
+    global _task_state_file
+    _task_state_file = Path(_args.task_state_file)
 
     # 启动拜访 18000：拉取能力注册表快照，拿不到就拒绝启动（启动脚本
     # prepare.sh 负责先把 18000 拉起来）。快照进程内一直用到退出，重启生效。
@@ -2293,10 +2513,12 @@ def main() -> None:
     _capability_registry_cache = snapshot["registry"]
     _capability_sequence_pool = list(snapshot.get("sequence_pool") or [])
     _capability_registry_loaded = True
+    restore_status = _restore_task_state()
 
     print(f"[dispatch] 调度服务已启动（常驻属正常）: http://{_lan_ip()}:{_args.port}/")
     print(f"[dispatch] 18000 {describe_active(snapshot)}"
           "；可接任务由 18000 注册表推导")
+    print(f"[dispatch] 任务状态恢复: {restore_status}（{_task_state_file}）")
     print("[dispatch] 外部触发: POST /task/flip "
           "（body 带 hand + task）→ 轮询 GET /task/status")
     print(f"[dispatch] reach_server 按需拉起: {sys.executable} reach_server.py "

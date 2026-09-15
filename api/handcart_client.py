@@ -46,3 +46,11 @@ class HandcartClient:
             timeout=self.timeout_s,
         )
         return self._json(response)
+
+    def terminate(self, job_id: str) -> dict[str, Any]:
+        response = self._session.post(
+            f"{self.base}/v1/handcart/jobs/{job_id}/terminate",
+            json={},
+            timeout=self.timeout_s,
+        )
+        return self._json(response)
