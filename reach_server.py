@@ -270,6 +270,9 @@ def main() -> int:
     parser.add_argument("--arm-payload-kg", type=float, default=None,
                         help="临时覆盖版本中的额外手部负载（kg）。换装的因时灵巧手比 URDF 里的"
                              "官方手重就填差值，会加到手掌质心上一起补")
+    parser.add_argument("--arm-payload-com-m", type=float, nargs=3, default=None,
+                        metavar=("X", "Y", "Z"),
+                        help="临时覆盖负载质心（末端负载连杆坐标系，米）")
     parser.add_argument("--arm-grav-in-float", action=argparse.BooleanOptionalAction,
                         default=None,
                         help="临时覆盖版本中的卸力重力前馈开关：手臂近似失重、"
@@ -402,11 +405,26 @@ def main() -> int:
 
     try:
         gravity_registry = load_registry(args.gravity_profiles)
-        selected_gravity = active_profile(gravity_registry, args.gravity_version)
+        combo_gravity_version = active_combo.get("gravity_profile_version")
+        selected_gravity = active_profile(
+            gravity_registry, args.gravity_version or combo_gravity_version)
     except ValueError as exc:
         print(f"[reach] 重力补偿版本配置错误: {exc}")
         return 1
+    compatibility = selected_gravity.get("compatibility")
+    if compatibility and not args.camera_only and (
+        compatibility["arm"] != active_combo.get("arm")
+        or compatibility["hand_id"] != active_combo.get("hand_id")
+    ):
+        print(
+            f"[reach] 重力补偿版本 {selected_gravity['version']} 仅适用于 "
+            f"{compatibility['arm']} + {compatibility['hand_id']}，"
+            "与 18000 激活组合不一致，拒绝启动"
+        )
+        return 1
     gravity_parameters = selected_gravity["parameters"]
+    payload_link = gravity_parameters.get("payload_link")
+    excluded_subtree_link = gravity_parameters.get("excluded_subtree_link")
     cli_overrides = {}
     gravity_arg_names = {
         "arm_grav_ff": "grav_alpha",
@@ -420,18 +438,23 @@ def main() -> int:
             setattr(args, argument, gravity_parameters[parameter])
         else:
             cli_overrides[parameter] = value
+    if args.arm_payload_com_m is None:
+        args.arm_payload_com_m = gravity_parameters.get("payload_com_m")
+    else:
+        cli_overrides["payload_com_m"] = list(args.arm_payload_com_m)
     try:
         effective_gravity_parameters = validate_parameters(
             {
                 parameter: getattr(args, argument)
                 for argument, parameter in gravity_arg_names.items()
-            }
+            } | {"payload_com_m": args.arm_payload_com_m}
         )
     except ValueError as exc:
         print(f"[reach] 重力补偿CLI覆盖参数错误: {exc}")
         return 1
     for argument, parameter in gravity_arg_names.items():
         setattr(args, argument, effective_gravity_parameters[parameter])
+    args.arm_payload_com_m = effective_gravity_parameters["payload_com_m"]
     gravity_profile_meta = {
         "version": selected_gravity["version"],
         "label": selected_gravity["label"],
@@ -629,6 +652,9 @@ def main() -> int:
                                       kp_wrist=args.arm_kp_wrist, kd_wrist=args.arm_kd_wrist,
                                       grav_alpha=args.arm_grav_ff,
                                       payload_kg=args.arm_payload_kg,
+                                      payload_com_m=args.arm_payload_com_m,
+                                      payload_link=payload_link,
+                                      excluded_subtree_link=excluded_subtree_link,
                                       grav_in_float=args.arm_grav_in_float,
                                       use_imu_gravity=args.arm_imu_gravity)
                 print(f"[reach] 重力前馈: {ctl.describe_gravity()}")

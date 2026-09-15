@@ -5,7 +5,46 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from core import capability_registry as reg
+from core import gravity_profiles
 from tools import capability_server
+
+
+def test_active_combo_selects_only_compatible_gravity_profile(tmp_path: Path):
+    registry_path = tmp_path / "capability_registry.json"
+    seed = reg.seed_registry()
+    seed["hands"].append({
+        "id": "qiangnao-revo2-left",
+        "name": "强脑-Revo2-左",
+        "design_side": "left",
+        "tool_out_mm": 0.0,
+        "notes": "",
+    })
+    reg.save_registry(seed, registry_path)
+    client = TestClient(capability_server.app)
+    patches = (
+        patch.object(capability_server, "REGISTRY_PATH", registry_path),
+        patch.object(
+            capability_server,
+            "GRAVITY_PROFILES_PATH",
+            gravity_profiles.DEFAULT_GRAVITY_PROFILES_PATH,
+        ),
+    )
+    with patches[0], patches[1]:
+        selected = client.post("/api/capability/active", json={
+            "arm": "left_arm",
+            "hand_id": "qiangnao-revo2-left",
+            "gravity_profile_version": "0.2.0",
+        })
+        rejected = client.post("/api/capability/active", json={
+            "arm": "right_arm",
+            "hand_id": seed["hands"][0]["id"],
+            "gravity_profile_version": "0.2.0",
+        })
+
+    assert selected.status_code == 200, selected.text
+    assert selected.json()["registry"]["active"]["gravity_profile_version"] == "0.2.0"
+    assert rejected.status_code == 400
+    assert "仅适用于" in rejected.json()["error"]
 
 
 def _manifest(artifact_id: str, artifact_type: str, subject: dict, subject_key: str) -> dict:

@@ -30,6 +30,9 @@ class GravityProfileTests(unittest.TestCase):
             {
                 "grav_alpha": 1.0,
                 "payload_kg": 0.0,
+                "payload_com_m": None,
+                "payload_link": None,
+                "excluded_subtree_link": None,
                 "grav_in_float": True,
                 "use_imu_gravity": False,
             },
@@ -92,6 +95,28 @@ class GravityProfileTests(unittest.TestCase):
                     "use_imu_gravity": False,
                 }
             )
+
+    def test_payload_com_and_combination_compatibility_are_preserved(self):
+        parameters = validate_parameters({
+            "grav_alpha": 1.0,
+            "payload_kg": 0.766,
+            "payload_com_m": [0.0774, 0.0106, -0.0069],
+            "payload_link": "left_wrist_yaw_link",
+            "excluded_subtree_link": "left_hand_link",
+            "grav_in_float": True,
+            "use_imu_gravity": False,
+        })
+        self.assertEqual(parameters["payload_com_m"], [0.0774, 0.0106, -0.0069])
+        self.assertEqual(parameters["payload_link"], "left_wrist_yaw_link")
+        with self.assertRaisesRegex(ValueError, "3 个数字"):
+            validate_parameters({**parameters, "payload_com_m": [0.1, 0.2]})
+
+        registry = load_registry(DEFAULT_GRAVITY_PROFILES_PATH)
+        imported = active_profile(registry, "0.2.0")
+        self.assertEqual(imported["compatibility"], {
+            "arm": "left_arm", "hand_id": "qiangnao-revo2-left",
+        })
+        self.assertEqual(registry["active_version"], "0.1.0")
 
 
 if __name__ == "__main__":

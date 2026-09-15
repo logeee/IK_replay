@@ -820,9 +820,16 @@ def validate_registry(payload: Any) -> dict[str, Any]:
             raise ValueError(
                 f"active.mount_profile_id 指向 {hand_id} 不存在的安装方案"
                 f"「{mount_profile_id}」")
+        gravity_profile_version = str(
+            raw_active.get("gravity_profile_version") or "").strip()
+        if gravity_profile_version and not re.fullmatch(
+                r"[0-9]+\.[0-9]+\.[0-9]+", gravity_profile_version):
+            raise ValueError("active.gravity_profile_version 必须使用 x.y.z 格式")
         active = {"arm": arm, "hand_id": hand_id, "camera_role": camera_role,
                   "motion_backend": motion_backend,
                   "mount_profile_id": mount_profile_id}
+        if gravity_profile_version:
+            active["gravity_profile_version"] = gravity_profile_version
 
     # 顶层 cabinet_frame：旧注册表没有该键 → 方法一 + 默认参数（行为不变）
     cabinet_frame = validate_cabinet_frame_config(

@@ -16,6 +16,7 @@ const emit = defineEmits<{
     cameraRole: string,
     motionBackend: MotionBackend,
     mountProfileId: string,
+    gravityProfileVersion: string,
   ];
 }>();
 
@@ -24,6 +25,7 @@ const handId = ref("");
 const cameraRole = ref("head");
 const motionBackend = ref<MotionBackend>("legacy");
 const mountProfileId = ref("");
+const gravityProfileVersion = ref("");
 
 const FALLBACK_BACKENDS: MotionBackend[] = ["legacy", "legacy_timed", "pink"];
 const FALLBACK_BACKEND_LABELS: Record<string, string> = {
@@ -47,6 +49,8 @@ watch(
       cameraRole.value = active.camera_role ?? "head";
       motionBackend.value = active.motion_backend ?? "legacy";
       mountProfileId.value = active.mount_profile_id ?? "";
+      gravityProfileVersion.value = active.gravity_profile_version
+        ?? props.payload.meta.gravity_active_version ?? "";
     }
   },
   { immediate: true },
@@ -55,6 +59,25 @@ watch(
 const hands = computed(() => props.payload.registry.hands);
 const mountProfiles = computed(
   () => hands.value.find((hand) => hand.id === handId.value)?.mount_profiles ?? [],
+);
+const gravityProfiles = computed(() =>
+  (props.payload.meta.gravity_profiles ?? []).filter((profile) => {
+    const compatibility = profile.compatibility;
+    return !compatibility
+      || (compatibility.arm === arm.value && compatibility.hand_id === handId.value);
+  }),
+);
+
+watch(
+  gravityProfiles,
+  (list) => {
+    if (!list.some((profile) => profile.version === gravityProfileVersion.value)) {
+      const preferred = props.payload.meta.gravity_active_version;
+      gravityProfileVersion.value = list.find((profile) => profile.version === preferred)?.version
+        ?? list[0]?.version ?? "";
+    }
+  },
+  { immediate: true },
 );
 
 watch(hands, (list) => {
@@ -128,6 +151,8 @@ const isCurrent = computed(() => {
     (active.camera_role ?? "head") === cameraRole.value &&
     (active.motion_backend ?? "legacy") === motionBackend.value &&
     (active.mount_profile_id ?? mountProfiles.value[0]?.id ?? "") === mountProfileId.value
+    && (active.gravity_profile_version ?? props.payload.meta.gravity_active_version ?? "")
+      === gravityProfileVersion.value
   );
 });
 
@@ -187,6 +212,13 @@ const activeMountProfileName = computed(() => {
           </option>
         </select>
       </label>
+      <label class="field">重力补偿版本
+        <select v-model="gravityProfileVersion">
+          <option v-for="profile in gravityProfiles" :key="profile.version" :value="profile.version">
+            {{ profile.version }} · {{ profile.label }}
+          </option>
+        </select>
+      </label>
       <div class="status">
         <span class="badge" :class="calibStatus">
           {{ CALIB_TEXT[calibStatus] }}
@@ -202,7 +234,7 @@ const activeMountProfileName = computed(() => {
       <button
         class="btn primary"
         :disabled="busy || isCurrent || !handId"
-        @click="emit('apply', arm, handId, cameraRole, motionBackend, mountProfileId)"
+        @click="emit('apply', arm, handId, cameraRole, motionBackend, mountProfileId, gravityProfileVersion)"
       >
         {{ isCurrent ? "已是激活组合" : "切换激活组合" }}
       </button>

@@ -51,9 +51,11 @@ sys.path.insert(0, str(ROOT))
 
 from core import arm_assets
 from core import capability_registry as reg
+from core import gravity_profiles
 
 DIST_DIR = ROOT / "web-capability" / "dist"
 REGISTRY_PATH = reg.DEFAULT_REGISTRY_PATH
+GRAVITY_PROFILES_PATH = gravity_profiles.DEFAULT_GRAVITY_PROFILES_PATH
 
 app = FastAPI(title="capability-config")
 # 开发时 Vite (5173) 直接跨域访问本服务，省掉代理配置的坑
@@ -71,6 +73,7 @@ def _error(message: str, status: int = 400) -> JSONResponse:
 
 
 def _registry_payload(registry: dict[str, Any]) -> dict[str, Any]:
+    gravity_registry = gravity_profiles.load_registry(GRAVITY_PROFILES_PATH)
     calibrations = [
         reg.calibration_info(registry, c["arm"], c["hand_id"], ROOT)
         for c in registry["calibrations"]
@@ -98,6 +101,8 @@ def _registry_payload(registry: dict[str, Any]) -> dict[str, Any]:
             "builtin_pose_patterns": reg.BUILTIN_POSE_PATTERNS,
             "motion_backends": list(reg.MOTION_BACKENDS),
             "motion_backend_labels": reg.MOTION_BACKEND_LABELS,
+            "gravity_profiles": gravity_registry["versions"],
+            "gravity_active_version": gravity_registry["active_version"],
             "cabinet_frame_methods": list(reg.CABINET_FRAME_METHODS),
             "cabinet_frame_method_labels": reg.CABINET_FRAME_METHOD_LABELS,
             "cabinet_frame_param_specs": reg.CABINET_FRAME_PARAM_SPECS,
@@ -247,6 +252,29 @@ async def active_set(request: Request):
     with _lock:
         registry = reg.load_registry(REGISTRY_PATH)
         previous = registry.get("active") or {}
+        gravity_registry = gravity_profiles.load_registry(GRAVITY_PROFILES_PATH)
+        same_combo = (
+            body.get("arm") == previous.get("arm")
+            and body.get("hand_id") == previous.get("hand_id")
+        )
+        gravity_version = str(
+            body.get("gravity_profile_version")
+            or (previous.get("gravity_profile_version") if same_combo else None)
+            or gravity_registry["active_version"]
+        ).strip()
+        try:
+            gravity_profile = gravity_profiles.active_profile(
+                gravity_registry, gravity_version)
+        except ValueError as exc:
+            return _error(str(exc))
+        compatibility = gravity_profile.get("compatibility")
+        if compatibility and (
+            compatibility["arm"] != body.get("arm")
+            or compatibility["hand_id"] != body.get("hand_id")
+        ):
+            return _error(
+                f"重力补偿版本 {gravity_version} 仅适用于 "
+                f"{compatibility['arm']} + {compatibility['hand_id']}")
         # motion_backend 未传时沿用现值（只切手/臂不应悄悄改运动后端）
         registry["active"] = {
             "arm": body.get("arm"),
@@ -259,6 +287,7 @@ async def active_set(request: Request):
                 "mount_profile_id",
                 previous.get("mount_profile_id")
                 if body.get("hand_id") == previous.get("hand_id") else None),
+            "gravity_profile_version": gravity_version,
         }
         try:
             registry = reg.save_registry(registry, REGISTRY_PATH)

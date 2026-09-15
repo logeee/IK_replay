@@ -111,6 +111,7 @@ async function applyActive(
   cameraRole: string,
   motionBackend: MotionBackend = "legacy",
   mountProfileId = "",
+  gravityProfileVersion = "",
 ) {
   await mutate(
     "/api/capability/active",
@@ -120,6 +121,7 @@ async function applyActive(
       camera_role: cameraRole,
       motion_backend: motionBackend,
       mount_profile_id: mountProfileId,
+      gravity_profile_version: gravityProfileVersion,
     },
     "激活组合已切换（重启 17001/18001/18003 生效）",
   );
@@ -136,6 +138,8 @@ async function applyMountProfile(mountProfileId: string) {
       camera_role: active.camera_role ?? "head",
       motion_backend: active.motion_backend ?? "legacy",
       mount_profile_id: mountProfileId,
+      gravity_profile_version: active.gravity_profile_version
+        ?? payload.value?.meta.gravity_active_version,
     },
     "安装方案已切换（重启 18001/18003 生效）",
   );

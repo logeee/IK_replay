@@ -12,6 +12,9 @@
       "parameters": {
         "grav_alpha": 1.0,
         "payload_kg": 0.0,
+        "payload_com_m": null,
+        "payload_link": null,
+        "excluded_subtree_link": null,
         "grav_in_float": true,
         "use_imu_gravity": false
       }
@@ -26,6 +29,30 @@
       "parameters": {
         "grav_alpha": 1.1,
         "payload_kg": 0.5,
+        "payload_com_m": null,
+        "payload_link": null,
+        "excluded_subtree_link": null,
+        "grav_in_float": true,
+        "use_imu_gravity": false
+      }
+    },
+    {
+      "version": "0.2.0",
+      "label": "强脑 Revo2 左手负载标定",
+      "description": "导入 arm_payload_gravity 左臂标定；质量 0.766kg，质心为末端负载连杆坐标系 [0.0774, 0.0106, -0.0069]m。",
+      "created_at": "2026-09-15T17:12:50+08:00",
+      "parent_version": "0.1.0",
+      "source": "/home/robot/hhy/project/arm_payload_gravity/config/payload_left.json#20260915_170646_left",
+      "compatibility": {
+        "arm": "left_arm",
+        "hand_id": "qiangnao-revo2-left"
+      },
+      "parameters": {
+        "grav_alpha": 1.0,
+        "payload_kg": 0.766,
+        "payload_com_m": [0.0774, 0.0106, -0.0069],
+        "payload_link": "left_wrist_yaw_link",
+        "excluded_subtree_link": "left_hand_link",
         "grav_in_float": true,
         "use_imu_gravity": false
       }

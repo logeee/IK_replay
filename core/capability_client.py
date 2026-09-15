@@ -137,9 +137,10 @@ def describe_active(payload: dict[str, Any]) -> str:
             "missing",
         )
     backend = active.get("motion_backend") or "legacy"
+    gravity_version = active.get("gravity_profile_version") or "全局默认"
     profile = find_mount_profile(
         registry, active["hand_id"], active.get("mount_profile_id")) or {}
     return (f"激活组合: {ARM_LABELS.get(active.get('arm'), active.get('arm'))}"
             f" + {hand.get('name') or active.get('hand_id')}（标定 {status}，"
             f"安装方案 {profile.get('name') or profile.get('id') or '默认'}，"
-            f"运动后端 {backend}）")
+            f"运动后端 {backend}，重力补偿 {gravity_version}）")

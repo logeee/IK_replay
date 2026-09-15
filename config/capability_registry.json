@@ -10,7 +10,8 @@
     "hand_id": "qiangnao-revo2-left",
     "camera_role": "head",
     "motion_backend": "pink",
-    "mount_profile_id": "measured_3d"
+    "mount_profile_id": "measured_3d",
+    "gravity_profile_version": "0.1.0"
   },
   "cabinet_frame": {
     "method": "method2_panel_edges",

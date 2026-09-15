@@ -551,6 +551,15 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             reg.validate_registry(seed)
 
+    def test_active_gravity_profile_version_is_part_of_combo(self):
+        seed = self._seed()
+        seed["active"]["gravity_profile_version"] = "0.2.0"
+        active = reg.validate_registry(seed)["active"]
+        self.assertEqual(active["gravity_profile_version"], "0.2.0")
+        seed["active"]["gravity_profile_version"] = "left-latest"
+        with self.assertRaisesRegex(ValueError, "x.y.z"):
+            reg.validate_registry(seed)
+
     def test_mount_profile_defaults_and_fixed_transform_validation(self):
         seed = self._seed()
         hand = seed["hands"][0]

@@ -25,6 +25,9 @@ BASELINE_PROFILE: dict[str, Any] = {
     "parameters": {
         "grav_alpha": 1.0,
         "payload_kg": 0.0,
+        "payload_com_m": None,
+        "payload_link": None,
+        "excluded_subtree_link": None,
         "grav_in_float": True,
         "use_imu_gravity": False,
     },
@@ -59,9 +62,29 @@ def validate_parameters(payload: Any) -> dict[str, Any]:
     for name in ("grav_in_float", "use_imu_gravity"):
         if not isinstance(payload.get(name), bool):
             raise ValueError(f"{name} 必须是 boolean")
+    raw_com = payload.get("payload_com_m")
+    payload_com_m = None
+    if raw_com is not None:
+        if not isinstance(raw_com, (list, tuple)) or len(raw_com) != 3:
+            raise ValueError("payload_com_m 必须是 3 个数字或 null")
+        payload_com_m = [
+            _finite(value, f"payload_com_m[{index}]")
+            for index, value in enumerate(raw_com)
+        ]
+        if any(abs(value) > 2.0 for value in payload_com_m):
+            raise ValueError("payload_com_m 各分量必须在 -2.0~2.0m")
+    payload_link = payload.get("payload_link")
+    if payload_link is not None:
+        payload_link = str(payload_link).strip() or None
+    excluded_subtree_link = payload.get("excluded_subtree_link")
+    if excluded_subtree_link is not None:
+        excluded_subtree_link = str(excluded_subtree_link).strip() or None
     return {
         "grav_alpha": grav_alpha,
         "payload_kg": payload_kg,
+        "payload_com_m": payload_com_m,
+        "payload_link": payload_link,
+        "excluded_subtree_link": excluded_subtree_link,
         "grav_in_float": payload["grav_in_float"],
         "use_imu_gravity": payload["use_imu_gravity"],
     }
@@ -87,7 +110,17 @@ def validate_profile(payload: Any, *, known_versions: set[str]) -> dict[str, Any
     created_at = str(payload.get("created_at") or "").strip()
     if not created_at:
         raise ValueError("created_at 不能为空")
-    return {
+    compatibility = payload.get("compatibility")
+    normalized_compatibility = None
+    if compatibility is not None:
+        if not isinstance(compatibility, dict):
+            raise ValueError("compatibility 必须是 JSON object")
+        arm = str(compatibility.get("arm") or "").strip()
+        hand_id = str(compatibility.get("hand_id") or "").strip()
+        if arm not in ("left_arm", "right_arm") or not hand_id:
+            raise ValueError("compatibility 必须包含有效的 arm 和 hand_id")
+        normalized_compatibility = {"arm": arm, "hand_id": hand_id}
+    profile = {
         "version": version,
         "label": label,
         "description": description,
@@ -96,6 +129,9 @@ def validate_profile(payload: Any, *, known_versions: set[str]) -> dict[str, Any
         "source": str(payload.get("source") or "manual"),
         "parameters": validate_parameters(payload.get("parameters")),
     }
+    if normalized_compatibility is not None:
+        profile["compatibility"] = normalized_compatibility
+    return profile
 
 
 def validate_registry(payload: Any) -> dict[str, Any]:

@@ -51,6 +51,24 @@ export interface ActiveCombo {
   motion_backend?: MotionBackend;
   /** 同一物理手下选中的安装矩阵 + 可视模型方案 */
   mount_profile_id?: string;
+  /** 该机械臂 + 灵巧手组合使用的重力补偿版本 */
+  gravity_profile_version?: string;
+}
+
+export interface GravityProfile {
+  version: string;
+  label: string;
+  description: string;
+  compatibility?: { arm: string; hand_id: string };
+  parameters: {
+    grav_alpha: number;
+    payload_kg: number;
+    payload_com_m?: number[] | null;
+    payload_link?: string | null;
+    excluded_subtree_link?: string | null;
+    grav_in_float: boolean;
+    use_imu_gravity: boolean;
+  };
 }
 
 export interface RobotIdentity {
@@ -198,6 +216,8 @@ export interface Meta {
   builtin_pose_patterns?: Record<string, string>;
   motion_backends?: MotionBackend[];
   motion_backend_labels?: Record<string, string>;
+  gravity_profiles?: GravityProfile[];
+  gravity_active_version?: string;
   cabinet_frame_methods?: string[];
   cabinet_frame_method_labels?: Record<string, string>;
   cabinet_frame_param_specs?: Record<string, Record<string, ParamSpec>>;

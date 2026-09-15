@@ -54,11 +54,12 @@ position/gravity support active, settles, and is stored as a separate static
 sample point before the remaining trajectory continues.
 
 Gravity parameters are immutable, rollback-safe profiles in
-`config/gravity_compensation.json`. The initial active snapshot is
-`0.0.0 · 未标定前的重力补偿版本`. Saving or activating a profile in the 18002
-dashboard never changes live arm torque; restart 18001 to load the selected
-version. Every experiment record stores the effective version and any CLI
-overrides reported by 18001.
+`config/gravity_compensation.json`. The 18000 capability page binds a gravity
+profile to the active arm + dexterous-hand combination; old combinations that
+do not yet carry a binding fall back to the registry's global active version.
+Saving or activating a profile never changes live arm torque; restart 18001 to
+load the selected version. Every experiment record stores the effective version
+and any CLI overrides reported by 18001.
 
 Experiment runs are physically partitioned by that version:
 `data/gravity_calibration/runs/<version>/<run-id>.json`. Switching or rolling
