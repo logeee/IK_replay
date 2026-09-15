@@ -17,6 +17,12 @@
       "main_motion_backend": "legacy_timed",
       "hand_duration_ms": 500,
       "return_pose_gap_s": 0.5,
+      "waypoint_speed_rad_s": {
+        "start": 0.3,
+        "approach": 0.3,
+        "retry": 0.3,
+        "return": 0.5
+      },
       "sidestep_cm": 10.0,
       "push_force_n": 25.0
     },

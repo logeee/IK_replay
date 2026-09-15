@@ -52,6 +52,13 @@ DEFAULT_DEXTEROUS_LTR_V1: dict[str, Any] = {
     "main_motion_backend": "legacy_timed",
     "hand_duration_ms": 500,
     "return_pose_gap_s": 0.5,
+    # 固定安全路点分段关节限速（rad/s）；不影响 IK 主轨迹和横拨轨迹。
+    "waypoint_speed_rad_s": {
+        "start": 0.3,
+        "approach": 0.3,
+        "retry": 0.3,
+        "return": 0.5,
+    },
     "sidestep_cm": 10.0,
     "push_force_n": 25.0,
 }
@@ -323,6 +330,31 @@ def validate_dispatch_defaults(payload: Any) -> dict[str, Any]:
     dexterous["approach_waypoints"] = sorted(
         approach_waypoints, key=lambda item: item["distance_m"]
     )
+    raw_waypoint_speeds = dexterous.get("waypoint_speed_rad_s")
+    if raw_waypoint_speeds is None:
+        raw_waypoint_speeds = DEFAULT_DEXTEROUS_LTR_V1["waypoint_speed_rad_s"]
+    if not isinstance(raw_waypoint_speeds, dict):
+        raise ValueError(
+            "defaults.dexterous_ltr_v1.waypoint_speed_rad_s 必须是对象"
+        )
+    waypoint_speeds: dict[str, float] = {}
+    for key, default in DEFAULT_DEXTEROUS_LTR_V1[
+        "waypoint_speed_rad_s"
+    ].items():
+        try:
+            number = float(raw_waypoint_speeds.get(key, default))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "defaults.dexterous_ltr_v1."
+                f"waypoint_speed_rad_s.{key} 必须是数字"
+            ) from exc
+        if not math.isfinite(number) or not 0.05 <= number <= 0.5:
+            raise ValueError(
+                "defaults.dexterous_ltr_v1."
+                f"waypoint_speed_rad_s.{key} 必须在 0.05~0.5 rad/s"
+            )
+        waypoint_speeds[key] = number
+    dexterous["waypoint_speed_rad_s"] = waypoint_speeds
     numeric_limits = {
         "hand_duration_ms": (50.0, 5000.0),
         "return_pose_gap_s": (0.0, 5.0),

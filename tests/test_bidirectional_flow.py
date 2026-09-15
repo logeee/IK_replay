@@ -72,6 +72,12 @@ class FlipIntentTests(unittest.TestCase):
             "main_motion_backend": "legacy_timed",
             "hand_duration_ms": 500,
             "return_pose_gap_s": 0.5,
+            "waypoint_speed_rad_s": {
+                "start": 0.2,
+                "approach": 0.25,
+                "retry": 0.35,
+                "return": 0.45,
+            },
             "sidestep_cm": 10.0,
             "push_force_n": 25.0,
         }
@@ -119,7 +125,7 @@ class FlipIntentTests(unittest.TestCase):
             flip_kind="close_to_remote",
             workflow_mode="dexterous_ltr_v1",
             dexterous_config=self._dexterous_config(),
-            max_flip_rounds=1,
+            max_flip_rounds=2,
         )
         events = []
         flow._set_hand_pose = mock.Mock(side_effect=lambda name: events.append(name))
@@ -129,13 +135,25 @@ class FlipIntentTests(unittest.TestCase):
             or [{"p_root": [0.1, 0.2, 0.3]}]
         )
         flow.flip_switch = mock.Mock()
-        flow.verify_flip = mock.Mock(return_value=True)
+        flow.verify_flip = mock.Mock(side_effect=[False, True])
         flow._dexterous_return_and_release = mock.Mock()
 
         flow._run_dexterous_ltr(0.0, 0.47)
 
         prepare_index = events.index("L-预备抓取")
         self.assertEqual(events[prepare_index + 1], "stability+capture")
+        self.assertEqual(
+            flow._interp_to_waypoint.call_args_list[0].kwargs["speed_rad_s"],
+            0.2,
+        )
+        self.assertEqual(
+            flow._interp_to_waypoint.call_args_list[1].kwargs["speed_rad_s"],
+            0.25,
+        )
+        self.assertEqual(
+            flow._interp_to_waypoint.call_args_list[2].kwargs["speed_rad_s"],
+            0.35,
+        )
 
     def test_dexterous_return_waits_half_second_between_hand_commands(self):
         flow = SwitchFlow(
@@ -163,6 +181,10 @@ class FlipIntentTests(unittest.TestCase):
             events,
             ["L-预备抓取", "arm-started", ("sleep", 0.5),
              "L-握拳起收", "arm-arrived"],
+        )
+        self.assertEqual(
+            flow._interp_to_waypoint.call_args.kwargs["speed_rad_s"],
+            0.45,
         )
 
     def test_rightward_flip_selects_left_prefixed_opening_pose(self):

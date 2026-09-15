@@ -681,7 +681,11 @@ class SwitchFlow:
         self._confirm("dexterous_prepare", "即将握拳并依次前往起手点和当前距离准备位")
         self._step_begin("5️⃣ 灵巧手与固定准备位")
         self._set_hand_pose(str(cfg["fist_pose"]))
-        self._interp_to_waypoint(str(cfg["start_waypoint"]), "新模式起手点")
+        self._interp_to_waypoint(
+            str(cfg["start_waypoint"]),
+            "新模式起手点",
+            speed_rad_s=self._dexterous_waypoint_speed("start"),
+        )
         approach = self._choose_dexterous_approach(distance_m)
         self._current_pose = {
             "name": approach["waypoint"],
@@ -691,6 +695,7 @@ class SwitchFlow:
         self._interp_to_waypoint(
             approach["waypoint"],
             f"新模式 {approach['distance_m']:.2f}m 准备位",
+            speed_rad_s=self._dexterous_waypoint_speed("approach"),
         )
 
         last_error: FlowError | None = None
@@ -699,7 +704,9 @@ class SwitchFlow:
             if round_no > 1:
                 self._step_begin(f"5️⃣ 回准备位（第{round_no}轮）")
                 self._interp_to_waypoint(
-                    approach["waypoint"], f"新模式重试第{round_no}轮"
+                    approach["waypoint"],
+                    f"新模式重试第{round_no}轮",
+                    speed_rad_s=self._dexterous_waypoint_speed("retry"),
                 )
             try:
                 # 下发后不等手势完成、不 sleep，直接进入现有腰关节+IMU判稳。
@@ -753,6 +760,17 @@ class SwitchFlow:
             f"准备位「{selected['waypoint']}」"
         )
         return dict(selected)
+
+    def _dexterous_waypoint_speed(self, stage: str) -> float:
+        """返回新流程固定路点某一段的关节限速（rad/s）。"""
+        defaults = {
+            "start": 0.3,
+            "approach": 0.3,
+            "retry": 0.3,
+            "return": 0.5,
+        }
+        configured = self.dexterous_config.get("waypoint_speed_rad_s") or {}
+        return float(configured.get(stage, defaults[stage]))
 
     def _set_hand_pose(self, name: str) -> None:
         if self._hand_pose_files is None:
@@ -2029,7 +2047,7 @@ class SwitchFlow:
         self._interp_to_waypoint(
             str(cfg["start_waypoint"]),
             tag,
-            speed_rad_s=self.DESCEND_SPEED_RAD_S,
+            speed_rad_s=self._dexterous_waypoint_speed("return"),
             after_start=close_during_return,
         )
         if hand_error:

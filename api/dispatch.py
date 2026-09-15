@@ -1724,6 +1724,16 @@ def task_submit(body: dict | None = None):
         push_force_note = (
             f"，拨动推力 {push_force_n:g} N（{push_force_source}）"
         )
+        waypoint_speed_note = ""
+        if workflow_mode == "dexterous_ltr_v1":
+            speeds = dexterous_config.get("waypoint_speed_rad_s") or {}
+            waypoint_speed_note = (
+                "，固定路点速度 起手/准备/重试/收尾 "
+                f"{float(speeds.get('start', 0.3)):g}/"
+                f"{float(speeds.get('approach', 0.3)):g}/"
+                f"{float(speeds.get('retry', 0.3)):g}/"
+                f"{float(speeds.get('return', 0.5)):g} rad/s"
+            )
         resolved_public_task = public_task or (
             "left_to_right" if kind == "close_to_remote" else "right_to_left"
         )
@@ -1759,7 +1769,7 @@ def task_submit(body: dict | None = None):
                          f"·{workflow_source}，最多 {retries} 轮"
                          f"{'，手动确认模式' if manual else ''}"
                          f"{offset_note}{first_offset_note}{lift_note}"
-                         f"{push_force_note}）"],
+                         f"{push_force_note}{waypoint_speed_note}）"],
                  "reach_proc": None, "reach_external": False,
                  "stats_counted": False}
         _task_stats["accepted"] += 1
@@ -1831,6 +1841,11 @@ def task_status():
             "language": t.get("language"), "retries": t.get("retries"),
             "workflow_mode": t.get("workflow_mode") or "legacy",
             "workflow_source": t.get("workflow_source") or "",
+            "waypoint_speed_rad_s": deepcopy(
+                (t.get("dexterous_config") or {}).get(
+                    "waypoint_speed_rad_s"
+                ) or {}
+            ),
             "site": t.get("site") or "lab",
             "kind": t.get("kind"), "direction": t.get("direction"),
             "flip_from": t.get("flip_from"), "flip_to": t.get("flip_to"),

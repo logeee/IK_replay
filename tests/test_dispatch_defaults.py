@@ -334,6 +334,10 @@ class DispatchDefaultsTest(unittest.TestCase):
         dexterous = defaults["dexterous_ltr_v1"]
         self.assertEqual(dexterous["main_motion_backend"], "legacy_timed")
         self.assertEqual(dexterous["return_pose_gap_s"], 0.5)
+        self.assertEqual(
+            dexterous["waypoint_speed_rad_s"],
+            {"start": 0.3, "approach": 0.3, "retry": 0.3, "return": 0.5},
+        )
         self.assertEqual(dexterous["sidestep_cm"], 10.0)
         self.assertEqual(dexterous["push_force_n"], 25.0)
         self.assertEqual(
@@ -341,6 +345,29 @@ class DispatchDefaultsTest(unittest.TestCase):
             [{"distance_m": 0.43,
               "waypoint": "L-0.43-测试灵巧手-2"}],
         )
+
+    def test_dexterous_waypoint_speeds_validate_range(self):
+        payload = _config(defaults={"site": "factory"})
+        payload["defaults"]["dexterous_ltr_v1"] = {
+            "waypoint_speed_rad_s": {
+                "start": 0.1,
+                "approach": 0.2,
+                "retry": 0.3,
+                "return": 0.4,
+            },
+        }
+        validated = validate_dispatch_defaults(payload)
+        self.assertEqual(
+            validated["defaults"]["dexterous_ltr_v1"]
+            ["waypoint_speed_rad_s"],
+            {"start": 0.1, "approach": 0.2, "retry": 0.3, "return": 0.4},
+        )
+
+        payload["defaults"]["dexterous_ltr_v1"][
+            "waypoint_speed_rad_s"
+        ]["return"] = 0.51
+        with self.assertRaisesRegex(ValueError, "0.05~0.5"):
+            validate_dispatch_defaults(payload)
 
 
 if __name__ == "__main__":
