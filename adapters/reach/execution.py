@@ -460,8 +460,8 @@ def reach_execute(body: dict):
 
     label（可选）：段名，只用于 logs/reach 里区分主轨迹/横移/收回。
 
-    max_speed_rad_s（可选）：本次执行的关节限速档（默认 0.2，收回段等
-    低精度动作可以给 0.4 提速），不会超过 --arm-max-speed 天花板。
+    max_speed_rad_s（可选）：本次执行的关节限速档（默认 0.2），服务端接受
+    0.05~2.0 rad/s，且不会超过 --arm-max-speed 天花板。
     stiffness_scale（可选）：本段位置环 Kp 临时倍率，范围 0.2~1.0；
     Kd 保持不变，执行结束自动恢复。用于低刚度安全复位。
 
@@ -479,7 +479,7 @@ def reach_execute(body: dict):
             status_code=409)
     waypoints = body.get("waypoints") or []
     duration = float(body.get("duration") or 4.0)
-    speed = float(np.clip(float(body.get("max_speed_rad_s") or 0.2), 0.05, 0.5))
+    speed = float(np.clip(float(body.get("max_speed_rad_s") or 0.2), 0.05, 2.0))
     label = str(body.get("label") or "reach")[:32]
     try:
         stiffness_scale = float(body.get("stiffness_scale", 1.0))
@@ -1034,8 +1034,8 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
         control_q_list = _build_control_waypoints(q_list, command_start_q)
         state.exec_phase = "traj"
         ctl.enable_jog()
-        # 分段限速：普通段默认 0.2 慢而稳；带推力的快拨段放行到 0.4；
-        # 调用方也可以按段指定（如收回段 0.4），都不超 --arm-max-speed 天花板
+        # 分段限速：普通段默认 0.2 慢而稳；带推力的快拨段至少放行到 0.4；
+        # 调用方也可以按段指定，最终仍不超 --arm-max-speed 天花板。
         if hasattr(ctl, "set_max_speed"):
             ctl.set_max_speed(max(0.4, speed) if push_tau is not None else speed)
         if backend == "legacy_timed":

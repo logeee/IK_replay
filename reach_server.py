@@ -248,8 +248,8 @@ def main() -> int:
                              "legacy_timed=原路径生成 50Hz 时间轨迹；pink=世界系 PINK 闭环跟踪"
                              "（补偿躯干漂移，需要 pinocchio/pin-pink）。"
                              "pink 初始化失败会回退 legacy 并告警")
-    parser.add_argument("--arm-max-speed", type=float, default=0.4,
-                        help="最大关节速度 rad/s（默认 0.4）。这是限速天花板，"
+    parser.add_argument("--arm-max-speed", type=float, default=2.0,
+                        help="最大关节速度 rad/s（默认 2.0）。这是限速天花板，"
                              "正常轨迹快慢仍由执行时长控制；带推力的快拨段需要它放行")
     parser.add_argument("--arm-kp", type=float, default=140.0,
                         help="肩/肘位置环刚度（默认 140，与官方遥操一致）。"

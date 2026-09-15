@@ -57,7 +57,7 @@ def lean(pitch_rad: float, dx: float = 0.0, dz: float = 0.0) -> np.ndarray:
     return pin.SE3(pin.rpy.rpyToMatrix(0.0, pitch_rad, 0.0), np.array([dx, 0.0, dz])).homogeneous
 
 
-EXECUTOR_MAX_QDOT = 0.4  # H2ArmController --arm-max-speed 默认天花板
+EXECUTOR_MAX_QDOT = 0.4  # 本组跟踪测试使用的执行器限速档
 
 
 def executor_follow(q_cmd: np.ndarray, q_target: np.ndarray, max_qdot: float = EXECUTOR_MAX_QDOT) -> np.ndarray:

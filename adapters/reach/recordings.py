@@ -412,7 +412,7 @@ def reach_run_sequence(body: dict):
         return JSONResponse({"ok": False, "error": f"序列/路点读取失败: {exc}"}, status_code=400)
 
     joint_speed = float(np.clip(float(body.get("joint_speed") or 0.35), 0.05, 0.5))
-    speed = float(np.clip(float(body.get("max_speed_rad_s") or 0.4), 0.05, 0.5))
+    speed = float(np.clip(float(body.get("max_speed_rad_s") or 0.4), 0.05, 2.0))
     margin = float(np.clip(float(body.get("margin_m", 0.01)), -0.05, 0.05))
 
     with state.exec_lock:
