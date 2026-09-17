@@ -686,10 +686,17 @@
       <label>腰关节 <input id="xiaoshanStableWaistRange" type="number" min="0.01" max="5" step="0.01" value="0.03" /></label>
       <label>IMU <input id="xiaoshanStableImuRange" type="number" min="0.01" max="5" step="0.01" value="0.03" /></label>
     </div>
-    <div class="modal-field" title="7005找到目标点后，控制50Hz主轨迹到达目标；实际时长过短时执行器会按最大关节速度自动拉长">
+    <div class="modal-field" title="只控制7005找到目标点后的到位主轨迹；起手式、回终点、倒序收尾和横向拨动始终使用legacy">
       萧山展会版本 · 到目标主轨迹
+      <label>执行方式
+        <select id="xiaoshanMainMotionBackend">
+          <option value="legacy_timed">50 Hz 时间轨迹</option>
+          <option value="pink">PINK 世界系闭环</option>
+        </select>
+      </label>
       <label>目标时间(s) <input id="xiaoshanTargetDuration" type="number" min="1" max="30" step="0.5" value="6" /></label>
       <label>最大关节速度(rad/s) <input id="xiaoshanTargetMaxSpeed" type="number" min="0.05" max="2" step="0.05" value="0.2" /></label>
+      <span class="hint">选择 PINK 时，每次取点都会先判稳并重新锚定，再由7005拍摄；不可用时任务会中止，不会自动降级。</span>
     </div>
     <div class="modal-buttons">
       <button id="saveDefaults" class="primary">保存默认</button>
@@ -1247,7 +1254,7 @@ function syncLanguageOptions() {
   syncCarouselControls();
   const carousel = xiaoshan && $("manualCarousel").checked;
   $("manualDirectionHint").textContent = carousel
-    ? "轮播：YOLO自动选择首方向；成功后转到对向起手式终点继续"
+    ? "轮播：YOLO自动选首方向；成功后转对向终点，复查腰部角度再继续"
     : (dexterous
     ? `${SITE_LABELS[site]}仅作现场记录；新模式固定左→右`
     : (xiaoshan
@@ -1343,6 +1350,7 @@ let currentDefaults = {
     reverse_joint_speed_rad_s: 0.35,
     stable_waist_range_deg: 0.03,
     stable_imu_range_deg: 0.03,
+    main_motion_backend: "legacy_timed",
     target_duration_s: 6,
     target_max_speed_rad_s: 0.2,
   },
@@ -1500,7 +1508,8 @@ function renderConfigSummary() {
     + `/${xiaoshan.endpoint_speed_rad_s}/${xiaoshan.reverse_joint_speed_rad_s} rad/s`
     + `、判稳 腰/IMU≤${xiaoshan.stable_waist_range_deg}`
     + `/${xiaoshan.stable_imu_range_deg}°`
-    + `、到目标 ${xiaoshan.target_duration_s}s/${xiaoshan.target_max_speed_rad_s} rad/s`
+    + `、到目标 ${xiaoshan.main_motion_backend === "pink" ? "PINK" : "50Hz"}`
+    + ` ${xiaoshan.target_duration_s}s/${xiaoshan.target_max_speed_rad_s} rad/s`
     + ` ｜ 固定路点速度 起手/准备/重试/收尾：${waypointSpeeds.start}`
     + `/${waypointSpeeds.approach}/${waypointSpeeds.retry}/${waypointSpeeds.return} rad/s`
     + ` ｜ 已存偏移配置 ${offsetPresets.length} 条`;
@@ -1572,6 +1581,7 @@ async function loadDefaultsConfig() {
         reverse_joint_speed_rad_s: 0.35,
         stable_waist_range_deg: 0.03,
         stable_imu_range_deg: 0.03,
+        main_motion_backend: "legacy_timed",
         target_duration_s: 6,
         target_max_speed_rad_s: 0.2,
       },
@@ -1708,6 +1718,8 @@ $("editDefaults").addEventListener("click", () => {
     Number(xiaoshan.stable_waist_range_deg ?? 0.03);
   $("xiaoshanStableImuRange").value =
     Number(xiaoshan.stable_imu_range_deg ?? 0.03);
+  $("xiaoshanMainMotionBackend").value =
+    xiaoshan.main_motion_backend === "pink" ? "pink" : "legacy_timed";
   $("xiaoshanTargetDuration").value =
     Number(xiaoshan.target_duration_s ?? 6);
   $("xiaoshanTargetMaxSpeed").value =
@@ -1740,6 +1752,7 @@ $("saveDefaults").addEventListener("click", async () => {
       push_force_n: readPushForce("xiaoshanPushForce"),
       stable_waist_range_deg: readStableRange("xiaoshanStableWaistRange"),
       stable_imu_range_deg: readStableRange("xiaoshanStableImuRange"),
+      main_motion_backend: $("xiaoshanMainMotionBackend").value,
       target_duration_s: readTargetDuration("xiaoshanTargetDuration"),
       target_max_speed_rad_s: readXiaoshanSpeed("xiaoshanTargetMaxSpeed"),
     },
@@ -2117,7 +2130,7 @@ $("manualStart").addEventListener("click", async () => {
     ? `\n首轮额外偏置：右${firstOffset.x}mm / 上${firstOffset.z}mm / 入墙${firstOffset.y}mm`
     : "\n首轮额外偏置：无";
   const taskDescription = carousel
-    ? `双向轮播 ${cycles} 次（左右各成功一次算一轮）\n首方向：YOLO按旋钮当前位置自动决定\n失败：每个方向最多尝试 ${retries} 次\n方向偏移：分别使用已保存的左→右、右→左默认配置`
+    ? `双向轮播 ${cycles} 次（左右各成功一次算一轮）\n首方向：YOLO按旋钮当前位置自动决定\n切换方向：在对向终点复查腰部角度，超范围才纠正\n失败：每个方向最多尝试 ${retries} 次\n方向偏移：分别使用已保存的左→右、右→左默认配置`
     : `指令：${language}\n最多 ${retries} 轮${offsetNote}${firstOffsetNote}`;
   if (!confirm(`确认启动拨闸流程？\n现场：${SITE_LABELS[site]}\n${taskDescription}\n流程：${workflowLabel(workflowMode)}\n${mode}\n拨点上抬：${liftText(lift)}\n拨动推力：${pushForce} N`)) return;
   const taskBody = {

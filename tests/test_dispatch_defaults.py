@@ -403,6 +403,27 @@ class DispatchDefaultsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "0.05~2"):
             validate_dispatch_defaults(config)
 
+    def test_xiaoshan_main_motion_backend_allows_timed_or_pink_only(self):
+        for backend in ("legacy_timed", "pink"):
+            config = load_dispatch_defaults(DEFAULT_DISPATCH_DEFAULTS_PATH)
+            config["defaults"]["xiaoshan_expo_v1"][
+                "main_motion_backend"
+            ] = backend
+            validated = validate_dispatch_defaults(config)
+            self.assertEqual(
+                validated["defaults"]["xiaoshan_expo_v1"][
+                    "main_motion_backend"
+                ],
+                backend,
+            )
+
+        config = load_dispatch_defaults(DEFAULT_DISPATCH_DEFAULTS_PATH)
+        config["defaults"]["xiaoshan_expo_v1"][
+            "main_motion_backend"
+        ] = "legacy"
+        with self.assertRaisesRegex(ValueError, "legacy_timed 或 pink"):
+            validate_dispatch_defaults(config)
+
     def test_dexterous_waypoint_speeds_validate_range(self):
         payload = _config(defaults={"site": "factory"})
         payload["defaults"]["dexterous_ltr_v1"] = {

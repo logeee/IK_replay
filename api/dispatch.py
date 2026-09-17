@@ -1862,7 +1862,13 @@ def task_submit(body: dict | None = None):
                 "，萧山展会版距离 "
                 f"{float(xiaoshan_config['distance_min_m']):.2f}~"
                 f"{float(xiaoshan_config['distance_max_m']):.2f}m、"
-                "按厘米四舍五入选双向起手式、成功倒序收尾"
+                "按厘米四舍五入选双向起手式、成功倒序收尾、"
+                "到目标主轨迹 "
+                + (
+                    "PINK世界系闭环"
+                    if xiaoshan_config.get("main_motion_backend") == "pink"
+                    else "50Hz时间轨迹"
+                )
             )
         resolved_public_task = public_task or (
             "left_to_right" if kind == "close_to_remote" else "right_to_left"

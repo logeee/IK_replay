@@ -43,6 +43,7 @@ DEFAULT_PUSH_FORCE_N = 15.0
 FLIP_KINDS = ("close_to_remote", "remote_to_close")
 ZERO_OFFSET_MM: dict[str, float] = {"x": 0.0, "y": 0.0, "z": 0.0}
 WORKFLOW_MODES = ("legacy", "dexterous_ltr_v1", "xiaoshan_expo_v1")
+XIAOSHAN_MAIN_MOTION_BACKENDS = ("legacy_timed", "pink")
 DEFAULT_DEXTEROUS_LTR_V1: dict[str, Any] = {
     "fist_pose": "L-握拳起收",
     "prepare_pose": "L-预备抓取",
@@ -420,9 +421,10 @@ def validate_dispatch_defaults(payload: Any) -> dict[str, Any]:
         if not value:
             raise ValueError(f"defaults.xiaoshan_expo_v1.{key} 不能为空")
         xiaoshan[key] = value
-    if xiaoshan["main_motion_backend"] != "legacy_timed":
+    if xiaoshan["main_motion_backend"] not in XIAOSHAN_MAIN_MOTION_BACKENDS:
         raise ValueError(
-            "defaults.xiaoshan_expo_v1.main_motion_backend 当前只能是 legacy_timed"
+            "defaults.xiaoshan_expo_v1.main_motion_backend 只能是 "
+            + " 或 ".join(XIAOSHAN_MAIN_MOTION_BACKENDS)
         )
     if xiaoshan["sequence_motion_backend"] != "legacy":
         raise ValueError(

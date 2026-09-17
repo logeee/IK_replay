@@ -163,6 +163,7 @@ class FlipIntentTests(unittest.TestCase):
         client = mock.Mock()
         client.run_sequence.return_value = {"ok": True}
         cfg = self._xiaoshan_config()
+        cfg["main_motion_backend"] = "pink"
         cfg["opening_joint_speed_rad_s"] = 0.2
         cfg["reverse_joint_speed_rad_s"] = 1.6
         flow = SwitchFlow(
@@ -193,6 +194,37 @@ class FlipIntentTests(unittest.TestCase):
                     max_speed_rad_s=1.6, reverse=True,
                 ),
             ],
+        )
+
+    def test_xiaoshan_pink_selection_keeps_flick_on_legacy(self):
+        client = mock.Mock()
+        client.joints.return_value = {
+            "ok": True, "named_joints": {"j": 0.0},
+        }
+        client.plan_cartesian.return_value = {
+            "ok": True,
+            "waypoints": [
+                {"named_joints": {"j": 0.0}},
+                {"named_joints": {"j": 0.5}},
+            ],
+        }
+        client.execute.return_value = {"ok": True}
+        cfg = self._xiaoshan_config()
+        cfg["main_motion_backend"] = "pink"
+        flow = SwitchFlow(
+            client=client, arm="left_arm", site="factory",
+            flip_kind="close_to_remote", workflow_mode="xiaoshan_expo_v1",
+            xiaoshan_config=cfg,
+        )
+        flow._wait_exec = mock.Mock()
+
+        flow._sidestep_flick(
+            {"plane": {"left_root": [1.0, 0.0, 0.0]}},
+            "测试横拨",
+        )
+
+        self.assertEqual(
+            client.execute.call_args.kwargs["motion_backend"], "legacy"
         )
 
     def test_xiaoshan_main_uses_configured_target_timing_and_speed(self):
@@ -228,6 +260,86 @@ class FlipIntentTests(unittest.TestCase):
         self.assertEqual(execute["motion_backend"], "legacy_timed")
         self.assertEqual(execute["duration"], 4.5)
         self.assertEqual(execute["max_speed_rad_s"], 0.7)
+
+    def test_xiaoshan_main_can_execute_with_pink(self):
+        client = mock.Mock()
+        client.joints.return_value = {
+            "ok": True, "named_joints": {"j": 0.0},
+        }
+        client.plan_axis_last.return_value = {
+            "ok": True,
+            "waypoints": [
+                {"named_joints": {"j": 0.0}},
+                {"named_joints": {"j": 1.0}},
+            ],
+            "max_ik_error_mm": 1.0,
+        }
+        client.execute.return_value = {"ok": True}
+        cfg = self._xiaoshan_config()
+        cfg["main_motion_backend"] = "pink"
+        flow = SwitchFlow(
+            client=client, arm="left_arm", site="factory",
+            flip_kind="close_to_remote", workflow_mode="xiaoshan_expo_v1",
+            xiaoshan_config=cfg,
+        )
+        flow._wait_exec = mock.Mock()
+        flow._set_hand_pose = mock.Mock()
+        flow._flip_evidence_before = mock.Mock()
+        flow._sidestep_flick = mock.Mock()
+
+        flow.flip_switch([{"p_root": [0.1, 0.2, 0.3]}])
+
+        execute = client.execute.call_args.kwargs
+        self.assertEqual(execute["label"], "主轨迹:萧山展会到位")
+        self.assertEqual(execute["motion_backend"], "pink")
+
+    def test_xiaoshan_pink_preflight_fails_before_arm_when_unavailable(self):
+        client = mock.Mock()
+        client.status.return_value = {
+            "ok": True, "arm_supported": True, "armed": False,
+        }
+        client.pink_status.return_value = {
+            "ok": True, "available": False,
+        }
+        cfg = self._xiaoshan_config()
+        cfg["main_motion_backend"] = "pink"
+        flow = SwitchFlow(
+            client=client, pointcloud=mock.Mock(), arm="left_arm",
+            site="factory", flip_kind="close_to_remote",
+            workflow_mode="xiaoshan_expo_v1", xiaoshan_config=cfg,
+        )
+
+        with self.assertRaisesRegex(FlowError, "PINK 运行时不可用"):
+            flow._preflight()
+
+        client.arm.assert_not_called()
+
+    def test_xiaoshan_pink_anchors_after_stable_before_7005_pick(self):
+        events = []
+        client = mock.Mock()
+        client.pink_anchor.side_effect = lambda: (
+            events.append("anchor")
+            or {"ok": True, "floating_base": {"anchor_count": 4}}
+        )
+        cfg = self._xiaoshan_config()
+        cfg["main_motion_backend"] = "pink"
+        flow = SwitchFlow(
+            client=client, pointcloud=mock.Mock(), arm="left_arm",
+            site="factory", flip_kind="close_to_remote",
+            workflow_mode="xiaoshan_expo_v1", xiaoshan_config=cfg,
+        )
+        flow._wait_robot_stable = mock.Mock(
+            side_effect=lambda: events.append("stable")
+        )
+        expected = [{"p_root": [0.1, 0.2, 0.3]}]
+        flow._detect_points_pointcloud = mock.Mock(
+            side_effect=lambda _round: events.append("7005") or expected
+        )
+
+        result = flow.detect_points(1)
+
+        self.assertEqual(result, expected)
+        self.assertEqual(events, ["stable", "anchor", "7005"])
 
     def test_xiaoshan_stability_ranges_come_from_config(self):
         cfg = self._xiaoshan_config()
@@ -336,6 +448,9 @@ class FlipIntentTests(unittest.TestCase):
                 ("endpoint", pose["name"])
             )
         )
+        flow._fine_align_with_retry = mock.Mock(
+            side_effect=lambda: events.append(("align", flow.flip_direction))
+        )
         flow.verify_flip = mock.Mock(return_value=True)
 
         result = flow._run_xiaoshan_carousel(0.0, 0.421)
@@ -352,6 +467,18 @@ class FlipIntentTests(unittest.TestCase):
                 ("endpoint", poses["rtl"]["name"]),
                 ("endpoint", poses["ltr"]["name"]),
             ],
+        )
+        self.assertEqual(
+            [event for event in events if event[0] == "align"],
+            [("align", "rtl")],
+        )
+        self.assertLess(
+            events.index(("endpoint", poses["rtl"]["name"])),
+            events.index(("align", "rtl")),
+        )
+        self.assertLess(
+            events.index(("align", "rtl")),
+            events.index(("flip", "rtl")),
         )
         self.assertEqual(
             events[-1], ("sequence", poses["ltr"]["name"], True)
@@ -395,6 +522,7 @@ class FlipIntentTests(unittest.TestCase):
         flow._xiaoshan_return_to_endpoint = mock.Mock(
             side_effect=lambda pose, _tag: endpoints.append(pose["name"])
         )
+        flow._fine_align_with_retry = mock.Mock()
         flow.verify_flip = mock.Mock(side_effect=[False, True, True])
 
         result = flow._run_xiaoshan_carousel(0.0, 0.42)
@@ -402,6 +530,7 @@ class FlipIntentTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(flip_directions, ["ltr", "ltr", "rtl"])
         self.assertEqual(endpoints, ["RTL", "LTR", "RTL", "LTR"])
+        flow._fine_align_with_retry.assert_called_once_with()
 
     def test_xiaoshan_success_returns_endpoint_then_reverses_opening(self):
         client = mock.Mock()

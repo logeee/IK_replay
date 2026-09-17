@@ -42,6 +42,8 @@ class DispatchDashboardTests(unittest.TestCase):
         self.assertIn('id="dexterousApproachSpeed"', html)
         self.assertIn('id="dexterousRetrySpeed"', html)
         self.assertIn('id="dexterousReturnSpeed"', html)
+        self.assertIn('id="xiaoshanMainMotionBackend"', html)
+        self.assertIn('<option value="pink">PINK 世界系闭环</option>', html)
         self.assertIn("waypoint_speed_rad_s", html)
         self.assertIn("first_round_offset_wall_mm_by_kind", html)
         self.assertIn("push_force_n_by_kind", html)

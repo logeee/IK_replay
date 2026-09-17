@@ -139,6 +139,14 @@ class ReachClient:
         """只读腰关节位置和IMU姿态，不触发柜面拟合或相机采集。"""
         return self.get("/torso")
 
+    def pink_status(self) -> dict:
+        """查询 PINK 运行时、世界系锚定和取点世界帧状态。"""
+        return self.get("/pink/status")
+
+    def pink_anchor(self) -> dict:
+        """机器人站稳后重新锚定 PINK 世界系；锚定会使旧取点失效。"""
+        return self.post("/pink/anchor")
+
     def motors(self, ids: str | None = None) -> dict:
         """全身电机角度（只读）。缺省 = 左右腿俯仰/偏航 + 腰偏航 5 个。"""
         return self.get("/motors", **({"ids": ids} if ids else {}))

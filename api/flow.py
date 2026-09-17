@@ -1006,7 +1006,8 @@ class SwitchFlow:
         direction_text = "左→右" if self.flip_direction == "ltr" else "右→左"
         self._log(
             f"萧山轮播：首方向 {direction_text}，计划 {self.carousel_cycles} 轮，"
-            f"每个方向最多尝试 {self.max_flip_rounds} 次"
+            f"每个方向最多尝试 {self.max_flip_rounds} 次，"
+            f"到目标使用{self._xiaoshan_main_motion_label()}"
         )
         self._confirm(
             "xiaoshan_carousel_opening",
@@ -1028,6 +1029,28 @@ class SwitchFlow:
             next_pose = poses[next_kind]
             last_error: FlowError | None = None
 
+            # 首方向沿用流程开始时的粗对齐。每次成功切换到反方向后，手臂
+            # 已在该方向起手式终点；此时先检查抬手状态下的柜面角度，只有
+            # 超出 fine 验收带才扭腰纠正。随后 detect_points 仍会等待腰部
+            # 与 IMU 稳定，再冻结 RGB-D，避免刚转完就取点。
+            if half_successes > 0:
+                band = self._band_text(
+                    self.fine_accept_min_deg, self.fine_accept_max_deg
+                )
+                self._log(
+                    f"═══ 轮播切换至 {direction_text}：复查腰部角度，"
+                    f"验收 {band} ═══"
+                )
+                self._confirm(
+                    "carousel_direction_align",
+                    f"即将复查腰部角度；若超出 {band}，先扭腰纠正，"
+                    "再等待稳定并由7005取点",
+                )
+                self._step_begin(
+                    f"轮播 {direction_text} 切向角度复查"
+                )
+                self._fine_align_with_retry()
+
             for attempt in range(1, self.max_flip_rounds + 1):
                 self._check_abort()
                 success = False
@@ -1046,7 +1069,8 @@ class SwitchFlow:
                     side_text = "向右" if self.flip_direction == "ltr" else "向左"
                     self._confirm(
                         "flip",
-                        f"即将到位、完全捏住并{side_text}拨动"
+                        f"即将用{self._xiaoshan_main_motion_label()}到位、"
+                        f"完全捏住并{side_text}拨动"
                         f" {self.sidestep_distance_cm:g}cm，助力 {self.push_force_n:g}N",
                     )
                     self._step_begin(
@@ -1082,6 +1106,7 @@ class SwitchFlow:
                         )
                 except FlowError as exc:
                     if exc.code in (
+                        ErrorCode.PRECONDITION,
                         ErrorCode.NOT_IMPLEMENTED,
                         ErrorCode.POSE_UNAVAILABLE,
                         ErrorCode.ALIGN_FAILED,
@@ -1179,7 +1204,7 @@ class SwitchFlow:
         direction_text = "左→右" if self.flip_direction == "ltr" else "右→左"
         self._log(
             f"萧山展会版本：{direction_text}，起手式回放 + 7005 + "
-            "50Hz 主轨迹"
+            f"{self._xiaoshan_main_motion_label()}"
         )
         self._confirm(
             "xiaoshan_opening",
@@ -1204,7 +1229,8 @@ class SwitchFlow:
                 side_text = "向右" if self.flip_direction == "ltr" else "向左"
                 self._confirm(
                     "flip",
-                    f"即将用50Hz主轨迹到位、完全捏住并{side_text}拨动"
+                    f"即将用{self._xiaoshan_main_motion_label()}到位、"
+                    f"完全捏住并{side_text}拨动"
                     f" {self.sidestep_distance_cm:g}cm，助力 {self.push_force_n:g}N",
                 )
                 self._step_begin(f"8️⃣ 到位、捏住与拨动（第{round_no}轮）")
@@ -1222,6 +1248,7 @@ class SwitchFlow:
                     )
             except FlowError as exc:
                 if exc.code in (
+                    ErrorCode.PRECONDITION,
                     ErrorCode.NOT_IMPLEMENTED,
                     ErrorCode.POSE_UNAVAILABLE,
                     ErrorCode.ALIGN_FAILED,
@@ -1296,6 +1323,72 @@ class SwitchFlow:
             )
         self._log(f"灵巧手已下发「{name}」")
 
+    def _uses_pink_main_motion(self) -> bool:
+        """PINK 仅允许用于萧山展会版 7005 取点后的到目标主轨迹。"""
+        return (
+            self.workflow_mode == "xiaoshan_expo_v1"
+            and str(
+                self.xiaoshan_config.get("main_motion_backend") or ""
+            ).strip().lower() == "pink"
+        )
+
+    def _xiaoshan_main_motion_label(self) -> str:
+        return (
+            "PINK世界系闭环主轨迹"
+            if self._uses_pink_main_motion()
+            else "50Hz时间主轨迹"
+        )
+
+    def _check_pink_main_motion_ready(self) -> None:
+        """在接管和抬手前确认 PINK 与 7005 均可用，不做静默降级。"""
+        if not self._uses_pink_main_motion():
+            return
+        if self.pointcloud is None:
+            raise FlowError(
+                ErrorCode.PRECONDITION,
+                "萧山主轨迹选择了 PINK，但 7005 点云服务不可用；"
+                "PINK 不允许退回旧 YOLO 像素取点",
+            )
+        try:
+            status = self.client.pink_status()
+        except Exception as exc:
+            raise FlowError(
+                ErrorCode.PRECONDITION,
+                f"读取 PINK 状态失败: {exc}",
+            ) from exc
+        if not status.get("ok") or not status.get("available"):
+            raise FlowError(
+                ErrorCode.PRECONDITION,
+                "萧山主轨迹选择了 PINK，但 reach_server 的 PINK 运行时不可用"
+                f"（{status.get('error') or '未安装、未初始化或当前机械臂不支持'}）",
+            )
+        self._log("PINK 主轨迹运行时可用；将在机器人判稳后、7005取点前重新锚定")
+
+    def _anchor_pink_before_pointcloud_pick(self) -> None:
+        """判稳后重新锚定，确保紧随其后的 7005 目标属于本次世界系。"""
+        if not self._uses_pink_main_motion():
+            return
+        self._check_abort()
+        try:
+            result = self.client.pink_anchor()
+        except Exception as exc:
+            raise FlowError(
+                ErrorCode.PRECONDITION,
+                f"PINK 世界系锚定失败: {exc}",
+            ) from exc
+        if not result.get("ok"):
+            raise FlowError(
+                ErrorCode.PRECONDITION,
+                f"PINK 世界系锚定失败: {result.get('error') or '未知错误'}",
+            )
+        floating_base = result.get("floating_base") or {}
+        anchor_count = floating_base.get("anchor_count")
+        count_note = "" if anchor_count is None else f"（锚定序号 {anchor_count}）"
+        self._log(
+            f"PINK 世界系已在当前稳定姿态重新锚定{count_note}；"
+            "旧取点已清空，立即由7005重新拍摄取点"
+        )
+
     # ------------------------------------------------------------ 已就绪的步骤
 
     def _preflight(self) -> None:
@@ -1308,6 +1401,7 @@ class SwitchFlow:
                   f"arm_supported={st.get('arm_supported')}")
         if not st.get("arm_supported"):
             raise FlowError(ErrorCode.PRECONDITION, "无真机执行能力（--no-robot 模式？）")
+        self._check_pink_main_motion_ready()
         if not st.get("armed"):
             self._log("未接管手臂，自动接管…")
             res = self.client.arm()
@@ -1578,7 +1672,7 @@ class SwitchFlow:
             }
             if self.workflow_mode in ("dexterous_ltr_v1", "xiaoshan_expo_v1"):
                 # 18001 的验证期保护只允许 7005 冻结点云的“主轨迹”
-                # 使用 50Hz 时间轨迹；起手路点和后续拨动仍走 legacy。
+                # 使用 50Hz 或 PINK；起手路点和后续拨动仍走 legacy。
                 motion_cfg = (
                     self.xiaoshan_config
                     if self.workflow_mode == "xiaoshan_expo_v1"
@@ -1676,7 +1770,7 @@ class SwitchFlow:
         body: dict[str, Any] = {
             "waypoints": [f["named_joints"] for f in seg["waypoints"]],
             "label": f"flow_flick{self.sidestep_cm:+.0f}cm",
-            # 50Hz 只用于到目标的主轨迹，拨动段保持原控制。
+            # 50Hz/PINK 只用于到目标的主轨迹，拨动段保持原控制。
             "motion_backend": "legacy",
             # 带推力时快拨（0.06 m/s）；无推力保持慢滑（0.02 m/s）
             "duration": (max(1.0, dist / self.SIDESTEP_PUSH_SPEED)
@@ -2212,6 +2306,7 @@ class SwitchFlow:
         """
         if self.pointcloud is not None:
             self._wait_robot_stable()
+            self._anchor_pink_before_pointcloud_pick()
             return self._detect_points_pointcloud(round_no)
         if self.yolo is not None:
             self._wait_robot_stable()
