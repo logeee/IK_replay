@@ -49,6 +49,7 @@ class ReachState:
         self.provider_reader = None        # 只读 lowstate 关节读取（未接管时用）
         self.torso_reader = None           # 只读腰关节 + IMU（躯干姿态诊断）
         self.motors_reader = None          # 只读任意全身电机角度（按序号）
+        self.lowstate_reader = None        # 原始帧 + monotonic接收时刻 + 序号（控制器复用）
         self.loco_client = None            # 高层 loco RPC（原地转身用），懒创建
         self.loco_available = False        # 有 DDS（非 --no-robot）才可用
         self.hand_raised_ui = False        # 前端人工标注"已抬手"，随转身/对中日志落盘
@@ -168,6 +169,7 @@ def configure(*, camera, wrist_camera=None, robot_model, robot_id: str, chain_id
               robot_only: bool = False,
               collision_checker=None, ik_solver=None, arm_factory=None,
               joints_reader=None, torso_reader=None, motors_reader=None,
+              lowstate_reader=None,
               tool_out_mm: float = 0.0,
               yolo_base: str = "http://127.0.0.1:7004",
               gravity_profile: dict[str, Any] | None = None,
@@ -309,6 +311,7 @@ def configure(*, camera, wrist_camera=None, robot_model, robot_id: str, chain_id
     state.provider_reader = joints_reader
     state.torso_reader = torso_reader
     state.motors_reader = motors_reader
+    state.lowstate_reader = lowstate_reader
     state.loco_available = joints_reader is not None   # 有 DDS 连接才谈得上转身
     state.base_link = base_link
     state.joint_names = robot_model.joint_names(chain_id)

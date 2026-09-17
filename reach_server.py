@@ -627,6 +627,7 @@ def main() -> int:
     joints_reader = None
     torso_reader = None
     motors_reader = None
+    lowstate_reader = None
     arm_factory = None
     if not args.no_robot and not args.camera_only:
         try:
@@ -636,6 +637,7 @@ def main() -> int:
             joints_reader = provider.read_arm_q
             torso_reader = provider.read_torso_state
             motors_reader = provider.read_motor_q
+            lowstate_reader = provider.read_low_state_snapshot
             print("[reach] rt/lowstate 只读订阅就绪（不发任何指令）")
         except Exception as exc:
             print(f"[reach] DDS 连接失败，退化为仅模拟模式: {exc}")
@@ -674,6 +676,7 @@ def main() -> int:
         ik_solver=app_module.solvers[args.robot]["numerical"],
         arm_factory=arm_factory, joints_reader=joints_reader,
         torso_reader=torso_reader, motors_reader=motors_reader,
+        lowstate_reader=lowstate_reader,
         tool_out_mm=args.tool_out_mm,
         yolo_base=args.yolo_base,
         gravity_profile=gravity_profile_meta,

@@ -47,7 +47,12 @@ class ArmWorkspace:
         self.states = {primary.chain_id: primary}
         self.primary = primary
         self.lock = asyncio.Lock()
-        self.owner = DualArmController(args.network_interface)
+        # 发送器复用启动时 H2PoseProvider 已建立并持续验证的 lowstate
+        # 订阅；不要在接管瞬间再创建一条容易失联的重复 DDS reader。
+        self.owner = DualArmController(
+            args.network_interface,
+            lowstate_reader=primary.lowstate_reader,
+        )
         self.selections = {}
         primary.hand_runtime = hand_runtime
         if hand_runtime is not None:
@@ -199,6 +204,7 @@ class ArmWorkspace:
                       ik_solver=NumericalIKSolver(model, self.primary.ik_solver.default_options),
                       joints_reader=reader, torso_reader=self.primary.torso_reader,
                       motors_reader=self.primary.motors_reader,
+                      lowstate_reader=self.primary.lowstate_reader,
                       tool_out_mm=float(hand.get("tool_out_mm") or 0),
                       yolo_base=self.primary.yolo_base, gravity_profile=gravity,
                       settle_trim=self.primary.settle_trim)

@@ -490,6 +490,18 @@ class ExecutionHandoffTests(unittest.TestCase):
         )
         fake_thread.start.assert_called_once()
 
+    def test_sequence_replay_allows_two_rad_per_second_joint_speed(self):
+        sequence = self._sequence()
+        sequence["trajectory"]["frames"] = [[0.0, 0.0], [1.0, 1.0]]
+
+        result, thread, fake_thread = self._run_sequence_in_sandbox(
+            sequence, self._waypoint(), body={"joint_speed": 2.0},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(thread.call_args.kwargs["args"][1], 1.0)
+        fake_thread.start.assert_called_once()
+
     def test_sequence_reverse_rejects_position_away_from_endpoint(self):
         sequence = self._sequence()
         sequence["trajectory"]["frames"][-1] = [0.8, 0.8]

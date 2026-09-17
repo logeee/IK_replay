@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import unittest
+from copy import deepcopy
 from unittest import mock
 
 from adapters.reach import execution as reach_execution
@@ -14,6 +15,7 @@ from api.flow import (
 )
 from api.switch_states import SCENE_LEFT, SCENE_RIGHT
 from core.capability_registry import seed_registry
+from core.dispatch_defaults import DEFAULT_DISPATCH_DEFAULTS
 
 
 class _YoloSequence:
@@ -98,6 +100,12 @@ class FlipIntentTests(unittest.TestCase):
             },
             "main_motion_backend": "legacy_timed",
             "sequence_motion_backend": "legacy",
+            "opening_joint_speed_rad_s": 0.35,
+            "reverse_joint_speed_rad_s": 0.35,
+            "stable_waist_range_deg": 0.03,
+            "stable_imu_range_deg": 0.03,
+            "target_duration_s": 6.0,
+            "target_max_speed_rad_s": 0.2,
             "hand_duration_ms": 500,
             "endpoint_speed_rad_s": 0.3,
             "sidestep_cm": 10.0,
@@ -150,6 +158,250 @@ class FlipIntentTests(unittest.TestCase):
 
         with self.assertRaisesRegex(FlowError, "0.35~0.50"):
             ltr._choose_xiaoshan_sequence(0.51)
+
+    def test_xiaoshan_sequence_uses_forward_and_reverse_speeds(self):
+        client = mock.Mock()
+        client.run_sequence.return_value = {"ok": True}
+        cfg = self._xiaoshan_config()
+        cfg["opening_joint_speed_rad_s"] = 0.2
+        cfg["reverse_joint_speed_rad_s"] = 1.6
+        flow = SwitchFlow(
+            client=client, arm="left_arm", site="factory",
+            flip_kind="close_to_remote", workflow_mode="xiaoshan_expo_v1",
+            xiaoshan_config=cfg,
+        )
+        flow._interp_to_waypoint = mock.Mock()
+        flow._wait_exec = mock.Mock()
+        pose = {
+            "name": "L-0.42-左到右起手式",
+            "file": "ltr.json",
+            "start_waypoint": "L-start",
+        }
+
+        flow._run_xiaoshan_sequence(pose)
+        flow._run_xiaoshan_sequence(pose, reverse=True)
+
+        self.assertEqual(
+            client.run_sequence.call_args_list,
+            [
+                mock.call(
+                    "ltr.json", motion_backend="legacy", joint_speed=0.2,
+                    max_speed_rad_s=0.4, reverse=False,
+                ),
+                mock.call(
+                    "ltr.json", motion_backend="legacy", joint_speed=1.6,
+                    max_speed_rad_s=1.6, reverse=True,
+                ),
+            ],
+        )
+
+    def test_xiaoshan_main_uses_configured_target_timing_and_speed(self):
+        client = mock.Mock()
+        client.joints.return_value = {
+            "ok": True, "named_joints": {"j": 0.0},
+        }
+        client.plan_axis_last.return_value = {
+            "ok": True,
+            "waypoints": [
+                {"named_joints": {"j": 0.0}},
+                {"named_joints": {"j": 1.0}},
+            ],
+            "max_ik_error_mm": 1.0,
+        }
+        client.execute.return_value = {"ok": True}
+        cfg = self._xiaoshan_config()
+        cfg["target_duration_s"] = 4.5
+        cfg["target_max_speed_rad_s"] = 0.7
+        flow = SwitchFlow(
+            client=client, arm="left_arm", site="factory",
+            flip_kind="close_to_remote", workflow_mode="xiaoshan_expo_v1",
+            xiaoshan_config=cfg,
+        )
+        flow._wait_exec = mock.Mock()
+        flow._set_hand_pose = mock.Mock()
+        flow._flip_evidence_before = mock.Mock()
+        flow._sidestep_flick = mock.Mock()
+
+        flow.flip_switch([{"p_root": [0.1, 0.2, 0.3]}])
+
+        execute = client.execute.call_args.kwargs
+        self.assertEqual(execute["motion_backend"], "legacy_timed")
+        self.assertEqual(execute["duration"], 4.5)
+        self.assertEqual(execute["max_speed_rad_s"], 0.7)
+
+    def test_xiaoshan_stability_ranges_come_from_config(self):
+        cfg = self._xiaoshan_config()
+        cfg["stable_waist_range_deg"] = 0.12
+        cfg["stable_imu_range_deg"] = 0.25
+        flow = SwitchFlow(
+            client=mock.Mock(), arm="left_arm", site="factory",
+            flip_kind="close_to_remote", workflow_mode="xiaoshan_expo_v1",
+            xiaoshan_config=cfg,
+        )
+
+        self.assertEqual(flow.stable_waist_range_deg, 0.12)
+        self.assertEqual(flow.stable_imu_range_deg, 0.25)
+
+    def test_carousel_yolo_selects_first_direction_from_current_side(self):
+        for scene, expected_kind, expected_direction in (
+            (SCENE_LEFT, "close_to_remote", "ltr"),
+            (SCENE_RIGHT, "remote_to_close", "rtl"),
+        ):
+            flow = SwitchFlow(
+                client=mock.Mock(), arm="left_arm", site="factory",
+                flip_kind="close_to_remote",
+                workflow_mode="xiaoshan_expo_v1",
+                xiaoshan_config=self._xiaoshan_config(),
+                carousel_cycles=1,
+            )
+            flow._yolo_scene = mock.Mock(return_value={
+                "scene": scene, "conf": 0.97,
+            })
+
+            result = flow._detect_carousel_start()
+
+            self.assertEqual(flow.flip_kind, expected_kind)
+            self.assertEqual(flow.flip_direction, expected_direction)
+            self.assertEqual(result["direction"], expected_direction)
+
+    def test_carousel_switches_to_each_direction_saved_offset(self):
+        flow = SwitchFlow(
+            client=mock.Mock(), arm="left_arm", site="factory",
+            flip_kind="close_to_remote",
+            workflow_mode="xiaoshan_expo_v1",
+            xiaoshan_config=self._xiaoshan_config(),
+            carousel_cycles=1,
+            carousel_direction_configs={
+                "close_to_remote": {
+                    "target_offset_wall_m": [0.01, 0.0, 0.0],
+                    "first_round_offset_wall_m": [0.001, 0.0, 0.0],
+                },
+                "remote_to_close": {
+                    "target_offset_wall_m": [-0.02, 0.0, 0.0],
+                    "first_round_offset_wall_m": [-0.002, 0.0, 0.0],
+                },
+            },
+        )
+
+        flow._activate_carousel_direction("close_to_remote")
+        self.assertEqual(flow.target_offset_wall_m, (0.01, 0.0, 0.0))
+        self.assertEqual(flow.first_round_offset_wall_m, (0.001, 0.0, 0.0))
+        flow._activate_carousel_direction("remote_to_close")
+        self.assertEqual(flow.target_offset_wall_m, (-0.02, 0.0, 0.0))
+        self.assertEqual(flow.first_round_offset_wall_m, (-0.002, 0.0, 0.0))
+
+    def test_carousel_alternates_endpoints_and_reverses_last_opening(self):
+        client = mock.Mock()
+        client.disarm.return_value = {"ok": True}
+        flow = SwitchFlow(
+            client=client, arm="left_arm", site="factory",
+            flip_kind="close_to_remote",
+            workflow_mode="xiaoshan_expo_v1",
+            xiaoshan_config=self._xiaoshan_config(),
+            carousel_cycles=1,
+            max_flip_rounds=2,
+        )
+        poses = {
+            "ltr": {
+                "name": "L-0.42-左到右起手式",
+                "file": "ltr.json",
+                "endpoint_name": "L-0.42-左到右终点",
+                "min_distance_m": 0.42,
+            },
+            "rtl": {
+                "name": "L-0.42-右到左起手式",
+                "file": "rtl.json",
+                "endpoint_name": "L-0.42-右到左终点",
+                "min_distance_m": 0.42,
+            },
+        }
+        events = []
+        flow._choose_xiaoshan_sequence = mock.Mock(
+            side_effect=lambda _distance: poses[flow.flip_direction]
+        )
+        flow._set_hand_pose = mock.Mock()
+        flow._run_xiaoshan_sequence = mock.Mock(
+            side_effect=lambda pose, reverse=False: events.append(
+                ("sequence", pose["name"], reverse)
+            )
+        )
+        flow.detect_points = mock.Mock(return_value=[{"u": 1, "v": 2}])
+        flow.flip_switch = mock.Mock(
+            side_effect=lambda _points, _attempt: events.append(
+                ("flip", flow.flip_direction)
+            )
+        )
+        flow._xiaoshan_return_to_endpoint = mock.Mock(
+            side_effect=lambda pose, _tag: events.append(
+                ("endpoint", pose["name"])
+            )
+        )
+        flow.verify_flip = mock.Mock(return_value=True)
+
+        result = flow._run_xiaoshan_carousel(0.0, 0.421)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.detail["cycles"], 1)
+        self.assertEqual(
+            [event for event in events if event[0] == "flip"],
+            [("flip", "ltr"), ("flip", "rtl")],
+        )
+        self.assertEqual(
+            [event for event in events if event[0] == "endpoint"],
+            [
+                ("endpoint", poses["rtl"]["name"]),
+                ("endpoint", poses["ltr"]["name"]),
+            ],
+        )
+        self.assertEqual(
+            events[-1], ("sequence", poses["ltr"]["name"], True)
+        )
+        client.disarm.assert_called_once_with()
+
+    def test_carousel_failure_returns_own_endpoint_then_retries_direction(self):
+        client = mock.Mock()
+        client.disarm.return_value = {"ok": True}
+        flow = SwitchFlow(
+            client=client, arm="left_arm", site="factory",
+            flip_kind="close_to_remote",
+            workflow_mode="xiaoshan_expo_v1",
+            xiaoshan_config=self._xiaoshan_config(),
+            carousel_cycles=1,
+            max_flip_rounds=2,
+        )
+        poses = {
+            "ltr": {
+                "name": "LTR", "file": "ltr.json",
+                "endpoint_name": "LTR终点", "min_distance_m": 0.42,
+            },
+            "rtl": {
+                "name": "RTL", "file": "rtl.json",
+                "endpoint_name": "RTL终点", "min_distance_m": 0.42,
+            },
+        }
+        endpoints = []
+        flip_directions = []
+        flow._choose_xiaoshan_sequence = mock.Mock(
+            side_effect=lambda _distance: poses[flow.flip_direction]
+        )
+        flow._set_hand_pose = mock.Mock()
+        flow._run_xiaoshan_sequence = mock.Mock()
+        flow.detect_points = mock.Mock(return_value=[{"u": 1, "v": 2}])
+        flow.flip_switch = mock.Mock(
+            side_effect=lambda _points, _attempt: flip_directions.append(
+                flow.flip_direction
+            )
+        )
+        flow._xiaoshan_return_to_endpoint = mock.Mock(
+            side_effect=lambda pose, _tag: endpoints.append(pose["name"])
+        )
+        flow.verify_flip = mock.Mock(side_effect=[False, True, True])
+
+        result = flow._run_xiaoshan_carousel(0.0, 0.42)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(flip_directions, ["ltr", "ltr", "rtl"])
+        self.assertEqual(endpoints, ["RTL", "LTR", "RTL", "LTR"])
 
     def test_xiaoshan_success_returns_endpoint_then_reverses_opening(self):
         client = mock.Mock()
@@ -922,6 +1174,77 @@ class FactoryDispatchTests(unittest.TestCase):
         self.assertEqual(right_source, "「就地→远方」默认配置")
         self.assertEqual(explicit, 7.5)
         self.assertEqual(explicit_source, "请求指定")
+
+    def test_carousel_submission_freezes_both_direction_default_offsets(self):
+        defaults = deepcopy(DEFAULT_DISPATCH_DEFAULTS)
+        defaults["defaults"]["site"] = "factory"
+        defaults["defaults"]["workflow_mode"] = "xiaoshan_expo_v1"
+        defaults["defaults"]["offset_preset_by_kind"] = {
+            "close_to_remote": "左到右偏置",
+            "remote_to_close": "右到左偏置",
+        }
+        defaults["defaults"]["first_round_offset_wall_mm_by_kind"] = {
+            "close_to_remote": {"x": 1, "y": 2, "z": 3},
+            "remote_to_close": {"x": -1, "y": 4, "z": 5},
+        }
+        defaults["offset_presets"] = [
+            {
+                "name": "左到右偏置",
+                "offset_mm": {"x": 10, "y": 0, "z": 0},
+            },
+            {
+                "name": "右到左偏置",
+                "offset_mm": {"x": -10, "y": 0, "z": 0},
+            },
+        ]
+        with dispatch._lock:
+            original_task = dispatch._task
+            original_check = dispatch._check
+            original_stats = dict(dispatch._task_stats)
+            dispatch._task = None
+            dispatch._check = None
+        try:
+            with (
+                mock.patch.object(
+                    dispatch, "_current_defaults", return_value=defaults
+                ),
+                mock.patch.object(
+                    dispatch,
+                    "_capability_registry",
+                    return_value=seed_registry(),
+                ),
+                mock.patch.object(dispatch.threading, "Thread") as thread,
+            ):
+                result = dispatch.task_submit({
+                    "hand": "left",
+                    "task": "carousel",
+                    "cycles": 3,
+                    "retries": 2,
+                })
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(dispatch._task["public_task"], "carousel")
+            self.assertEqual(dispatch._task["carousel_cycles"], 3)
+            configs = dispatch._task["carousel_direction_configs"]
+            self.assertEqual(
+                configs["close_to_remote"]["target_offset_wall_mm"],
+                [10, 0, 0],
+            )
+            self.assertEqual(
+                configs["remote_to_close"]["target_offset_wall_mm"],
+                [-10, 0, 0],
+            )
+            self.assertEqual(
+                configs["close_to_remote"]["first_round_offset_wall_mm"],
+                [1.0, 2.0, 3.0],
+            )
+            thread.return_value.start.assert_called_once_with()
+        finally:
+            with dispatch._lock:
+                dispatch._task = original_task
+                dispatch._check = original_check
+                dispatch._task_stats.clear()
+                dispatch._task_stats.update(original_stats)
 
     def test_factory_close_to_remote_task_reaches_worker(self):
         defaults = {

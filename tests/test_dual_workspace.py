@@ -2,6 +2,7 @@
 import asyncio
 import json
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -265,6 +266,82 @@ def test_transport_rejects_nonfinite_before_publishing():
     with pytest.raises(RuntimeError, match='非有限'):
         transport._publish({'left': {**data, 'indices': range(15,22)}}, 1.)
     assert not writes
+
+
+def test_transport_reuses_shared_lowstate_and_reports_real_age():
+    sample = SimpleNamespace(motor_state=[])
+    transport = DDSTransport.__new__(DDSTransport)
+    transport._lock = threading.Lock()
+    transport._sample = None
+    transport._received_at = 0.0
+    transport._sequence = 0
+    transport._lowstate_reader = lambda: (sample, time.monotonic(), 37)
+    assert transport.snapshot() is sample
+
+    transport._lowstate_reader = lambda: (
+        sample, time.monotonic() - .6, 38,
+    )
+    with pytest.raises(RuntimeError, match=r"lowstate 已过期.*序号 38.*共享只读订阅"):
+        transport.snapshot()
+
+
+def test_transport_waits_for_post_initialization_frame_without_relaxing_age_limit():
+    sample = SimpleNamespace(motor_state=[])
+    current = {'received_at': time.monotonic() - .4, 'sequence': 10}
+    transport = DDSTransport.__new__(DDSTransport)
+    transport._lock = threading.Lock()
+    transport._sample = None
+    transport._received_at = 0.0
+    transport._sequence = 0
+    transport._lowstate_reader = lambda: (
+        sample, current['received_at'], current['sequence'],
+    )
+
+    def publish_new_frame():
+        time.sleep(.03)
+        current.update(received_at=time.monotonic(), sequence=11)
+
+    worker = threading.Thread(target=publish_new_frame)
+    worker.start()
+    assert transport.wait_for_fresh(after_sequence=10, timeout_s=.2) is sample
+    worker.join()
+    assert transport.sequence() == 11
+    assert transport.MAX_LOWSTATE_AGE_S == .5
+
+
+def test_owner_passes_shared_lowstate_reader_to_transport():
+    reader = lambda: None
+    owner = DualArmController(
+        lowstate_reader=reader,
+        channel_factory=lambda **_kwargs: SimpleNamespace(),
+    )
+    sample = SimpleNamespace(motor_state=[])
+    fake_transport = SimpleNamespace(snapshot=lambda: sample)
+    with patch('adapters.reach.dual_controller.DDSTransport',
+               return_value=fake_transport) as constructor:
+        owner._initialize()
+    constructor.assert_called_once_with(None, lowstate_reader=reader)
+
+
+def test_h2_pose_provider_exposes_timestamped_raw_lowstate(monkeypatch):
+    from pathlib import Path
+    monkeypatch.syspath_prepend(
+        str(Path(__file__).resolve().parents[2] / 'calib/calib_workstation')
+    )
+    from calib_workstation.calib3d.robot import H2PoseProvider
+    provider = H2PoseProvider.__new__(H2PoseProvider)
+    provider._lock = threading.Lock()
+    provider._low_state = None
+    provider._low_state_received_at = None
+    provider._low_state_sequence = 0
+    message = SimpleNamespace(motor_state=[])
+
+    provider._on_low_state(message)
+    snapshot, received_at, sequence = provider.read_low_state_snapshot()
+
+    assert snapshot is message
+    assert received_at > 0
+    assert sequence == 1
 
 
 def test_collision_checks_include_opposite_arm():

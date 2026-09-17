@@ -203,7 +203,7 @@ class DispatchDefaultsTest(unittest.TestCase):
                 "keyframes": [
                     {"distance_m": 0.60,
                      "offset_mm": {"x": 30, "y": 6, "z": -4}},
-                    {"distance_m": 0.43,
+                    {"distance_m": 0.35,
                      "offset_mm": {"x": 10}},
                     {"distance_m": 0.50,
                      "offset_mm": {"x": 10}},
@@ -217,7 +217,7 @@ class DispatchDefaultsTest(unittest.TestCase):
         self.assertEqual(curve["mode"], "keyframes")
         self.assertEqual(
             [frame["distance_m"] for frame in curve["keyframes"]],
-            [0.43, 0.50, 0.60],
+            [0.35, 0.50, 0.60],
         )
         self.assertEqual(
             curve["keyframes"][0]["offset_mm"],
@@ -238,6 +238,10 @@ class DispatchDefaultsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "超范围"):
             validate_offset_keyframes([
                 {"distance_m": 0.61, "offset_mm": {}},
+            ])
+        with self.assertRaisesRegex(ValueError, "超范围"):
+            validate_offset_keyframes([
+                {"distance_m": 0.34, "offset_mm": {}},
             ])
         with self.assertRaisesRegex(ValueError, "超范围"):
             validate_offset_keyframes([
@@ -335,8 +339,22 @@ class DispatchDefaultsTest(unittest.TestCase):
         self.assertEqual(xiaoshan["distance_min_m"], 0.35)
         self.assertEqual(xiaoshan["distance_max_m"], 0.50)
         self.assertEqual(xiaoshan["distance_step_m"], 0.01)
+        for key in (
+            "opening_joint_speed_rad_s",
+            "endpoint_speed_rad_s",
+            "reverse_joint_speed_rad_s",
+            "target_max_speed_rad_s",
+        ):
+            self.assertGreaterEqual(xiaoshan[key], 0.05)
+            self.assertLessEqual(xiaoshan[key], 2.0)
+        for key in ("stable_waist_range_deg", "stable_imu_range_deg"):
+            self.assertGreaterEqual(xiaoshan[key], 0.01)
+            self.assertLessEqual(xiaoshan[key], 5.0)
+        self.assertGreaterEqual(xiaoshan["target_duration_s"], 1.0)
+        self.assertLessEqual(xiaoshan["target_duration_s"], 30.0)
         self.assertEqual(xiaoshan["sidestep_cm"], 10.0)
-        self.assertEqual(xiaoshan["push_force_n"], 10.0)
+        self.assertGreaterEqual(xiaoshan["push_force_n"], 0.0)
+        self.assertLessEqual(xiaoshan["push_force_n"], 40.0)
         self.assertEqual(
             xiaoshan["sequence_name_by_direction"],
             {
@@ -364,6 +382,26 @@ class DispatchDefaultsTest(unittest.TestCase):
                 for distance in range(35, 51)
             ],
         )
+
+    def test_xiaoshan_speeds_allow_up_to_two_rad_per_second(self):
+        config = load_dispatch_defaults(DEFAULT_DISPATCH_DEFAULTS_PATH)
+        xiaoshan = config["defaults"]["xiaoshan_expo_v1"]
+        xiaoshan["opening_joint_speed_rad_s"] = 2.0
+        xiaoshan["endpoint_speed_rad_s"] = 2.0
+        xiaoshan["reverse_joint_speed_rad_s"] = 2.0
+        validated = validate_dispatch_defaults(config)
+        self.assertEqual(
+            validated["defaults"]["xiaoshan_expo_v1"][
+                "opening_joint_speed_rad_s"
+            ],
+            2.0,
+        )
+
+        config["defaults"]["xiaoshan_expo_v1"][
+            "opening_joint_speed_rad_s"
+        ] = 2.01
+        with self.assertRaisesRegex(ValueError, "0.05~2"):
+            validate_dispatch_defaults(config)
 
     def test_dexterous_waypoint_speeds_validate_range(self):
         payload = _config(defaults={"site": "factory"})

@@ -30,6 +30,9 @@
                           启动的 18001 除外，成败都不动）。
     POST /task/flip    → 推荐 body {"hand":"left|right", "task":"...",
                                         "retries":3}（可选，默认 3，范围 1~20）。
+                          萧山双向轮播使用 task="carousel"，另可带
+                          "cycles":3（完整轮数；双向各成功一次算一轮，1~50）；
+                          首方向由 YOLO 按旋钮当前位置自动决定。
                           旧调用方仍可使用 body {"language": "<固定指令>",
                                 "retries": 3,   # 可选，最大尝试轮数（VLA 后端忽略）
                                 "manual": false,  # 可选，手动确认模式（见下）
@@ -196,6 +199,7 @@ _task_stats = {
 PUBLIC_LEFT_TASKS = {
     "left_to_right": "close_to_remote",
     "right_to_left": "remote_to_close",
+    "carousel": "carousel",
 }
 HANDCART_TASKS = {
     # 8876 的 left/right 表示电机转向，不表示左右手。
@@ -829,7 +833,15 @@ def _run_task(task: dict) -> None:
                                or [0.0, 0.0, 0.0])),
                           workflow_mode=task.get("workflow_mode") or "legacy",
                           dexterous_config=task.get("dexterous_config") or {},
-                          xiaoshan_config=task.get("xiaoshan_config") or {})
+                          xiaoshan_config=task.get("xiaoshan_config") or {},
+                          carousel_cycles=int(
+                              task.get("carousel_cycles") or 0
+                          ),
+                          carousel_direction_configs=(
+                              _carousel_direction_configs_for_flow(
+                                  task.get("carousel_direction_configs")
+                              )
+                          ))
         task["flow"] = flow
         if task.get("manual"):
             gate = _ManualGate(task)
@@ -1565,6 +1577,94 @@ def _parse_target_offset(value: Any) -> tuple[float, float, float]:
     return tuple(out)
 
 
+def _validate_first_round_offset_total(
+    offset_spec: dict[str, Any],
+    first_offset_mm: tuple[float, float, float],
+) -> None:
+    """校验基础偏置与首轮额外偏置叠加后仍在安全范围内。"""
+    offset_keyframes = offset_spec["keyframes"]
+    offsets_to_check = [
+        (offset_spec["offset_mm"], None)
+    ] if not offset_keyframes else [
+        (
+            tuple(frame["offset_mm"][axis] for axis in ("x", "y", "z")),
+            frame["distance_m"],
+        )
+        for frame in offset_keyframes
+    ]
+    for base_mm, distance in offsets_to_check:
+        first_total_mm = tuple(
+            base_mm[index] + first_offset_mm[index]
+            for index in range(3)
+        )
+        for index, axis in enumerate(("右", "入墙", "上")):
+            if abs(first_total_mm[index]) > TARGET_OFFSET_LIMIT_MM:
+                distance_note = (
+                    f"（关键帧 {distance:.2f} m）" if distance is not None
+                    else ""
+                )
+                raise ValueError(
+                    f"首轮{axis}方向合计偏置超范围{distance_note}：单轴限 "
+                    f"±{TARGET_OFFSET_LIMIT_MM:g} mm"
+                    f"（基础 {base_mm[index]:g} + 首轮额外 "
+                    f"{first_offset_mm[index]:g} = {first_total_mm[index]:g}）"
+                )
+
+
+def _carousel_direction_config(defaults: dict, kind: str) -> dict[str, Any]:
+    """冻结轮播某一方向的默认偏置，任务中途不再受配置修改影响。"""
+    offset_spec = _resolve_offset_spec({}, defaults, kind)
+    first_offset_mm, first_offset_source = _resolve_first_round_offset(
+        {}, defaults, kind
+    )
+    _validate_first_round_offset_total(offset_spec, first_offset_mm)
+    return {
+        "target_offset_wall_mm": list(offset_spec["offset_mm"]),
+        "target_offset_keyframes": deepcopy(offset_spec["keyframes"]),
+        "offset_mode": offset_spec["mode"],
+        "offset_preset_name": offset_spec["preset_name"],
+        "offset_source": offset_spec["source"],
+        "first_round_offset_wall_mm": list(first_offset_mm),
+        "first_round_offset_source": first_offset_source,
+    }
+
+
+def _carousel_direction_configs_for_flow(
+    configs: dict[str, dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    """把调度层保存的毫米配置转换成 SwitchFlow 使用的米。"""
+    result: dict[str, dict[str, Any]] = {}
+    for kind, cfg in (configs or {}).items():
+        result[kind] = {
+            "target_offset_wall_m": [
+                float(value) / 1000.0
+                for value in cfg.get(
+                    "target_offset_wall_mm", [0.0, 0.0, 0.0]
+                )
+            ],
+            "target_offset_keyframes": [
+                {
+                    "distance_m": float(frame["distance_m"]),
+                    "offset_wall_m": [
+                        float(frame["offset_mm"][axis]) / 1000.0
+                        for axis in ("x", "y", "z")
+                    ],
+                }
+                for frame in cfg.get("target_offset_keyframes", [])
+            ],
+            "target_offset_preset_name": str(
+                cfg.get("offset_preset_name") or ""
+            ),
+            "first_round_offset_wall_m": [
+                float(value) / 1000.0
+                for value in cfg.get(
+                    "first_round_offset_wall_mm", [0.0, 0.0, 0.0]
+                )
+            ],
+        }
+    return result
+
+
 def _unsupported_message(kind: str, site: str) -> str:
     pre, post = CHECK_KIND_STATES[kind]
     supported = "、".join(
@@ -1587,6 +1687,15 @@ def task_submit(body: dict | None = None):
                             status_code=422)
     if not 1 <= retries <= 20:
         return JSONResponse({"ok": False, "error": "retries 取值范围 1~20"},
+                            status_code=422)
+    try:
+        raw_cycles = body.get("cycles")
+        cycles = 1 if raw_cycles is None else int(raw_cycles)
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "cycles 必须是整数"},
+                            status_code=422)
+    if not 1 <= cycles <= 50:
+        return JSONResponse({"ok": False, "error": "cycles 取值范围 1~50"},
                             status_code=422)
     public_request = "hand" in body or "task" in body
     public_hand = str(body.get("hand") or "").strip().lower()
@@ -1616,10 +1725,14 @@ def task_submit(body: dict | None = None):
             return _submit_handcart_task(public_task, retries)
 
         kind_from_public = PUBLIC_LEFT_TASKS[public_task]
-        body["language"] = {
-            "close_to_remote": "Change the switch from close to remote",
-            "remote_to_close": "Change the switch from remote to close",
-        }[kind_from_public]
+        if kind_from_public == "carousel":
+            # kind 仅作创建流程时的占位；真正首方向由流程内YOLO决定。
+            body["language"] = "Change the switch from close to remote"
+        else:
+            body["language"] = {
+                "close_to_remote": "Change the switch from close to remote",
+                "remote_to_close": "Change the switch from remote to close",
+            }[kind_from_public]
     language = str(body.get("language") or "").strip()
     if not language:
         return JSONResponse(
@@ -1635,6 +1748,7 @@ def task_submit(body: dict | None = None):
                            "Change the switch from remote to close"]},
             status_code=422)
     manual = bool(body.get("manual"))
+    carousel = public_task == "carousel"
     defaults = _current_defaults()
     try:
         (workflow_mode, dexterous_config, xiaoshan_config,
@@ -1643,6 +1757,11 @@ def task_submit(body: dict | None = None):
         )
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+    if carousel and workflow_mode != "xiaoshan_expo_v1":
+        return JSONResponse(
+            {"ok": False, "error": "carousel 轮播任务只能使用萧山展会版本"},
+            status_code=422,
+        )
     if workflow_mode == "dexterous_ltr_v1" and kind != "close_to_remote":
         # 公开 left/right 请求保留旧兼容行为；显式指定新模式则明确拒绝。
         if public_task == "right_to_left" and not body.get("workflow_mode"):
@@ -1660,6 +1779,7 @@ def task_submit(body: dict | None = None):
             {"ok": False, "error": "site 只能是 lab（实验室柜）或 factory（工厂柜）"},
             status_code=422)
     intent = resolve_flip_intent(site, kind)
+    carousel_direction_configs: dict[str, dict[str, Any]] = {}
     try:
         offset_spec = _resolve_offset_spec(body, defaults, kind)
         offset_mm = offset_spec["offset_mm"]
@@ -1680,32 +1800,16 @@ def task_submit(body: dict | None = None):
         elif workflow_mode == "xiaoshan_expo_v1":
             push_force_n = float(xiaoshan_config["push_force_n"])
             push_force_source = "萧山展会版本配置"
-        offsets_to_check = [
-            (offset_mm, None)
-        ] if not offset_keyframes else [
-            (
-                tuple(frame["offset_mm"][axis] for axis in ("x", "y", "z")),
-                frame["distance_m"],
-            )
-            for frame in offset_keyframes
-        ]
-        for base_mm, distance in offsets_to_check:
-            first_total_mm = tuple(
-                base_mm[index] + first_offset_mm[index]
-                for index in range(3)
-            )
-            for index, axis in enumerate(("右", "入墙", "上")):
-                if abs(first_total_mm[index]) > TARGET_OFFSET_LIMIT_MM:
-                    distance_note = (
-                        f"（关键帧 {distance:.2f} m）" if distance is not None
-                        else ""
-                    )
-                    raise ValueError(
-                        f"首轮{axis}方向合计偏置超范围{distance_note}：单轴限 "
-                        f"±{TARGET_OFFSET_LIMIT_MM:g} mm"
-                        f"（基础 {base_mm[index]:g} + 首轮额外 "
-                        f"{first_offset_mm[index]:g} = {first_total_mm[index]:g}）"
-                    )
+        _validate_first_round_offset_total(offset_spec, first_offset_mm)
+        if carousel:
+            carousel_direction_configs = {
+                direction_kind: _carousel_direction_config(
+                    defaults, direction_kind
+                )
+                for direction_kind in (
+                    "close_to_remote", "remote_to_close"
+                )
+            }
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
 
@@ -1763,6 +1867,34 @@ def task_submit(body: dict | None = None):
         resolved_public_task = public_task or (
             "left_to_right" if kind == "close_to_remote" else "right_to_left"
         )
+        if carousel:
+            direction_notes = []
+            for direction_kind, label in (
+                ("close_to_remote", "左→右"),
+                ("remote_to_close", "右→左"),
+            ):
+                cfg = carousel_direction_configs[direction_kind]
+                preset = cfg["offset_preset_name"] or "无偏移配置"
+                direction_notes.append(f"{label}={preset}")
+            instruction_log = (
+                f"指令: 萧山双向轮播（YOLO 自动决定首方向，{cycles} 轮，"
+                f"每方向最多 {retries} 次，方向偏移 "
+                f"{'、'.join(direction_notes)}，流程 {workflow_mode}"
+                f"·{workflow_source}{'，手动确认模式' if manual else ''}"
+                f"{lift_note}{push_force_note}{waypoint_speed_note}）"
+            )
+        else:
+            instruction_log = (
+                f"指令: {language}（{kind}，"
+                f"{intent['flip_from']}→{intent['flip_to']}，"
+                f"{'向左拨' if intent['direction'] == 'rtl' else '向右拨'}，"
+                f"现场 {SITE_LABELS[site]}"
+                f"·{site_source}，流程 {workflow_mode}"
+                f"·{workflow_source}，最多 {retries} 轮"
+                f"{'，手动确认模式' if manual else ''}"
+                f"{offset_note}{first_offset_note}{lift_note}"
+                f"{push_force_note}{waypoint_speed_note}）"
+            )
         _task = {"id": uuid.uuid4().hex[:10], "state": "starting",
                  "hand": "left", "public_task": resolved_public_task,
                  "backend": "dexterous_arm",
@@ -1772,6 +1904,10 @@ def task_submit(body: dict | None = None):
                  "workflow_source": workflow_source,
                  "dexterous_config": deepcopy(dexterous_config),
                  "xiaoshan_config": deepcopy(xiaoshan_config),
+                 "carousel_cycles": cycles if carousel else 0,
+                 "carousel_direction_configs": deepcopy(
+                     carousel_direction_configs
+                 ),
                  "direction": intent["direction"],
                  "flip_from": intent["flip_from"], "flip_to": intent["flip_to"],
                  "prompt": None, "gate": None,
@@ -1788,27 +1924,33 @@ def task_submit(body: dict | None = None):
                  "started_at": now, "finished_at": None,
                  "result": None, "flow": None,
                  "reset_requested": False, "reset_result": None,
-                 "log": [f"指令: {language}（{kind}，"
-                         f"{intent['flip_from']}→{intent['flip_to']}，"
-                         f"{'向左拨' if intent['direction'] == 'rtl' else '向右拨'}，"
-                         f"现场 {SITE_LABELS[site]}"
-                         f"·{site_source}，流程 {workflow_mode}"
-                         f"·{workflow_source}，最多 {retries} 轮"
-                         f"{'，手动确认模式' if manual else ''}"
-                         f"{offset_note}{first_offset_note}{lift_note}"
-                         f"{push_force_note}{waypoint_speed_note}）"],
+                 "log": [instruction_log],
                  "reach_proc": None, "reach_external": False,
                  "stats_counted": False}
         _task_stats["accepted"] += 1
         _save_task_state_locked()
-        if not _kind_supported(site, kind):
+        required_kinds = (
+            ("close_to_remote", "remote_to_close") if carousel else (kind,)
+        )
+        unsupported_kinds = [
+            direction_kind for direction_kind in required_kinds
+            if not _kind_supported(site, direction_kind)
+        ]
+        if unsupported_kinds:
             # 该柜没验证过这个方向，快速失败不启动硬件
             # ——平台仍按统一的轮询路径拿到结果，错误码 NOT_IMPLEMENTED
             _task["state"] = "done"
             _task["finished_at"] = now
             _task["result"] = {
                 "ok": False, "code": 1, "code_name": "NOT_IMPLEMENTED",
-                "message": _unsupported_message(kind, site),
+                "message": (
+                    "轮播需要左→右和右→左两项能力都已启用；"
+                    + "；".join(
+                        _unsupported_message(direction_kind, site)
+                        for direction_kind in unsupported_kinds
+                    )
+                    if carousel else _unsupported_message(kind, site)
+                ),
                 "detail": {}}
             _count_finished_task_locked(_task)
             _save_task_state_locked()
@@ -1861,6 +2003,20 @@ def task_status():
         }
     flow: SwitchFlow | None = t.get("flow")
     log = list(t["log"]) + (list(flow.log_lines) if flow is not None else [])
+    carousel = bool(t.get("carousel_cycles"))
+    status_kind = (
+        flow.flip_kind if carousel and flow is not None else t.get("kind")
+    )
+    status_direction = (
+        flow.flip_direction
+        if carousel and flow is not None else t.get("direction")
+    )
+    status_flip_from = (
+        flow.flip_from if carousel and flow is not None else t.get("flip_from")
+    )
+    status_flip_to = (
+        flow.flip_to if carousel and flow is not None else t.get("flip_to")
+    )
     return {**common, "state": t["state"], "task_id": t["id"],
             "hand": t.get("hand") or "left",
             "task": t.get("public_task"),
@@ -1868,6 +2024,10 @@ def task_status():
             "language": t.get("language"), "retries": t.get("retries"),
             "workflow_mode": t.get("workflow_mode") or "legacy",
             "workflow_source": t.get("workflow_source") or "",
+            "cycles": t.get("carousel_cycles") or 0,
+            "carousel_direction_configs": deepcopy(
+                t.get("carousel_direction_configs") or {}
+            ),
             "waypoint_speed_rad_s": deepcopy(
                 (t.get("dexterous_config") or {}).get(
                     "waypoint_speed_rad_s"
@@ -1875,8 +2035,8 @@ def task_status():
             ),
             "xiaoshan_config": deepcopy(t.get("xiaoshan_config") or {}),
             "site": t.get("site") or "lab",
-            "kind": t.get("kind"), "direction": t.get("direction"),
-            "flip_from": t.get("flip_from"), "flip_to": t.get("flip_to"),
+            "kind": status_kind, "direction": status_direction,
+            "flip_from": status_flip_from, "flip_to": status_flip_to,
             "target_offset_wall_mm": t.get("target_offset_wall_mm")
                                      or [0.0, 0.0, 0.0],
             "target_offset_keyframes": deepcopy(

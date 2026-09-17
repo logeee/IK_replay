@@ -1,7 +1,7 @@
 # 17001 统一拨闸 API（作业平台对接版）
 
-- 文档版本：1.0
-- 更新日期：2026-09-15
+- 文档版本：1.1
+- 更新日期：2026-09-18
 - 服务协议：HTTP + JSON
 - 服务端口：`17001`
 - 有线网络示例地址：`http://192.168.124.5:17001`
@@ -47,10 +47,11 @@ BASE=http://192.168.124.5:17001
 |---|---|---|---|
 | `left` | `left_to_right` | 左手将旋钮从左拨到右 | 当前正式使用；17001 本地默认选择灵巧手新模式 |
 | `left` | `right_to_left` | 左手将旋钮从右拨到左 | 兼容的旧模式；只有 17001 能力配置启用后才能执行 |
+| `left` | `carousel` | 左右方向交替轮播 | 仅萧山展会版本；YOLO自动决定首方向；双向各成功一次算一轮 |
 | `right` | `counterclockwise` | 右手机构逆时针旋转 | 支持 |
 | `right` | `clockwise` | 右手机构顺时针旋转 | 支持 |
 
-作业平台只需发送 `hand`、`task` 和可选的 `retries`。现场、轨迹、手势、推力及视觉算法等参数由机器人端配置，不建议平台传入。
+作业平台只需发送 `hand`、`task` 和可选的 `retries`。轮播任务另传可选的 `cycles`。现场、轨迹、手势、推力及视觉算法等参数由机器人端配置，不建议平台传入。
 
 左手新流程的固定路点速度可在 17001 页面“修改默认”中分别配置：去起手点、去准备点、重试回准备点、收尾回起手点；范围为 `0.05～0.5 rad/s`。该配置不影响 50Hz 主轨迹、IK 规划轨迹和横拨轨迹。
 
@@ -70,6 +71,7 @@ Content-Type: application/json
 | `hand` | string | 是 | `left` 或 `right` |
 | `task` | string | 是 | 必须是该手支持的任务枚举，见上表 |
 | `retries` | integer | 否 | 最大执行次数，包含第一次；默认 `3`，范围 `1`～`20` |
+| `cycles` | integer | 轮播时否 | 完整轮播次数；默认 `1`，范围 `1`～`50`。左→右和右→左各成功一次计一轮 |
 
 右手任务只有在下游明确返回 `FAILED` 时才自动重试；`PAUSED`、`CANCELED` 和通信异常不会自动创建下一次任务。
 
@@ -105,7 +107,24 @@ curl --fail-with-body --silent --show-error \
 
 该任务始终进入旧模式，但仍受机器人端能力开关限制。若未启用，任务可能被接收，随后以 `NOT_IMPLEMENTED` 结束。
 
-### 3.5 右手：逆时针
+### 3.5 左手：萧山双向轮播
+
+```bash
+curl --fail-with-body --silent --show-error \
+  --max-time 10 \
+  -X POST "$BASE/task/flip" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "hand": "left",
+    "task": "carousel",
+    "cycles": 3,
+    "retries": 1
+  }'
+```
+
+`retries` 是每个方向的最大尝试次数。首方向由 YOLO 根据旋钮当前位置选择；成功后手臂保持高位并移动到对向起手式终点再复核，失败则回本方向起手式终点重试。达到 `cycles` 后，从最后所在的起手式终点倒序收尾并释放手臂。左右方向分别使用 17001 保存的对应默认偏移配置。
+
+### 3.6 右手：逆时针
 
 ```bash
 curl --fail-with-body --silent --show-error \
@@ -119,7 +138,7 @@ curl --fail-with-body --silent --show-error \
   }'
 ```
 
-### 3.6 右手：顺时针
+### 3.7 右手：顺时针
 
 ```bash
 curl --fail-with-body --silent --show-error \
@@ -133,7 +152,7 @@ curl --fail-with-body --silent --show-error \
   }'
 ```
 
-### 3.7 接收成功
+### 3.8 接收成功
 
 HTTP `200`：
 
@@ -146,7 +165,7 @@ HTTP `200`：
 
 调用方应保存 `task_id`，随后轮询状态。
 
-### 3.8 服务忙
+### 3.9 服务忙
 
 已有左手任务、右手任务或站位检查正在执行时返回 HTTP `409`：
 
@@ -161,7 +180,7 @@ HTTP `200`：
 
 建议平台等待当前任务完成，不要并发重试提交。
 
-### 3.9 参数错误
+### 3.10 参数错误
 
 字段缺失、枚举错误或 `retries` 超出范围时返回 HTTP `422`：
 
@@ -171,7 +190,8 @@ HTTP `200`：
   "error": "hand=left 不支持 task='clockwise'",
   "supported_tasks": [
     "left_to_right",
-    "right_to_left"
+    "right_to_left",
+    "carousel"
   ]
 }
 ```

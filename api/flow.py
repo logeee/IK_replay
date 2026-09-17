@@ -251,7 +251,9 @@ class SwitchFlow:
                  # 17001 任务级流程模式。
                  workflow_mode: str = "legacy",
                  dexterous_config: dict[str, Any] | None = None,
-                 xiaoshan_config: dict[str, Any] | None = None):
+                 xiaoshan_config: dict[str, Any] | None = None,
+                 carousel_cycles: int = 0,
+                 carousel_direction_configs: dict[str, Any] | None = None):
         self.client = client or ReachClient()
         self.console = console
         self.yolo = yolo
@@ -276,6 +278,19 @@ class SwitchFlow:
         self.workflow_mode = str(workflow_mode or "legacy")
         self.dexterous_config = dict(dexterous_config or {})
         self.xiaoshan_config = dict(xiaoshan_config or {})
+        self.carousel_cycles = max(0, int(carousel_cycles))
+        self.carousel_direction_configs = dict(
+            carousel_direction_configs or {}
+        )
+        self.stable_waist_range_deg = self.WAIST_STABLE_MAX_RANGE_DEG
+        self.stable_imu_range_deg = self.IMU_STABLE_MAX_RANGE_DEG
+        if self.workflow_mode == "xiaoshan_expo_v1":
+            self.stable_waist_range_deg = float(
+                self.xiaoshan_config.get("stable_waist_range_deg", 0.03)
+            )
+            self.stable_imu_range_deg = float(
+                self.xiaoshan_config.get("stable_imu_range_deg", 0.03)
+            )
         self._hand_pose_files: dict[str, str] | None = None
         self.coarse_target_deg = coarse_target_deg
         self.coarse_accept_min_deg = (
@@ -381,6 +396,49 @@ class SwitchFlow:
         self._step_name: str | None = None
         self._step_started = 0.0
 
+    def _set_flip_kind(self, kind: str) -> None:
+        """切换当前半轮的物理方向及视觉起止状态。"""
+        intent = resolve_flip_intent(self.site, kind)
+        self.flip_kind = intent["kind"]
+        self.flip_from = intent["flip_from"]
+        self.flip_to = intent["flip_to"]
+        self.flip_direction = intent["direction"]
+        self.sidestep_cm = (
+            self.sidestep_distance_cm
+            if self.flip_direction == "rtl"
+            else -self.sidestep_distance_cm
+        )
+
+    def _activate_carousel_direction(self, kind: str, pose: dict | None = None) -> None:
+        """启用轮播当前方向，并套用该方向独立的偏移配置。"""
+        self._set_flip_kind(kind)
+        cfg = dict(self.carousel_direction_configs.get(kind) or {})
+        self.target_offset_wall_m = tuple(
+            float(value)
+            for value in cfg.get("target_offset_wall_m", (0.0, 0.0, 0.0))
+        )
+        self.target_offset_keyframes = [
+            {
+                "distance_m": float(frame["distance_m"]),
+                "offset_wall_m": tuple(
+                    float(value) for value in frame["offset_wall_m"]
+                ),
+            }
+            for frame in cfg.get("target_offset_keyframes", [])
+        ]
+        self.target_offset_preset_name = str(
+            cfg.get("target_offset_preset_name") or ""
+        )
+        self.first_round_offset_wall_m = tuple(
+            float(value)
+            for value in cfg.get(
+                "first_round_offset_wall_m", (0.0, 0.0, 0.0)
+            )
+        )
+        self._target_offset_interpolation = None
+        if pose is not None:
+            self._apply_offset_keyframes_for_pose(pose)
+
     def request_abort(self) -> None:
         self.abort.set()
 
@@ -484,16 +542,25 @@ class SwitchFlow:
         try:
             self._check_abort()
             self._log("═══ 1️⃣ 一键开始 ═══")
-            direction_text = "从右向左（左移）" if self.flip_direction == "rtl" \
-                else "从左向右（右移）"
-            # 措辞别带阶段卡的关键词（如"拨动成功"），看板靠日志兜底推进度
-            self._log(
-                f"现场={'工厂柜' if self.site == 'factory' else '实验室柜'}："
-                f"任务「{self.flip_from} → {self.flip_to}」，物理方向 "
-                f"{direction_text} {self.sidestep_distance_cm:g}cm；"
-                f"识别「{self.flip_from}」= 要拨、"
-                f"「{self.flip_to}」= 目标状态"
-            )
+            if self.carousel_cycles:
+                self._log(
+                    f"现场={'工厂柜' if self.site == 'factory' else '实验室柜'}："
+                    f"萧山轮播任务，共 {self.carousel_cycles} 轮；"
+                    "每轮=左→右和右→左各成功一次，首方向由YOLO当前状态决定"
+                )
+            else:
+                direction_text = (
+                    "从右向左（左移）" if self.flip_direction == "rtl"
+                    else "从左向右（右移）"
+                )
+                # 措辞别带阶段卡的关键词（如"拨动成功"），看板靠日志兜底推进度
+                self._log(
+                    f"现场={'工厂柜' if self.site == 'factory' else '实验室柜'}："
+                    f"任务「{self.flip_from} → {self.flip_to}」，物理方向 "
+                    f"{direction_text} {self.sidestep_distance_cm:g}cm；"
+                    f"识别「{self.flip_from}」= 要拨、"
+                    f"「{self.flip_to}」= 目标状态"
+                )
             self._confirm("preflight",
                           "即将检查前置条件（reach 服务 / 真机能力 / 确认台），"
                           "若手臂未接管会自动接管")
@@ -503,7 +570,10 @@ class SwitchFlow:
             self._log("═══ 2️⃣ 场景判断（是否需要拨动、往哪个方向）═══")
             self._confirm("scene", "即将进行场景判断（YOLO 纯视觉，不动机器人）")
             self._step_begin("2️⃣ 场景判断")
-            scene = self.detect_scene()
+            scene = (
+                self._detect_carousel_start()
+                if self.carousel_cycles else self.detect_scene()
+            )
             if not scene.get("need_flip", True):
                 self._release_if_flow_armed()
                 return self._done(t0, "无需拨动，流程结束", scene=scene)
@@ -534,6 +604,8 @@ class SwitchFlow:
             if self.workflow_mode == "dexterous_ltr_v1":
                 return self._run_dexterous_ltr(t0, distance_m)
             if self.workflow_mode == "xiaoshan_expo_v1":
+                if self.carousel_cycles:
+                    return self._run_xiaoshan_carousel(t0, distance_m)
                 return self._run_xiaoshan_expo(t0, distance_m)
 
             last_error: FlowError | None = None
@@ -856,9 +928,18 @@ class SwitchFlow:
             )
         self._arm_moved = True
         self._check_abort()
+        joint_speed = float(cfg.get(
+            "reverse_joint_speed_rad_s" if reverse
+            else "opening_joint_speed_rad_s",
+            0.35,
+        ))
         result = self.client.run_sequence(
             str(pose["file"]),
             motion_backend=str(cfg.get("sequence_motion_backend") or "legacy"),
+            joint_speed=joint_speed,
+            # 保留原回放的 0.4 rad/s 限速；配置高于它时同步抬高上限，
+            # 否则 joint_speed 调高后仍会被旧默认悄悄卡在 0.4。
+            max_speed_rad_s=max(0.4, joint_speed),
             reverse=reverse,
         )
         action = "倒序回放" if reverse else "回放"
@@ -894,6 +975,196 @@ class SwitchFlow:
                     ErrorCode.EXEC_FAILED,
                     f"释放手臂失败: {result.get('error')}",
                 )
+
+    @staticmethod
+    def _opposite_flip_kind(kind: str) -> str:
+        return (
+            "remote_to_close"
+            if kind == "close_to_remote" else "close_to_remote"
+        )
+
+    def _run_xiaoshan_carousel(
+        self, t0: float, distance_m: float
+    ) -> FlowResult:
+        """萧山轮播：双向交替，整轮期间手臂始终保持在高位。"""
+        if self.arm != "left_arm" or self.carousel_cycles < 1:
+            raise FlowError(
+                ErrorCode.NOT_IMPLEMENTED,
+                "萧山轮播只支持左臂，且 cycles 必须大于0",
+            )
+
+        start_kind = self.flip_kind
+        poses: dict[str, dict[str, Any]] = {}
+        for kind in ("close_to_remote", "remote_to_close"):
+            self._activate_carousel_direction(kind)
+            poses[kind] = self._choose_xiaoshan_sequence(distance_m)
+        current_kind = start_kind
+        current_pose = poses[current_kind]
+        self._activate_carousel_direction(current_kind, current_pose)
+        self._current_pose = current_pose
+
+        direction_text = "左→右" if self.flip_direction == "ltr" else "右→左"
+        self._log(
+            f"萧山轮播：首方向 {direction_text}，计划 {self.carousel_cycles} 轮，"
+            f"每个方向最多尝试 {self.max_flip_rounds} 次"
+        )
+        self._confirm(
+            "xiaoshan_carousel_opening",
+            f"即将握拳并执行首方向起手式「{current_pose['name']}」",
+        )
+        self._step_begin("5️⃣ 轮播首方向起手式")
+        self._set_hand_pose(str(self.xiaoshan_config["fist_pose"]))
+        self._run_xiaoshan_sequence(current_pose)
+
+        completed_cycles = 0
+        half_successes = 0
+        while completed_cycles < self.carousel_cycles:
+            self._check_abort()
+            current_pose = poses[current_kind]
+            self._current_pose = current_pose
+            self._activate_carousel_direction(current_kind, current_pose)
+            direction_text = "左→右" if self.flip_direction == "ltr" else "右→左"
+            next_kind = self._opposite_flip_kind(current_kind)
+            next_pose = poses[next_kind]
+            last_error: FlowError | None = None
+
+            for attempt in range(1, self.max_flip_rounds + 1):
+                self._check_abort()
+                success = False
+                try:
+                    self._set_hand_pose(str(self.xiaoshan_config["prepare_pose"]))
+                    self._confirm(
+                        "detect_points",
+                        f"轮播第{completed_cycles + 1}轮 {direction_text}："
+                        "即将判稳并由7005取点",
+                    )
+                    self._step_begin(
+                        f"轮播 {direction_text} 判稳取点（尝试{attempt}）"
+                    )
+                    points = self.detect_points(attempt)
+                    self._log(f"点位: {self._points_brief(points)}")
+                    side_text = "向右" if self.flip_direction == "ltr" else "向左"
+                    self._confirm(
+                        "flip",
+                        f"即将到位、完全捏住并{side_text}拨动"
+                        f" {self.sidestep_distance_cm:g}cm，助力 {self.push_force_n:g}N",
+                    )
+                    self._step_begin(
+                        f"轮播 {direction_text} 到位与拨动（尝试{attempt}）"
+                    )
+                    self.flip_switch(points, attempt)
+
+                    self._confirm(
+                        "carousel_next_endpoint",
+                        f"拨动完成，即将移动到对向起手式终点"
+                        f"「{self._pose_endpoint_name(next_pose)}」后再复核",
+                    )
+                    self._step_begin(
+                        f"轮播 {direction_text} 转对向起手式终点"
+                    )
+                    self._xiaoshan_return_to_endpoint(
+                        next_pose,
+                        f"轮播{direction_text}后转对向起手式终点",
+                    )
+
+                    self._confirm(
+                        "verify",
+                        f"已到对向起手式终点，即将复核 {direction_text} 结果",
+                    )
+                    self._step_begin(
+                        f"轮播 {direction_text} 视觉复核（尝试{attempt}）"
+                    )
+                    success = self.verify_flip()
+                    if not success:
+                        last_error = FlowError(
+                            ErrorCode.VERIFY_FAILED,
+                            f"轮播{direction_text}复核仍为{self.flip_from}",
+                        )
+                except FlowError as exc:
+                    if exc.code in (
+                        ErrorCode.NOT_IMPLEMENTED,
+                        ErrorCode.POSE_UNAVAILABLE,
+                        ErrorCode.ALIGN_FAILED,
+                        ErrorCode.ABORTED,
+                    ):
+                        raise
+                    last_error = exc
+                    self._log(
+                        f"轮播{direction_text}第{attempt}次失败"
+                        f"（{exc.code.name}: {exc.message}）"
+                    )
+
+                if success:
+                    half_successes += 1
+                    current_kind = next_kind
+                    self._current_pose = next_pose
+                    self._activate_carousel_direction(current_kind, next_pose)
+                    if half_successes % 2 == 0:
+                        completed_cycles += 1
+                        self._log(
+                            f"✓ 轮播第 {completed_cycles}/{self.carousel_cycles} 轮完成"
+                        )
+                    else:
+                        next_text = (
+                            "左→右" if self.flip_direction == "ltr" else "右→左"
+                        )
+                        self._log(
+                            f"✓ {direction_text}成功，手臂保持高位，"
+                            f"下一半轮执行 {next_text}"
+                        )
+                    break
+
+                self._confirm(
+                    "carousel_retry_endpoint",
+                    f"{direction_text}未成功，即将回本方向起手式终点"
+                    f"「{self._pose_endpoint_name(current_pose)}」重试",
+                )
+                self._step_begin(
+                    f"轮播 {direction_text} 失败回本方向终点"
+                )
+                self._xiaoshan_return_to_endpoint(
+                    current_pose,
+                    f"轮播{direction_text}失败回本方向起手式终点",
+                )
+                self._current_pose = current_pose
+                self._activate_carousel_direction(current_kind, current_pose)
+                if attempt < self.max_flip_rounds:
+                    self._log(
+                        f"轮播{direction_text}未通过，保持高位重新取点，"
+                        f"准备第{attempt + 1}次尝试"
+                    )
+            else:
+                raise last_error or FlowError(
+                    ErrorCode.VERIFY_FAILED,
+                    f"轮播{direction_text}重试次数耗尽",
+                )
+
+        final_pose = poses[current_kind]
+        self._current_pose = final_pose
+        self._activate_carousel_direction(current_kind, final_pose)
+        self._confirm(
+            "xiaoshan_carousel_finish",
+            f"轮播完成，手臂已在「{self._pose_endpoint_name(final_pose)}」，"
+            f"即将倒序执行「{final_pose['name']}」并释放",
+        )
+        self._step_begin("🔟 轮播倒序收尾与释放")
+        self._run_xiaoshan_sequence(final_pose, reverse=True)
+        self._set_hand_pose(str(self.xiaoshan_config["fist_pose"]))
+        result = self.client.disarm()
+        if not result.get("ok"):
+            raise FlowError(
+                ErrorCode.EXEC_FAILED,
+                f"释放手臂失败: {result.get('error')}",
+            )
+        return self._done(
+            t0,
+            f"萧山轮播完成 {completed_cycles} 轮",
+            cycles=completed_cycles,
+            half_successes=half_successes,
+            distance_m=distance_m,
+            selected_distance_m=final_pose["min_distance_m"],
+            final_opening_sequence=final_pose["name"],
+        )
 
     def _run_xiaoshan_expo(self, t0: float, distance_m: float) -> FlowResult:
         """萧山展会版本：左手双向、厘米档起手式、终点回收后倒序收尾。"""
@@ -1321,6 +1592,15 @@ class SwitchFlow:
                     ),
                     "motion_backend": motion_cfg["main_motion_backend"],
                 })
+                if self.workflow_mode == "xiaoshan_expo_v1":
+                    execute_kwargs.update({
+                        "duration": float(
+                            motion_cfg.get("target_duration_s", 6.0)
+                        ),
+                        "max_speed_rad_s": float(
+                            motion_cfg.get("target_max_speed_rad_s", 0.2)
+                        ),
+                    })
             res = self.client.execute(**execute_kwargs)
             if not res.get("ok"):
                 raise FlowError(ErrorCode.EXEC_FAILED,
@@ -1597,6 +1877,43 @@ class SwitchFlow:
                 "direction": self.flip_direction,
                 "source": "console"}
 
+    def _detect_carousel_start(self) -> dict:
+        """轮播首方向：旋钮在左则先左→右，在右则先右→左。"""
+        got = self._yolo_scene("2️⃣ 轮播首方向判断")
+        if got is not None:
+            kind = (
+                "close_to_remote"
+                if got["scene"] == SCENE_LEFT else "remote_to_close"
+            )
+            self._activate_carousel_direction(kind)
+            direction_text = "左→右" if self.flip_direction == "ltr" else "右→左"
+            self._log(
+                f"轮播初始状态为「{got['scene']}」，首个方向选择 {direction_text}"
+            )
+            return {
+                "need_flip": True,
+                "direction": self.flip_direction,
+                "source": "yolo",
+                "conf": got["conf"],
+            }
+        if self.yolo is not None:
+            raise FlowError(
+                ErrorCode.YOLO_FAILED,
+                f"轮播首方向判断失败：YOLO 连续 {self.YOLO_ATTEMPTS} 次都没"
+                "识别到旋钮左/右",
+            )
+        answer = self._need_console("轮播首方向判断").choice(
+            "当前旋钮在哪一侧？",
+            ["旋钮左：先左→右", "旋钮右：先右→左"],
+        )
+        kind = "close_to_remote" if "旋钮左" in answer else "remote_to_close"
+        self._activate_carousel_direction(kind)
+        return {
+            "need_flip": True,
+            "direction": self.flip_direction,
+            "source": "console",
+        }
+
     # 向左拨使用原「0.49-起手式新」；向右拨使用「0.49-左-起手式」。
     # 前缀数字是该档的录制距离。正则字符串以能力注册表为单一来源
     # （18000 自动认领路由也用同一份，见 core/capability_registry.py）。
@@ -1797,8 +2114,8 @@ class SwitchFlow:
         last_imu_range_deg: float | None = None
         self._log(
             f"等待机器人稳定：连续 {self.WAIST_STABLE_WINDOW_S:g}s "
-            f"腰关节摆幅 ≤{self.WAIST_STABLE_MAX_RANGE_DEG:g}°，"
-            f"IMU摆幅 ≤{self.IMU_STABLE_MAX_RANGE_DEG:g}°"
+            f"腰关节摆幅 ≤{self.stable_waist_range_deg:g}°，"
+            f"IMU摆幅 ≤{self.stable_imu_range_deg:g}°"
         )
         while True:
             state = self.client.torso()
@@ -1852,8 +2169,8 @@ class SwitchFlow:
                 last_waist_range_deg = max(waist_ranges_deg)
                 last_imu_range_deg = max(imu_ranges_deg)
                 if (
-                    last_waist_range_deg <= self.WAIST_STABLE_MAX_RANGE_DEG
-                    and last_imu_range_deg <= self.IMU_STABLE_MAX_RANGE_DEG
+                    last_waist_range_deg <= self.stable_waist_range_deg
+                    and last_imu_range_deg <= self.stable_imu_range_deg
                 ):
                     self._log(
                         f"机器人已稳定（{self.WAIST_STABLE_WINDOW_S:g}s："

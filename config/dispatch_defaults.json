@@ -100,8 +100,14 @@
       },
       "main_motion_backend": "legacy_timed",
       "sequence_motion_backend": "legacy",
+      "opening_joint_speed_rad_s": 1.0,
+      "reverse_joint_speed_rad_s": 1.0,
+      "stable_waist_range_deg": 0.05,
+      "stable_imu_range_deg": 0.05,
+      "target_duration_s": 6.0,
+      "target_max_speed_rad_s": 0.4,
       "hand_duration_ms": 500,
-      "endpoint_speed_rad_s": 0.3,
+      "endpoint_speed_rad_s": 0.5,
       "sidestep_cm": 10.0,
       "push_force_n": 10.0
     },
@@ -123,7 +129,7 @@
     },
     "lift_mm": {
       "base": 0.0,
-      "step": 2.0,
+      "step": 0.0,
       "max": 30.0
     },
     "push_force_n_by_kind": {
@@ -132,24 +138,6 @@
     }
   },
   "offset_presets": [
-    {
-      "name": "向右-降低10cm后",
-      "mode": "static",
-      "offset_mm": {
-        "x": 60.0,
-        "y": 0.0,
-        "z": 10.0
-      }
-    },
-    {
-      "name": "摔手后",
-      "mode": "static",
-      "offset_mm": {
-        "x": 20.0,
-        "y": 15.0,
-        "z": -5.0
-      }
-    },
     {
       "name": "Debug左到右",
       "mode": "static",
@@ -175,24 +163,6 @@
         "x": 25.0,
         "y": -10.0,
         "z": 25.0
-      }
-    },
-    {
-      "name": "右边",
-      "mode": "static",
-      "offset_mm": {
-        "x": 0.0,
-        "y": 0.0,
-        "z": 50.0
-      }
-    },
-    {
-      "name": "左边",
-      "mode": "static",
-      "offset_mm": {
-        "x": 20.0,
-        "y": 20.0,
-        "z": 45.0
       }
     },
     {
@@ -229,6 +199,76 @@
             "x": 20.0,
             "y": 15.0,
             "z": 22.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "向右-降低10cm后",
+      "mode": "static",
+      "offset_mm": {
+        "x": 60.0,
+        "y": 0.0,
+        "z": 10.0
+      }
+    },
+    {
+      "name": "摔手后",
+      "mode": "static",
+      "offset_mm": {
+        "x": 20.0,
+        "y": 15.0,
+        "z": -5.0
+      }
+    },
+    {
+      "name": "右边",
+      "mode": "keyframes",
+      "keyframes": [
+        {
+          "distance_m": 0.4,
+          "offset_mm": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 50.0
+          }
+        },
+        {
+          "distance_m": 0.48,
+          "offset_mm": {
+            "x": 15.0,
+            "y": 10.0,
+            "z": 35.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "左边",
+      "mode": "keyframes",
+      "keyframes": [
+        {
+          "distance_m": 0.42,
+          "offset_mm": {
+            "x": 20.0,
+            "y": 20.0,
+            "z": 45.0
+          }
+        },
+        {
+          "distance_m": 0.46,
+          "offset_mm": {
+            "x": 30.0,
+            "y": 20.0,
+            "z": 30.0
+          }
+        },
+        {
+          "distance_m": 0.48,
+          "offset_mm": {
+            "x": 40.0,
+            "y": 10.0,
+            "z": 30.0
           }
         }
       ]
