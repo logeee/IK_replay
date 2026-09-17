@@ -6,7 +6,8 @@
 #   ./capability.sh stop               停止默认端口上的实例
 #   ./capability.sh restart            重启
 #
-# 配置保存在 config/capability_registry.json；修改后需重启 17001/18001 生效。
+# 配置保存在 config/capability_registry.json 和 config/reach_arms.json；
+# 18001 在线且已释放时可按侧热加载，离线时在下次启动自动加载。
 # Python 查找顺序：PYTHON / FASTAPI_PY → conda 环境 fastapi → PATH 上的 python3。
 
 set -euo pipefail
@@ -301,4 +302,4 @@ else
 fi
 
 echo "浏览器打开: http://$(lan_ip):$PORT/"
-echo "提示: 修改配置保存后，需重启 17001/18001 才会生效"
+echo "提示: 双臂配置由 18000 保存；18001 在线且已释放时可即时应用，离线时下次启动加载"

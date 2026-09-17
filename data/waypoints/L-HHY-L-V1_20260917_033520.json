@@ -1,0 +1,20 @@
+{
+  "name": "L-HHY-L-V1",
+  "arm": "left_arm",
+  "chain_id": "left_arm",
+  "named_joints": {
+    "left_shoulder_pitch_joint": -1.3098663091659546,
+    "left_shoulder_roll_joint": 0.5953463315963745,
+    "left_shoulder_yaw_joint": -0.7135108113288879,
+    "left_elbow_joint": 0.2416619062423706,
+    "left_wrist_roll_joint": 1.9808906316757202,
+    "left_wrist_pitch_joint": 0.17272864282131195,
+    "left_wrist_yaw_joint": 0.6441401243209839
+  },
+  "arrival_speed_rad_s": 0.4,
+  "created_at": "2026-09-17 03:35:20",
+  "recorded_combo": {
+    "arm": "left_arm",
+    "hand_id": "qiangnao-revo2-left"
+  }
+}

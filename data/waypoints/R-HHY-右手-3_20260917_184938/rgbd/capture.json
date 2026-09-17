@@ -1,0 +1,437 @@
+{
+  "ok": true,
+  "capture_id": "8e692e9ec966453cb353c96c101776ce",
+  "arm": "right_arm",
+  "data_url": "/api/pointcloud/data/8e692e9ec966453cb353c96c101776ce",
+  "image_url": "/api/pointcloud/image/8e692e9ec966453cb353c96c101776ce",
+  "point_count": 59534,
+  "point_limit": 350000,
+  "adaptive_point_limit": true,
+  "stride": 4,
+  "dense_box_sampling": true,
+  "box_padding_ratio": 0.1,
+  "z_min_m": 0.15,
+  "z_max_m": 3.0,
+  "conf": 0.25,
+  "model": "Xuanniu_hhy.pt",
+  "model_available": true,
+  "model_error": null,
+  "names": {
+    "0": "面板",
+    "1": "旋钮左",
+    "2": "旋钮右"
+  },
+  "boxes": [],
+  "semantic_clusters": [],
+  "class_point_counts": {},
+  "intrinsics": [
+    1036.3985595703125,
+    1036.47900390625,
+    966.4566650390625,
+    539.8660888671875
+  ],
+  "distortion": [
+    0.007066068705171347,
+    -0.04711054265499115,
+    -0.0004220326663926244,
+    6.579305045306683e-05,
+    0.03199521824717522,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "distortion_compensated": true,
+  "mask_instance_count": 0,
+  "source": {
+    "stream": "head_rgbd_camera",
+    "data_format": "rgbd",
+    "frame_id": 249014,
+    "timestamp_ns": 1789642177595427196,
+    "color_camera": "head_camera",
+    "depth_camera": "__head_rgbd_camera_depth",
+    "color_format": "jpeg",
+    "depth_format": "depth_z16",
+    "color_shape": [
+      1080,
+      1920
+    ],
+    "depth_shape": [
+      800,
+      1280
+    ],
+    "depth_dtype": "uint16",
+    "handeye_ready": false,
+    "robot_pose": {
+      "sample_started_unix_ns": 1789642177829290451,
+      "sample_finished_unix_ns": 1789642177829963638,
+      "recorded_at": "2026-09-17T18:49:37.829+08:00",
+      "robot": "h2",
+      "arm": "right_arm",
+      "named_joints": {
+        "right_shoulder_pitch_joint": 0.7270472645759583,
+        "right_shoulder_roll_joint": -0.3247305750846863,
+        "right_shoulder_yaw_joint": 0.08838365972042084,
+        "right_elbow_joint": 1.1513844728469849,
+        "right_wrist_roll_joint": 0.019935758784413338,
+        "right_wrist_pitch_joint": 0.14125806093215942,
+        "right_wrist_yaw_joint": -0.04858405143022537
+      },
+      "torso": {
+        "waist_rad": [
+          0.02034229040145874,
+          0.026015980169177055,
+          -0.010716557502746582
+        ],
+        "waist_names": [
+          "waist_yaw",
+          "waist_roll",
+          "waist_pitch"
+        ],
+        "imu_quat": [
+          0.8708109855651855,
+          -0.012640681117773056,
+          -0.014441068284213543,
+          -0.49124327301979065
+        ],
+        "imu_rpy": [
+          -0.007832743227481842,
+          -0.03757902607321739,
+          -1.027093768119812
+        ]
+      },
+      "base_link": "torso_link",
+      "wrist_link": "right_wrist_yaw_link",
+      "T_root_from_base": [
+        [
+          0.9997413631997452,
+          -0.0203340041751298,
+          -0.010185037148736281,
+          0.0
+        ],
+        [
+          0.02006101216465278,
+          0.9994547762337382,
+          -0.026224150214979865,
+          0.0
+        ],
+        [
+          0.010712726004383163,
+          0.026013045530540617,
+          0.9996042011535272,
+          0.12303700000000001
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "T_base_from_wrist": [
+        [
+          -0.43035453537841023,
+          -0.10486074086281177,
+          0.8965484922216614,
+          -0.26402609613290906
+        ],
+        [
+          -0.3112941277095826,
+          0.9495388206556316,
+          -0.03836657557618239,
+          -0.3027231078116553
+        ],
+        [
+          -0.8472844504254536,
+          -0.29560151064163226,
+          -0.44128087084488715,
+          -0.0320265545072317
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "T_base_from_tcp": [
+        [
+          -0.43035453537841023,
+          -0.10486074086281177,
+          0.8965484922216614,
+          -0.26402609613290906
+        ],
+        [
+          -0.3112941277095826,
+          0.9495388206556316,
+          -0.03836657557618239,
+          -0.3027231078116553
+        ],
+        [
+          -0.8472844504254536,
+          -0.29560151064163226,
+          -0.44128087084488715,
+          -0.0320265545072317
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "tcp": {
+        "p_tool_wrist_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "selection": null,
+        "orientation_definition": "wrist_link_axes"
+      },
+      "calibration": {
+        "ready": false,
+        "metadata": {
+          "ready": false,
+          "mode": "no_handeye",
+          "wrist_link": "right_wrist_yaw_link",
+          "tcp_definition": {
+            "type": "wrist_origin_fallback"
+          },
+          "message": "当前激活组合无可用手眼标定（缺归档，或标定相机 ≠ 运行相机）：关节录制 / 回放 / 接管可用；视觉选点、笛卡尔规划、TCP 切换、转身对齐已禁用"
+        },
+        "T_base_from_camera": null,
+        "T_wrist_from_hand": null
+      },
+      "active_combo": {
+        "arm": "right_arm",
+        "hand_id": "yaoshouche",
+        "camera_role": "head",
+        "motion_backend": "legacy_timed",
+        "mount_profile_id": "measured_3d"
+      },
+      "pink_world": null,
+      "before": {
+        "sample_started_unix_ns": 1789642177590992049,
+        "sample_finished_unix_ns": 1789642177591637853,
+        "recorded_at": "2026-09-17T18:49:37.591+08:00",
+        "robot": "h2",
+        "arm": "right_arm",
+        "named_joints": {
+          "right_shoulder_pitch_joint": 0.7270472645759583,
+          "right_shoulder_roll_joint": -0.3247125744819641,
+          "right_shoulder_yaw_joint": 0.08838365972042084,
+          "right_elbow_joint": 1.1513844728469849,
+          "right_wrist_roll_joint": 0.019965719431638718,
+          "right_wrist_pitch_joint": 0.14128203690052032,
+          "right_wrist_yaw_joint": -0.04858405143022537
+        },
+        "torso": {
+          "waist_rad": [
+            0.02040194533765316,
+            0.026006167754530907,
+            -0.010710358619689941
+          ],
+          "waist_names": [
+            "waist_yaw",
+            "waist_roll",
+            "waist_pitch"
+          ],
+          "imu_quat": [
+            0.8707447052001953,
+            -0.012626088224351406,
+            -0.014487889595329762,
+            -0.4913597106933594
+          ],
+          "imu_rpy": [
+            -0.0077562411315739155,
+            -0.0376472994685173,
+            -1.0273629426956177
+          ]
+        },
+        "base_link": "torso_link",
+        "wrist_link": "right_wrist_yaw_link",
+        "T_root_from_base": [
+          [
+            0.9997402256461814,
+            -0.02039363175608804,
+            -0.01017747555731104,
+            0.0
+          ],
+          [
+            0.020120919235031638,
+            0.9994538165811845,
+            -0.026214826538458996,
+            0.0
+          ],
+          [
+            0.01070653230789129,
+            0.02600323643512933,
+            0.9996045227292836,
+            0.12303700000000001
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "T_base_from_wrist": [
+          [
+            -0.4303786340601709,
+            -0.10482151508648335,
+            0.896541511208196,
+            -0.2640278648258867
+          ],
+          [
+            -0.31127278874457925,
+            0.9495442259363087,
+            -0.038405910719431544,
+            -0.3027148768241625
+          ],
+          [
+            -0.8472800495300677,
+            -0.29559805981432047,
+            -0.4412916322595921,
+            -0.03202835694632189
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "T_base_from_tcp": [
+          [
+            -0.4303786340601709,
+            -0.10482151508648335,
+            0.896541511208196,
+            -0.2640278648258867
+          ],
+          [
+            -0.31127278874457925,
+            0.9495442259363087,
+            -0.038405910719431544,
+            -0.3027148768241625
+          ],
+          [
+            -0.8472800495300677,
+            -0.29559805981432047,
+            -0.4412916322595921,
+            -0.03202835694632189
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "tcp": {
+          "p_tool_wrist_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "selection": null,
+          "orientation_definition": "wrist_link_axes"
+        },
+        "calibration": {
+          "ready": false,
+          "metadata": {
+            "ready": false,
+            "mode": "no_handeye",
+            "wrist_link": "right_wrist_yaw_link",
+            "tcp_definition": {
+              "type": "wrist_origin_fallback"
+            },
+            "message": "当前激活组合无可用手眼标定（缺归档，或标定相机 ≠ 运行相机）：关节录制 / 回放 / 接管可用；视觉选点、笛卡尔规划、TCP 切换、转身对齐已禁用"
+          },
+          "T_base_from_camera": null,
+          "T_wrist_from_hand": null
+        },
+        "active_combo": {
+          "arm": "right_arm",
+          "hand_id": "yaoshouche",
+          "camera_role": "head",
+          "motion_backend": "legacy_timed",
+          "mount_profile_id": "measured_3d"
+        },
+        "pink_world": null
+      },
+      "synchronization": {
+        "method": "stationary_pose_samples_bracketing_fresh_rgbd",
+        "hardware_synchronized": false,
+        "selected_sample": "after",
+        "window_ms": 238.971589,
+        "max_joint_delta_deg": 0.001716618637494611,
+        "tcp_position_delta_mm": 0.008609658334087908,
+        "tcp_rotation_delta_deg": 0.002671190646285019,
+        "torso_rotation_delta_deg": 0.012911429744153262
+      }
+    }
+  },
+  "T_cam2root": null,
+  "capture_ms": 560.5,
+  "timings_ms": {
+    "rgbd": 422.3,
+    "jpeg_decode": 7.9,
+    "yolo": 115.3,
+    "pointcloud": 14.3,
+    "encode": 0.2
+  },
+  "binary_protocol": {
+    "magic": "PCV1",
+    "version": 1,
+    "bytes_per_point": 24,
+    "arrays": [
+      "positions_f32x3",
+      "rgb_u8x3",
+      "semantic_u8x3",
+      "pixels_u16x2",
+      "class_ids_i16"
+    ]
+  },
+  "recording": {
+    "defaults": true,
+    "cabinet_frame_config": {
+      "method": "method2_panel_edges",
+      "params": {
+        "plane_threshold_mm": 4.0,
+        "min_points": 100,
+        "min_inlier_ratio": 0.35,
+        "max_horizontal_tilt_deg": 30.0
+      }
+    },
+    "target_model_config": {
+      "method": "panel_anchor",
+      "params": {
+        "plane_threshold_mm": 4.0,
+        "min_points": 300,
+        "min_inlier_ratio": 0.35,
+        "border_margin_px": 8,
+        "max_size_deviation_ratio": 0.15,
+        "anchor_offset_wall_mm": [
+          -87.5,
+          -6.03,
+          -62.22
+        ],
+        "point1_offset_wall_mm": [
+          48.19,
+          5.94,
+          -18.19
+        ],
+        "point3_offset_wall_mm": [
+          -48.19,
+          5.94,
+          -18.19
+        ],
+        "panel_size_mm": [
+          241.4,
+          182.0
+        ]
+      }
+    }
+  }
+}

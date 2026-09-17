@@ -1,8 +1,8 @@
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "defaults": {
     "site": "factory",
-    "workflow_mode": "dexterous_ltr_v1",
+    "workflow_mode": "xiaoshan_expo_v1",
     "dexterous_ltr_v1": {
       "fist_pose": "L-握拳起收",
       "prepare_pose": "L-预备抓取",
@@ -10,68 +10,68 @@
       "start_waypoint": "L-起手点测试",
       "approach_waypoints": [
         {
+          "distance_m": 0.35,
+          "waypoint": "L-0.35-左到右预备点测试"
+        },
+        {
+          "distance_m": 0.36,
+          "waypoint": "L-0.36-左到右预备点测试"
+        },
+        {
+          "distance_m": 0.37,
+          "waypoint": "L-0.37-左到右预备点测试"
+        },
+        {
+          "distance_m": 0.38,
+          "waypoint": "L-0.38-左到右预备点测试"
+        },
+        {
+          "distance_m": 0.39,
+          "waypoint": "L-0.39-左到右预备点测试"
+        },
+        {
           "distance_m": 0.4,
-          "waypoint": "L-0.40-测试灵巧手-2"
+          "waypoint": "L-0.40-左到右预备点测试"
         },
         {
           "distance_m": 0.41,
-          "waypoint": "L-0.41-测试灵巧手-2"
+          "waypoint": "L-0.41-左到右预备点测试"
         },
         {
           "distance_m": 0.42,
-          "waypoint": "L-0.42-测试灵巧手-2"
+          "waypoint": "L-0.42-左到右预备点测试"
         },
         {
           "distance_m": 0.43,
-          "waypoint": "L-0.43-测试灵巧手-2"
+          "waypoint": "L-0.43-左到右预备点测试"
         },
         {
           "distance_m": 0.44,
-          "waypoint": "L-0.44-测试灵巧手-2"
+          "waypoint": "L-0.44-左到右预备点测试"
         },
         {
           "distance_m": 0.45,
-          "waypoint": "L-0.45-测试灵巧手-2"
+          "waypoint": "L-0.45-左到右预备点测试"
         },
         {
           "distance_m": 0.46,
-          "waypoint": "L-0.46-测试灵巧手-2"
+          "waypoint": "L-0.46-左到右预备点测试"
         },
         {
           "distance_m": 0.47,
-          "waypoint": "L-0.47-测试灵巧手-2"
+          "waypoint": "L-0.47-左到右预备点测试"
         },
         {
           "distance_m": 0.48,
-          "waypoint": "L-0.48-测试灵巧手-2"
+          "waypoint": "L-0.48-左到右预备点测试"
         },
         {
           "distance_m": 0.49,
-          "waypoint": "L-0.49-测试灵巧手-2"
+          "waypoint": "L-0.49-左到右预备点测试"
         },
         {
           "distance_m": 0.5,
-          "waypoint": "L-0.50-测试灵巧手-2"
-        },
-        {
-          "distance_m": 0.51,
-          "waypoint": "L-0.51-测试灵巧手-2"
-        },
-        {
-          "distance_m": 0.52,
-          "waypoint": "L-0.52-测试灵巧手-2"
-        },
-        {
-          "distance_m": 0.53,
-          "waypoint": "L-0.53-测试灵巧手-2"
-        },
-        {
-          "distance_m": 0.54,
-          "waypoint": "L-0.54-测试灵巧手-2"
-        },
-        {
-          "distance_m": 0.55,
-          "waypoint": "L-0.55-测试灵巧手-2"
+          "waypoint": "L-0.50-左到右预备点测试"
         }
       ],
       "main_motion_backend": "legacy_timed",
@@ -86,9 +86,28 @@
       "sidestep_cm": 10.0,
       "push_force_n": 25.0
     },
+    "xiaoshan_expo_v1": {
+      "display_name": "萧山展会版本",
+      "fist_pose": "L-握拳起收",
+      "prepare_pose": "L-预备抓取",
+      "grasp_pose": "L-完全捏住",
+      "distance_min_m": 0.35,
+      "distance_max_m": 0.5,
+      "distance_step_m": 0.01,
+      "sequence_name_by_direction": {
+        "ltr": "L-{distance:.2f}-左到右起手式",
+        "rtl": "L-{distance:.2f}-右到左起手式"
+      },
+      "main_motion_backend": "legacy_timed",
+      "sequence_motion_backend": "legacy",
+      "hand_duration_ms": 500,
+      "endpoint_speed_rad_s": 0.3,
+      "sidestep_cm": 10.0,
+      "push_force_n": 10.0
+    },
     "offset_preset_by_kind": {
-      "close_to_remote": "向右-降低10cm后",
-      "remote_to_close": "摔手后"
+      "close_to_remote": "左边",
+      "remote_to_close": "右边"
     },
     "first_round_offset_wall_mm_by_kind": {
       "close_to_remote": {
@@ -129,6 +148,51 @@
         "x": 20.0,
         "y": 15.0,
         "z": -5.0
+      }
+    },
+    {
+      "name": "Debug左到右",
+      "mode": "static",
+      "offset_mm": {
+        "x": 25.0,
+        "y": 10.0,
+        "z": -15.0
+      }
+    },
+    {
+      "name": "L-左-标完重力补偿之后",
+      "mode": "static",
+      "offset_mm": {
+        "x": 40.0,
+        "y": 0.0,
+        "z": 40.0
+      }
+    },
+    {
+      "name": "hhy",
+      "mode": "static",
+      "offset_mm": {
+        "x": 25.0,
+        "y": -10.0,
+        "z": 25.0
+      }
+    },
+    {
+      "name": "右边",
+      "mode": "static",
+      "offset_mm": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 50.0
+      }
+    },
+    {
+      "name": "左边",
+      "mode": "static",
+      "offset_mm": {
+        "x": 20.0,
+        "y": 20.0,
+        "z": 45.0
       }
     },
     {

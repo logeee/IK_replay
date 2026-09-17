@@ -14,6 +14,8 @@ config/hand_eye/{arm}__{hand_id}/handeye3d_result.json。
 - POST /api/capability/capabilities        新增/编辑能力条目
 - POST /api/capability/capabilities/delete 删除能力条目
 - POST /api/capability/active              切换激活组合（17001/18001 重启后生效）
+- POST /api/capability/arms/{arm}          保存某侧期望配置（18000 唯一写入口）
+- POST /api/capability/gravity/import      导入双臂重力补偿版本
 - POST /api/capability/cabinet-frame       设置柜面坐标系构建方法与参数
                                            （7005 重启后生效）
 - POST /api/capability/calibrations        登记标定（source_path 复制入库 或
@@ -26,7 +28,8 @@ config/hand_eye/{arm}__{hand_id}/handeye3d_result.json。
                                            条目起手式正则自动路由认领，幂等
 - /                                        托管 web-capability/dist 构建产物（若已构建）
 
-公共动作池 = data/sequences，位点池 = data/waypoints（都由 18001 录制落
+双臂期望配置落在 config/reach_arms.json，由本服务独占写入；18001 只读取
+快照、应用配置并报告运行态。公共动作池 = data/sequences，位点池 = data/waypoints（都由 18001 录制落
 盘）；认领挂在能力条目上——拨和扭是不同条目，各认各的互不影响。终点位
 点不落库：认领了起手式即自动推导其配套终点；其余位点手选。GET registry
 的 payload 附 sequence_pool / waypoint_pool（按名聚合，含最近录制时间）。
@@ -35,7 +38,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -56,6 +61,8 @@ from core import gravity_profiles
 DIST_DIR = ROOT / "web-capability" / "dist"
 REGISTRY_PATH = reg.DEFAULT_REGISTRY_PATH
 GRAVITY_PROFILES_PATH = gravity_profiles.DEFAULT_GRAVITY_PROFILES_PATH
+ARMS_CONFIG_PATH = ROOT / "config" / "reach_arms.json"
+ARMS = ("left_arm", "right_arm")
 
 app = FastAPI(title="capability-config")
 # 开发时 Vite (5173) 直接跨域访问本服务，省掉代理配置的坑
@@ -66,6 +73,158 @@ app.add_middleware(
     allow_headers=["*"],
 )
 _lock = threading.Lock()
+
+
+def _selection_from_active(registry: dict[str, Any], arm: str) -> dict[str, Any]:
+    """Build the dual-arm representation for an old single-active registry."""
+    active = registry.get("active") or {}
+    selected = active if active.get("arm") == arm else {}
+    return {
+        "arm": arm,
+        "enabled": bool(selected),
+        "hand_id": str(selected.get("hand_id") or ""),
+        "camera_role": str(selected.get("camera_role") or "head"),
+        "motion_backend": str(selected.get("motion_backend") or "legacy"),
+        "mount_profile_id": str(selected.get("mount_profile_id") or ""),
+        "gravity_file": "",
+        "gravity_version": str(selected.get("gravity_profile_version") or ""),
+        "hand_service_url": "http://127.0.0.1:18089",
+        "hand_port": "",
+    }
+
+
+def _load_arm_selections(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Read desired arm configuration owned by 18000, with legacy migration."""
+    raw: dict[str, Any] = {}
+    if ARMS_CONFIG_PATH.is_file():
+        try:
+            loaded = json.loads(ARMS_CONFIG_PATH.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                raw = loaded
+        except (OSError, ValueError):
+            # A malformed store must not make the rest of the capability registry
+            # disappear. The next successful save replaces it atomically.
+            raw = {}
+    result: dict[str, dict[str, Any]] = {}
+    for arm in ARMS:
+        base = _selection_from_active(registry, arm)
+        item = raw.get(arm)
+        if isinstance(item, dict):
+            base.update(item)
+        base["arm"] = arm
+        base["enabled"] = bool(base.get("enabled"))
+        result[arm] = base
+    return result
+
+
+def _save_arm_selections(selections: dict[str, dict[str, Any]]) -> None:
+    """Atomically persist desired configuration; only the 18000 service calls this."""
+    ARMS_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=".reach-arms-", dir=ARMS_CONFIG_PATH.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(selections, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+        os.replace(name, ARMS_CONFIG_PATH)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def _validate_arm_selection(
+    registry: dict[str, Any],
+    arm: str,
+    selection: dict[str, Any],
+) -> dict[str, Any]:
+    if arm not in ARMS:
+        raise ValueError("arm 必须是 left_arm/right_arm")
+    enabled = selection.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ValueError("enabled 必须是 boolean")
+    hand_id = str(selection.get("hand_id") or "").strip()
+    hand = next((item for item in registry["hands"] if item["id"] == hand_id), None)
+    if hand is None:
+        raise ValueError("请选择有效的手型号")
+    if hand.get("design_side") != arm.removesuffix("_arm"):
+        raise ValueError("手型号与所选手臂不匹配")
+    camera_role = str(selection.get("camera_role") or "head")
+    if camera_role not in reg.CAMERA_ROLES:
+        raise ValueError("无效任务相机")
+    backend = str(selection.get("motion_backend") or "legacy")
+    if backend not in reg.MOTION_BACKENDS:
+        raise ValueError("无效运动后端")
+    profiles = hand.get("mount_profiles") or []
+    mount_profile_id = str(selection.get("mount_profile_id") or "")
+    if profiles and not mount_profile_id:
+        mount_profile_id = str(profiles[0]["id"])
+    if mount_profile_id and not any(p["id"] == mount_profile_id for p in profiles):
+        raise ValueError("安装方案不属于所选手型号")
+    gravity_file = str(selection.get("gravity_file") or "").strip()
+    gravity_version = str(selection.get("gravity_version") or "").strip()
+    # Version-library selections can be fully checked by 18000. An explicitly
+    # supplied file is revalidated by 18001 when it consumes the snapshot.
+    if not gravity_file:
+        gravity_registry = gravity_profiles.load_registry(GRAVITY_PROFILES_PATH)
+        profile = gravity_profiles.active_profile(
+            gravity_registry, gravity_version or gravity_registry["active_version"])
+        compatibility = profile.get("compatibility")
+        if compatibility and (
+            compatibility["arm"] != arm
+            or compatibility["hand_id"] != hand_id
+        ):
+            raise ValueError(
+                f"重力补偿版本 {profile['version']} 仅适用于 "
+                f"{compatibility['arm']} + {compatibility['hand_id']}")
+        gravity_version = profile["version"]
+    return {
+        "arm": arm,
+        "enabled": enabled,
+        "hand_id": hand_id,
+        "camera_role": camera_role,
+        "motion_backend": backend,
+        "mount_profile_id": mount_profile_id,
+        "gravity_file": gravity_file,
+        "gravity_version": gravity_version,
+        "hand_service_url": str(selection.get("hand_service_url") or "").strip(),
+        "hand_port": str(selection.get("hand_port") or "").strip(),
+    }
+
+
+def _legacy_active(selection: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "arm": selection["arm"],
+        "hand_id": selection["hand_id"],
+        "camera_role": selection["camera_role"],
+        "motion_backend": selection["motion_backend"],
+        "mount_profile_id": selection["mount_profile_id"] or None,
+        "gravity_profile_version": selection["gravity_version"] or None,
+    }
+
+
+def _arm_workspace_payload(
+    registry: dict[str, Any],
+    gravity_registry: dict[str, Any],
+) -> dict[str, Any]:
+    selections = _load_arm_selections(registry)
+    active = registry.get("active") or {}
+    default_arm = str(active.get("arm") or next(
+        (arm for arm in ARMS if selections[arm]["enabled"]), "right_arm"))
+    return {
+        "ok": True,
+        "default_arm": default_arm,
+        "arms": {
+            arm: {
+                "enabled": selection["enabled"],
+                "selection": selection,
+                "status": None,
+            }
+            for arm, selection in selections.items()
+        },
+        "shared_control_active": False,
+        "runtime_available": False,
+        "gravity_profiles": gravity_registry["versions"],
+        "gravity_active_version": gravity_registry["active_version"],
+    }
 
 
 def _error(message: str, status: int = 400) -> JSONResponse:
@@ -91,6 +250,9 @@ def _registry_payload(registry: dict[str, Any]) -> dict[str, Any]:
         "calibrations": calibrations,
         "sequence_pool": reg.sequence_pool(ROOT),
         "waypoint_pool": reg.waypoint_pool(ROOT),
+        # Desired dual-arm configuration is configuration-plane data. 18000
+        # remains usable when the execution service is offline.
+        "arm_workspace": _arm_workspace_payload(registry, gravity_registry),
         "meta": {
             "arms": list(reg.ARMS),
             "camera_roles": list(reg.CAMERA_ROLES),
@@ -186,6 +348,14 @@ async def hands_delete(request: Request):
         active = registry.get("active")
         if active and active.get("hand_id") == hand_id:
             return _error(f"手型号「{hand_id}」是当前激活组合，先切换激活组合")
+        configured_arms = [
+            arm for arm, selection in _load_arm_selections(registry).items()
+            if selection.get("hand_id") == hand_id
+        ]
+        if configured_arms:
+            return _error(
+                f"手型号「{hand_id}」被双臂配置 {configured_arms} 引用，"
+                "请先在激活组合中切换对应侧")
         calibration_refs = [
             item["artifact_id"] for item in registry.get("calibration_artifacts") or []
             if (item.get("subject") or {}).get("hand_id") == hand_id
@@ -294,6 +464,70 @@ async def active_set(request: Request):
         except ValueError as exc:
             return _error(str(exc))
     return _registry_payload(registry)
+
+
+@app.post("/api/capability/arms/{arm}")
+async def arm_selection_set(arm: str, request: Request):
+    """Save desired per-arm configuration without contacting 18001."""
+    body = await _json_body(request)
+    with _lock:
+        registry = reg.load_registry(REGISTRY_PATH)
+        selections = _load_arm_selections(registry)
+        if arm not in selections:
+            return _error("arm 必须是 left_arm/right_arm", 404)
+        candidate = {**selections[arm], **body, "arm": arm}
+        try:
+            candidate = _validate_arm_selection(registry, arm, candidate)
+        except (OSError, ValueError) as exc:
+            return _error(str(exc))
+        selections[arm] = candidate
+        try:
+            _save_arm_selections(selections)
+        except OSError as exc:
+            return _error(f"保存双臂配置失败: {exc}", 500)
+
+        # Keep the legacy single-active field as the default side for old
+        # consumers. It is compatibility data, not the dual-arm source of truth.
+        previous_arm = (registry.get("active") or {}).get("arm")
+        if candidate["enabled"]:
+            registry["active"] = _legacy_active(candidate)
+        elif previous_arm == arm:
+            fallback = next(
+                (item for side, item in selections.items()
+                 if side != arm and item["enabled"]),
+                None,
+            )
+            registry["active"] = _legacy_active(fallback) if fallback else None
+        try:
+            registry = reg.save_registry(registry, REGISTRY_PATH)
+        except ValueError as exc:
+            return _error(str(exc))
+    return _registry_payload(registry)
+
+
+@app.post("/api/capability/gravity/import")
+async def gravity_import(request: Request):
+    """Import a gravity profile in the configuration service, independent of 18001."""
+    body = await _json_body(request)
+    with _lock:
+        registry = reg.load_registry(REGISTRY_PATH)
+        arm = str(body.get("arm") or "")
+        hand_id = str(body.get("hand_id") or "")
+        hand = next((item for item in registry["hands"] if item["id"] == hand_id), None)
+        if arm not in ARMS or hand is None:
+            return _error("请选择有效的手臂和手型号")
+        if hand.get("design_side") != arm.removesuffix("_arm"):
+            return _error("手型号与所选手臂不匹配")
+        try:
+            from core.payload_import import import_payload_profile
+            profile, created = import_payload_profile(
+                body, GRAVITY_PROFILES_PATH)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return _error(str(exc))
+        payload = _registry_payload(registry)
+        payload["arm_workspace"]["imported_profile"] = profile
+        payload["arm_workspace"]["created"] = created
+    return payload
 
 
 @app.post("/api/capability/robot")

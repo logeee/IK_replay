@@ -11,18 +11,21 @@
 from __future__ import annotations
 
 import json
+import fcntl
 import math
 import os
 import tempfile
+import threading
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DISPATCH_DEFAULTS_PATH = (
     PROJECT_ROOT / "config" / "dispatch_defaults.json"
 )
+_DISPATCH_DEFAULTS_UPDATE_LOCK = threading.RLock()
 
 SITES = ("lab", "factory")
 OFFSET_LIMIT_MM = 100.0    # 单轴上限，与 /task/flip 的校验一致
@@ -39,29 +42,16 @@ DEFAULT_LIFT_MM: dict[str, float] = {"base": 10.0, "step": 10.0, "max": 30.0}
 DEFAULT_PUSH_FORCE_N = 15.0
 FLIP_KINDS = ("close_to_remote", "remote_to_close")
 ZERO_OFFSET_MM: dict[str, float] = {"x": 0.0, "y": 0.0, "z": 0.0}
-WORKFLOW_MODES = ("legacy", "dexterous_ltr_v1")
+WORKFLOW_MODES = ("legacy", "dexterous_ltr_v1", "xiaoshan_expo_v1")
 DEFAULT_DEXTEROUS_LTR_V1: dict[str, Any] = {
     "fist_pose": "L-握拳起收",
     "prepare_pose": "L-预备抓取",
     "grasp_pose": "L-完全捏住",
     "start_waypoint": "L-起手点测试",
     "approach_waypoints": [
-        {"distance_m": 0.40, "waypoint": "L-0.40-测试灵巧手-2"},
-        {"distance_m": 0.41, "waypoint": "L-0.41-测试灵巧手-2"},
-        {"distance_m": 0.42, "waypoint": "L-0.42-测试灵巧手-2"},
-        {"distance_m": 0.43, "waypoint": "L-0.43-测试灵巧手-2"},
-        {"distance_m": 0.44, "waypoint": "L-0.44-测试灵巧手-2"},
-        {"distance_m": 0.45, "waypoint": "L-0.45-测试灵巧手-2"},
-        {"distance_m": 0.46, "waypoint": "L-0.46-测试灵巧手-2"},
-        {"distance_m": 0.47, "waypoint": "L-0.47-测试灵巧手-2"},
-        {"distance_m": 0.48, "waypoint": "L-0.48-测试灵巧手-2"},
-        {"distance_m": 0.49, "waypoint": "L-0.49-测试灵巧手-2"},
-        {"distance_m": 0.50, "waypoint": "L-0.50-测试灵巧手-2"},
-        {"distance_m": 0.51, "waypoint": "L-0.51-测试灵巧手-2"},
-        {"distance_m": 0.52, "waypoint": "L-0.52-测试灵巧手-2"},
-        {"distance_m": 0.53, "waypoint": "L-0.53-测试灵巧手-2"},
-        {"distance_m": 0.54, "waypoint": "L-0.54-测试灵巧手-2"},
-        {"distance_m": 0.55, "waypoint": "L-0.55-测试灵巧手-2"},
+        {"distance_m": distance / 100,
+         "waypoint": f"L-{distance / 100:.2f}-左到右预备点测试"}
+        for distance in range(35, 51)
     ],
     "main_motion_backend": "legacy_timed",
     "hand_duration_ms": 500,
@@ -77,12 +67,35 @@ DEFAULT_DEXTEROUS_LTR_V1: dict[str, Any] = {
     "push_force_n": 25.0,
 }
 
+# 萧山展会双向流程：按实测距离四舍五入到厘米档，回放对应方向的起手式；
+# 拨动结束后先回该起手式终点，成功或重试耗尽时再倒序回放起手式。
+DEFAULT_XIAOSHAN_EXPO_V1: dict[str, Any] = {
+    "display_name": "萧山展会版本",
+    "fist_pose": "L-握拳起收",
+    "prepare_pose": "L-预备抓取",
+    "grasp_pose": "L-完全捏住",
+    "distance_min_m": 0.35,
+    "distance_max_m": 0.50,
+    "distance_step_m": 0.01,
+    "sequence_name_by_direction": {
+        "ltr": "L-{distance:.2f}-左到右起手式",
+        "rtl": "L-{distance:.2f}-右到左起手式",
+    },
+    "main_motion_backend": "legacy_timed",
+    "sequence_motion_backend": "legacy",
+    "hand_duration_ms": 500,
+    "endpoint_speed_rad_s": 0.3,
+    "sidestep_cm": 10.0,
+    "push_force_n": 10.0,
+}
+
 DEFAULT_DISPATCH_DEFAULTS: dict[str, Any] = {
-    "schema_version": 7,
+    "schema_version": 8,
     "defaults": {
         "site": "factory",
         "workflow_mode": "dexterous_ltr_v1",
         "dexterous_ltr_v1": deepcopy(DEFAULT_DEXTEROUS_LTR_V1),
+        "xiaoshan_expo_v1": deepcopy(DEFAULT_XIAOSHAN_EXPO_V1),
         # 两个任务方向独立标定；"" = 不套偏移配置。
         "offset_preset_by_kind": {
             "close_to_remote": "",
@@ -232,8 +245,8 @@ def validate_dispatch_defaults(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("默认配置必须是 JSON object")
     version = int(payload.get("schema_version", -1))
-    if version not in (1, 2, 3, 4, 5, 6, 7):
-        raise ValueError("默认配置 schema_version 必须为 1~7")
+    if version not in (1, 2, 3, 4, 5, 6, 7, 8):
+        raise ValueError("默认配置 schema_version 必须为 1~8")
 
     raw_presets = payload.get("offset_presets")
     if raw_presets is None:
@@ -287,14 +300,14 @@ def validate_dispatch_defaults(payload: Any) -> dict[str, Any]:
     site = str(raw_defaults.get("site") or "").strip().lower()
     if site not in SITES:
         raise ValueError("defaults.site 只能是 lab 或 factory")
-    # v1~v6 没有流程模式，读取时保持旧行为；本仓库的 v7 配置
-    # 显式选择 dexterous_ltr_v1。
+    # v1~v6 没有流程模式，读取时保持旧行为；后续版本显式保存模式。
     workflow_mode = str(
         raw_defaults.get("workflow_mode") or "legacy"
     ).strip().lower()
     if workflow_mode not in WORKFLOW_MODES:
         raise ValueError(
-            "defaults.workflow_mode 只能是 legacy 或 dexterous_ltr_v1"
+            "defaults.workflow_mode 只能是 legacy、dexterous_ltr_v1 或 "
+            "xiaoshan_expo_v1"
         )
     raw_dexterous = raw_defaults.get("dexterous_ltr_v1")
     if raw_dexterous is None:
@@ -385,6 +398,76 @@ def validate_dispatch_defaults(payload: Any) -> dict[str, Any]:
                 f"defaults.dexterous_ltr_v1.{key} 必须在 {minimum:g}~{maximum:g}"
             )
         dexterous[key] = int(number) if key == "hand_duration_ms" else number
+
+    raw_xiaoshan = raw_defaults.get("xiaoshan_expo_v1")
+    if raw_xiaoshan is None:
+        raw_xiaoshan = deepcopy(DEFAULT_XIAOSHAN_EXPO_V1)
+    if not isinstance(raw_xiaoshan, dict):
+        raise ValueError("defaults.xiaoshan_expo_v1 必须是对象")
+    xiaoshan = deepcopy(DEFAULT_XIAOSHAN_EXPO_V1)
+    xiaoshan.update(raw_xiaoshan)
+    for key in (
+        "display_name", "fist_pose", "prepare_pose", "grasp_pose",
+        "main_motion_backend", "sequence_motion_backend",
+    ):
+        value = str(xiaoshan.get(key) or "").strip()
+        if not value:
+            raise ValueError(f"defaults.xiaoshan_expo_v1.{key} 不能为空")
+        xiaoshan[key] = value
+    if xiaoshan["main_motion_backend"] != "legacy_timed":
+        raise ValueError(
+            "defaults.xiaoshan_expo_v1.main_motion_backend 当前只能是 legacy_timed"
+        )
+    if xiaoshan["sequence_motion_backend"] != "legacy":
+        raise ValueError(
+            "defaults.xiaoshan_expo_v1.sequence_motion_backend 当前只能是 legacy"
+        )
+    templates = xiaoshan.get("sequence_name_by_direction")
+    if not isinstance(templates, dict):
+        raise ValueError(
+            "defaults.xiaoshan_expo_v1.sequence_name_by_direction 必须是对象"
+        )
+    normalized_templates: dict[str, str] = {}
+    for direction in ("ltr", "rtl"):
+        template = str(templates.get(direction) or "").strip()
+        try:
+            example = template.format(distance=0.42)
+        except (KeyError, ValueError) as exc:
+            raise ValueError(
+                "defaults.xiaoshan_expo_v1.sequence_name_by_direction."
+                f"{direction} 必须包含有效的 {{distance:.2f}} 占位符"
+            ) from exc
+        if "{distance" not in template or not example:
+            raise ValueError(
+                "defaults.xiaoshan_expo_v1.sequence_name_by_direction."
+                f"{direction} 必须包含 {{distance:.2f}} 占位符"
+            )
+        normalized_templates[direction] = template
+    xiaoshan["sequence_name_by_direction"] = normalized_templates
+    xiaoshan_numeric_limits = {
+        "distance_min_m": (0.3, 1.0),
+        "distance_max_m": (0.3, 1.0),
+        "distance_step_m": (0.01, 0.01),
+        "hand_duration_ms": (50.0, 5000.0),
+        "endpoint_speed_rad_s": (0.05, 0.5),
+        "sidestep_cm": (0.5, 30.0),
+        "push_force_n": (0.0, PUSH_FORCE_LIMIT_N),
+    }
+    for key, (minimum, maximum) in xiaoshan_numeric_limits.items():
+        try:
+            number = float(xiaoshan.get(key))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"defaults.xiaoshan_expo_v1.{key} 必须是数字"
+            ) from exc
+        if not math.isfinite(number) or not minimum <= number <= maximum:
+            expected = "0.01" if minimum == maximum else f"{minimum:g}~{maximum:g}"
+            raise ValueError(
+                f"defaults.xiaoshan_expo_v1.{key} 必须为 {expected}"
+            )
+        xiaoshan[key] = int(number) if key == "hand_duration_ms" else number
+    if xiaoshan["distance_min_m"] >= xiaoshan["distance_max_m"]:
+        raise ValueError("defaults.xiaoshan_expo_v1 距离下限必须小于上限")
     # v1 只有一个 offset_preset；迁移时先让两个方向都沿用它，避免旧配置失效。
     legacy_preset = str(raw_defaults.get("offset_preset") or "").strip()
     raw_by_kind = raw_defaults.get("offset_preset_by_kind")
@@ -435,11 +518,12 @@ def validate_dispatch_defaults(payload: Any) -> dict[str, Any]:
     }
 
     return {
-        "schema_version": 7,
+        "schema_version": 8,
         "defaults": {
             "site": site,
             "workflow_mode": workflow_mode,
             "dexterous_ltr_v1": dexterous,
+            "xiaoshan_expo_v1": xiaoshan,
             "offset_preset_by_kind": preset_by_kind,
             "first_round_offset_wall_mm_by_kind": first_by_kind,
             "lift_mm": lift_mm,
@@ -450,9 +534,11 @@ def validate_dispatch_defaults(payload: Any) -> dict[str, Any]:
 
 
 def load_dispatch_defaults(
-    path: str | Path = DEFAULT_DISPATCH_DEFAULTS_PATH,
+    path: str | Path | None = None,
 ) -> dict[str, Any]:
-    config_path = Path(path).expanduser().resolve()
+    config_path = Path(
+        DEFAULT_DISPATCH_DEFAULTS_PATH if path is None else path
+    ).expanduser().resolve()
     if not config_path.exists():
         return deepcopy(DEFAULT_DISPATCH_DEFAULTS)
     try:
@@ -464,10 +550,12 @@ def load_dispatch_defaults(
 
 def save_dispatch_defaults(
     payload: Any,
-    path: str | Path = DEFAULT_DISPATCH_DEFAULTS_PATH,
+    path: str | Path | None = None,
 ) -> dict[str, Any]:
     validated = validate_dispatch_defaults(payload)
-    config_path = Path(path).expanduser().resolve()
+    config_path = Path(
+        DEFAULT_DISPATCH_DEFAULTS_PATH if path is None else path
+    ).expanduser().resolve()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(
         prefix=f".{config_path.name}.",
@@ -488,6 +576,36 @@ def save_dispatch_defaults(
         except FileNotFoundError:
             pass
     return validated
+
+
+def update_dispatch_defaults(
+    mutator: Callable[[dict[str, Any]], dict[str, Any] | None],
+    path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Atomically read, mutate, validate, and save the shared defaults file.
+
+    17001 and 7005 both edit the named offset presets.  The in-process lock
+    serializes threads while ``flock`` prevents the two service processes from
+    losing each other's read-modify-write updates.  Readers remain lock-free:
+    ``save_dispatch_defaults`` already replaces the JSON file atomically.
+    """
+    config_path = Path(
+        DEFAULT_DISPATCH_DEFAULTS_PATH if path is None else path
+    ).expanduser().resolve()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = config_path.with_name(f".{config_path.name}.lock")
+    with _DISPATCH_DEFAULTS_UPDATE_LOCK:
+        with lock_path.open("a+", encoding="utf-8") as lock_stream:
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
+            try:
+                current = load_dispatch_defaults(config_path)
+                candidate = mutator(deepcopy(current))
+                return save_dispatch_defaults(
+                    current if candidate is None else candidate,
+                    config_path,
+                )
+            finally:
+                fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
 
 
 def find_offset_preset(

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RGB / YOLO 语义点云</title>
-    <link rel="stylesheet" href="/web/pointcloud.css?v=20260914-3" />
+    <link rel="stylesheet" href="/web/pointcloud.css?v=20260917-knob" />
     <script type="importmap">
       {
         "imports": {
@@ -61,6 +61,14 @@
 
       <section class="panel">
         <h2>选中点</h2>
+        <label>旋钮当前类别
+          <select id="knobSceneOverride">
+            <option value="">自动识别（默认）</option>
+            <option value="旋钮右">手动：旋钮右 → 点 1</option>
+            <option value="旋钮左">手动：旋钮左 → 点 3</option>
+          </select>
+        </label>
+        <p class="knob-scene-help">旋钮被遮挡时可手动指定类别，仍需识别到完整面板。切换后请重新找点。</p>
         <button id="autoTarget" class="auto-target" disabled>算法找点1/3（Tab）</button>
         <div id="selection" class="details muted">点击点云选择一个点</div>
         <div class="form-grid target-controls">
@@ -83,17 +91,17 @@
             </select>
             <button id="applyOffsetPreset" type="button" disabled>一键叠加</button>
           </div>
-          <input id="offsetPresetName" type="text" maxlength="60"
+          <input id="offsetPresetName" type="text" maxlength="40"
                  placeholder="预设名称，例如：右25 下15 内20" />
           <div class="offset-preset-axes">
             <label><span class="offset-axis-label"><b>X</b>右 / 左</span>
-              <input id="offsetPresetX" type="number" min="-500" max="500" step="0.1" value="0" />
+              <input id="offsetPresetX" type="number" min="-100" max="100" step="0.1" value="0" />
             </label>
             <label><span class="offset-axis-label"><b>Z</b>上 / 下</span>
-              <input id="offsetPresetZ" type="number" min="-500" max="500" step="0.1" value="0" />
+              <input id="offsetPresetZ" type="number" min="-100" max="100" step="0.1" value="0" />
             </label>
             <label><span class="offset-axis-label"><b>Y</b>入墙 / 离墙</span>
-              <input id="offsetPresetY" type="number" min="-500" max="500" step="0.1" value="0" />
+              <input id="offsetPresetY" type="number" min="-100" max="100" step="0.1" value="0" />
             </label>
           </div>
           <div class="offset-positive-help"><span>＋ 正方向</span>右 · 上 · 入墙</div>
@@ -101,7 +109,7 @@
             <button id="saveOffsetPreset" type="button">保存 / 更新</button>
             <button id="deleteOffsetPreset" type="button" disabled>删除</button>
           </div>
-          <div class="offset-preset-help">预设只用于算法找点；点击后叠加在当前微调值上，不会替换已有偏移。</div>
+          <div class="offset-preset-help">固定偏置与 17001 双向共享；点击后叠加在当前微调值上，不会替换已有偏移。</div>
         </div>
         <div id="selectionLock" class="selection-lock ready">首次选点：直接点击点云或RGB图像</div>
         <button id="confirmTarget" class="primary" disabled>确定目标并发送到 18001</button>
@@ -132,6 +140,6 @@
       <div id="axisNote" class="axis-note hidden">淡色原点三轴为相机显示轴；运行“算法找点”后显示柜面 X / Y / Z</div>
     </main>
 
-    <script type="module" src="/web/pointcloud.js?v=20260914-3"></script>
+    <script type="module" src="/web/pointcloud.js?v=20260917-knob"></script>
   </body>
 </html>

@@ -1,0 +1,77 @@
+{
+  "name": "L-HHY-L-D-V4",
+  "arm": "left_arm",
+  "chain_id": "left_arm",
+  "named_joints": {
+    "left_shoulder_pitch_joint": -1.328086495399475,
+    "left_shoulder_roll_joint": 1.0771421194076538,
+    "left_shoulder_yaw_joint": -0.9000452756881714,
+    "left_elbow_joint": -0.33756566047668457,
+    "left_wrist_roll_joint": 2.0789754390716553,
+    "left_wrist_pitch_joint": 0.3370683193206787,
+    "left_wrist_yaw_joint": 0.29224732518196106
+  },
+  "arrival_speed_rad_s": 0.4,
+  "created_at": "2026-09-17 17:07:12",
+  "recorded_combo": {
+    "arm": "left_arm",
+    "hand_id": "qiangnao-revo2-left"
+  },
+  "rgbd": {
+    "schema_version": 1,
+    "directory": "L-HHY-L-D-V4_20260917_170714/rgbd",
+    "manifest": "L-HHY-L-D-V4_20260917_170714/rgbd/manifest.json",
+    "capture_id": "eac03341077a4b46938b49c2ac508a8b",
+    "frame_id": 64660,
+    "recorded_at": "2026-09-17T17:07:12.774+08:00",
+    "depth_unit": "mm"
+  },
+  "tcp_pose_recorded": {
+    "base_link": "torso_link",
+    "wrist_link": "left_wrist_yaw_link",
+    "T_base_from_tcp": [
+      [
+        0.0107771395192957,
+        -0.6658527182086714,
+        0.7460053692286039,
+        0.35808811738454494
+      ],
+      [
+        -0.9445845940645512,
+        -0.2515652999159693,
+        -0.210890598496224,
+        -0.05114564651456116
+      ],
+      [
+        0.32809114270228135,
+        -0.7023923814594747,
+        -0.6316653738713237,
+        0.5473586235839127
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "tcp": {
+      "p_tool_wrist_m": [
+        0.2095773766794327,
+        -0.0484596443700332,
+        0.025312167837534996
+      ],
+      "selection": {
+        "kind": "custom",
+        "key": "L-从左到右扭食指工作点_20260914_005540.json",
+        "label": "L-从左到右扭食指工作点",
+        "xyz_wrist": [
+          0.2095773766794327,
+          -0.0484596443700332,
+          0.025312167837534996
+        ]
+      },
+      "orientation_definition": "wrist_link_axes"
+    }
+  }
+}

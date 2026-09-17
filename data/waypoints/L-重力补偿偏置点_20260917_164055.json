@@ -1,0 +1,20 @@
+{
+  "name": "L-重力补偿偏置点",
+  "arm": "left_arm",
+  "chain_id": "left_arm",
+  "named_joints": {
+    "left_shoulder_pitch_joint": 0.7279080152511597,
+    "left_shoulder_roll_joint": 0.841190755367279,
+    "left_shoulder_yaw_joint": -0.4963147044181824,
+    "left_elbow_joint": -0.2395646721124649,
+    "left_wrist_roll_joint": 0.07532085478305817,
+    "left_wrist_pitch_joint": -0.5549894571304321,
+    "left_wrist_yaw_joint": -0.21763353049755096
+  },
+  "arrival_speed_rad_s": 0.4,
+  "created_at": "2026-09-17 16:40:55",
+  "recorded_combo": {
+    "arm": "left_arm",
+    "hand_id": "qiangnao-revo2-left"
+  }
+}

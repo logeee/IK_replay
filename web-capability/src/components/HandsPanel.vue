@@ -14,7 +14,7 @@ const emit = defineEmits<{
   <section class="card">
     <h2>手型号登记 <span class="lvl-tag">二级</span></h2>
     <p class="sub">
-      设计侧只作过滤提示，不限制跨侧安装（右臂可装左版灵巧手）。
+      按实物登记手型号、设计侧和 TCP，上方左右卡片分别选择对应型号。
     </p>
     <ul class="hand-list">
       <li v-for="h in payload.registry.hands" :key="h.id" class="hand">

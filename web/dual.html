@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>双臂工作台</title><link rel="stylesheet" href="/web/dual.css"></head>
+<body>
+<iframe id="scene" title="双臂三维视图" src="/?workspace=scene"></iframe>
+<header class="workspace-bar"><strong>双臂工作台</strong><span id="summary">读取状态…</span>
+<button id="bothFloat">同时卸力</button><button id="bothHold">同时恢复保持</button>
+<button id="stop" class="danger">停止双臂轨迹</button><button id="release">释放双臂</button>
+<a href="/">单臂操作台</a></header>
+<div id="notice" role="status" aria-live="polite"></div>
+<section id="left_arm" class="arm-window left"></section>
+<section id="right_arm" class="arm-window right"></section>
+<script type="module" src="/web/dual.js?v=3"></script>
+</body></html>

@@ -1,0 +1,55 @@
+{
+  "name": "L-0.42-右手首帧镜像起点-V2",
+  "arm": "left_arm",
+  "chain_id": "left_arm",
+  "robot": "h2",
+  "named_joints": {
+    "left_shoulder_pitch_joint": 0.14123,
+    "left_shoulder_roll_joint": 0.30737,
+    "left_shoulder_yaw_joint": -0.21115,
+    "left_elbow_joint": 1.2741,
+    "left_wrist_roll_joint": -0.00569,
+    "left_wrist_pitch_joint": 0.02718,
+    "left_wrist_yaw_joint": -0.00073
+  },
+  "created_at": "2026-09-17 21:52:36",
+  "tcp_offset": {
+    "xyz": [
+      0.2095773766794327,
+      -0.0484596443700332,
+      0.025312167837534996
+    ],
+    "rpy": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "generated": true,
+  "generated_from_sequence": "L-0.42-起手式.json",
+  "source_trajectory_frame": 0,
+  "mirrored_from_sequence": "R-0.46避障起手式_20260726_202946.json",
+  "mirrored_source_frame": 0,
+  "recorded_combo": {
+    "arm": "left_arm",
+    "hand_id": "qiangnao-revo2-left"
+  },
+  "shared_opening_distances_m": [
+    0.35,
+    0.36,
+    0.37,
+    0.38,
+    0.39,
+    0.4,
+    0.41,
+    0.42,
+    0.43,
+    0.44,
+    0.45,
+    0.46,
+    0.47,
+    0.48,
+    0.49,
+    0.5
+  ]
+}

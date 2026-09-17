@@ -166,6 +166,27 @@ class GravityCalibrationTests(unittest.TestCase):
             ["起点.json", "0.46终点.json"],
         )
 
+    def test_offline_sequence_uses_its_recorded_left_tcp(self):
+        gravity.SEQUENCES_DIR.mkdir(parents=True)
+        filename = "L-预览候选.json"
+        tcp = [0.209577, -0.048460, 0.025312]
+        payload = {
+            "name": "L-预览候选", "arm": "left_arm", "chain_id": "left_arm",
+            "tcp_offset": {"xyz": tcp, "rpy": [0, 0, 0]},
+            "trajectory": {"joint_names": ["left_elbow_joint"],
+                           "frames": [[0.1], [0.2]]},
+        }
+        (gravity.SEQUENCES_DIR / filename).write_text(json.dumps(payload))
+        with patch.object(gravity, "_offline_tool_visualization",
+                          side_effect=AssertionError("must not use another run's TCP")), \
+                patch.object(gravity, "_request_reach",
+                             side_effect=AssertionError("offline preview only")):
+            preview = gravity.offline_sequence_preview(filename)["plan"]
+        self.assertEqual(preview["arm"], "left_arm")
+        self.assertEqual(preview["tool_visualization"]["tcp_offset"], tcp)
+        self.assertEqual(preview["tool_visualization"]["wrist_link"], "left_wrist_yaw_link")
+        self.assertEqual(preview["tool_visualization"]["source"], "sequence_recorded_tcp")
+
     def test_offline_sequence_keeps_dense_execution_and_sparse_comparison_frames(self):
         gravity.SEQUENCES_DIR.mkdir(parents=True)
         filename = "0.47避障起手式.json"

@@ -1,0 +1,20 @@
+{
+  "name": "R-释放后的位点",
+  "arm": "right_arm",
+  "chain_id": "right_arm",
+  "named_joints": {
+    "right_shoulder_pitch_joint": 0.16176681220531464,
+    "right_shoulder_roll_joint": -0.316946804523468,
+    "right_shoulder_yaw_joint": 0.2162613421678543,
+    "right_elbow_joint": 1.2885318994522095,
+    "right_wrist_roll_joint": 0.0009467538329772651,
+    "right_wrist_pitch_joint": 0.024651551619172096,
+    "right_wrist_yaw_joint": 0.03636014088988304
+  },
+  "arrival_speed_rad_s": 0.4,
+  "created_at": "2026-09-17 16:16:03",
+  "recorded_combo": {
+    "arm": "right_arm",
+    "hand_id": "yaoshouche"
+  }
+}

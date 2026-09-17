@@ -138,6 +138,10 @@ class SpawnReachTests(_RegistryTestCase):
         self.assertEqual(cmd[cmd.index("--capability-url") + 1],
                          "http://127.0.0.1:18000")
 
+    def test_spawn_disables_unused_wrist_camera(self):
+        cmd, _task = self._spawn(reg.seed_registry(), calib_status="ready")
+        self.assertIn("--no-wrist-camera", cmd)
+
     def test_spawn_lets_reach_resolve_independent_artifact_binding(self):
         registry = reg.seed_registry()
         hand_id = registry["active"]["hand_id"]

@@ -1,0 +1,20 @@
+{
+  "name": "L-辅助测试点2",
+  "arm": "left_arm",
+  "chain_id": "left_arm",
+  "named_joints": {
+    "left_shoulder_pitch_joint": -1.1884516477584839,
+    "left_shoulder_roll_joint": 1.077046275138855,
+    "left_shoulder_yaw_joint": -0.673747181892395,
+    "left_elbow_joint": -0.01847967505455017,
+    "left_wrist_roll_joint": 2.010305881500244,
+    "left_wrist_pitch_joint": 0.18683406710624695,
+    "left_wrist_yaw_joint": 0.7797775864601135
+  },
+  "arrival_speed_rad_s": 0.4,
+  "created_at": "2026-09-17 15:18:17",
+  "recorded_combo": {
+    "arm": "left_arm",
+    "hand_id": "qiangnao-revo2-left"
+  }
+}

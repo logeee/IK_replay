@@ -1,0 +1,68 @@
+{
+  "name": "R-HHY-右手-3",
+  "arm": "right_arm",
+  "chain_id": "right_arm",
+  "named_joints": {
+    "right_shoulder_pitch_joint": 0.7270472645759583,
+    "right_shoulder_roll_joint": -0.3247305750846863,
+    "right_shoulder_yaw_joint": 0.08838365972042084,
+    "right_elbow_joint": 1.1513844728469849,
+    "right_wrist_roll_joint": 0.019935758784413338,
+    "right_wrist_pitch_joint": 0.14125806093215942,
+    "right_wrist_yaw_joint": -0.04858405143022537
+  },
+  "arrival_speed_rad_s": 0.4,
+  "created_at": "2026-09-17 18:49:37",
+  "recorded_combo": {
+    "arm": "right_arm",
+    "hand_id": "yaoshouche"
+  },
+  "rgbd": {
+    "schema_version": 1,
+    "directory": "R-HHY-右手-3_20260917_184938/rgbd",
+    "manifest": "R-HHY-右手-3_20260917_184938/rgbd/manifest.json",
+    "capture_id": "8e692e9ec966453cb353c96c101776ce",
+    "frame_id": 249014,
+    "recorded_at": "2026-09-17T18:49:37.829+08:00",
+    "depth_unit": "mm"
+  },
+  "tcp_pose_recorded": {
+    "base_link": "torso_link",
+    "wrist_link": "right_wrist_yaw_link",
+    "T_base_from_tcp": [
+      [
+        -0.43035453537841023,
+        -0.10486074086281177,
+        0.8965484922216614,
+        -0.26402609613290906
+      ],
+      [
+        -0.3112941277095826,
+        0.9495388206556316,
+        -0.03836657557618239,
+        -0.3027231078116553
+      ],
+      [
+        -0.8472844504254536,
+        -0.29560151064163226,
+        -0.44128087084488715,
+        -0.0320265545072317
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "tcp": {
+      "p_tool_wrist_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "selection": null,
+      "orientation_definition": "wrist_link_axes"
+    }
+  }
+}

@@ -35,6 +35,8 @@ _DETECTION_RULES: dict[str, tuple[int, np.ndarray]] = {
 def predict_target(
     panel_fit: dict[str, Any],
     wall_plane: dict[str, Any],
+    *,
+    knob_scene_override: str | None = None,
 ) -> dict[str, Any]:
     """Predict point 1/3 from the fitted panel center and YOLO class."""
     if not isinstance(panel_fit, dict) or not panel_fit.get("available"):
@@ -85,6 +87,8 @@ def predict_target(
         if isinstance(detection, dict) and detection.get("name") is not None
         else ""
     )
+    if knob_scene_override is not None:
+        detection_name = knob_scene_override
     rule = _DETECTION_RULES.get(detection_name)
     if rule is None:
         supported = "、".join(_DETECTION_RULES)

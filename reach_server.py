@@ -224,8 +224,9 @@ def main() -> int:
     parser.add_argument(
         "--wrist-camera",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="从 teleimager ZMQ 订阅右腕 JPEG，仅供横移拨动前留档",
+        default=False,
+        help="从 teleimager ZMQ 订阅右腕 JPEG，仅供横移拨动前留档；"
+             "默认关闭，需要时显式传 --wrist-camera",
     )
     parser.add_argument(
         "--wrist-camera-port",
@@ -447,7 +448,8 @@ def main() -> int:
             {
                 parameter: getattr(args, argument)
                 for argument, parameter in gravity_arg_names.items()
-            } | {"payload_com_m": args.arm_payload_com_m}
+            } | {"payload_com_m": args.arm_payload_com_m, "payload_link": payload_link,
+                 "excluded_subtree_link": excluded_subtree_link}
         )
     except ValueError as exc:
         print(f"[reach] 重力补偿CLI覆盖参数错误: {exc}")
@@ -781,7 +783,7 @@ def main() -> int:
                     status_code=409,
                 )
             return await call_next(request)
-    elif handeye_missing:
+    elif not args.camera_only:
         from fastapi.responses import JSONResponse
 
         # 无标定降级：只拦「相机 → 机器人坐标」和「依赖 TCP 标定」的接口，
@@ -802,7 +804,7 @@ def main() -> int:
 
         @app_module.app.middleware("http")
         async def guard_no_handeye(request, call_next):
-            if (request.url.path in blocked_no_handeye
+            if (not reach.state.handeye_ready and request.url.path in blocked_no_handeye
                     and request.method != "OPTIONS"):
                 return JSONResponse(
                     {
@@ -839,10 +841,22 @@ def main() -> int:
     for url in _browser_urls(args.host, args.port):
         print(f"  {url}")
 
+    workspace = None
+    if not args.camera_only:
+        from adapters.reach.workspace import install_workspace
+        from adapters.reach.state import current_state
+        workspace = install_workspace(app_module.app, args, capability_snapshot,
+                                      current_state(), hand_runtime)
+        print(f"[reach] 双臂工作台: http://127.0.0.1:{args.port}/arms")
+
     import uvicorn
     try:
         uvicorn.run(app_module.app, host=args.host, port=args.port)
     finally:
+        if workspace is not None:
+            workspace.owner.shutdown()
+            for arm_state in workspace.states.values():
+                arm_state.controller = None
         if reach.state.controller is not None:
             print("[reach] 手臂仍处于接管状态，权重渐出交还本体控制器（请扶住手臂）...")
             reach.state.controller.shutdown()

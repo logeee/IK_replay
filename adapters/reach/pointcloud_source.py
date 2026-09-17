@@ -12,7 +12,7 @@ from .state import router, state
 
 
 @router.get("/rgbd_snapshot")
-def reach_rgbd_snapshot():
+def reach_rgbd_snapshot(include_robot_pose: bool = False):
     """Return one ZMQ message as a compressed NPZ payload.
 
     The JPEG and aligned depth are copied from the same subscriber update.
@@ -25,7 +25,16 @@ def reach_rgbd_snapshot():
             {"ok": False, "error": "当前相机源不支持同帧 RGB-D 快照"},
             status_code=409,
         )
-    snapshot = snapshot_reader()
+    try:
+        if include_robot_pose:
+            from .waypoint_rgbd import pose_sample, paired_pose
+            before = pose_sample()
+            snapshot = snapshot_reader(fresh=True)
+            pose = paired_pose(before, pose_sample()) if snapshot is not None else None
+        else:
+            snapshot = snapshot_reader()
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"RGBD 位姿采集失败: {exc}"}, status_code=409)
     if snapshot is None:
         return JSONResponse(
             {"ok": False, "error": "还没有新鲜的 RGB-D 帧"},
@@ -34,6 +43,8 @@ def reach_rgbd_snapshot():
 
     metadata = dict(snapshot.get("metadata") or {})
     metadata["handeye_ready"] = bool(state.handeye_ready)
+    if include_robot_pose:
+        metadata["robot_pose"] = pose
     payload = io.BytesIO()
     np.savez_compressed(
         payload,

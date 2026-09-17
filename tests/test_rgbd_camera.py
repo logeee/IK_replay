@@ -455,6 +455,11 @@ class MockTeleimagerTest(unittest.TestCase):
                 self.assertEqual(rgbd["depth_mm"].shape, color_shape)
                 self.assertEqual(rgbd["metadata"], metadata)
                 self.assertEqual(tuple(rgbd["intrinsics"]), camera.intrinsics)
+                with camera._lock:
+                    previous_generation = camera._frame_generation
+                fresh = camera.rgbd_snapshot(fresh=True)
+                self.assertIsNotNone(fresh)
+                self.assertGreater(camera.info()["aligned_generation"], previous_generation)
                 self.assertTrue(picked["ok"], picked)
                 info = camera.info()
                 self.assertEqual(info["source"], "zmq")

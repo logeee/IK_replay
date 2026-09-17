@@ -361,8 +361,8 @@ class ExecutionHandoffTests(unittest.TestCase):
                     return_value=np.zeros((3, 2)),
                 ),
                 mock.patch.object(
-                    execution.threading,
-                    "Thread",
+                    execution,
+                    "ReachThread",
                     return_value=fake_thread,
                 ) as thread,
             ):
@@ -396,7 +396,10 @@ class ExecutionHandoffTests(unittest.TestCase):
         "exec_thread",
     )
 
-    def _run_sequence_in_sandbox(self, sequence: dict, waypoint: dict):
+    def _run_sequence_in_sandbox(
+        self, sequence: dict, waypoint: dict, *, body: dict | None = None,
+        measured: list[float] | None = None,
+    ):
         """把序列 / 位点写进临时目录，在 right_arm 服务里调 reach_run_sequence。
 
         返回 (result, thread_mock, fake_thread)。
@@ -414,6 +417,10 @@ class ExecutionHandoffTests(unittest.TestCase):
             (sequences / "sequence.json").write_text(json.dumps(sequence))
             try:
                 state.controller = _SequenceController()
+                if measured is not None:
+                    state.controller.read_measured = mock.Mock(
+                        return_value=list(measured)
+                    )
                 state.sequences_dir = sequences
                 state.waypoints_dir = waypoints
                 state.joint_names = ["j1", "j2"]
@@ -421,11 +428,12 @@ class ExecutionHandoffTests(unittest.TestCase):
                 state.exec_running = False
                 fake_thread = mock.Mock()
                 with mock.patch.object(
-                    recordings.threading, "Thread", return_value=fake_thread
+                    recordings, "ReachThread", return_value=fake_thread
                 ) as thread:
-                    result = recordings.reach_run_sequence(
-                        {"file": "sequence.json"}
-                    )
+                    result = recordings.reach_run_sequence({
+                        "file": "sequence.json",
+                        **(body or {}),
+                    })
                 return result, thread, fake_thread
             finally:
                 for name, value in saved.items():
@@ -464,6 +472,95 @@ class ExecutionHandoffTests(unittest.TestCase):
             kwargs["command_handoff"]["source"], "sequence_replay"
         )
         fake_thread.start.assert_called_once()
+
+    def test_sequence_reverse_replays_saved_frames_from_endpoint(self):
+        result, thread, fake_thread = self._run_sequence_in_sandbox(
+            self._sequence(), self._waypoint(),
+            body={"reverse": True}, measured=[0.1, 0.1],
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["reverse"])
+        frames = thread.call_args.kwargs["args"][0]
+        np.testing.assert_allclose(frames[0], [0.1, 0.1])
+        np.testing.assert_allclose(frames[-1], [0.0, 0.0])
+        self.assertEqual(
+            thread.call_args.kwargs["kwargs"]["command_handoff"]["source"],
+            "sequence_reverse_replay",
+        )
+        fake_thread.start.assert_called_once()
+
+    def test_sequence_reverse_rejects_position_away_from_endpoint(self):
+        sequence = self._sequence()
+        sequence["trajectory"]["frames"][-1] = [0.8, 0.8]
+        result, thread, _ = self._run_sequence_in_sandbox(
+            sequence, self._waypoint(), body={"reverse": True},
+            measured=[0.0, 0.0],
+        )
+
+        self.assertEqual(result.status_code, 409)
+        self.assertIn("起手式终点", json.loads(result.body)["error"])
+        thread.assert_not_called()
+
+    def test_saved_sequence_can_explicitly_skip_other_arm_check(self):
+        sequence = self._sequence()
+        sequence["trajectory"]["check_other_arm_collision"] = False
+        result, thread, _ = self._run_sequence_in_sandbox(sequence, self._waypoint())
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["other_arm_collision_check"])
+        kwargs = thread.call_args.kwargs["kwargs"]
+        self.assertFalse(kwargs["check_other_arm_collision"])
+        self.assertFalse(kwargs["command_handoff"]["other_arm_collision_check"])
+
+    def test_other_arm_check_defaults_on_and_requires_literal_false_to_skip(self):
+        for value in (True, None, 0, "false"):
+            with self.subTest(value=value):
+                sequence = self._sequence()
+                sequence["trajectory"]["check_other_arm_collision"] = value
+                result, thread, _ = self._run_sequence_in_sandbox(sequence, self._waypoint())
+                self.assertTrue(result["other_arm_collision_check"])
+                self.assertTrue(thread.call_args.kwargs["kwargs"]["check_other_arm_collision"])
+        result, thread, _ = self._run_sequence_in_sandbox(self._sequence(), self._waypoint())
+        self.assertTrue(result["other_arm_collision_check"])
+        self.assertTrue(thread.call_args.kwargs["kwargs"]["check_other_arm_collision"])
+
+    def test_skipping_other_arm_check_does_not_bypass_start_drift_guard(self):
+        sequence = self._sequence()
+        sequence["trajectory"].update({"check_other_arm_collision": False,
+                                      "frames": [[0.8, 0.0], [0.1, 0.1]]})
+        result, thread, _ = self._run_sequence_in_sandbox(sequence, self._waypoint())
+        self.assertEqual(result.status_code, 409)
+        self.assertIn("起点与录制起点相差", json.loads(result.body)["error"])
+        thread.assert_not_called()
+
+    def test_worker_only_skips_other_arm_check_when_requested(self):
+        from adapters.reach.state import ReachState, use_state
+        for option in ({}, {"check_other_arm_collision": True},
+                       {"check_other_arm_collision": False}):
+            with self.subTest(option=option):
+                local = ReachState()
+                local.workspace = mock.Mock()
+                # Abort at the first post-check boundary, before controller use.
+                with use_state(local), mock.patch.object(
+                    execution, "_start_torso_trace", side_effect=RuntimeError("offline boundary")
+                ), self.assertRaisesRegex(RuntimeError, "offline boundary"):
+                    execution._exec_loop([np.zeros(2), np.ones(2)], 1., **option)
+                if option.get("check_other_arm_collision") is False:
+                    local.workspace.check_other_path.assert_not_called()
+                else:
+                    local.workspace.check_other_path.assert_called_once()
+
+    def test_worker_still_rejects_other_arm_collision_by_default(self):
+        from adapters.reach.state import ReachState, use_state
+        local = ReachState()
+        local.exec_running = True
+        local.workspace = mock.Mock()
+        local.workspace.check_other_path.side_effect = RuntimeError("intersection")
+        with use_state(local), mock.patch.object(execution, "_start_torso_trace") as trace:
+            execution._exec_loop([np.zeros(2), np.ones(2)], 1.)
+        self.assertFalse(local.exec_running)
+        self.assertIn("双臂执行检查失败", local.exec_message)
+        trace.assert_not_called()
 
     def test_sequence_replay_rejects_sequence_of_other_arm_or_unmarked(self):
         """序列 arm 是左臂 / 缺失 / 与名字前缀矛盾 → 409，不起执行线程。"""

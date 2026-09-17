@@ -1,0 +1,77 @@
+{
+  "name": "L-HHY-R-D-V1",
+  "arm": "left_arm",
+  "chain_id": "left_arm",
+  "named_joints": {
+    "left_shoulder_pitch_joint": -1.3425570726394653,
+    "left_shoulder_roll_joint": 0.40733781456947327,
+    "left_shoulder_yaw_joint": -0.9279146194458008,
+    "left_elbow_joint": 0.1513487845659256,
+    "left_wrist_roll_joint": 1.5475529432296753,
+    "left_wrist_pitch_joint": 0.5078315734863281,
+    "left_wrist_yaw_joint": 0.13665612041950226
+  },
+  "arrival_speed_rad_s": 0.4,
+  "created_at": "2026-09-17 04:05:42",
+  "recorded_combo": {
+    "arm": "left_arm",
+    "hand_id": "qiangnao-revo2-left"
+  },
+  "rgbd": {
+    "schema_version": 1,
+    "directory": "L-HHY-R-D-V1_20260917_040545/rgbd",
+    "manifest": "L-HHY-R-D-V1_20260917_040545/rgbd/manifest.json",
+    "capture_id": "68faa06a625b4c8f88d98078824516dd",
+    "frame_id": 241962,
+    "recorded_at": "2026-09-17T04:05:42.903+08:00",
+    "depth_unit": "mm"
+  },
+  "tcp_pose_recorded": {
+    "base_link": "torso_link",
+    "wrist_link": "left_wrist_yaw_link",
+    "T_base_from_tcp": [
+      [
+        0.2680634163798999,
+        -0.9599880688283565,
+        0.08102414767178345,
+        0.47751112804587864
+      ],
+      [
+        -0.6224497309251857,
+        -0.2367726079289462,
+        -0.7459859681024098,
+        -0.0917773151757671
+      ],
+      [
+        0.7353219276411527,
+        0.14953808826425483,
+        -0.6610143893202112,
+        0.5372019068134216
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "tcp": {
+      "p_tool_wrist_m": [
+        0.18186065820104044,
+        -0.056240100864676026,
+        0.017762315956833738
+      ],
+      "selection": {
+        "kind": "custom",
+        "key": "L-从左到右扭食指工作点_20260914_005540.json",
+        "label": "L-从左到右扭食指工作点",
+        "xyz_wrist": [
+          0.18186065820104044,
+          -0.056240100864676026,
+          0.017762315956833738
+        ]
+      },
+      "orientation_definition": "wrist_link_axes"
+    }
+  }
+}

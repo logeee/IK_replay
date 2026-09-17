@@ -248,11 +248,14 @@ def plan_trajectory(payload: TrajectoryPayload) -> dict[str, Any]:
             steps=int(payload.steps if payload.steps is not None else config.trajectory.get("steps", 80)),
             planner_options=payload.planner_options,
         )
-        waypoints = planners[robot_id][planner_name].plan(request)
+        planner = planners[robot_id][planner_name]
+        if planner_name == "rrt":
+            planner = RRTConnectTrajectoryPlanner(robot_model, _request_collision_checker(robot_id, payload.chain_id))
+        waypoints = planner.plan(request)
         waypoint_dicts = [waypoint.to_dict() for waypoint in waypoints]
         collision_summary = None
         if payload.check_collision:
-            checker = collision_checkers[robot_id]
+            checker = _request_collision_checker(robot_id, payload.chain_id)
             collision_checks = checker.check_trajectory(waypoints, payload.chain_id, request.tcp_offset)
             collision_summary = checker.summarize_checks(collision_checks)
             # 撞了才 RRT：勾了碰撞检查且规划路径撞障时，自动改用 RRT-Connect
@@ -306,7 +309,7 @@ def check_collision(payload: CollisionPayload) -> dict[str, Any]:
         robot_id, robot_model = _select_robot(payload.robot)
         robot_model.chain_config(payload.chain_id)
         tcp_offset = _pose_or_default(payload.tcp_offset, robot_model.tcp_offset(payload.chain_id))
-        checker = collision_checkers[robot_id]
+        checker = _request_collision_checker(robot_id, payload.chain_id)
         if payload.waypoints is not None:
             checks = checker.check_trajectory(payload.waypoints, payload.chain_id, tcp_offset)
             return {
@@ -400,6 +403,18 @@ def legacy_demo_plan(payload: LegacyDemoPayload) -> dict[str, Any]:
         raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _request_collision_checker(robot_id, chain_id):
+    from adapters.reach.state import current_state
+    selected = current_state()
+    workspace = getattr(selected, "workspace", None)
+    if workspace is not None:
+        entry = workspace.states.get(chain_id)
+        if entry is not None and entry.workspace_enabled and entry.robot_id == robot_id:
+            workspace.refresh_collision(entry)
+            return entry.collision_checker
+    return collision_checkers[robot_id]
 
 
 def _select_robot(requested: str | None) -> tuple[str, RobotModel]:

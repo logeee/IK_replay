@@ -1,0 +1,59 @@
+{
+  "name": "L-0.45-左到右预备点测试",
+  "chain_id": "left_arm",
+  "named_joints": {
+    "left_shoulder_pitch_joint": -0.6058955967151722,
+    "left_shoulder_roll_joint": 0.17157098715371005,
+    "left_shoulder_yaw_joint": -0.06565566902484207,
+    "left_elbow_joint": -0.06760637887197156,
+    "left_wrist_roll_joint": 0.3115989137231387,
+    "left_wrist_pitch_joint": -0.2338458250392725,
+    "left_wrist_yaw_joint": 0.45194586613734905
+  },
+  "created_at": "2026-09-17 20:41:14",
+  "arm": "left_arm",
+  "distance_m": 0.45,
+  "generated_from": "L-0.42-左到右预备点测试_20260917_191957.json",
+  "reference_distance_m": 0.42,
+  "offset_root_m": [
+    0.03,
+    0.0,
+    0.0
+  ],
+  "tcp_pose": {
+    "xyz": [
+      0.45288977899053673,
+      0.11805760374671403,
+      0.6119418047310747
+    ],
+    "rpy": [
+      0.16692486136110832,
+      -1.0202207794109754,
+      0.21023895930675038
+    ]
+  },
+  "tcp_offset": {
+    "xyz": [
+      0.2095773766794327,
+      -0.0484596443700332,
+      0.025312167837534996
+    ],
+    "rpy": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "ik": {
+    "mode": "strict_orientation",
+    "error_mm": 0.0006653675419221788,
+    "error_rotation_deg": 0.00038384101559216054,
+    "collision_status": "safe",
+    "minimum_model_clearance_mm": 53.0628582353471
+  },
+  "recorded_combo": {
+    "arm": "left_arm",
+    "hand_id": "qiangnao-revo2-left"
+  },
+  "arrival_speed_rad_s": 0.4
+}

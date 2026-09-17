@@ -1,0 +1,144 @@
+{
+  "request_started_at": "2026-09-17T02:45:48.380+08:00",
+  "response_received_at": "2026-09-17T02:45:48.405+08:00",
+  "data": {
+    "enabled": true,
+    "arm": "left_arm",
+    "hand_id": "qiangnao-revo2-left",
+    "hand_name": "强脑-Revo2-左",
+    "side": "left",
+    "wrist_link": "left_wrist_yaw_link",
+    "T_wrist2hand": [
+      [
+        0.09381998468087482,
+        -0.9955743454935029,
+        -0.005434433702255733,
+        0.08201311235391213
+      ],
+      [
+        0.9840549156106102,
+        0.09356014534843135,
+        -0.1512693698835787,
+        0.005137492862078404
+      ],
+      [
+        0.15110835032212774,
+        0.008844308766898191,
+        0.988477639942028,
+        0.0010112390774479393
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "tcp_point_id": "",
+    "p_tool_wrist_m": [
+      0.12145679351634511,
+      -0.025497084209996388,
+      0.10810629379886669
+    ],
+    "mount_profile": {
+      "id": "measured_3d",
+      "name": "3D 标定实测",
+      "source": "calibration"
+    },
+    "model": {
+      "key": "brainco_revo2:left:measured_3d:brainco_left.urdf",
+      "device_id": "brainco_revo2",
+      "urdf_url": "/api/reach/hand/assets/brainco_hand/brainco_left.urdf",
+      "mesh_base_url": "/api/reach/hand/assets/brainco_hand/",
+      "preview": {
+        "model_root": "/assets/brainco_hand",
+        "urdf": "brainco_{side}.urdf",
+        "side_prefix": {
+          "left": "left",
+          "right": "right"
+        },
+        "material_mode": "brainco",
+        "joints": [
+          {
+            "index": 0,
+            "targets": [
+              {
+                "suffix": "thumb_proximal_joint",
+                "lower": 0.0,
+                "upper": 1.0472
+              }
+            ]
+          },
+          {
+            "index": 1,
+            "targets": [
+              {
+                "suffix": "thumb_metacarpal_joint",
+                "lower": 0.0,
+                "upper": 1.5184
+              }
+            ]
+          },
+          {
+            "index": 2,
+            "targets": [
+              {
+                "suffix": "index_proximal_joint",
+                "lower": 0.0,
+                "upper": 1.4661
+              }
+            ]
+          },
+          {
+            "index": 3,
+            "targets": [
+              {
+                "suffix": "middle_proximal_joint",
+                "lower": 0.0,
+                "upper": 1.4661
+              }
+            ]
+          },
+          {
+            "index": 4,
+            "targets": [
+              {
+                "suffix": "ring_proximal_joint",
+                "lower": 0.0,
+                "upper": 1.4661
+              }
+            ]
+          },
+          {
+            "index": 5,
+            "targets": [
+              {
+                "suffix": "pinky_proximal_joint",
+                "lower": 0.0,
+                "upper": 1.4661
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "service": {
+      "url": "http://127.0.0.1:18089",
+      "available": true,
+      "connected": true,
+      "compatible": true,
+      "expected_device_id": "brainco_revo2",
+      "actual_device_id": "brainco_revo2",
+      "transport": "modbus",
+      "error": null
+    },
+    "positions": [
+      0.433,
+      0.805,
+      0.409,
+      0.999,
+      0.999,
+      0.999
+    ]
+  }
+}

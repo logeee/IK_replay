@@ -157,13 +157,21 @@ let snapshotImageUrl = null;
 let selection = null;
 let replacementArmed = false;
 let selectionPending = false;
+let confirmPending = false;
 let semanticLabels = [];
 let restoringState = false;
 let autoTargetPending = false;
 let capturePending = false;
 let panelCenterCamera = null;
 let offsetPresets = [];
-const STORAGE_KEY = "ik-replay-pointcloud-state-v1";
+const selectedArm = new URLSearchParams(location.search).get("arm");
+const arm = ["left_arm", "right_arm"].includes(selectedArm) ? selectedArm : null;
+const STORAGE_KEY = "ik-replay-pointcloud-state-v1" + (arm ? `-${arm}` : "");
+if (arm) {
+  const label = arm === "left_arm" ? "左臂" : "右臂";
+  document.title = `${label}选点 · ${document.title}`;
+  document.querySelector(".sidebar h1").textContent = `${label} · RGB / 语义点云`;
+}
 
 function resize() {
   const { clientWidth, clientHeight } = viewport;
@@ -207,6 +215,7 @@ function persistState() {
       cameraPosition: camera.position.toArray(),
       controlsTarget: controls.target.toArray(),
       selection,
+      knobSceneOverride: $("knobSceneOverride").value,
       panelCenterCamera,
     }));
   } catch (_) {
@@ -408,7 +417,9 @@ function updateAutoTargetButton() {
     || capturePending
     || selectionPending
     || autoTargetPending
+    || confirmPending
   );
+  $("knobSceneOverride").disabled = capturePending || selectionPending || autoTargetPending || confirmPending;
   button.textContent = modelUnavailable
     ? "算法找点（需 YOLO）"
     : (autoTargetPending ? "算法找点中…" : "算法找点1/3（Tab）");
@@ -583,6 +594,7 @@ function renderCaptureInfo(meta) {
 }
 
 function restoredSelection(meta, stored) {
+  if (stored?.captureId === meta.capture_id && stored.selection === null) return null;
   if (stored?.captureId === meta.capture_id && stored.selection) {
     const value = stored.selection;
     if (!Array.isArray(value.pCamera) || value.pCamera.length !== 3) return null;
@@ -638,6 +650,8 @@ async function loadCapture(meta, { restore = false, reportProgress = false } = {
     && Array.isArray(stored.cameraPosition)
     && Array.isArray(stored.controlsTarget);
   captureMeta = meta;
+  const savedOverride = stored.captureId === meta.capture_id ? stored.knobSceneOverride : "";
+  $("knobSceneOverride").value = ["旋钮左", "旋钮右"].includes(savedOverride) ? savedOverride : "";
   const snapshotImage = $("snapshotImage");
   snapshotImage.onload = () => {
     layoutSnapshot();
@@ -722,6 +736,7 @@ async function capture() {
   capturePending = true;
   button.disabled = true;
   $("autoTarget").disabled = true;
+  updateAutoTargetButton();
   setStatus("1/7 获取并对齐同帧 RGB-D…");
   try {
     const response = await fetch("/api/pointcloud/capture", {
@@ -733,6 +748,7 @@ async function capture() {
         z_max_m: Number($("zMax").value),
         conf: Number($("conf").value),
         operation_id: operationId,
+        arm,
       }),
     });
     const meta = await response.json();
@@ -866,7 +882,7 @@ async function autoTarget() {
     setStatus("未加载 YOLO 模型，请在 RGB 或点云中手动选点", "error");
     return;
   }
-  if (autoTargetPending || selectionPending) {
+  if (autoTargetPending || selectionPending || confirmPending) {
     setStatus("算法正在找点，请稍候");
     return;
   }
@@ -877,7 +893,8 @@ async function autoTarget() {
   try {
     const response = await fetch(
       `/api/pointcloud/auto-target/${captureMeta.capture_id}`,
-      { method: "POST" },
+      { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({knob_scene_override: $("knobSceneOverride").value || null}) },
     );
     const result = await response.json();
     if (!response.ok || !result.ok) {
@@ -909,13 +926,16 @@ async function autoTarget() {
         modelVersion: result.model_version,
         targetPointSlot: result.target_point_slot,
         matchedDetectionName: result.matched_detection_name,
+        knobSceneSource: result.knob_scene_source,
+        knobSceneOverride: result.knob_scene_override,
         wallAxesCamera: result.wall_axes_camera,
         panelCenterCamera: result.panel_center_camera_m,
         targetWall: result.target_wall_m,
       },
     );
     setStatus(
-      `算法找点成功：${result.matched_detection_name}·点${result.target_point_slot}`,
+      `算法找点成功：${result.matched_detection_name}·点${result.target_point_slot}`
+        + (result.knob_scene_source === "manual" ? "（手动指定类别）" : "（自动识别类别）"),
       "ok",
     );
   } catch (error) {
@@ -953,7 +973,7 @@ function renderSelection() {
       : selection.source === "restored" ? "已恢复的确认点"
         : algorithmSelection ? selection.source : "三维点云"}`,
     selection.pixel ? `像素: (${selection.pixel[0]}, ${selection.pixel[1]})` : "像素: -",
-    `类别: ${selection.className}`,
+    `类别: ${selection.className}${selection.knobSceneSource === "manual" ? "（手动指定）" : ""}`,
     `深度: ${(pCamera[2] * 1000).toFixed(1)} mm`,
     `p_camera: [${pCamera.map((value) => value.toFixed(5)).join(", ")}] m`,
     `微调(mm): [${adjustmentMm.map((value) => value.toFixed(1)).join(", ")}]`,
@@ -1172,8 +1192,8 @@ function offsetPresetPayload() {
   if (!Object.values(offsetMm).every(Number.isFinite)) {
     throw new Error("三个方向的偏移都必须是数字");
   }
-  if (Object.values(offsetMm).some((value) => Math.abs(value) > 500)) {
-    throw new Error("单轴偏移不能超过 ±500 mm");
+  if (Object.values(offsetMm).some((value) => Math.abs(value) > 100)) {
+    throw new Error("单轴偏移不能超过 ±100 mm");
   }
   return { name, offset_mm: offsetMm };
 }
@@ -1280,6 +1300,8 @@ async function confirmTarget() {
     return;
   }
   const button = $("confirmTarget");
+  confirmPending = true;
+  updateAutoTargetButton();
   button.disabled = true;
   setStatus("正在用冻结深度拟合表面，并提交给 18001…");
   // 墙面系微调分量（右x/入墙y/上z，mm）：把累计的相机系微调向量投影到
@@ -1306,6 +1328,7 @@ async function confirmTarget() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          arm,
           p_camera: selection.pCamera,
           surface_reference_camera: selection.baseCamera,
           pixel: selection.pixel,
@@ -1316,6 +1339,8 @@ async function confirmTarget() {
           model_version: selection.modelVersion || null,
           target_point_slot: selection.targetPointSlot ?? null,
           matched_detection_name: selection.matchedDetectionName || null,
+          knob_scene_source: selection.knobSceneSource || null,
+          knob_scene_override: selection.knobSceneOverride || null,
         }),
       },
     );
@@ -1333,6 +1358,8 @@ async function confirmTarget() {
   } catch (error) {
     setStatus(error.message || String(error), "error");
   } finally {
+    confirmPending = false;
+    updateAutoTargetButton();
     button.disabled = false;
   }
 }
@@ -1352,7 +1379,7 @@ function showSnapshot() {
 function showLive() {
   const image = $("liveStream");
   if (!image.getAttribute("src")) {
-    image.src = `/api/pointcloud/stream?t=${Date.now()}`;
+    image.src = `/api/pointcloud/stream?t=${Date.now()}${arm ? `&arm=${arm}` : ""}`;
   }
   setViewMode("live");
 }
@@ -1413,6 +1440,22 @@ renderer.domElement.addEventListener("pointerup", (event) => {
 
 $("captureBtn").addEventListener("click", capture);
 $("autoTarget").addEventListener("click", autoTarget);
+$("knobSceneOverride").addEventListener("change", () => {
+  if (selection?.source?.startsWith("target-finder/")) {
+    selection = null;
+    marker.visible = false;
+    setPanelCenterMarker(null);
+    clearCabinetFrame();
+    replacementArmed = false;
+    $("confirmTarget").disabled = true;
+    $("selection").textContent = "类别已切换，请重新运行算法找点";
+    $("selection").classList.add("muted");
+    updateSelectionLock();
+  }
+  persistState();
+  const category = $("knobSceneOverride").value;
+  setStatus(category ? `已手动指定${category}，点击“算法找点”重新计算` : "已恢复自动识别，点击“算法找点”重新计算");
+});
 $("snapshotImage").addEventListener("click", selectSnapshotPixel);
 $("confirmTarget").addEventListener("click", confirmTarget);
 $("offsetPresetSelect").addEventListener("change", populateOffsetPresetEditor);
@@ -1477,7 +1520,7 @@ if (Number.isFinite(requestedOffset)) {
 
 async function initialize() {
   try {
-    const response = await fetch("/api/pointcloud/status", { cache: "no-store" });
+    const response = await fetch(`/api/pointcloud/status${arm ? `?arm=${arm}` : ""}`, { cache: "no-store" });
     const value = await response.json();
     if (!response.ok || !value.ok) {
       throw new Error(value.error || `HTTP ${response.status}`);
@@ -1515,3 +1558,6 @@ setViewMode(viewMode);
 updateSelectionLock();
 refreshOffsetPresets();
 initialize();
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refreshOffsetPresets($("offsetPresetSelect").value);
+});

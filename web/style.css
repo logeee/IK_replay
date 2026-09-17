@@ -811,6 +811,79 @@ button:disabled {
   width: min(680px, 100%);
 }
 
+.reach-record-card {
+  width: min(500px, 100%);
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
+}
+
+.reach-record-options {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.reach-record-options legend, .reach-record-name {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #526579;
+}
+
+.reach-record-option {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #c5d2dd;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.reach-record-option:has(input:checked) {
+  border-color: #2d78ad;
+  background: #edf6fc;
+}
+
+.reach-record-option:focus-within {
+  outline: 2px solid #2d78ad;
+  outline-offset: 2px;
+}
+
+.reach-record-option input {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  flex: 0 0 auto;
+  accent-color: #2d78ad;
+}
+
+.reach-record-option strong, .reach-record-option small { display: block; }
+.reach-record-option strong { font-size: 14px; }
+.reach-record-option small { margin-top: 4px; font-size: 12px; color: #607387; }
+.reach-record-name { margin-top: 18px; }
+
+.reach-record-name-input {
+  width: 100%;
+  height: auto;
+  padding: 10px 12px;
+  border: 1px solid #b9c7d3;
+  border-radius: 7px;
+  background: #fff;
+  color: #172636;
+  font-size: 15px;
+}
+
+.reach-record-name-input:focus { outline: 2px solid #2d78ad; outline-offset: 1px; }
+.reach-record-feedback { margin-top: 10px; font-size: 13px; line-height: 1.5; color: #526579; }
+.reach-record-feedback.error { color: #b42318; }
+.reach-record-card[aria-busy="true"] .reach-record-option { cursor: wait; opacity: 0.65; }
+
 .reach-waypoint-speed-list {
   max-height: min(60vh, 560px);
   margin-top: 12px;
@@ -1148,6 +1221,13 @@ button:disabled {
   gap: 7px;
 }
 
+.reach-orientation-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #47617c;
+  padding: 4px 0;
+}
+
 .reach-stepmode {
   display: inline-flex;
   /* 全局 label 是竖排（表单字段样式），这里必须显式横排 */
@@ -1192,6 +1272,13 @@ button:disabled {
   display: none;
 }
 
+.reach-step-pop-ab {
+  width: min(480px, calc(100vw - 24px));
+  min-width: 0;
+  max-height: calc(100dvh - 36px);
+  overflow-y: auto;
+}
+
 @keyframes reach-step-pop-in {
   from { opacity: 0; transform: translate(-50%, -8px); }
   to { opacity: 1; transform: translate(-50%, 0); }
@@ -1216,6 +1303,13 @@ button:disabled {
   margin-top: 10px;
 }
 
+.reach-step-direct { margin: 12px 0; padding-bottom: 12px; border-bottom: 1px solid #e6d5b5; }
+.reach-step-group-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 8px; font-size: 12px; font-weight: 600; color: #6b4c0d; }
+.reach-step-group-title[hidden] { display: none; }
+.reach-step-group-title span, .reach-step-direct p { font-size: 11px; font-weight: 400; color: #8a713f; }
+.reach-step-direct p { margin: 6px 0 0; line-height: 1.5; }
+.reach-step-direct-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 7px; }
+
 .reach-step-pop-actions button {
   padding: 6px 14px;
   font-size: 13px;
@@ -1233,6 +1327,18 @@ button:disabled {
   border-color: #cf9a2c;
   color: #3d2c04;
 }
+
+.reach-step-pop-ab .reach-step-pop-actions button {
+  max-width: 100%;
+  white-space: normal;
+  text-align: left;
+}
+
+.reach-step-pop-ab .reach-step-pop-actions button:nth-child(-n+2) {
+  flex-basis: 100%;
+}
+
+.reach-step-pop-ab .reach-step-direct-actions button { min-width: 0; text-align: center; }
 
 .reach-step-pop-actions button.primary:hover:not(:disabled) {
   background: #e8ad2e;
@@ -1522,4 +1628,68 @@ button:disabled {
   background: #fbe9e7;
   color: #b3362a;
   word-break: break-all;
+}
+.reach-debug-row { display: flex; gap: 6px; margin: 6px 0; flex-wrap: wrap; }
+#reachDebugModal, #reachDirectSettingsModal { padding: 12px; background: rgba(8, 12, 16, 0.45); }
+.reach-debug-card { width: min(620px, 100%); padding: 0; max-height: calc(100dvh - 24px); display: flex; flex-direction: column; overflow: hidden; }
+.reach-debug-card .reach-library-header { flex: none; margin: 0; padding: 10px 14px; border-bottom: 1px solid #d8e0e7; font-size: 16px; }
+.reach-debug-body { padding: 12px 14px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.reach-debug-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0; padding: 0; border: 0; }
+.reach-debug-modes label { display: flex; flex-direction: row; align-items: center; gap: 7px; margin: 0; padding: 8px; border: 1px solid #c3d1de; border-radius: 8px; background: #fff; cursor: pointer; }
+.reach-debug-modes label:has(input:checked) { border-color: #247caf; background: #eaf5fb; box-shadow: inset 0 0 0 1px #247caf; }
+.reach-debug-modes input { flex: none; width: 15px; height: 15px; margin: 0; accent-color: #247caf; }
+.reach-debug-modes strong { display: block; font-size: 13px; line-height: 1.35; }
+.reach-debug-modes small { display: block; font-size: 11px; line-height: 1.4; color: #607387; }
+.reach-debug-points { display: grid; grid-template-columns: 1fr; gap: 10px; margin-top: 12px; }
+.reach-debug-points.hidden { display: none; }
+.reach-debug-point-row { display: grid; min-width: 0; gap: 10px; padding: 12px; border: 1px solid #d8e0e7; border-radius: 8px; background: #f7fafc; }
+.reach-debug-point-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 10px; }
+.reach-debug-point-heading strong { font-size: 13px; }
+.reach-debug-point-heading > span { padding: 2px 7px; border-radius: 4px; background: #eaf2f7; color: #47657c; font-size: 11px; font-weight: 500; }
+.reach-debug-point-values { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 1.15fr); gap: 8px; }
+.reach-debug-point-values .reach-debug-force { padding-left: 10px; border-left: 1px solid #d8e0e7; }
+.reach-debug-timing { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.reach-debug-timing-title { grid-column: 1 / -1; font-size: 12px; font-weight: 600; }
+.reach-debug-timing-title span { margin-left: 6px; color: #607387; font-size: 11px; font-weight: 400; }
+.reach-debug-point-select, .reach-debug-point-values > label, .reach-debug-timing > label { min-width: 0; display: flex; flex-direction: column; gap: 4px; margin: 0; font-size: 12px; line-height: 1.4; font-weight: 600; }
+.reach-debug-point-row select { min-width: 0; width: 100%; height: 34px; padding: 5px 7px; font-size: 13px; }
+.reach-debug-offset { display: flex; align-items: center; height: 34px; border: 1px solid #c3d1de; border-radius: 6px; background: #fff; padding-right: 7px; }
+.reach-debug-offset:focus-within { outline: 2px solid #247caf; outline-offset: 1px; }
+.reach-debug-offset input { min-width: 0; width: 100%; height: 100%; padding: 5px 6px; border: 0; background: transparent; font-size: 14px; font-weight: 600; outline: none; }
+.reach-debug-offset > span { color: #607387; font-size: 11px; font-weight: 400; }
+.reach-direct-offsets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.reach-direct-tolerances { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.reach-direct-offsets > label, .reach-direct-tolerances > label { display: flex; flex-direction: column; min-width: 0; gap: 4px; font-size: 12px; font-weight: 600; }
+.reach-direct-note { margin: 4px 0; font-size: 12px; color: #526579; line-height: 1.5; }
+#reachDirectSettingsForm .reach-library-actions { flex: none; margin: 0; padding: 10px 14px; border-top: 1px solid #d8e0e7; background: #f7fafc; align-items: center; }
+#reachDirectSettingsForm .reach-library-actions button { min-width: 64px; font-size: 13px; padding: 7px 10px; }
+#reachDirectSettingsForm .reach-debug-point-heading > span { overflow-wrap: anywhere; max-width: 100%; }
+#reachDirectSettingsFeedback:empty { display: none; }
+#reachDirectSettingsOpen { min-width: 0; width: auto; margin-left: auto; padding: 4px 8px; font-size: 12px; }
+#reachDirectPoints .reach-step-group-title { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; }
+#reachDebugAxisHint { margin: 0; color: #526579; font-size: 12px; line-height: 1.4; }
+.reach-debug-offset-summary { display: grid; gap: 6px; padding: 7px 9px; border-radius: 6px; background: #eaf2f7; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.reach-debug-help { font-size: 12px; color: #526579; line-height: 1.5; }
+.reach-debug-help summary { cursor: pointer; }
+.reach-debug-help p { margin: 5px 0; }
+#reachDebugFeedback { margin-top: 8px; font-size: 12px; min-height: 0; }
+#reachDebugFeedback:empty { display: none; }
+#reachDebugForm .reach-library-actions { flex: none; margin: 0; padding: 10px 14px; border-top: 1px solid #d8e0e7; background: #f7fafc; align-items: center; }
+#reachDebugForm .reach-library-actions button { min-width: 64px; white-space: nowrap; font-size: 13px; padding: 7px 10px; }
+.reach-debug-save-note { margin-right: auto; font-size: 11px; color: #607387; }
+@media (max-height: 460px) {
+  .reach-debug-body { padding-top: 6px; padding-bottom: 6px; }
+  .reach-debug-points { gap: 8px; margin-top: 10px; }
+}
+@media (max-width: 520px) {
+  .reach-debug-point-values { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .reach-debug-point-values .reach-debug-force { grid-column: 1 / -1; flex-direction: row; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0 0; border-left: 0; border-top: 1px solid #d8e0e7; }
+.reach-debug-force .reach-debug-offset { width: 110px; }
+}
+@media (max-width: 420px) {
+  #reachDebugModal, #reachDirectSettingsModal { padding: 8px; }
+  .reach-debug-card { max-height: calc(100dvh - 16px); }
+  .reach-debug-body { padding: 10px; }
+  .reach-debug-point-row { padding: 10px; gap: 8px; }
+  .reach-debug-save-note { max-width: 70px; }
 }

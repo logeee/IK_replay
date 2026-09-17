@@ -9,6 +9,84 @@ from core import gravity_profiles
 from tools import capability_server
 
 
+def test_dual_arm_configuration_is_owned_by_18000(tmp_path: Path):
+    registry_path = tmp_path / "capability_registry.json"
+    arms_path = tmp_path / "reach_arms.json"
+    registry = reg.seed_registry()
+    registry["hands"].append({
+        "id": "test-left",
+        "name": "测试左手",
+        "design_side": "left",
+        "tool_out_mm": 0.0,
+        "notes": "",
+    })
+    reg.save_registry(registry, registry_path)
+    client = TestClient(capability_server.app)
+    patches = (
+        patch.object(capability_server, "REGISTRY_PATH", registry_path),
+        patch.object(capability_server, "ARMS_CONFIG_PATH", arms_path),
+        patch.object(
+            capability_server,
+            "GRAVITY_PROFILES_PATH",
+            gravity_profiles.DEFAULT_GRAVITY_PROFILES_PATH,
+        ),
+    )
+    with patches[0], patches[1], patches[2]:
+        initial = client.get("/api/capability/registry")
+        saved = client.post("/api/capability/arms/left_arm", json={
+            "enabled": True,
+            "hand_id": "test-left",
+            "camera_role": "head",
+            "motion_backend": "legacy_timed",
+            "gravity_version": "0.0.0",
+        })
+
+    assert initial.status_code == 200
+    assert initial.json()["arm_workspace"]["runtime_available"] is False
+    assert saved.status_code == 200, saved.text
+    selected = saved.json()["arm_workspace"]["arms"]["left_arm"]
+    assert selected["enabled"] is True
+    assert selected["selection"]["hand_id"] == "test-left"
+    assert json.loads(arms_path.read_text())["left_arm"]["motion_backend"] == "legacy_timed"
+    # Legacy consumers still receive a valid default side from the registry.
+    assert reg.load_registry(registry_path)["active"]["arm"] == "left_arm"
+
+
+def test_disabling_default_arm_falls_back_to_other_saved_side(tmp_path: Path):
+    registry_path = tmp_path / "capability_registry.json"
+    arms_path = tmp_path / "reach_arms.json"
+    registry = reg.seed_registry()
+    right_hand = registry["hands"][0]["id"]
+    registry["hands"].append({
+        "id": "test-left", "name": "测试左手", "design_side": "left",
+        "tool_out_mm": 0.0, "notes": "",
+    })
+    reg.save_registry(registry, registry_path)
+    arms_path.write_text(json.dumps({
+        "right_arm": {
+            "arm": "right_arm", "enabled": True, "hand_id": right_hand,
+            "camera_role": "head", "motion_backend": "legacy",
+            "mount_profile_id": "", "gravity_file": "",
+            "gravity_version": "0.0.0", "hand_service_url": "", "hand_port": "",
+        },
+        "left_arm": {
+            "arm": "left_arm", "enabled": True, "hand_id": "test-left",
+            "camera_role": "head", "motion_backend": "legacy",
+            "mount_profile_id": "", "gravity_file": "",
+            "gravity_version": "0.0.0", "hand_service_url": "", "hand_port": "",
+        },
+    }))
+    client = TestClient(capability_server.app)
+    with patch.object(capability_server, "REGISTRY_PATH", registry_path), \
+         patch.object(capability_server, "ARMS_CONFIG_PATH", arms_path), \
+         patch.object(capability_server, "GRAVITY_PROFILES_PATH", gravity_profiles.DEFAULT_GRAVITY_PROFILES_PATH):
+        client.post("/api/capability/arms/left_arm", json={"enabled": True})
+        response = client.post("/api/capability/arms/left_arm", json={"enabled": False})
+
+    assert response.status_code == 200, response.text
+    assert reg.load_registry(registry_path)["active"]["arm"] == "right_arm"
+
+
 def test_active_combo_selects_only_compatible_gravity_profile(tmp_path: Path):
     registry_path = tmp_path / "capability_registry.json"
     seed = reg.seed_registry()

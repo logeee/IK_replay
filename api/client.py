@@ -113,11 +113,11 @@ class ReachClient:
                           "distance_m": distance_m, **kwargs},
                          timeout_s=45.0)
 
-    def sequences(self) -> dict:
-        return self.get("/sequences")
+    def sequences(self, scope: str = "") -> dict:
+        return self.get("/sequences", **({"scope": scope} if scope else {}))
 
-    def waypoints(self) -> dict:
-        return self.get("/waypoints")
+    def waypoints(self, scope: str = "") -> dict:
+        return self.get("/waypoints", **({"scope": scope} if scope else {}))
 
     def run_sequence(self, file: str, **kwargs: Any) -> dict:
         """一键执行已保存序列。首次调用只规划并回传 preview，

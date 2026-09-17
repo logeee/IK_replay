@@ -1,0 +1,70 @@
+{
+  "request_started_at": "2026-09-17T02:45:47.634+08:00",
+  "response_received_at": "2026-09-17T02:45:47.643+08:00",
+  "data": {
+    "ok": true,
+    "available": true,
+    "joints": {
+      "left_hip_pitch_joint": 0.07212910056114197,
+      "left_hip_roll_joint": 0.104774110019207,
+      "left_hip_yaw_joint": 0.14965924620628357,
+      "left_knee_joint": 0.1198050007224083,
+      "left_ankle_roll_joint": -0.04298833757638931,
+      "left_ankle_pitch_joint": -0.14359745383262634,
+      "right_hip_pitch_joint": 0.08617447316646576,
+      "right_hip_roll_joint": -0.06943293660879135,
+      "right_hip_yaw_joint": -0.15055416524410248,
+      "right_knee_joint": 0.07685351371765137,
+      "right_ankle_roll_joint": 0.09360970556735992,
+      "right_ankle_pitch_joint": -0.04910251498222351,
+      "waist_yaw_joint": 0.03713085874915123,
+      "waist_roll_joint": 0.024565482512116432,
+      "waist_pitch_joint": -0.008140802383422852,
+      "left_shoulder_pitch_joint": -1.1609678268432617,
+      "left_shoulder_roll_joint": 0.41399505734443665,
+      "left_shoulder_yaw_joint": -0.6153480410575867,
+      "left_elbow_joint": -0.07784353941679001,
+      "left_wrist_roll_joint": 1.9316054582595825,
+      "left_wrist_pitch_joint": 0.11061439663171768,
+      "left_wrist_yaw_joint": -0.1242404654622078,
+      "right_shoulder_pitch_joint": 0.17672312259674072,
+      "right_shoulder_roll_joint": -0.3052741587162018,
+      "right_shoulder_yaw_joint": 0.23433354496955872,
+      "right_elbow_joint": 1.2891850471496582,
+      "right_wrist_roll_joint": -0.008898287080228329,
+      "right_wrist_pitch_joint": 0.04494084417819977,
+      "right_wrist_yaw_joint": 0.03568902239203453,
+      "head_pitch_joint": 0.007160259410738945,
+      "head_yaw_joint": -0.008658918552100658
+    },
+    "lowstate_age_ms": 2.1236970001154987,
+    "anchored": false,
+    "anchor_count": 0,
+    "anchor_T_pelvis": [
+      [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ]
+  }
+}

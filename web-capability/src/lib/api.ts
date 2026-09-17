@@ -240,6 +240,7 @@ export interface Meta {
 export interface Payload {
   ok: boolean;
   registry: Registry;
+  arm_workspace: ArmWorkspace;
   calibrations: CalibInfo[];
   sequence_pool: SequencePoolEntry[];
   waypoint_pool: WaypointPoolEntry[];
@@ -307,4 +308,66 @@ export async function apiPost(
     throw new Error(data.error || `请求失败（HTTP ${res.status}）`);
   }
   return data as Payload;
+}
+
+export type ArmId = "left_arm" | "right_arm";
+export interface ArmSelection {
+  enabled?: boolean;
+  arm?: ArmId;
+  hand_id?: string;
+  camera_role?: string;
+  motion_backend?: MotionBackend;
+  mount_profile_id?: string;
+  gravity_file?: string;
+  gravity_version?: string;
+  hand_service_url?: string;
+  hand_port?: string;
+}
+export interface ArmWorkspaceEntry {
+  enabled: boolean;
+  selection: ArmSelection;
+  status: { armed: boolean; hand_move: boolean; exec?: { running: boolean } } | null;
+  runtime_synced?: boolean;
+}
+export interface ArmWorkspace {
+  ok: boolean;
+  default_arm: ArmId;
+  arms: Record<ArmId, ArmWorkspaceEntry>;
+  shared_control_active: boolean;
+  control_error?: string | null;
+  gravity_profiles?: GravityProfile[];
+  gravity_active_version?: string;
+  imported_profile?: GravityProfile;
+  created?: boolean;
+  runtime_available?: boolean;
+}
+export function reachUrl(path: string): string {
+  const url = new URL(window.location.href);
+  url.port = "18001";
+  url.pathname = path;
+  url.search = url.hash = "";
+  return url.toString();
+}
+export async function runtimeWorkspaceApi(path = "/api/dual/status", body?: unknown): Promise<ArmWorkspace> {
+  const response = await fetch(reachUrl(path), {
+    cache: "no-store",
+    ...(body === undefined ? {} : {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    }),
+    signal: AbortSignal.timeout(15000),
+  });
+  const value = await response.json();
+  if (!response.ok || value.ok === false) throw new Error(value.error || `HTTP ${response.status}`);
+  return value as ArmWorkspace;
+}
+
+export async function saveArmSelection(
+  arm: ArmId,
+  selection: ArmSelection,
+): Promise<Payload> {
+  return apiPost(`/api/capability/arms/${arm}`, selection);
+}
+
+export async function importGravityProfile(body: unknown): Promise<Payload> {
+  return apiPost("/api/capability/gravity/import", body);
 }

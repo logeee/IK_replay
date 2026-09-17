@@ -1,0 +1,36 @@
+{
+  "name": "L-0.40-右-预备点",
+  "arm": "left_arm",
+  "chain_id": "left_arm",
+  "named_joints": {
+    "left_shoulder_pitch_joint": -0.6381786465644836,
+    "left_shoulder_roll_joint": 0.8483093976974487,
+    "left_shoulder_yaw_joint": -0.14338526129722595,
+    "left_elbow_joint": -0.8148494362831116,
+    "left_wrist_roll_joint": 1.1644831895828247,
+    "left_wrist_pitch_joint": 0.12277838587760925,
+    "left_wrist_yaw_joint": -0.3669449985027313
+  },
+  "arrival_speed_rad_s": 0.4,
+  "created_at": "2026-09-17 18:59:16",
+  "recorded_combo": {
+    "arm": "left_arm",
+    "hand_id": "qiangnao-revo2-left"
+  },
+  "distance_m": 0.4,
+  "preparation_side": "right",
+  "direction": "rtl",
+  "tcp_offset": {
+    "xyz": [
+      0.2095773766794327,
+      -0.0484596443700332,
+      0.025312167837534996
+    ],
+    "rpy": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "classification_updated_at": "2026-09-17T22:42:45"
+}

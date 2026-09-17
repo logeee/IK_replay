@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import threading
+from .state import ReachThread
 import time
 from datetime import datetime
 from typing import Any
@@ -186,7 +187,7 @@ def _hold_close_locked(reason: str) -> None:
     else:
         # 心跳断掉/反打：机器人把最后一个脉冲走完才停
         duration = sess["last_beat"] - sess["t0"] + TURN_HOLD_PULSE_S
-    threading.Thread(target=_hold_write_entry,
+    ReachThread(target=_hold_write_entry,
                      args=(sess, max(0.0, duration), reason), daemon=True).start()
 
 
@@ -866,7 +867,7 @@ def reach_align_yaw(body: dict):
     if abs(target) > 0.01:
         tol_note += f"，目标 {target:+.1f}°"
     state.align_message = f"{'新' if use_hold else ''}对中开始（{tol_note}）…"
-    state.align_thread = threading.Thread(
+    state.align_thread = ReachThread(
         target=loop, args=(tol, dmin, dmax, target), name="reach-align", daemon=True)
     state.align_thread.start()
     return {"ok": True, "started": True, "tol_deg": tol, "target_deg": target,

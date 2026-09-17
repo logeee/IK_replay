@@ -434,7 +434,7 @@
 <header>
   <div class="brand">
     <div class="brand-mark">IK</div>
-    <div><h1>拨闸任务流程监控</h1><p>DISPATCH SERVICE · PORT 17001</p></div>
+    <div><h1>拨闸任务流程监控</h1><a href="/arms" target="_blank" style="color:#54c6ff">打开双臂工作台 ↗</a><p>DISPATCH SERVICE · PORT 17001</p></div>
   </div>
   <div class="head-right">
     <div id="connection" class="connection"><span class="connection-dot"></span><span id="connectionText">连接中</span></div>
@@ -472,7 +472,8 @@
         <option value="lab">实验室柜</option>
       </select>
       <select id="manualLanguage"></select>
-      <select id="manualWorkflow" title="legacy=原起手轨迹；dexterous_ltr_v1=左手灵巧手固定路点新流程">
+      <select id="manualWorkflow" title="选择本次手动任务使用的流程模式">
+        <option value="xiaoshan_expo_v1">萧山展会版本（左手双向）</option>
         <option value="dexterous_ltr_v1">灵巧手新模式（左→右）</option>
         <option value="legacy">旧模式</option>
       </select>
@@ -621,6 +622,7 @@
     </label>
     <label class="modal-field">默认流程模式
       <select id="defaultWorkflow">
+        <option value="xiaoshan_expo_v1">萧山展会版本（左手双向）</option>
         <option value="dexterous_ltr_v1">灵巧手新模式（目前仅旋钮左→右）</option>
         <option value="legacy">旧模式（固定手姿+距离起手轨迹）</option>
       </select>
@@ -1182,6 +1184,15 @@ function renderManual(data) {
 }
 
 const DEXTEROUS_LTR_LANGUAGE = "Change the switch from close to remote";
+const WORKFLOW_LABELS = {
+  legacy: "旧模式",
+  dexterous_ltr_v1: "灵巧手新模式",
+  xiaoshan_expo_v1: "萧山展会版本",
+};
+
+function workflowLabel(mode) {
+  return WORKFLOW_LABELS[mode] || mode;
+}
 
 // 旧模式保留现场能力差异；新模式在两个现场都固定执行左→右。
 const SITE_LANGUAGE_OPTIONS = {
@@ -1197,19 +1208,25 @@ const SITE_LANGUAGE_OPTIONS = {
 
 function syncLanguageOptions() {
   const site = $("manualSite").value;
-  const dexterous = $("manualWorkflow").value === "dexterous_ltr_v1";
+  const workflow = $("manualWorkflow").value;
+  const dexterous = workflow === "dexterous_ltr_v1";
+  const xiaoshan = workflow === "xiaoshan_expo_v1";
   const options = dexterous
     ? [{ value: DEXTEROUS_LTR_LANGUAGE, label: "旋钮左 → 右（新模式固定）" }]
-    : (SITE_LANGUAGE_OPTIONS[site] || SITE_LANGUAGE_OPTIONS.lab);
+    : (xiaoshan
+      ? SITE_LANGUAGE_OPTIONS.factory
+      : (SITE_LANGUAGE_OPTIONS[site] || SITE_LANGUAGE_OPTIONS.lab));
   $("manualLanguage").innerHTML = options.map((option) =>
     `<option value="${escapeHtml(option.value)}"${option.disabled ? " disabled" : ""}>`
     + `${escapeHtml(option.label)}</option>`
   ).join("");
   $("manualDirectionHint").textContent = dexterous
     ? `${SITE_LABELS[site]}仅作现场记录；新模式固定左→右`
+    : (xiaoshan
+      ? "萧山展会版本：左→右、右→左均使用方向对应起手式"
     : (site === "factory"
       ? "旧模式·工厂双向：远→就向左 / 就→远向右"
-      : "旧模式·实验室：当前仅支持远→就向左");
+      : "旧模式·实验室：当前仅支持远→就向左"));
 }
 $("manualSite").addEventListener("change", () => {
   syncLanguageOptions();
@@ -1250,7 +1267,7 @@ let offsetPresets = [];
 let defaultsLoadedOnce = false;
 let currentDefaults = {
   site: "factory",
-  workflow_mode: "dexterous_ltr_v1",
+  workflow_mode: "xiaoshan_expo_v1",
   dexterous_ltr_v1: {
     waypoint_speed_rad_s: {
       start: 0.3,
@@ -1258,6 +1275,13 @@ let currentDefaults = {
       retry: 0.3,
       return: 0.5,
     },
+  },
+  xiaoshan_expo_v1: {
+    display_name: "萧山展会版本",
+    distance_min_m: 0.35,
+    distance_max_m: 0.50,
+    sidestep_cm: 10,
+    push_force_n: 10,
   },
   offset_preset_by_kind: { close_to_remote: "", remote_to_close: "" },
   first_round_offset_wall_mm_by_kind: {
@@ -1362,7 +1386,14 @@ function fillManualDirectionDefaults() {
     "firstOffsetZ",
   );
   const forceByKind = currentDefaults.push_force_n_by_kind || {};
-  $("pushForce").value = Number(forceByKind[kind] ?? 15);
+  const xiaoshan = $("manualWorkflow").value === "xiaoshan_expo_v1";
+  $("pushForce").value = xiaoshan
+    ? Number(currentDefaults.xiaoshan_expo_v1?.push_force_n ?? 10)
+    : Number(forceByKind[kind] ?? 15);
+  $("pushForce").disabled = xiaoshan;
+  $("pushForce").title = xiaoshan
+    ? "萧山展会版本固定使用 10N"
+    : "本次拨动使用的前馈推力";
   $("firstOffsetHint").textContent = "已载入本方向默认；修改后可学习当前";
 }
 
@@ -1386,9 +1417,11 @@ function renderConfigSummary() {
   const firstByKind = currentDefaults.first_round_offset_wall_mm_by_kind || {};
   const waypointSpeeds = currentDefaults.dexterous_ltr_v1?.waypoint_speed_rad_s
     || { start: 0.3, approach: 0.3, retry: 0.3, return: 0.5 };
+  const xiaoshan = currentDefaults.xiaoshan_expo_v1
+    || { distance_min_m: 0.35, distance_max_m: 0.50, sidestep_cm: 10, push_force_n: 10 };
   $("configSummary").textContent =
     `默认现场：${SITE_LABELS[currentDefaults.site] || currentDefaults.site}`
-    + ` ｜ 流程：${currentDefaults.workflow_mode === "dexterous_ltr_v1" ? "灵巧手新模式" : "旧模式"}`
+    + ` ｜ 流程：${workflowLabel(currentDefaults.workflow_mode)}`
     + ` ｜ 远→就偏移：${rtlPreset ? `「${rtlPreset.name}」` : "无"}`
     + ` ｜ 就→远偏移：${ltrPreset ? `「${ltrPreset.name}」` : "无"}`
     + ` ｜ 首轮额外 远→就：${offsetText(firstByKind.remote_to_close || {})}`
@@ -1396,6 +1429,8 @@ function renderConfigSummary() {
     + ` ｜ 拨点上抬：${liftText(currentDefaults.lift_mm)}`
     + ` ｜ 推力 从右到左：${currentDefaults.push_force_n_by_kind.remote_to_close} N`
     + `；从左到右：${currentDefaults.push_force_n_by_kind.close_to_remote} N`
+    + ` ｜ 展会版：${Number(xiaoshan.distance_min_m).toFixed(2)}–${Number(xiaoshan.distance_max_m).toFixed(2)} m`
+    + `、双向${xiaoshan.sidestep_cm} cm、${xiaoshan.push_force_n} N`
     + ` ｜ 固定路点速度 起手/准备/重试/收尾：${waypointSpeeds.start}`
     + `/${waypointSpeeds.approach}/${waypointSpeeds.retry}/${waypointSpeeds.return} rad/s`
     + ` ｜ 已存偏移配置 ${offsetPresets.length} 条`;
@@ -1415,7 +1450,7 @@ function renderPresetCards() {
     ].filter(Boolean);
     const active = preset.name === editingPresetOriginalName ? " active" : "";
     const modeClass = isCurvePreset(preset) ? "" : " static";
-    const modeLabel = isCurvePreset(preset) ? "关键帧" : "固定";
+    const modeLabel = isCurvePreset(preset) ? "关键帧" : "固定·与7005共享";
     return `<button class="preset-card${active}" data-edit="${escapeHtml(preset.name)}">`
       + `<div class="preset-card-name"><span class="mode-badge${modeClass}">${modeLabel}</span>`
       + `<strong>${escapeHtml(preset.name)}</strong></div>`
@@ -1455,6 +1490,13 @@ async function loadDefaultsConfig() {
           retry: 0.3,
           return: 0.5,
         },
+      },
+      xiaoshan_expo_v1: savedDefaults.xiaoshan_expo_v1 || {
+        display_name: "萧山展会版本",
+        distance_min_m: 0.35,
+        distance_max_m: 0.50,
+        sidestep_cm: 10,
+        push_force_n: 10,
       },
       offset_preset_by_kind: savedDefaults.offset_preset_by_kind
         || { close_to_remote: "", remote_to_close: "" },
@@ -1597,6 +1639,7 @@ $("saveDefaults").addEventListener("click", async () => {
         return: readWaypointSpeed("dexterousReturnSpeed"),
       },
     },
+    xiaoshan_expo_v1: currentDefaults.xiaoshan_expo_v1,
     offset_preset_by_kind: {
       remote_to_close: $("defaultPresetRemoteToClose").value,
       close_to_remote: $("defaultPresetCloseToRemote").value,
@@ -1955,7 +1998,9 @@ $("manualStart").addEventListener("click", async () => {
     "firstOffsetZ",
   );
   const lift = { base: readLiftMm("liftBase"), step: readLiftMm("liftStep"), max: readLiftMm("liftMax") };
-  const pushForce = readPushForce("pushForce");
+  const pushForce = workflowMode === "xiaoshan_expo_v1"
+    ? Number(currentDefaults.xiaoshan_expo_v1?.push_force_n ?? 10)
+    : readPushForce("pushForce");
   const mode = manual ? "每个主要步骤执行前都需要在本页确认" : "全自动执行（无每步确认）";
   const offsetNote = manualCurvePresetName
     ? `\n目的点微调：距离曲线「${manualCurvePresetName}」（运行时按起手式距离插值）`
@@ -1965,7 +2010,7 @@ $("manualStart").addEventListener("click", async () => {
   const firstOffsetNote = (firstOffset.x || firstOffset.y || firstOffset.z)
     ? `\n首轮额外偏置：右${firstOffset.x}mm / 上${firstOffset.z}mm / 入墙${firstOffset.y}mm`
     : "\n首轮额外偏置：无";
-  if (!confirm(`确认启动拨闸流程？\n现场：${SITE_LABELS[site]}\n指令：${language}\n流程：${workflowMode === "dexterous_ltr_v1" ? "灵巧手新模式" : "旧模式"}\n${mode}，最多 ${retries} 轮${offsetNote}${firstOffsetNote}\n拨点上抬：${liftText(lift)}\n拨动推力：${pushForce} N`)) return;
+  if (!confirm(`确认启动拨闸流程？\n现场：${SITE_LABELS[site]}\n指令：${language}\n流程：${workflowLabel(workflowMode)}\n${mode}，最多 ${retries} 轮${offsetNote}${firstOffsetNote}\n拨点上抬：${liftText(lift)}\n拨动推力：${pushForce} N`)) return;
   const taskBody = {
     language,
     retries,
@@ -2081,6 +2126,7 @@ document.addEventListener("visibilitychange", () => {
     disconnectCameraPreview("页面隐藏，预览已暂停");
   } else {
     poll();
+    loadDefaultsConfig();
     renderCamera(lastData || {});
   }
 });

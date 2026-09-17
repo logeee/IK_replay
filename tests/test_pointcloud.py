@@ -20,9 +20,10 @@ from api.pointcloud_core import (
     fit_surface_plane,
     point_from_pixel,
 )
-from api import pointcloud_viewer
+from api import dispatch, pointcloud_viewer
 from api.switch_states import SCENE_LEFT, SCENE_RIGHT
 from adapters.reach import perception
+from core import dispatch_defaults
 
 
 class PointCloudGeometryTest(unittest.TestCase):
@@ -578,6 +579,8 @@ class PointCloudBackendTest(unittest.TestCase):
                     "model_version": "0.2.0-s",
                     "target_point_slot": 1,
                     "matched_detection_name": SCENE_RIGHT,
+                    "knob_scene_source": "manual",
+                    "knob_scene_override": SCENE_RIGHT,
                 },
             )
         self.assertTrue(confirmed["ok"])
@@ -593,6 +596,8 @@ class PointCloudBackendTest(unittest.TestCase):
         self.assertEqual(sent["model_version"], "0.2.0-s")
         self.assertEqual(sent["target_point_slot"], 1)
         self.assertEqual(sent["matched_detection_name"], SCENE_RIGHT)
+        self.assertEqual(sent["knob_scene_source"], "manual")
+        self.assertEqual(sent["knob_scene_override"], SCENE_RIGHT)
         self.assertEqual(sent["plane"]["x_axis_camera"], [1.0, 0.0, 0.0])
         self.assertEqual(sent["plane"]["z_axis_camera"], [0.0, -1.0, 0.0])
         self.assertEqual(sent["plane"]["axis_source"], "wall_coordinate_x")
@@ -611,6 +616,8 @@ class PointCloudBackendTest(unittest.TestCase):
             (pointcloud_viewer.PICK_HISTORY_DIR / record_name / "meta.json")
             .read_text(encoding="utf-8")
         )
+        self.assertEqual(record_meta["knob_scene_source"], "manual")
+        self.assertEqual(record_meta["knob_scene_override"], SCENE_RIGHT)
         self.assertEqual(
             record_meta["adjustment_wall_mm"], {"x": 1.0, "y": 0.0, "z": 0.0}
         )
@@ -825,6 +832,71 @@ class PointCloudBackendTest(unittest.TestCase):
         cloud_response = pointcloud_viewer.pointcloud_data(metadata["capture_id"])
         self.assertEqual(cloud_response.status_code, 200)
 
+    def test_manual_knob_category_with_only_panel_and_switching_cache(self):
+        from core.target_models import PANEL_ANCHOR, validate_target_model_config
+        metadata = self._confirm_capture_without_auto_target("occluded-knob")
+        frozen = pointcloud_viewer._latest
+        frozen.boxes = [{"name": "面板", "conf": .95, "cls": 0}]
+        wall = {
+            "calibrated": True, "origin_camera_m": [0., 0., 1.],
+            "x_axis_camera": [1., 0., 0.],
+            "y_axis_camera": [0., 0., 1.],
+            "z_axis_camera": [0., -1., 0.],
+        }
+        panel = {"available": True, "rectangle_center_camera_m": [0., 0., 1.]}
+        config = validate_target_model_config({"method": PANEL_ANCHOR})
+        capture_id = metadata["capture_id"]
+        with (
+            mock.patch.object(pointcloud_viewer, "_target_model_config", config),
+            mock.patch.object(pointcloud_viewer, "_ensure_wall_plane", return_value=wall),
+            mock.patch.object(pointcloud_viewer, "_save_panel_debug_image"),
+            mock.patch("api.cabinet_panel_anchor.fit_panel_reference", return_value=panel) as fit,
+        ):
+            missing = pointcloud_viewer.auto_target(capture_id)
+            self.assertEqual(missing.status_code, 422)
+            self.assertIn("没有旋钮类实例", json.loads(missing.body)["error"])
+            fit.assert_not_called()
+            right = pointcloud_viewer.auto_target(capture_id, {"knob_scene_override": SCENE_RIGHT})
+            self.assertTrue(right["ok"])
+            self.assertEqual(right["target_point_slot"], 1)
+            self.assertEqual(right["knob_scene_source"], "manual")
+            self.assertEqual(right["knob_scene_override"], SCENE_RIGHT)
+            self.assertEqual(pointcloud_viewer.auto_target(capture_id, {"knob_scene_override": SCENE_RIGHT}), right)
+            self.assertEqual(fit.call_count, 1)
+            left = pointcloud_viewer.auto_target(capture_id, {"knob_scene_override": SCENE_LEFT})
+            self.assertEqual(left["target_point_slot"], 3)
+            self.assertNotEqual(left["target_camera_m"], right["target_camera_m"])
+            self.assertEqual(fit.call_count, 2)
+            self.assertEqual(frozen.boxes, [{"name": "面板", "conf": .95, "cls": 0}])
+            # Returning to auto must fail, not reuse the previous manual slot.
+            self.assertEqual(pointcloud_viewer.auto_target(capture_id).status_code, 422)
+            self.assertIsNone(frozen.auto_target)
+            frozen.boxes.append({"name": SCENE_LEFT, "conf": .9, "cls": 1})
+            manual = pointcloud_viewer.auto_target(capture_id, {"knob_scene_override": SCENE_RIGHT})
+            self.assertEqual(manual["target_point_slot"], 1)
+            automatic = pointcloud_viewer.auto_target(capture_id)
+            self.assertEqual(automatic["target_point_slot"], 3)
+            self.assertEqual(automatic["knob_scene_source"], "yolo")
+            self.assertIsNone(automatic["knob_scene_override"])
+            fit.side_effect = ValueError("面板尺寸偏差过大")
+            rejected = pointcloud_viewer.auto_target(capture_id, {"knob_scene_override": SCENE_LEFT})
+            self.assertEqual(rejected.status_code, 422)
+            self.assertIn("面板尺寸偏差过大", json.loads(rejected.body)["error"])
+
+    def test_manual_knob_category_validation_and_legacy_geometry_requirement(self):
+        metadata = self._confirm_capture_without_auto_target("category-validation")
+        capture_id = metadata["capture_id"]
+        with mock.patch.object(pointcloud_viewer, "_ensure_wall_plane", return_value={}) as wall:
+            for invalid in ("面板", "left", 1, {}, []):
+                rejected = pointcloud_viewer.auto_target(capture_id, {"knob_scene_override": invalid})
+                self.assertEqual(rejected.status_code, 400)
+            wall.assert_not_called()
+            pointcloud_viewer._latest.boxes = [{"name": "面板"}]
+            with mock.patch.object(pointcloud_viewer, "_save_panel_debug_image"):
+                rejected = pointcloud_viewer.auto_target(capture_id, {"knob_scene_override": SCENE_LEFT})
+            self.assertEqual(rejected.status_code, 422)
+            self.assertIn("旋钮轮廓", json.loads(rejected.body)["error"])
+
     def test_live_stream_proxies_reach_mjpeg_and_closes_upstream(self):
         upstream = mock.Mock()
         upstream.headers = {
@@ -848,6 +920,19 @@ class PointCloudBackendTest(unittest.TestCase):
             timeout=(3.0, None),
         )
         upstream.close.assert_called_once()
+
+    def test_live_stream_uses_selected_arm_and_rejects_unknown_arm(self):
+        # A right-only workspace must not send its preview to the disabled
+        # default left arm. Keep the unscoped stream covered above.
+        with mock.patch.object(pointcloud_viewer._http, "get") as request:
+            request.return_value.headers = {}
+            for arm in ("left_arm", "right_arm"):
+                pointcloud_viewer.camera_stream(arm)
+                self.assertEqual(request.call_args.args[0],
+                                 f"http://127.0.0.1:18001/api/arms/{arm}/reach/stream")
+            request.reset_mock()
+            self.assertEqual(pointcloud_viewer.camera_stream("unknown").status_code, 400)
+            request.assert_not_called()
 
 
 class ReachPointCloudConfirmationTest(unittest.TestCase):
@@ -998,6 +1083,50 @@ class PointCloudDashboardTest(unittest.TestCase):
             pointcloud_viewer._normalize_offset_preset({
                 "name": "bad", "offset_mm": {"x": 501, "y": 0, "z": 0},
             })
+
+    def test_static_offset_presets_are_shared_bidirectionally_with_dispatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "dispatch_defaults.json"
+            with (
+                mock.patch.object(
+                    pointcloud_viewer, "OFFSET_PRESETS_PATH", path
+                ),
+                mock.patch.object(
+                    dispatch_defaults, "DEFAULT_DISPATCH_DEFAULTS_PATH", path
+                ),
+            ):
+                from_7005 = pointcloud_viewer.offset_presets_save({
+                    "name": "7005偏置",
+                    "offset_mm": {"x": 12, "y": -3, "z": 8},
+                })
+                self.assertTrue(from_7005["ok"])
+                body = json.loads(dispatch.config_defaults_get().body)
+                self.assertIn(
+                    "7005偏置",
+                    [item["name"] for item in body["offset_presets"]],
+                )
+
+                from_17001 = dispatch.config_preset_upsert({
+                    "name": "17001偏置",
+                    "mode": "static",
+                    "offset_mm": {"x": -4, "y": 6, "z": 9},
+                })
+                self.assertTrue(from_17001["ok"])
+                visible_7005 = pointcloud_viewer.offset_presets_list()
+                self.assertIn(
+                    "17001偏置",
+                    [item["name"] for item in visible_7005["presets"]],
+                )
+
+                deleted = pointcloud_viewer.offset_presets_delete({
+                    "name": "7005偏置",
+                })
+                self.assertTrue(deleted["ok"])
+                body = json.loads(dispatch.config_defaults_get().body)
+                self.assertNotIn(
+                    "7005偏置",
+                    [item["name"] for item in body["offset_presets"]],
+                )
 
     def test_dashboard_exposes_named_offset_preset_controls(self):
         html = (pointcloud_viewer.WEB_DIR / "pointcloud.html").read_text(

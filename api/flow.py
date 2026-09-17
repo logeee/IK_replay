@@ -248,10 +248,10 @@ class SwitchFlow:
                  target_offset_preset_name: str = "",
                  # 仅第1轮在上述基础偏移之上额外叠加；第2轮起自动归零。
                  first_round_offset_wall_m: tuple[float, float, float] = (0.0, 0.0, 0.0),
-                 # 17001 任务级流程模式；新模式绕过按距离起手轨迹，
-                 # 改用固定安全路点 + 灵巧手手势时序。
+                 # 17001 任务级流程模式。
                  workflow_mode: str = "legacy",
-                 dexterous_config: dict[str, Any] | None = None):
+                 dexterous_config: dict[str, Any] | None = None,
+                 xiaoshan_config: dict[str, Any] | None = None):
         self.client = client or ReachClient()
         self.console = console
         self.yolo = yolo
@@ -275,6 +275,7 @@ class SwitchFlow:
         )
         self.workflow_mode = str(workflow_mode or "legacy")
         self.dexterous_config = dict(dexterous_config or {})
+        self.xiaoshan_config = dict(xiaoshan_config or {})
         self._hand_pose_files: dict[str, str] | None = None
         self.coarse_target_deg = coarse_target_deg
         self.coarse_accept_min_deg = (
@@ -310,6 +311,9 @@ class SwitchFlow:
         if self.workflow_mode == "dexterous_ltr_v1":
             sidestep_cm = float(self.dexterous_config.get("sidestep_cm", 10.0))
             push_force_n = float(self.dexterous_config.get("push_force_n", 25.0))
+        elif self.workflow_mode == "xiaoshan_expo_v1":
+            sidestep_cm = float(self.xiaoshan_config.get("sidestep_cm", 10.0))
+            push_force_n = float(self.xiaoshan_config.get("push_force_n", 10.0))
         self.sidestep_distance_cm = abs(float(sidestep_cm))
         self.push_force_n = push_force_n
         self.push_hold_s = None if push_hold_s is None else float(push_hold_s)
@@ -398,6 +402,9 @@ class SwitchFlow:
         if self.workflow_mode == "dexterous_ltr_v1":
             start = str(self.dexterous_config.get("start_waypoint") or "")
             return [start] if start else [self.DESCEND_WAYPOINT]
+        if self.workflow_mode == "xiaoshan_expo_v1":
+            endpoint = self._pose_endpoint_name(self._current_pose)
+            return [endpoint] if endpoint else [self.DESCEND_WAYPOINT]
         route: list[str] = []
         pose = self._current_pose
         if self._is_left_start_pose(pose):
@@ -526,6 +533,8 @@ class SwitchFlow:
 
             if self.workflow_mode == "dexterous_ltr_v1":
                 return self._run_dexterous_ltr(t0, distance_m)
+            if self.workflow_mode == "xiaoshan_expo_v1":
+                return self._run_xiaoshan_expo(t0, distance_m)
 
             last_error: FlowError | None = None
             for round_no in range(1, self.max_flip_rounds + 1):
@@ -772,6 +781,219 @@ class SwitchFlow:
         configured = self.dexterous_config.get("waypoint_speed_rad_s") or {}
         return float(configured.get(stage, defaults[stage]))
 
+    def _choose_xiaoshan_sequence(self, distance_m: float) -> dict[str, Any]:
+        """按实测距离四舍五入到厘米档，选择当前方向的展会起手式。"""
+        cfg = self.xiaoshan_config
+        minimum = float(cfg.get("distance_min_m", 0.35))
+        maximum = float(cfg.get("distance_max_m", 0.50))
+        step = float(cfg.get("distance_step_m", 0.01))
+        if distance_m < minimum - 1e-9 or distance_m > maximum + 1e-9:
+            raise FlowError(
+                ErrorCode.POSE_UNAVAILABLE,
+                f"萧山展会版本支持距离 {minimum:.2f}~{maximum:.2f} m，"
+                f"实测为 {distance_m:.3f} m",
+            )
+        # 加微小正偏置落实传统“四舍五入”，避免 Python 银行家舍入。
+        ticks = math.floor(distance_m / step + 0.5 + 1e-9)
+        selected_distance = round(ticks * step, 2)
+        templates = cfg.get("sequence_name_by_direction") or {}
+        template = str(templates.get(self.flip_direction) or "")
+        sequence_name = template.format(distance=selected_distance)
+        sequences = self.client.sequences(scope="all").get("sequences") or []
+        sequence = next(
+            (item for item in sequences
+             if str(item.get("name") or "") == sequence_name),
+            None,
+        )
+        if sequence is None:
+            raise FlowError(
+                ErrorCode.POSE_UNAVAILABLE,
+                f"缺少萧山展会起手式「{sequence_name}」",
+            )
+        try:
+            arm_assets.check_asset_arm(sequence, self.arm, "起手式")
+        except arm_assets.ArmMismatch as exc:
+            raise FlowError(ErrorCode.POSE_UNAVAILABLE, str(exc)) from exc
+        waypoint_files = [str(item) for item in sequence.get("waypoints") or []]
+        if not waypoint_files:
+            raise FlowError(
+                ErrorCode.POSE_UNAVAILABLE,
+                f"萧山展会起手式「{sequence_name}」不含路点",
+            )
+
+        def waypoint_name(filename: str) -> str:
+            return re.sub(r"_\d{8}_\d{6}\.json$", "", filename)
+
+        selected = {
+            "name": sequence_name,
+            "file": str(sequence.get("file") or ""),
+            "manual": False,
+            "min_distance_m": selected_distance,
+            "start_waypoint": waypoint_name(waypoint_files[0]),
+            "endpoint_name": waypoint_name(waypoint_files[-1]),
+            "xiaoshan": True,
+        }
+        if not selected["file"]:
+            raise FlowError(
+                ErrorCode.POSE_UNAVAILABLE,
+                f"萧山展会起手式「{sequence_name}」缺少文件名",
+            )
+        self._log(
+            f"实测 {distance_m:.3f}m，四舍五入选择 {selected_distance:.2f}m "
+            f"起手式「{sequence_name}」"
+        )
+        return selected
+
+    def _run_xiaoshan_sequence(self, pose: dict, *, reverse: bool = False) -> None:
+        cfg = self.xiaoshan_config
+        if not reverse:
+            self._interp_to_waypoint(
+                str(pose["start_waypoint"]),
+                "萧山展会起手式起点",
+                only_if_beyond_rad=0.4,
+                allow_unclaimed=True,
+                scope_all=True,
+            )
+        self._arm_moved = True
+        self._check_abort()
+        result = self.client.run_sequence(
+            str(pose["file"]),
+            motion_backend=str(cfg.get("sequence_motion_backend") or "legacy"),
+            reverse=reverse,
+        )
+        action = "倒序回放" if reverse else "回放"
+        if not result.get("ok") or result.get("preview"):
+            reason = result.get("error") or "轨迹尚未录制，不能直接执行"
+            raise FlowError(
+                ErrorCode.EXEC_FAILED,
+                f"起手式「{pose['name']}」{action}失败: {reason}",
+            )
+        self._wait_exec(f"起手式「{pose['name']}」{action}")
+
+    def _xiaoshan_return_to_endpoint(self, pose: dict, tag: str) -> None:
+        self._set_hand_pose(str(self.xiaoshan_config["prepare_pose"]))
+        self._interp_to_waypoint(
+            self._pose_endpoint_name(pose),
+            tag,
+            only_if_beyond_rad=0.02,
+            speed_rad_s=float(
+                self.xiaoshan_config.get("endpoint_speed_rad_s", 0.3)
+            ),
+            allow_unclaimed=True,
+            scope_all=True,
+        )
+
+    def _xiaoshan_reverse_home(self, pose: dict, *, release: bool) -> None:
+        self._xiaoshan_return_to_endpoint(pose, "萧山展会回起手式终点")
+        self._run_xiaoshan_sequence(pose, reverse=True)
+        self._set_hand_pose(str(self.xiaoshan_config["fist_pose"]))
+        if release:
+            result = self.client.disarm()
+            if not result.get("ok"):
+                raise FlowError(
+                    ErrorCode.EXEC_FAILED,
+                    f"释放手臂失败: {result.get('error')}",
+                )
+
+    def _run_xiaoshan_expo(self, t0: float, distance_m: float) -> FlowResult:
+        """萧山展会版本：左手双向、厘米档起手式、终点回收后倒序收尾。"""
+        if self.arm != "left_arm" or self.flip_direction not in ("ltr", "rtl"):
+            raise FlowError(
+                ErrorCode.NOT_IMPLEMENTED,
+                "萧山展会版本只支持左臂执行旋钮左→右或右→左",
+            )
+        pose = self._choose_xiaoshan_sequence(distance_m)
+        self._current_pose = pose
+        self._apply_offset_keyframes_for_pose(pose)
+        direction_text = "左→右" if self.flip_direction == "ltr" else "右→左"
+        self._log(
+            f"萧山展会版本：{direction_text}，起手式回放 + 7005 + "
+            "50Hz 主轨迹"
+        )
+        self._confirm(
+            "xiaoshan_opening",
+            f"即将握拳并执行起手式「{pose['name']}」",
+        )
+        self._step_begin("5️⃣ 萧山展会起手式")
+        self._set_hand_pose(str(self.xiaoshan_config["fist_pose"]))
+        self._run_xiaoshan_sequence(pose)
+
+        last_error: FlowError | None = None
+        for round_no in range(1, self.max_flip_rounds + 1):
+            self._check_abort()
+            try:
+                self._set_hand_pose(str(self.xiaoshan_config["prepare_pose"]))
+                self._confirm(
+                    "detect_points",
+                    "即将判稳，随后冻结 RGB-D 并由 7005 计算目标点",
+                )
+                self._step_begin(f"7️⃣ 判稳与7005取点（第{round_no}轮）")
+                points = self.detect_points(round_no)
+                self._log(f"点位: {self._points_brief(points)}")
+                side_text = "向右" if self.flip_direction == "ltr" else "向左"
+                self._confirm(
+                    "flip",
+                    f"即将用50Hz主轨迹到位、完全捏住并{side_text}拨动"
+                    f" {self.sidestep_distance_cm:g}cm，助力 {self.push_force_n:g}N",
+                )
+                self._step_begin(f"8️⃣ 到位、捏住与拨动（第{round_no}轮）")
+                self.flip_switch(points, round_no)
+                self._confirm(
+                    "verify",
+                    "即将进行视觉复核（不移动机器人）",
+                )
+                self._step_begin(f"9️⃣ 拨动复核（第{round_no}轮）")
+                success = self.verify_flip()
+                if not success:
+                    last_error = FlowError(
+                        ErrorCode.VERIFY_FAILED,
+                        f"复核仍为{self.flip_from}",
+                    )
+            except FlowError as exc:
+                if exc.code in (
+                    ErrorCode.NOT_IMPLEMENTED,
+                    ErrorCode.POSE_UNAVAILABLE,
+                    ErrorCode.ALIGN_FAILED,
+                    ErrorCode.ABORTED,
+                ):
+                    raise
+                success = False
+                last_error = exc
+                self._log(f"本轮失败（{exc.code.name}: {exc.message}）")
+
+            self._confirm(
+                "xiaoshan_endpoint",
+                f"即将返回起手式终点「{self._pose_endpoint_name(pose)}」",
+            )
+            self._step_begin(f"🔙 回起手式终点（第{round_no}轮）")
+            self._xiaoshan_return_to_endpoint(pose, f"第{round_no}轮回起手式终点")
+            if success:
+                self._confirm(
+                    "xiaoshan_reverse",
+                    f"拨动成功，即将倒序执行起手式「{pose['name']}」并释放",
+                )
+                self._step_begin("🔟 起手式倒序收尾与释放")
+                self._run_xiaoshan_sequence(pose, reverse=True)
+                self._set_hand_pose(str(self.xiaoshan_config["fist_pose"]))
+                result = self.client.disarm()
+                if not result.get("ok"):
+                    raise FlowError(
+                        ErrorCode.EXEC_FAILED,
+                        f"释放手臂失败: {result.get('error')}",
+                    )
+                return self._done(
+                    t0,
+                    f"萧山展会版本旋钮{direction_text}拨动成功",
+                    rounds=round_no,
+                    distance_m=distance_m,
+                    selected_distance_m=pose["min_distance_m"],
+                    opening_sequence=pose["name"],
+                )
+            if round_no < self.max_flip_rounds:
+                self._log("复核未通过；已回起手式终点，重新判稳取点")
+
+        raise last_error or FlowError(ErrorCode.VERIFY_FAILED, "重试轮数耗尽")
+
     def _set_hand_pose(self, name: str) -> None:
         if self._hand_pose_files is None:
             response = self.client.hand_poses()
@@ -787,9 +1009,14 @@ class SwitchFlow:
         filename = self._hand_pose_files.get(name)
         if not filename:
             raise FlowError(ErrorCode.PRECONDITION, f"找不到灵巧手姿态「{name}」")
+        hand_cfg = (
+            self.xiaoshan_config
+            if self.workflow_mode == "xiaoshan_expo_v1"
+            else self.dexterous_config
+        )
         result = self.client.hand_pose(
             filename,
-            int(self.dexterous_config.get("hand_duration_ms") or 500),
+            int(hand_cfg.get("hand_duration_ms") or 500),
         )
         if not result.get("ok"):
             raise FlowError(
@@ -1078,14 +1305,21 @@ class SwitchFlow:
                 "label": "flow_reach",
                 "motion_backend": "legacy",
             }
-            if self.workflow_mode == "dexterous_ltr_v1":
+            if self.workflow_mode in ("dexterous_ltr_v1", "xiaoshan_expo_v1"):
                 # 18001 的验证期保护只允许 7005 冻结点云的“主轨迹”
                 # 使用 50Hz 时间轨迹；起手路点和后续拨动仍走 legacy。
+                motion_cfg = (
+                    self.xiaoshan_config
+                    if self.workflow_mode == "xiaoshan_expo_v1"
+                    else self.dexterous_config
+                )
                 execute_kwargs.update({
-                    "label": "主轨迹:17001灵巧手到位",
-                    "motion_backend": self.dexterous_config[
-                        "main_motion_backend"
-                    ],
+                    "label": (
+                        "主轨迹:萧山展会到位"
+                        if self.workflow_mode == "xiaoshan_expo_v1"
+                        else "主轨迹:17001灵巧手到位"
+                    ),
+                    "motion_backend": motion_cfg["main_motion_backend"],
                 })
             res = self.client.execute(**execute_kwargs)
             if not res.get("ok"):
@@ -1093,9 +1327,14 @@ class SwitchFlow:
                                 f"{tag} 到位执行被拒: {res.get('error')}")
             self._wait_exec(f"{tag} 到位")
 
-            if self.workflow_mode == "dexterous_ltr_v1":
+            if self.workflow_mode in ("dexterous_ltr_v1", "xiaoshan_expo_v1"):
                 # 主轨迹到位边界立即下发捏住，不额外 sleep；随后进入右拨。
-                self._set_hand_pose(str(self.dexterous_config["grasp_pose"]))
+                motion_cfg = (
+                    self.xiaoshan_config
+                    if self.workflow_mode == "xiaoshan_expo_v1"
+                    else self.dexterous_config
+                )
+                self._set_hand_pose(str(motion_cfg["grasp_pose"]))
 
             # 横移（拨动本体）之前存一帧证据：此刻开关还是拨前状态
             self._last_pick_record = picked.get("record")
@@ -1208,7 +1447,9 @@ class SwitchFlow:
     def _interp_to_waypoint(self, wp_name: str, tag: str,
                             only_if_beyond_rad: float = 0.0,
                             speed_rad_s: float | None = None,
-                            after_start: Any = None) -> None:
+                            after_start: Any = None,
+                            allow_unclaimed: bool = False,
+                            scope_all: bool = False) -> None:
         """关节空间插值到指定名字的已录路点。
 
         直接把 [当前姿态, 目标姿态] 交给 /execute 做关节插值，不走
@@ -1217,14 +1458,19 @@ class SwitchFlow:
         就跳过不动。
         """
         # 位点认领（18000 配置，严格）：生效集合外的位点不准去
-        if (self.claimed_waypoint_names is not None
+        if (not allow_unclaimed
+                and self.claimed_waypoint_names is not None
                 and wp_name not in self.claimed_waypoint_names):
             raise FlowError(
                 ErrorCode.EXEC_FAILED,
                 f"{tag} 位点「{wp_name}」不在当前能力条目的生效位点里"
                 "——到 18000 配置页勾选（或认领对应起手式）后重启 17001",
             )
-        wps = self.client.waypoints().get("waypoints") or []
+        waypoint_response = (
+            self.client.waypoints(scope="all")
+            if scope_all else self.client.waypoints()
+        )
+        wps = waypoint_response.get("waypoints") or []
         target = next((w for w in wps if str(w.get("name")) == wp_name), None)
         if target is None:
             raise FlowError(ErrorCode.EXEC_FAILED,
@@ -2015,6 +2261,10 @@ class SwitchFlow:
         """按起手式选择安全收尾路径；本方法不释放手臂。"""
         if self.workflow_mode == "dexterous_ltr_v1":
             self._dexterous_return_to_start(tag)
+            return
+        if self.workflow_mode == "xiaoshan_expo_v1" and pose:
+            self._log(f"{tag}：先回萧山展会起手式终点，再倒序回到起点")
+            self._xiaoshan_reverse_home(pose, release=False)
             return
         if self._is_left_start_pose(pose):
             selected = pose or self._current_pose or {}

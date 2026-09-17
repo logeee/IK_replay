@@ -1,0 +1,20 @@
+{
+  "name": "R-防止后仰测试-1",
+  "arm": "right_arm",
+  "chain_id": "right_arm",
+  "named_joints": {
+    "right_shoulder_pitch_joint": 0.44061043858528137,
+    "right_shoulder_roll_joint": -0.3446303606033325,
+    "right_shoulder_yaw_joint": 0.20320452749729156,
+    "right_elbow_joint": 1.404784917831421,
+    "right_wrist_roll_joint": 0.0009467538329772651,
+    "right_wrist_pitch_joint": 0.06847786158323288,
+    "right_wrist_yaw_joint": 0.03573695942759514
+  },
+  "arrival_speed_rad_s": 0.4,
+  "created_at": "2026-09-17 16:15:31",
+  "recorded_combo": {
+    "arm": "right_arm",
+    "hand_id": "yaoshouche"
+  }
+}

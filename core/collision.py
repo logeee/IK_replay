@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -33,6 +33,23 @@ def _point_segment_distance(point: np.ndarray, a: np.ndarray, b: np.ndarray) -> 
         return float(np.linalg.norm(point - a))
     t = float(np.clip(np.dot(point - a, ab) / denom, 0.0, 1.0))
     return float(np.linalg.norm(point - (a + ab * t)))
+
+
+def _segment_distance(p0, p1, q0, q1) -> float:
+    """Exact minimum for two finite segments, including degenerate segments."""
+    u, v, w = p1 - p0, q1 - q0, p0 - q0
+    a, b, c = float(u @ u), float(u @ v), float(v @ v)
+    d, e = float(u @ w), float(v @ w)
+    candidates = [
+        _point_segment_distance(p0, q0, q1), _point_segment_distance(p1, q0, q1),
+        _point_segment_distance(q0, p0, p1), _point_segment_distance(q1, p0, p1),
+    ]
+    denom = a * c - b * b
+    if denom > 1e-15:
+        s, t = (b * e - c * d) / denom, (a * e - b * d) / denom
+        if 0 <= s <= 1 and 0 <= t <= 1:
+            candidates.append(float(np.linalg.norm(w + s * u - t * v)))
+    return min(candidates)
 
 
 def _point_obb_distance(point: np.ndarray, center: np.ndarray, rotation: np.ndarray, half_extents: np.ndarray) -> float:
@@ -182,6 +199,15 @@ class ConfigurableCollisionChecker:
         tcp_pose = pose_from_matrix(
             transforms[self.robot_model.end_link(chain_id)] @ transform_from_pose(offset))
         shapes = self._build_shapes(transforms, chain_id, tcp_pose)
+        other_provider = getattr(self, "other_arm_provider", None)
+        if other_provider is not None:
+            other_chain, other_joints, other_tcp = other_provider(chain_id)
+            other_transforms = self.robot_model.forward_kinematics(other_joints)
+            other_pose = pose_from_matrix(
+                other_transforms[self.robot_model.end_link(other_chain)] @ transform_from_pose(other_tcp))
+            for raw in (self.config.get("chains", {}).get(other_chain, {}).get("shapes") or []):
+                shape = self._build_shape(raw, "chain", other_transforms, other_pose, other_chain)
+                shapes.append(replace(shape, role="body"))
         distances = self._pair_distances(shapes)
         min_pair = min(distances, key=lambda item: item["distance_m"]) if distances else None
         min_distance = float(min_pair["distance_m"]) if min_pair else None
@@ -434,6 +460,10 @@ class ConfigurableCollisionChecker:
         return distances
 
     def _distance_between(self, a: CollisionPrimitive, b: CollisionPrimitive) -> float:
+        if a.kind == "capsule" and b.kind == "capsule":
+            return (_segment_distance(_as_array(a.data["a"]), _as_array(a.data["b"]),
+                                      _as_array(b.data["a"]), _as_array(b.data["b"]))
+                    - float(a.data["radius"]) - float(b.data["radius"]))
         if a.kind == "capsule" and b.kind == "sphere":
             return _capsule_sphere_distance(
                 _as_array(a.data["a"]),

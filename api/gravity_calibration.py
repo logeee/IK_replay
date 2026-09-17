@@ -309,11 +309,28 @@ def _load_sequence_preview(
         duration_s = 6.0
     robot = str(payload.get("robot") or "h2")
     chain_id = str(payload.get("chain_id") or "right_arm")
-    tool_visualization = (
-        _offline_tool_visualization(robot, chain_id)
-        if include_tool_visualization
-        else {}
-    )
+    tool_visualization = {}
+    if include_tool_visualization:
+        recorded_tool = payload.get("tcp_offset")
+        if recorded_tool is not None:
+            try:
+                tcp = [float(value) for value in recorded_tool["xyz"]]
+                if len(tcp) != 3 or not all(math.isfinite(value) for value in tcp):
+                    raise ValueError("TCP must contain three finite values")
+            except (KeyError, TypeError, ValueError) as exc:
+                raise GravityServiceError(f"轨迹记录的TCP非法: {filename}") from exc
+            import app as app_module
+
+            tool_visualization = {
+                "tcp_offset": tcp,
+                "markers": {},
+                "reference_marker": None,
+                "wrist_link": app_module.robots[robot].end_link(chain_id),
+                "source": "sequence_recorded_tcp",
+                "source_run_id": None,
+            }
+        else:
+            tool_visualization = _offline_tool_visualization(robot, chain_id)
     return {
         "file": path.name,
         "name": str(payload.get("name") or path.stem),

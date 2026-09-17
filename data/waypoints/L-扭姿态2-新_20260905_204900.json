@@ -16,5 +16,6 @@
   "recorded_combo": {
     "arm": "left_arm",
     "hand_id": "qiangnao-revo2-left"
-  }
+  },
+  "arrival_speed_rad_s": 0.4
 }

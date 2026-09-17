@@ -145,7 +145,7 @@ class DispatchDefaultsTest(unittest.TestCase):
                 {"name": "旧配置", "offset_mm": {"x": 3}},
             ],
         })
-        self.assertEqual(migrated["schema_version"], 7)
+        self.assertEqual(migrated["schema_version"], 8)
         self.assertEqual(migrated["defaults"]["workflow_mode"], "legacy")
         self.assertEqual(
             migrated["defaults"]["offset_preset_by_kind"],
@@ -327,10 +327,24 @@ class DispatchDefaultsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "数字"):
             validate_push_force_n("很大")
 
-    def test_repository_config_enables_dexterous_ltr_workflow(self):
+    def test_repository_config_enables_xiaoshan_expo_workflow(self):
         config = load_dispatch_defaults(DEFAULT_DISPATCH_DEFAULTS_PATH)
         defaults = config["defaults"]
-        self.assertEqual(defaults["workflow_mode"], "dexterous_ltr_v1")
+        self.assertEqual(defaults["workflow_mode"], "xiaoshan_expo_v1")
+        xiaoshan = defaults["xiaoshan_expo_v1"]
+        self.assertEqual(xiaoshan["distance_min_m"], 0.35)
+        self.assertEqual(xiaoshan["distance_max_m"], 0.50)
+        self.assertEqual(xiaoshan["distance_step_m"], 0.01)
+        self.assertEqual(xiaoshan["sidestep_cm"], 10.0)
+        self.assertEqual(xiaoshan["push_force_n"], 10.0)
+        self.assertEqual(
+            xiaoshan["sequence_name_by_direction"],
+            {
+                "ltr": "L-{distance:.2f}-左到右起手式",
+                "rtl": "L-{distance:.2f}-右到左起手式",
+            },
+        )
+        # 原灵巧手新模式仍保留为可选模式。
         dexterous = defaults["dexterous_ltr_v1"]
         self.assertEqual(dexterous["main_motion_backend"], "legacy_timed")
         self.assertEqual(dexterous["return_pose_gap_s"], 0.5)
@@ -345,9 +359,9 @@ class DispatchDefaultsTest(unittest.TestCase):
             [
                 {
                     "distance_m": distance / 100,
-                    "waypoint": f"L-0.{distance:02d}-测试灵巧手-2",
+                    "waypoint": f"L-0.{distance:02d}-左到右预备点测试",
                 }
-                for distance in range(40, 56)
+                for distance in range(35, 51)
             ],
         )
 

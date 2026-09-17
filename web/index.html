@@ -4,7 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>双臂 IK 调试回放台</title>
-    <link rel="stylesheet" href="/web/style.css?v=71" />
+    <script>document.documentElement.dataset.workspace=new URLSearchParams(location.search).get('workspace')||'';</script>
+    <link rel="stylesheet" href="/web/workspace-embed.css?v=3" />
+    <link rel="stylesheet" href="/web/style.css?v=cabinet-direct-tolerance-1" />
     <script type="importmap">
       {
         "imports": {
@@ -163,6 +165,27 @@
                 </div>
               </div>
               <div id="reachViaList" class="reach-via-list hidden"></div>
+              <div class="reach-control-row reach-debug-row">
+                <button id="reachDebugModeBtn" type="button">调试方式：经典…</button>
+                <button id="reachABOpenBtn" type="button">左右操作</button>
+              </div>
+              <div class="reach-control-group">
+                <div class="reach-control-row">
+                  <span>朝向模式</span>
+                  <select id="reachOrientationMode" class="reach-waypoint-sel" aria-label="朝向模式">
+                    <option value="free">不指定朝向（仅 XYZ）</option>
+                    <option value="cabinet">目标点使用记录朝向</option>
+                    <option value="cabinet_a">目标点使用 A 点柜面朝向</option>
+                    <option value="cabinet_b">目标点使用 B 点柜面朝向</option>
+                  </select>
+                </div>
+                <div id="reachOrientationReferenceRow" class="reach-control-row hidden">
+                  <span id="reachOrientationReferenceLabel">已记录朝向</span>
+                  <select id="reachOrientationReference" class="reach-waypoint-sel" aria-label="已记录朝向"></select>
+                  <button id="reachOrientationRefresh" type="button" title="刷新已记录朝向">刷新</button>
+                </div>
+                <div id="reachOrientationHelp" class="reach-orientation-note hidden">仅约束目标点的 XYZ 和朝向，中途允许转动。执行后端独立选择。</div>
+              </div>
               <div class="reach-toggles">
                 <label class="reach-stepmode" title="主段到位后暂停，横移/收回需手动点击才继续">
                   <input id="reachStepMode" type="checkbox" />
@@ -186,8 +209,8 @@
                 <select id="reachExecBackend" hidden
                         title="本次执行用哪个运动后端（默认跟 18000 配置）。legacy_timed：保持原关节路径并按 50Hz 连续下发；PINK：世界系闭环补偿躯干漂移，需先锚定。执行中不可切换">
                   <option value="legacy">本次：原方案</option>
-                  <option value="legacy_timed">本次：50Hz 时间轨迹（仅主轨迹）</option>
-                  <option value="pink">本次：PINK（仅主轨迹）</option>
+                  <option value="legacy_timed">本次：50Hz 时间轨迹</option>
+                  <option value="pink">本次：PINK 世界系跟踪</option>
                 </select>
                 <button id="reachExecBtn" type="button" class="danger" disabled>真机执行</button>
                 <button id="reachStopBtn" type="button" class="danger" disabled>急停</button>
@@ -221,8 +244,17 @@
         </div>
 
         <div id="reachStepNext" class="reach-step-pop hidden">
-          <div class="reach-step-pop-title">主段已到位，暂停中</div>
-          <div class="reach-step-pop-hint">可先调参数或重新取点，再选择下一步</div>
+          <div id="reachStepNextTitle" class="reach-step-pop-title">主段已到位，暂停中</div>
+          <div id="reachStepNextHint" class="reach-step-pop-hint">可先调参数或重新取点，再选择下一步</div>
+          <div id="reachDirectPoints" class="reach-step-direct" hidden>
+            <div class="reach-step-group-title">直接到点 <span>使用独立偏移与容差 · 无助力</span><button id="reachDirectSettingsOpen" type="button">偏移与容差…</button></div>
+            <div class="reach-step-pop-actions reach-step-direct-actions">
+              <button id="reachDirectABtn" type="button">直接到 A</button>
+              <button id="reachDirectBBtn" type="button">直接到 B</button>
+            </div>
+            <p>从当前位置出发，无需先到另一个点；未接管时仅预演。</p>
+          </div>
+          <div id="reachABSettingsLabel" class="reach-step-group-title" hidden>按往返设置执行</div>
           <div class="reach-step-pop-actions">
             <button id="reachNextSideBtn" type="button" class="primary">继续横移</button>
             <button id="reachNextSideRBtn" type="button"
@@ -232,6 +264,194 @@
             <button id="reachNextReturnBtn" type="button">收回到结束位点</button>
             <button id="reachNextDoneBtn" type="button" class="ghost">结束</button>
           </div>
+        </div>
+
+        <div id="reachDirectSettingsModal" class="reach-library-modal hidden"
+             role="dialog" aria-modal="true" aria-labelledby="reachDirectSettingsTitle">
+          <form id="reachDirectSettingsForm" class="reach-library-card reach-debug-card" novalidate>
+            <div class="reach-library-header">
+              <strong id="reachDirectSettingsTitle">直接到点 · 偏移与到位容差</strong>
+              <button id="reachDirectSettingsClose" type="button" aria-label="关闭直接到点设置">×</button>
+            </div>
+            <div class="reach-debug-body">
+              <p class="reach-direct-note">仅用于“直接到 A / B”，助力为 0。XYZ 偏移沿柜面坐标轴，默认 0。</p>
+              <div class="reach-debug-points">
+
+              <section class="reach-debug-point-row">
+                <div class="reach-debug-point-heading"><strong>直接到 A</strong><span id="reachDirectSettingsAName"></span></div>
+                <div class="reach-direct-offsets">
+                  <label for="reachDirectSettingsAX">X 偏移
+                    <span class="reach-debug-offset"><input id="reachDirectSettingsAX" type="number" min="-100" max="100" step="0.1" value="0" inputmode="decimal" aria-label="直接到 A：X 偏移（mm）" /><span>mm</span></span>
+                  </label>
+                  <label for="reachDirectSettingsAY">Y 偏移
+                    <span class="reach-debug-offset"><input id="reachDirectSettingsAY" type="number" min="-100" max="100" step="0.1" value="0" inputmode="decimal" aria-label="直接到 A：Y 偏移（mm）" /><span>mm</span></span>
+                  </label>
+                  <label for="reachDirectSettingsAZ">Z 偏移
+                    <span class="reach-debug-offset"><input id="reachDirectSettingsAZ" type="number" min="-100" max="100" step="0.1" value="0" inputmode="decimal" aria-label="直接到 A：Z 偏移（mm）" /><span>mm</span></span>
+                  </label>
+                </div>
+                <div class="reach-direct-tolerances">
+                  <label for="reachDirectSettingsAPosition">位置容差（总距离）
+                    <span class="reach-debug-offset"><input id="reachDirectSettingsAPosition" type="number" min="0.1" max="100" step="0.1" value="10" inputmode="decimal" aria-label="直接到 A：位置容差（mm）" /><span>mm</span></span>
+                  </label>
+                  <label for="reachDirectSettingsAOrientation">朝向容差（总夹角）
+                    <span class="reach-debug-offset"><input id="reachDirectSettingsAOrientation" type="number" min="0.1" max="45" step="0.1" value="2" inputmode="decimal" aria-label="直接到 A：朝向容差（°）" /><span>°</span></span>
+                  </label>
+                </div>
+              </section>
+
+              <section class="reach-debug-point-row">
+                <div class="reach-debug-point-heading"><strong>直接到 B</strong><span id="reachDirectSettingsBName"></span></div>
+                <div class="reach-direct-offsets">
+                  <label for="reachDirectSettingsBX">X 偏移
+                    <span class="reach-debug-offset"><input id="reachDirectSettingsBX" type="number" min="-100" max="100" step="0.1" value="0" inputmode="decimal" aria-label="直接到 B：X 偏移（mm）" /><span>mm</span></span>
+                  </label>
+                  <label for="reachDirectSettingsBY">Y 偏移
+                    <span class="reach-debug-offset"><input id="reachDirectSettingsBY" type="number" min="-100" max="100" step="0.1" value="0" inputmode="decimal" aria-label="直接到 B：Y 偏移（mm）" /><span>mm</span></span>
+                  </label>
+                  <label for="reachDirectSettingsBZ">Z 偏移
+                    <span class="reach-debug-offset"><input id="reachDirectSettingsBZ" type="number" min="-100" max="100" step="0.1" value="0" inputmode="decimal" aria-label="直接到 B：Z 偏移（mm）" /><span>mm</span></span>
+                  </label>
+                </div>
+                <div class="reach-direct-tolerances">
+                  <label for="reachDirectSettingsBPosition">位置容差（总距离）
+                    <span class="reach-debug-offset"><input id="reachDirectSettingsBPosition" type="number" min="0.1" max="100" step="0.1" value="10" inputmode="decimal" aria-label="直接到 B：位置容差（mm）" /><span>mm</span></span>
+                  </label>
+                  <label for="reachDirectSettingsBOrientation">朝向容差（总夹角）
+                    <span class="reach-debug-offset"><input id="reachDirectSettingsBOrientation" type="number" min="0.1" max="45" step="0.1" value="2" inputmode="decimal" aria-label="直接到 B：朝向容差（°）" /><span>°</span></span>
+                  </label>
+                </div>
+              </section>
+              </div>
+              <p class="reach-direct-note">位置误差和朝向误差须同时在容差内才算到位；开始前已满足时不再运动。容差不改变目标，不补偿视觉定位误差。X 向右，Y 向柜内，Z 向上。</p>
+              <div id="reachDirectSettingsFeedback" class="reach-record-feedback" role="status" aria-live="polite"></div>
+            </div>
+            <div class="reach-library-actions">
+              <span class="reach-debug-save-note">按当前手臂记住设置</span>
+              <button id="reachDirectSettingsCancel" type="button">取消</button>
+              <button id="reachDirectSettingsSave" type="submit" class="primary">保存</button>
+            </div>
+          </form>
+        </div>
+
+        <div id="reachDebugModal" class="reach-library-modal hidden"
+             role="dialog" aria-modal="true" aria-labelledby="reachDebugTitle">
+          <form id="reachDebugForm" class="reach-library-card reach-debug-card" novalidate>
+            <div class="reach-library-header">
+              <strong id="reachDebugTitle">默认调试方式</strong>
+              <button id="reachDebugClose" type="button" aria-label="关闭调试设置">×</button>
+            </div>
+            <div id="reachDebugBody" class="reach-debug-body">
+            <fieldset class="reach-debug-modes" aria-label="到点后的操作">
+              <label>
+                <input id="reachDebugClassic" type="radio" name="debugMode" value="classic" checked />
+                <span><strong>经典模式</strong><small>到点后选择左 / 右</small></span>
+              </label>
+              <label>
+                <input id="reachDebugAB" type="radio" name="debugMode" value="ab" />
+                <span><strong>A/B 点位调试</strong><small>到点后选择往返</small></span>
+              </label>
+            </fieldset>
+            <div id="reachDebugPoints" class="reach-debug-points hidden">
+              <section class="reach-debug-point-row" aria-labelledby="reachDebugATitle">
+                <label class="reach-debug-point-select" for="reachDebugA">
+                  <span class="reach-debug-point-heading"><strong id="reachDebugATitle">A 点 · 旋钮左</strong><span>B→A 的目标</span></span>
+                  <select id="reachDebugA" aria-label="A 点"></select>
+                </label>
+                <div class="reach-debug-point-values" role="group" aria-label="B→A 的柜面偏移与助力">
+                <label for="reachDebugOffsetBA">X 偏移
+                  <span class="reach-debug-offset"><input id="reachDebugOffsetBA" type="number" min="-100" max="100" step="0.1" value="0" inputmode="decimal" aria-describedby="reachDebugAxisHint" /><span>mm</span></span>
+                </label>
+                <label for="reachDebugOffsetBAY">Y 偏移
+                  <span class="reach-debug-offset"><input id="reachDebugOffsetBAY" type="number" min="-100" max="100" step="0.1" value="0" inputmode="decimal" aria-describedby="reachDebugAxisHint" /><span>mm</span></span>
+                </label>
+                <label for="reachDebugOffsetBAZ">Z 偏移
+                  <span class="reach-debug-offset"><input id="reachDebugOffsetBAZ" type="number" min="-100" max="100" step="0.1" value="0" inputmode="decimal" aria-describedby="reachDebugAxisHint" /><span>mm</span></span>
+                </label>
+                <label class="reach-debug-force" for="reachDebugForceBA">−X 助力
+                  <span class="reach-debug-offset"><input id="reachDebugForceBA" type="number" min="0" max="40" step="0.5" value="0" inputmode="decimal" /><span>N</span></span>
+                </label>
+                </div>
+              </section>
+              <section class="reach-debug-point-row" aria-labelledby="reachDebugBTitle">
+                <label class="reach-debug-point-select" for="reachDebugB">
+                  <span class="reach-debug-point-heading"><strong id="reachDebugBTitle">B 点 · 旋钮右</strong><span>A→B 的目标</span></span>
+                  <select id="reachDebugB" aria-label="B 点"></select>
+                </label>
+                <div class="reach-debug-point-values" role="group" aria-label="A→B 的柜面偏移与助力">
+                <label for="reachDebugOffsetAB">X 偏移
+                  <span class="reach-debug-offset"><input id="reachDebugOffsetAB" type="number" min="-100" max="100" step="0.1" value="0" inputmode="decimal" aria-describedby="reachDebugAxisHint" /><span>mm</span></span>
+                </label>
+                <label for="reachDebugOffsetABY">Y 偏移
+                  <span class="reach-debug-offset"><input id="reachDebugOffsetABY" type="number" min="-100" max="100" step="0.1" value="0" inputmode="decimal" aria-describedby="reachDebugAxisHint" /><span>mm</span></span>
+                </label>
+                <label for="reachDebugOffsetABZ">Z 偏移
+                  <span class="reach-debug-offset"><input id="reachDebugOffsetABZ" type="number" min="-100" max="100" step="0.1" value="0" inputmode="decimal" aria-describedby="reachDebugAxisHint" /><span>mm</span></span>
+                </label>
+                <label class="reach-debug-force" for="reachDebugForceAB">+X 助力
+                  <span class="reach-debug-offset"><input id="reachDebugForceAB" type="number" min="0" max="40" step="0.5" value="0" inputmode="decimal" /><span>N</span></span>
+                </label>
+                </div>
+              </section>
+              <p id="reachDebugAxisHint">柜面坐标：X 正向右，Y 正向柜内，Z 正向上；负值反向。各轴偏移 ±100 mm，0 不偏移；助力 0 关闭。</p>
+              <div class="reach-debug-timing" aria-label="两向共用的助力时间">
+                <div class="reach-debug-timing-title">助力时间 <span>两向共用</span></div>
+                <label for="reachDebugRamp">建立时间
+                  <span class="reach-debug-offset"><input id="reachDebugRamp" type="number" min="0.1" max="5" step="0.05" value="0.5" inputmode="decimal" /><span>s</span></span>
+                </label>
+                <label for="reachDebugHold">段末保持
+                  <span class="reach-debug-offset"><input id="reachDebugHold" type="number" min="0" max="5" step="0.05" value="0" inputmode="decimal" /><span>s</span></span>
+                </label>
+                <label for="reachDebugRelease">撤力时间
+                  <span class="reach-debug-offset"><input id="reachDebugRelease" type="number" min="0.1" max="5" step="0.05" value="0.65" inputmode="decimal" /><span>s</span></span>
+                </label>
+              </div>
+              <div id="reachDebugOffsetSummary" class="reach-debug-offset-summary" aria-live="polite"></div>
+              <details class="reach-debug-help">
+                <summary>运动与定位说明</summary>
+                <p>从当前位置直接前往目标。XYZ 偏移均沿柜面坐标轴、相对原记录计算，不累计；只改变终点位置，终点朝向使用原记录，中途允许转动。只需助力时，三轴偏移都填 0。</p>
+                <p>使用同一面板的 RGBD 点位；每次运动前重新定位，请露出面板并保持机身静止。关闭不会运动。</p>
+                <p>两向分别设置力度，共用时间。运动开始平滑建立助力，随后保持设定值，段末按设置保持并撤力；撤力后仍检查终点。助力是前馈指令，实际接触力未经传感器闭环测量。</p>
+              </details>
+            </div>
+            <div id="reachDebugFeedback" class="reach-record-feedback" role="status" aria-live="polite"></div>
+            </div>
+            <div class="reach-library-actions">
+              <span class="reach-debug-save-note">按当前手臂记住设置</span>
+              <button id="reachDebugCancel" type="button">取消</button>
+              <button id="reachDebugSave" type="submit" class="primary">保存为默认</button>
+            </div>
+          </form>
+        </div>
+
+        <div id="reachRecordModal" class="reach-library-modal hidden"
+             role="dialog" aria-modal="true" aria-labelledby="reachRecordTitle">
+          <form id="reachRecordForm" class="reach-library-card reach-record-card" novalidate>
+            <div class="reach-library-header">
+              <strong id="reachRecordTitle">录制路点</strong>
+              <button id="reachRecordCloseBtn" type="button" aria-label="关闭录制窗口">×</button>
+            </div>
+            <fieldset class="reach-record-options">
+              <legend>录制内容</legend>
+              <label class="reach-record-option">
+                <input id="reachRecordRgbdYes" type="radio" name="recordRgbd" value="yes" checked />
+                <span><strong>点位 + RGBD</strong><small>同时保存彩色图、深度和位姿</small></span>
+              </label>
+              <label class="reach-record-option">
+                <input id="reachRecordRgbdNo" type="radio" name="recordRgbd" value="no" />
+                <span><strong>仅录制点位</strong><small>保存当前机械臂关节角</small></span>
+              </label>
+            </fieldset>
+            <p id="reachRecordHint" class="reach-library-hint">使用 7005 默认参数拍摄，请保持手臂和机身静止。</p>
+            <label class="reach-record-name" for="reachRecordName">点位名称</label>
+            <input id="reachRecordName" class="reach-record-name-input" type="text"
+                   placeholder="例如：A 点、B 点" autocomplete="off" aria-describedby="reachRecordFeedback" />
+            <div id="reachRecordFeedback" class="reach-record-feedback" role="status" aria-live="polite"></div>
+            <div class="reach-library-actions">
+              <button id="reachRecordCancelBtn" type="button">取消</button>
+              <button id="reachRecordSaveBtn" type="submit" class="primary">录制</button>
+            </div>
+          </form>
         </div>
 
         <div id="reachWaypointSpeedModal" class="reach-library-modal hidden"
@@ -385,6 +605,6 @@
       <aside id="rightArmPanel" class="control-panel arm-panel right"></aside>
     </main>
 
-    <script type="module" src="/web/main.js?v=113"></script>
+    <script type="module" src="/web/main.js?v=cabinet-direct-tolerance-1"></script>
   </body>
 </html>

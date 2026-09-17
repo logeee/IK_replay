@@ -1,0 +1,72 @@
+{
+  "name": "L-0.47-右-预备点",
+  "arm": "left_arm",
+  "chain_id": "left_arm",
+  "named_joints": {
+    "left_shoulder_pitch_joint": -0.7642588381011619,
+    "left_shoulder_roll_joint": 0.8176931197937074,
+    "left_shoulder_yaw_joint": -0.2553664240236155,
+    "left_elbow_joint": -0.49930527380556294,
+    "left_wrist_roll_joint": 1.1793313042555484,
+    "left_wrist_pitch_joint": 0.07048518187197757,
+    "left_wrist_yaw_joint": -0.1655472556890881
+  },
+  "arrival_speed_rad_s": 0.4,
+  "created_at": "2026-09-17T22:54:38",
+  "recorded_combo": {
+    "arm": "left_arm",
+    "hand_id": "qiangnao-revo2-left"
+  },
+  "distance_m": 0.47,
+  "preparation_side": "right",
+  "direction": "rtl",
+  "tcp_offset": {
+    "xyz": [
+      0.2095773766794327,
+      -0.0484596443700332,
+      0.025312167837534996
+    ],
+    "rpy": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "classification_updated_at": "2026-09-17T22:42:45",
+  "generated_from": "L-0.40-右-预备点_20260917_185916.json",
+  "reference_distance_m": 0.4,
+  "offset_root_m": [
+    0.07,
+    0.0,
+    0.0
+  ],
+  "tcp_pose": {
+    "xyz": [
+      0.43976397402067313,
+      0.06151631940703749,
+      0.617661027035131
+    ],
+    "rpy": [
+      2.3862261388761747,
+      -0.6627674938786089,
+      -0.7735332298629386
+    ]
+  },
+  "requested_tcp_pose": {
+    "xyz": [
+      0.439763974197182,
+      0.061516319291593305,
+      0.6176610270875653
+    ],
+    "rpy": [
+      2.386226139966679,
+      -0.6627674937631839,
+      -0.7735332316165394
+    ]
+  },
+  "generated": true,
+  "ik": {
+    "error_mm": 2.1732945389653284e-07,
+    "error_rotation_deg": 7.948119608622713e-08
+  }
+}

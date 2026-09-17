@@ -126,13 +126,15 @@ class PinkRuntime:
 
     # ------------------------------------------------------------------ 世界系
     def anchor(self) -> dict[str, Any]:
-        sample = self.sampler.sample()
-        fb = self.world_frame.anchor(sample)
-        # 旧的取点世界系已失效（锚点变了）
-        self.pick_world_T_root = None
-        self.pick_world_frame_anchor = None
-        self.anchor_world_T_pelvis = _pelvis_pose_matrix(fb)
-        return fb.to_dict()
+        with self._lock:
+            sample = self.sampler.sample()
+            fb = self.world_frame.anchor(sample)
+            # The shared anchor count invalidates picks in both arm runtimes.
+            self.pick_world_T_root = None
+            self.pick_world_frame_anchor = None
+            self.anchor_world_T_pelvis = _pelvis_pose_matrix(fb)
+            self.world_frame.reach_anchor_world_T_pelvis = self.anchor_world_T_pelvis
+            return fb.to_dict()
 
     def body_snapshot(self) -> dict[str, Any]:
         """页面「实时全身姿态」用：最新 lowstate 映射成 URDF 关节名→rad，
@@ -148,15 +150,17 @@ class PinkRuntime:
             "anchor_T_pelvis": np.eye(4).tolist(),
         }
         fb = self.world_frame.last_state
-        if fb is not None and self.anchor_world_T_pelvis is not None:
+        anchor = getattr(self.world_frame, "reach_anchor_world_T_pelvis", self.anchor_world_T_pelvis)
+        if fb is not None and anchor is not None:
             world_T_pelvis = _pelvis_pose_matrix(fb)
-            out["anchor_T_pelvis"] = (np.linalg.inv(self.anchor_world_T_pelvis) @ world_T_pelvis).tolist()
+            out["anchor_T_pelvis"] = (np.linalg.inv(anchor) @ world_T_pelvis).tolist()
             out["quality"] = fb.quality
         return out
 
     def update_world(self):
-        sample = self.sampler.sample()
-        return sample, self.world_frame.update(sample)
+        with self._lock:
+            sample = self.sampler.sample()
+            return sample, self.world_frame.update(sample)
 
     def capture_pick_frame(self) -> np.ndarray | None:
         """取点时刻调用：记录 world_T_root，之后的规划结果都相对它提升到世界系。"""
@@ -247,8 +251,10 @@ def exec_loop_pink(q_list: list[np.ndarray], duration: float,
                execution_context=execution_context,
                stiffness_scale=stiffness_scale, extra=pink_log)
     completed = False
+    orientation_constraint = (execution_context or {}).get("orientation_constraint")
     stiffness_snapshot = None
     session = None
+    assist = None
     try:
         if command_start_q is None:
             raise RuntimeError("缺少上一帧已发送关节命令，拒绝启动轨迹")
@@ -272,11 +278,17 @@ def exec_loop_pink(q_list: list[np.ndarray], duration: float,
         pink_log["world_T_root_ref_source"] = ref_source
         pink_log["world_frame_at_start"] = fb.to_dict()
 
+        if orientation_constraint:
+            from .orientation import execution_constraint as validate_constraint
+            validate_constraint(orientation_constraint["id"], q_list, "pink")
+            world_T_root_ref = np.asarray(orientation_constraint["world_T_root_ref"])
+            pink_log["orientation_constraint"] = orientation_constraint
+
         controller = rt.controller_for_tool(state.p_tool)
         fk = lambda q: controller.root_T_tcp_actual(q).homogeneous  # noqa: E731
-
         state.exec_phase = "traj"
         ctl.enable_jog()
+        assist = legacy.make_assist(ctl, orientation_constraint, legacy._position_jacobian)
         if hasattr(ctl, "set_max_speed"):
             ctl.set_max_speed(max(0.4, speed) if push_tau is not None else speed)
         exec_speed = float(ctl.max_speed)
@@ -328,9 +340,19 @@ def exec_loop_pink(q_list: list[np.ndarray], duration: float,
             step = session.step(feedback_q(status), None, fb.world_T_root,
                                 state_age_ms=rt.sampler.age_ms(), warnings=warnings,
                                 q_executor=executor_q(status))
+            if orientation_constraint:
+                from .orientation import check_joint_path
+                if rt.world_frame.anchor_count != orientation_constraint["anchor_count"]:
+                    raise RuntimeError("世界系锚定已变化，停止朝向跟踪")
+                if rt.sampler.age_ms() > 150.:
+                    raise RuntimeError("实测状态超时，停止朝向跟踪")
+                check_joint_path([step.q_target])
             ctl.set_target(step.q_target)
             if push_tau is not None:
                 ctl.set_tau_ff(push_tau * min(1.0, (tick + 1) / n_ramp))
+            if assist:
+                assist.update(fb.world_T_root[:3, :3], active=(
+                    step.phase in ("TRACK", "HOLD", "DONE") and supervisor.state is SupervisorState.RUNNING))
             tick += 1
             state.exec_progress = float(min(1.0, step.t_s / max(plan.duration_s, 1e-6)))
             if step.phase != last_phase:
@@ -363,6 +385,44 @@ def exec_loop_pink(q_list: list[np.ndarray], duration: float,
         pink_log["summary"] = session.summary.to_dict()
         rt.last_summary = pink_log["summary"]
         q_final = session.last_q_target if session.last_q_target is not None else q_list[-1]
+
+        if orientation_constraint:
+            if assist:
+                if supervisor.state is not SupervisorState.RUNNING:
+                    raise RuntimeError("跟踪异常，停止柜面助力")
+                def assist_world_rotation():
+                    _, current_fb = rt.update_world()
+                    if (rt.world_frame.anchor_count != orientation_constraint["anchor_count"]
+                            or rt.sampler.age_ms() > 150.):
+                        raise RuntimeError("柜面助力的世界参考或实测状态已失效")
+                    return current_fb.world_T_root[:3, :3]
+                assist.finish(assist_world_rotation)
+                if state.exec_cancel.is_set():
+                    ctl.disable_jog()
+                    state.exec_message = "已中止（保持当前位置）"
+                    legacy._log_exec(label, "cancelled", q_final, **log)
+                    return
+                time.sleep(.3)
+            # Check the requested pose only on arrival. Preserve PINK's world
+            # goal instead of appending a trim to the old root-frame joint goal.
+            _, final_fb = rt.update_world()
+            from .orientation import check_arrival_pose, joint_pose
+            # Use planning-model FK for both measured and requested poses so
+            # the IK endpoint error counts toward the arrival limit. That model
+            # has a zero-waist root, while PINK's floating root is the torso.
+            torso_T_model_root = np.linalg.inv(state.robot_model.forward_kinematics({})[controller.root_frame])
+            actual = final_fb.world_T_root @ torso_T_model_root @ joint_pose(ctl.read_measured())
+            world_T_model_ref = world_T_root_ref @ torso_T_model_root
+            target_world = (world_T_model_ref @ np.r_[orientation_constraint["target_root"], 1.])[:3]
+            errors = check_arrival_pose(actual, target_world,
+                                       world_T_model_ref[:3, :3] @ orientation_constraint["R_root_tcp"],
+                                       orientation_constraint)
+            ctl.disable_jog()
+            state.exec_progress = 1.0
+            state.exec_message = f"完成（目标位姿到达，位置误差 {errors['position_error_mm']:.1f} mm，终点朝向误差 {errors['orientation_error_deg']:.2f}°）"
+            legacy._log_exec(label, "done", q_final, **log)
+            completed = True
+            return
 
         # ---- 以下与 legacy 相同：等限速滑动到位、推力保持/撤力、落点测量 ----
         state.exec_message = "收敛中"
@@ -456,6 +516,8 @@ def exec_loop_pink(q_list: list[np.ndarray], duration: float,
         state.exec_message = f"执行出错已停止: {exc}"
         legacy._log_exec(label, f"error: {exc}", q_list[-1], **log)
     finally:
+        if assist:
+            assist.clear()
         legacy._restore_stiffness(ctl, stiffness_snapshot)
         trace_stop.set()
         if rt is not None:
@@ -479,8 +541,8 @@ def exec_loop_pink(q_list: list[np.ndarray], duration: float,
 
 
 def _require_pink():
-    if state.motion_backend != "pink" or state.pink_runtime is None:
-        return JSONResponse({"ok": False, "error": "当前运动后端不是 pink（18000 active.motion_backend）"},
+    if state.pink_runtime is None:
+        return JSONResponse({"ok": False, "error": "PINK 运行时不可用"},
                             status_code=409)
     return None
 

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "waypoint_file": "L-HHY-L-D-V6_20260917_173813.json",
+  "arm": "left_arm",
+  "capture_id": "c59455874df0495a9a464a8f82d438ad",
+  "frame_id": 120417,
+  "rgb": "rgb.jpg",
+  "depth": "depth_mm.npy",
+  "depth_unit": "mm",
+  "depth_aligned_to": "rgb",
+  "depth_shape": [
+    1080,
+    1920
+  ],
+  "camera_intrinsics_fx_fy_cx_cy": [
+    1036.3985595703125,
+    1036.47900390625,
+    966.4566650390625,
+    539.8660888671875
+  ],
+  "distortion": [
+    0.007066068705171347,
+    -0.04711054265499115,
+    -0.0004220326663926244,
+    6.579305045306683e-05,
+    0.03199521824717522,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "robot_pose": "robot_pose.json",
+  "capture": "capture.json",
+  "pointcloud": "cloud.bin",
+  "coordinate_status": "raw_capture_for_cabinet_localization"
+}

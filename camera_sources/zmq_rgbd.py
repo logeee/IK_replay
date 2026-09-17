@@ -480,9 +480,14 @@ class ZmqRGBDCamera:
         _generation, _jpeg, depth, _metadata = aligned
         return depth.copy(), self.intrinsics
 
-    def rgbd_snapshot(self) -> dict[str, Any] | None:
+    def rgbd_snapshot(self, *, fresh: bool = False) -> dict[str, Any] | None:
         """Align and return one strict same-message color/depth pair."""
-        aligned = self._align_on_demand()
+        if fresh:
+            with self._lock:
+                generation = self._frame_generation
+            aligned = self._align_on_demand(after_generation=generation, timeout_s=2.0)
+        else:
+            aligned = self._align_on_demand()
         if aligned is None:
             return None
         _generation, jpeg, depth, metadata = aligned

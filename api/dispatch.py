@@ -106,7 +106,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from copy import deepcopy
@@ -134,12 +134,13 @@ from core.dispatch_defaults import (
     DEFAULT_DISPATCH_DEFAULTS,
     DEFAULT_LIFT_MM,
     DEFAULT_PUSH_FORCE_N,
+    DEFAULT_XIAOSHAN_EXPO_V1,
     OFFSET_KEYFRAME_MAX_DISTANCE_M,
     OFFSET_KEYFRAME_MIN_DISTANCE_M,
     OFFSET_KEYFRAME_STEP_M,
     find_offset_preset,
     load_dispatch_defaults,
-    save_dispatch_defaults,
+    update_dispatch_defaults,
     validate_lift_mm,
     validate_offset_keyframes,
     validate_offset_mm,
@@ -479,6 +480,10 @@ def _spawn_reach(task: dict) -> None:
         "--camera-request-port", str(_args.camera_request_port),
         "--camera-name", camera_name,
         "--camera-rgbd-calib", _args.camera_rgbd_calib,
+        # 萧山/17001 流程的取点和复核都使用头部 RGB-D；腕部 JPEG 只属于
+        # 旧调试留档能力。显式关闭，避免每次按需拉起 18001 时为不存在的
+        # right_wrist_camera 白等 5 秒。
+        "--no-wrist-camera",
         "--network-interface", _args.network_interface,
         "--chain", chain,
         "--tool-out-mm", str(tool_out_mm),
@@ -823,7 +828,8 @@ def _run_task(task: dict) -> None:
                               (task.get("first_round_offset_wall_mm")
                                or [0.0, 0.0, 0.0])),
                           workflow_mode=task.get("workflow_mode") or "legacy",
-                          dexterous_config=task.get("dexterous_config") or {})
+                          dexterous_config=task.get("dexterous_config") or {},
+                          xiaoshan_config=task.get("xiaoshan_config") or {})
         task["flow"] = flow
         if task.get("manual"):
             gate = _ManualGate(task)
@@ -1396,15 +1402,23 @@ def _resolve_site(body: dict | None, defaults: dict) -> tuple[str | None, str]:
 
 def _resolve_workflow_mode(
     body: dict | None, defaults: dict
-) -> tuple[str, dict[str, Any], str]:
-    """流程模式可按次覆盖；新模式的资产和时序始终取 17001 配置。"""
+) -> tuple[str, dict[str, Any], dict[str, Any], str]:
+    """流程模式可按次覆盖；各模式资产和时序始终取 17001 配置。"""
     raw = str((body or {}).get("workflow_mode") or "").strip().lower()
     source = "请求指定" if raw else "默认配置"
     mode = raw or str(defaults["defaults"].get("workflow_mode") or "legacy")
     if mode not in WORKFLOW_MODES:
-        raise ValueError("workflow_mode 只能是 legacy 或 dexterous_ltr_v1")
-    cfg = defaults["defaults"].get("dexterous_ltr_v1")
-    return mode, deepcopy(cfg or DEFAULT_DEXTEROUS_LTR_V1), source
+        raise ValueError(
+            "workflow_mode 只能是 legacy、dexterous_ltr_v1 或 xiaoshan_expo_v1"
+        )
+    dexterous_cfg = defaults["defaults"].get("dexterous_ltr_v1")
+    xiaoshan_cfg = defaults["defaults"].get("xiaoshan_expo_v1")
+    return (
+        mode,
+        deepcopy(dexterous_cfg or DEFAULT_DEXTEROUS_LTR_V1),
+        deepcopy(xiaoshan_cfg or DEFAULT_XIAOSHAN_EXPO_V1),
+        source,
+    )
 
 
 def _resolve_lift(body: dict | None, defaults: dict) -> tuple[dict, str]:
@@ -1606,10 +1620,6 @@ def task_submit(body: dict | None = None):
             "close_to_remote": "Change the switch from close to remote",
             "remote_to_close": "Change the switch from remote to close",
         }[kind_from_public]
-        # 灵巧手新流程当前只实现左→右；右→左仍走已存在的旧流程。
-        if public_task == "right_to_left":
-            body["workflow_mode"] = "legacy"
-
     language = str(body.get("language") or "").strip()
     if not language:
         return JSONResponse(
@@ -1627,17 +1637,23 @@ def task_submit(body: dict | None = None):
     manual = bool(body.get("manual"))
     defaults = _current_defaults()
     try:
-        workflow_mode, dexterous_config, workflow_source = (
+        (workflow_mode, dexterous_config, xiaoshan_config,
+         workflow_source) = (
             _resolve_workflow_mode(body, defaults)
         )
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
     if workflow_mode == "dexterous_ltr_v1" and kind != "close_to_remote":
-        return JSONResponse(
-            {"ok": False,
-             "error": "灵巧手新模式目前只支持旋钮左→右（close_to_remote）"},
-            status_code=422,
-        )
+        # 公开 left/right 请求保留旧兼容行为；显式指定新模式则明确拒绝。
+        if public_task == "right_to_left" and not body.get("workflow_mode"):
+            workflow_mode = "legacy"
+            workflow_source = "右→左兼容旧流程"
+        else:
+            return JSONResponse(
+                {"ok": False,
+                 "error": "灵巧手新模式目前只支持旋钮左→右（close_to_remote）"},
+                status_code=422,
+            )
     site, site_source = _resolve_site(body, defaults)
     if site is None:
         return JSONResponse(
@@ -1661,6 +1677,9 @@ def task_submit(body: dict | None = None):
         if workflow_mode == "dexterous_ltr_v1":
             push_force_n = float(dexterous_config["push_force_n"])
             push_force_source = "灵巧手新模式配置"
+        elif workflow_mode == "xiaoshan_expo_v1":
+            push_force_n = float(xiaoshan_config["push_force_n"])
+            push_force_source = "萧山展会版本配置"
         offsets_to_check = [
             (offset_mm, None)
         ] if not offset_keyframes else [
@@ -1734,6 +1753,13 @@ def task_submit(body: dict | None = None):
                 f"{float(speeds.get('retry', 0.3)):g}/"
                 f"{float(speeds.get('return', 0.5)):g} rad/s"
             )
+        elif workflow_mode == "xiaoshan_expo_v1":
+            waypoint_speed_note = (
+                "，萧山展会版距离 "
+                f"{float(xiaoshan_config['distance_min_m']):.2f}~"
+                f"{float(xiaoshan_config['distance_max_m']):.2f}m、"
+                "按厘米四舍五入选双向起手式、成功倒序收尾"
+            )
         resolved_public_task = public_task or (
             "left_to_right" if kind == "close_to_remote" else "right_to_left"
         )
@@ -1745,6 +1771,7 @@ def task_submit(body: dict | None = None):
                  "workflow_mode": workflow_mode,
                  "workflow_source": workflow_source,
                  "dexterous_config": deepcopy(dexterous_config),
+                 "xiaoshan_config": deepcopy(xiaoshan_config),
                  "direction": intent["direction"],
                  "flip_from": intent["flip_from"], "flip_to": intent["flip_to"],
                  "prompt": None, "gate": None,
@@ -1846,6 +1873,7 @@ def task_status():
                     "waypoint_speed_rad_s"
                 ) or {}
             ),
+            "xiaoshan_config": deepcopy(t.get("xiaoshan_config") or {}),
             "site": t.get("site") or "lab",
             "kind": t.get("kind"), "direction": t.get("direction"),
             "flip_from": t.get("flip_from"), "flip_to": t.get("flip_to"),
@@ -1962,44 +1990,47 @@ def config_defaults_get():
 def config_defaults_set(body: dict | None = None):
     """改默认值；两个任务方向可分别选择命名偏移配置。"""
     body = body or {}
-    cfg = _current_defaults()
-    if "site" in body:
-        cfg["defaults"]["site"] = body.get("site")
-    if "workflow_mode" in body:
-        cfg["defaults"]["workflow_mode"] = body.get("workflow_mode")
-    if "dexterous_ltr_v1" in body:
-        cfg["defaults"]["dexterous_ltr_v1"] = body.get("dexterous_ltr_v1")
-    if "offset_preset_by_kind" in body:
-        cfg["defaults"]["offset_preset_by_kind"] = (
-            body.get("offset_preset_by_kind")
-        )
-    elif "offset_preset" in body:
-        legacy = str(body.get("offset_preset") or "").strip()
-        # 旧页面只有一个下拉框，只更新该现场原本对应的方向，避免覆盖新版
-        # 页面已经为另一个方向独立保存的配置。
-        by_kind = dict(cfg["defaults"].get("offset_preset_by_kind") or {})
-        legacy_kind = resolve_flip_intent(cfg["defaults"]["site"])["kind"]
-        by_kind[legacy_kind] = legacy
-        cfg["defaults"]["offset_preset_by_kind"] = by_kind
-    if "first_round_offset_wall_mm_by_kind" in body:
-        cfg["defaults"]["first_round_offset_wall_mm_by_kind"] = (
-            body.get("first_round_offset_wall_mm_by_kind")
-        )
-    if "lift_mm" in body:
-        cfg["defaults"]["lift_mm"] = body.get("lift_mm")
-    if "push_force_n_by_kind" in body:
-        cfg["defaults"]["push_force_n_by_kind"] = (
-            body.get("push_force_n_by_kind")
-        )
-    elif "push_force_n" in body:
-        by_kind = dict(
-            cfg["defaults"].get("push_force_n_by_kind") or {}
-        )
-        legacy_kind = resolve_flip_intent(cfg["defaults"]["site"])["kind"]
-        by_kind[legacy_kind] = body.get("push_force_n")
-        cfg["defaults"]["push_force_n_by_kind"] = by_kind
+    def mutate(cfg: dict[str, Any]) -> dict[str, Any]:
+        if "site" in body:
+            cfg["defaults"]["site"] = body.get("site")
+        if "workflow_mode" in body:
+            cfg["defaults"]["workflow_mode"] = body.get("workflow_mode")
+        if "dexterous_ltr_v1" in body:
+            cfg["defaults"]["dexterous_ltr_v1"] = body.get("dexterous_ltr_v1")
+        if "xiaoshan_expo_v1" in body:
+            cfg["defaults"]["xiaoshan_expo_v1"] = body.get("xiaoshan_expo_v1")
+        if "offset_preset_by_kind" in body:
+            cfg["defaults"]["offset_preset_by_kind"] = (
+                body.get("offset_preset_by_kind")
+            )
+        elif "offset_preset" in body:
+            legacy = str(body.get("offset_preset") or "").strip()
+            # 旧页面只有一个下拉框，只更新该现场原本对应的方向，避免覆盖新版
+            # 页面已经为另一个方向独立保存的配置。
+            by_kind = dict(cfg["defaults"].get("offset_preset_by_kind") or {})
+            legacy_kind = resolve_flip_intent(cfg["defaults"]["site"])["kind"]
+            by_kind[legacy_kind] = legacy
+            cfg["defaults"]["offset_preset_by_kind"] = by_kind
+        if "first_round_offset_wall_mm_by_kind" in body:
+            cfg["defaults"]["first_round_offset_wall_mm_by_kind"] = (
+                body.get("first_round_offset_wall_mm_by_kind")
+            )
+        if "lift_mm" in body:
+            cfg["defaults"]["lift_mm"] = body.get("lift_mm")
+        if "push_force_n_by_kind" in body:
+            cfg["defaults"]["push_force_n_by_kind"] = (
+                body.get("push_force_n_by_kind")
+            )
+        elif "push_force_n" in body:
+            by_kind = dict(
+                cfg["defaults"].get("push_force_n_by_kind") or {}
+            )
+            legacy_kind = resolve_flip_intent(cfg["defaults"]["site"])["kind"]
+            by_kind[legacy_kind] = body.get("push_force_n")
+            cfg["defaults"]["push_force_n_by_kind"] = by_kind
+        return cfg
     try:
-        saved = save_dispatch_defaults(cfg)
+        saved = update_dispatch_defaults(mutate)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
     return {"ok": True, **saved}
@@ -2031,15 +2062,21 @@ def config_preset_upsert(body: dict | None = None):
             raise ValueError("mode 只能是 static 或 keyframes")
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
-    cfg = _current_defaults()
-    cfg["offset_presets"] = (
-        [p for p in cfg["offset_presets"] if p["name"] != name]
-        + [preset])
+    replaced = False
+
+    def mutate(cfg: dict[str, Any]) -> dict[str, Any]:
+        nonlocal replaced
+        replaced = any(p["name"] == name for p in cfg["offset_presets"])
+        cfg["offset_presets"] = (
+            [p for p in cfg["offset_presets"] if p["name"] != name]
+            + [preset]
+        )
+        return cfg
     try:
-        saved = save_dispatch_defaults(cfg)
+        saved = update_dispatch_defaults(mutate)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
-    return {"ok": True, **saved}
+    return {"ok": True, "preset": preset, "replaced": replaced, **saved}
 
 
 @app.post("/config/offset-presets/delete")
@@ -2049,21 +2086,28 @@ def config_preset_delete(body: dict | None = None):
     if not name:
         return JSONResponse({"ok": False, "error": "配置名不能为空"},
                             status_code=422)
-    cfg = _current_defaults()
-    remaining = [p for p in cfg["offset_presets"] if p["name"] != name]
-    if len(remaining) == len(cfg["offset_presets"]):
-        return JSONResponse({"ok": False, "error": f"没有配置「{name}」"},
-                            status_code=404)
-    cfg["offset_presets"] = remaining
-    by_kind = cfg["defaults"].get("offset_preset_by_kind") or {}
-    cfg["defaults"]["offset_preset_by_kind"] = {
-        kind: "" if preset == name else preset
-        for kind, preset in by_kind.items()
-    }
+    found = False
+
+    def mutate(cfg: dict[str, Any]) -> dict[str, Any]:
+        nonlocal found
+        remaining = [p for p in cfg["offset_presets"] if p["name"] != name]
+        found = len(remaining) != len(cfg["offset_presets"])
+        if not found:
+            return cfg
+        cfg["offset_presets"] = remaining
+        by_kind = cfg["defaults"].get("offset_preset_by_kind") or {}
+        cfg["defaults"]["offset_preset_by_kind"] = {
+            kind: "" if preset == name else preset
+            for kind, preset in by_kind.items()
+        }
+        return cfg
     try:
-        saved = save_dispatch_defaults(cfg)
+        saved = update_dispatch_defaults(mutate)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+    if not found:
+        return JSONResponse({"ok": False, "error": f"没有配置「{name}」"},
+                            status_code=404)
     return {"ok": True, **saved}
 
 
@@ -2149,25 +2193,36 @@ def _emergency_stop(reason: str) -> dict:
         flow.request_abort()      # 流程在最近的检查点退出，不再下发新动作
 
     if _reach_alive(1.5):
+        try:
+            dual = _http.get(f"{base}/api/dual/status", timeout=1.0).json()
+            dual_mode = isinstance(dual.get("arms"), dict)
+        except (requests.RequestException, ValueError, AttributeError):
+            dual_mode = False
         # 1) 先停基座：对中闭环可能正拿着速度指令在转身
         r = post("/api/reach/align_yaw", {"stop": True})
         actions.append("停止转身" + (f"（{r['error']}）" if r.get("error") else ""))
         # 2) 急停手臂轨迹（冻结在当前指令位，不下坠）
-        r = post("/api/reach/stop")
+        r = post("/api/dual/stop" if dual_mode else "/api/reach/stop")
         actions.append("急停手臂轨迹" + (f"（{r.get('error')}）"
                                         if r.get("error") else ""))
         # 3) 等执行线程真的退出，否则 disarm 会被"轨迹执行中"挡回 409
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline:
             try:
-                st = _http.get(f"{base}/api/reach/exec_status", timeout=1.0).json()
+                if dual_mode:
+                    dual = _http.get(f"{base}/api/dual/status", timeout=1.0).json()
+                    st = {"running": any(
+                        value.get("align_running") or (value.get("status") or {}).get("exec", {}).get("running")
+                        for value in dual.get("arms", {}).values())}
+                else:
+                    st = _http.get(f"{base}/api/reach/exec_status", timeout=1.0).json()
             except (requests.RequestException, ValueError):
                 break
             if not st.get("running"):
                 break
             time.sleep(0.2)
         # 4) 释放手臂：权重渐出，控制权交还本体控制器
-        r = post("/api/reach/disarm", timeout=15.0)
+        r = post("/api/dual/disarm" if dual_mode else "/api/reach/disarm", timeout=15.0)
         actions.append("释放手臂" if r.get("ok")
                        else f"释放手臂失败（{r.get('error') or r}）")
     else:
@@ -2412,6 +2467,14 @@ def index():
     )
 
 
+@app.get("/arms")
+def dual_arm_workspace(request: Request):
+    from fastapi.responses import RedirectResponse
+    from urllib.parse import urlparse
+    port = urlparse(_args.reach_base).port if _args else 18001
+    return RedirectResponse(str(request.url.replace(port=port or 18001, path="/arms", query="")))
+
+
 @app.get("/api/info")
 def service_info():
     ctx = _active_arm_context()
@@ -2446,6 +2509,7 @@ def service_info():
             "workflow_modes": {
                 "legacy": "旧起手轨迹流程",
                 "dexterous_ltr_v1": "左手灵巧手新流程（仅旋钮左→右）",
+                "xiaoshan_expo_v1": "萧山展会版本（左手双向）",
             },
             "capability": capability}
 

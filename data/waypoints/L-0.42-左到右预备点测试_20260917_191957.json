@@ -1,0 +1,47 @@
+{
+  "name": "L-0.42-左到右预备点测试",
+  "arm": "left_arm",
+  "chain_id": "left_arm",
+  "named_joints": {
+    "left_shoulder_pitch_joint": -0.5167896151542664,
+    "left_shoulder_roll_joint": 0.1537456214427948,
+    "left_shoulder_yaw_joint": -0.07584816217422485,
+    "left_elbow_joint": -0.25038641691207886,
+    "left_wrist_roll_joint": 0.3291347622871399,
+    "left_wrist_pitch_joint": -0.14403840899467468,
+    "left_wrist_yaw_joint": 0.4182974100112915
+  },
+  "arrival_speed_rad_s": 0.4,
+  "created_at": "2026-09-17 19:19:57",
+  "recorded_combo": {
+    "arm": "left_arm",
+    "hand_id": "qiangnao-revo2-left"
+  },
+  "distance_m": 0.42,
+  "reference_distance_m": 0.42,
+  "original_record_filename": "L-左到右预备点测试_20260917_191957.json",
+  "tcp_pose": {
+    "xyz": [
+      0.42289039632091513,
+      0.1180576516382695,
+      0.6119415611667738
+    ],
+    "rpy": [
+      0.16692204376200595,
+      -1.0202270882904991,
+      0.21023965596681432
+    ]
+  },
+  "tcp_offset": {
+    "xyz": [
+      0.2095773766794327,
+      -0.0484596443700332,
+      0.025312167837534996
+    ],
+    "rpy": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  }
+}

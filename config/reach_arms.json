@@ -1,0 +1,26 @@
+{
+  "right_arm": {
+    "arm": "right_arm",
+    "hand_id": "yaoshouche",
+    "camera_role": "head",
+    "motion_backend": "legacy_timed",
+    "mount_profile_id": "measured_3d",
+    "enabled": true,
+    "gravity_file": "/home/robot/yx/project/IK_replay/config/gravity_compensation.json",
+    "gravity_version": "0.2.3",
+    "hand_port": "",
+    "hand_service_url": "http://127.0.0.1:18089"
+  },
+  "left_arm": {
+    "arm": "left_arm",
+    "hand_id": "qiangnao-revo2-left",
+    "camera_role": "head",
+    "motion_backend": "legacy_timed",
+    "mount_profile_id": "cad_nominal",
+    "enabled": true,
+    "gravity_file": "/home/robot/yx/project/IK_replay/config/gravity_compensation.json",
+    "gravity_version": "0.2.0",
+    "hand_port": "",
+    "hand_service_url": "http://127.0.0.1:18089"
+  }
+}

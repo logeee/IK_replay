@@ -16,5 +16,6 @@
   "recorded_combo": {
     "arm": "left_arm",
     "hand_id": "yinshi-1-left"
-  }
+  },
+  "arrival_speed_rad_s": 2.0
 }

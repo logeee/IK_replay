@@ -4,7 +4,6 @@ import type {
   CabinetFrameConfig,
   Capability,
   Hand,
-  MotionBackend,
   Payload,
   TargetModelConfig,
 } from "./lib/api";
@@ -105,46 +104,6 @@ async function saveCalibration(body: Record<string, unknown>) {
   }
 }
 
-async function applyActive(
-  arm: string,
-  handId: string,
-  cameraRole: string,
-  motionBackend: MotionBackend = "legacy",
-  mountProfileId = "",
-  gravityProfileVersion = "",
-) {
-  await mutate(
-    "/api/capability/active",
-    {
-      arm,
-      hand_id: handId,
-      camera_role: cameraRole,
-      motion_backend: motionBackend,
-      mount_profile_id: mountProfileId,
-      gravity_profile_version: gravityProfileVersion,
-    },
-    "激活组合已切换（重启 17001/18001/18003 生效）",
-  );
-}
-
-async function applyMountProfile(mountProfileId: string) {
-  const active = payload.value?.registry.active;
-  if (!active) return;
-  await mutate(
-    "/api/capability/active",
-    {
-      arm: active.arm,
-      hand_id: active.hand_id,
-      camera_role: active.camera_role ?? "head",
-      motion_backend: active.motion_backend ?? "legacy",
-      mount_profile_id: mountProfileId,
-      gravity_profile_version: active.gravity_profile_version
-        ?? payload.value?.meta.gravity_active_version,
-    },
-    "安装方案已切换（重启 18001/18003 生效）",
-  );
-}
-
 async function saveCabinetFrame(config: CabinetFrameConfig) {
   await mutate(
     "/api/capability/cabinet-frame",
@@ -180,7 +139,7 @@ onMounted(reload);
   <div class="topbar">
     <span class="brand">能力配置中心<span class="dot">·</span>18000</span>
     <span class="hint">
-      四级：臂侧 → 手型号 → 任务配置 → 实现方式 ｜ 安装方案修改后重启 17001 / 18001 / 18003 生效（柜面坐标系配置重启 7005）
+      四级：臂侧 → 手型号 → 任务配置 → 实现方式 ｜ 双臂配置由 18000 独立保存，执行服务在线时即时应用（柜面坐标系配置重启 7005）
     </span>
     <span class="spacer"></span>
     <span v-if="payload?.registry.robot" class="robot-id">
@@ -190,7 +149,7 @@ onMounted(reload);
   </div>
 
   <template v-if="payload">
-    <ActiveCombo :payload="payload" :busy="busy" @apply="applyActive" />
+    <ActiveCombo :payload="payload" :busy="busy" @updated="payload = $event" />
     <div class="cols">
       <HandsPanel
         :payload="payload"
@@ -198,12 +157,7 @@ onMounted(reload);
         @edit="(hand) => (handDialog = { hand })"
         @remove="removeHand"
       />
-      <CalibPanel
-        :payload="payload"
-        :busy="busy"
-        @register="calibDialog = true"
-        @apply-mount-profile="applyMountProfile"
-      />
+      <CalibPanel :payload="payload" />
     </div>
     <CabinetFramePanel :payload="payload" :busy="busy" @save="saveCabinetFrame" />
     <TargetModelPanel :payload="payload" :busy="busy" @save="saveTargetModel" />

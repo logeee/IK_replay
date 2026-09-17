@@ -1,0 +1,60 @@
+{
+  "request_started_at": "2026-09-17T02:45:48.406+08:00",
+  "response_received_at": "2026-09-17T02:45:48.407+08:00",
+  "data": {
+    "ok": true,
+    "model": "Xuanniu_hhy.pt",
+    "model_available": true,
+    "model_error": null,
+    "names": {
+      "0": "面板",
+      "1": "旋钮左",
+      "2": "旋钮右"
+    },
+    "conf": 0.25,
+    "reach_base": "http://127.0.0.1:18001",
+    "latest_capture_id": "fd18477208bd4cb5b825311c1b4161fe",
+    "cabinet_frame": {
+      "method": "method2_panel_edges",
+      "params": {
+        "plane_threshold_mm": 4.0,
+        "min_points": 100,
+        "min_inlier_ratio": 0.35,
+        "max_horizontal_tilt_deg": 30.0
+      },
+      "method_label": "方法二：面板 mask 矩形边定轴（横边=X，竖边=Z）"
+    },
+    "target_model": {
+      "method": "panel_anchor",
+      "params": {
+        "plane_threshold_mm": 4.0,
+        "min_points": 300,
+        "min_inlier_ratio": 0.35,
+        "border_margin_px": 8,
+        "max_size_deviation_ratio": 0.15,
+        "anchor_offset_wall_mm": [
+          -87.5,
+          -6.03,
+          -62.22
+        ],
+        "point1_offset_wall_mm": [
+          48.19,
+          5.94,
+          -18.19
+        ],
+        "point3_offset_wall_mm": [
+          -48.19,
+          5.94,
+          -18.19
+        ],
+        "panel_size_mm": [
+          241.4,
+          182.0
+        ]
+      },
+      "method_label": "面板矩形中心 → 锚点 → 点 1/3（两级偏移，需标定）",
+      "model_version": "1.0.0-pa"
+    },
+    "semantic_mode": "yolo_instance_mask_fallback_box"
+  }
+}

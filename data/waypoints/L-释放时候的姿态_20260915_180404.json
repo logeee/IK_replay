@@ -1,0 +1,20 @@
+{
+  "name": "L-释放时候的姿态",
+  "arm": "left_arm",
+  "chain_id": "left_arm",
+  "named_joints": {
+    "left_shoulder_pitch_joint": 0.1575142741203308,
+    "left_shoulder_roll_joint": 0.3177018165588379,
+    "left_shoulder_yaw_joint": -0.20292289555072784,
+    "left_elbow_joint": 1.2821922302246094,
+    "left_wrist_roll_joint": -0.002061286708340049,
+    "left_wrist_pitch_joint": 0.015028218738734722,
+    "left_wrist_yaw_joint": -0.013829795643687248
+  },
+  "arrival_speed_rad_s": 2.0,
+  "created_at": "2026-09-15 18:04:04",
+  "recorded_combo": {
+    "arm": "left_arm",
+    "hand_id": "qiangnao-revo2-left"
+  }
+}

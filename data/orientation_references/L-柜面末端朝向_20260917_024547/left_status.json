@@ -1,0 +1,160 @@
+{
+  "request_started_at": "2026-09-17T02:45:47.625+08:00",
+  "response_received_at": "2026-09-17T02:45:47.633+08:00",
+  "data": {
+    "enabled": true,
+    "robot": "h2",
+    "chain_id": "left_arm",
+    "camera": {
+      "source": "zmq",
+      "host": "127.0.0.1",
+      "request_port": 60000,
+      "stream_port": 55560,
+      "camera_name": "head_rgbd_camera",
+      "serial": "CP0X663000B7",
+      "width": 1920,
+      "height": 1080,
+      "intrinsics": {
+        "fx": 1036.3985595703125,
+        "fy": 1036.47900390625,
+        "cx": 966.4566650390625,
+        "cy": 539.8660888671875
+      },
+      "calibration_path": "/home/robot/yx/project/IK_replay/config/camera/orbbec_rgbd_calibration.json",
+      "last_frame_age_s": 0.015961863000029552,
+      "alignment_mode": "on_demand",
+      "aligned_frame_age_s": 239.18332111200016,
+      "aligned_generation": 63179,
+      "metadata": {
+        "stream": "head_rgbd_camera",
+        "data_format": "rgbd",
+        "frame_id": 98113,
+        "timestamp_ns": 1789584347610816767,
+        "color_camera": "head_camera",
+        "depth_camera": "__head_rgbd_camera_depth",
+        "color_format": "jpeg",
+        "depth_format": "depth_z16",
+        "color_shape": [
+          1080,
+          1920
+        ],
+        "depth_shape": [
+          800,
+          1280
+        ],
+        "depth_dtype": "uint16"
+      },
+      "error": null
+    },
+    "wrist_camera": {
+      "source": "disabled"
+    },
+    "last_flip_verification": null,
+    "calib": {
+      "ready": true,
+      "path": null,
+      "source": "manifest_binding",
+      "artifact_ids": {
+        "extrinsic": "1f3497ac-1ba5-50b4-a40f-a9b0707ea1c3",
+        "intrinsic": "ad69c53b-bfa4-5078-8116-b19cc23e6c8e",
+        "hand_mount": "b61d23a3-a534-5b46-92ad-c71c8e002f3f",
+        "tcp_profile": "67369e4f-b861-5819-9688-5997bd1927f6"
+      },
+      "base_link": "torso_link",
+      "solved_at": "2026-09-13T23:18:53",
+      "rms_mm": 15.50294151200226,
+      "num_samples": 52,
+      "tool_out_mm": 0.0,
+      "wrist_link": "left_wrist_yaw_link",
+      "marker_count": 0,
+      "tool_reference_marker": "tip:left_thumb_tip",
+      "calib_reference_marker": "tip:left_thumb_tip",
+      "tcp_definition": {
+        "type": "calibration_reference"
+      }
+    },
+    "gravity_profile": {
+      "config_path": "/home/robot/yx/project/IK_replay/config/gravity_compensation.json",
+      "version": "0.2.0",
+      "label": "强脑 Revo2 左手负载标定",
+      "effective_parameters": {
+        "grav_alpha": 1.0,
+        "payload_kg": 0.766,
+        "payload_com_m": [
+          0.0774,
+          0.0106,
+          -0.0069
+        ],
+        "payload_link": "left_wrist_yaw_link",
+        "excluded_subtree_link": "left_hand_link",
+        "grav_in_float": true,
+        "use_imu_gravity": false
+      },
+      "cli_overrides": {}
+    },
+    "settle_trim": "off",
+    "handeye_ready": true,
+    "camera_only": false,
+    "robot_only": false,
+    "p_tool": [
+      0.18186065820104044,
+      -0.056240100864676026,
+      0.017762315956833738
+    ],
+    "tcp_selection": {
+      "kind": "custom",
+      "key": "L-从左到右扭食指工作点_20260914_005540.json",
+      "label": "L-从左到右扭食指工作点",
+      "xyz_wrist": [
+        0.18186065820104044,
+        -0.056240100864676026,
+        0.017762315956833738
+      ]
+    },
+    "p_tool_wrist_m_by_marker": {},
+    "p_tool_reference_marker": "tip:left_thumb_tip",
+    "wrist_link": "left_wrist_yaw_link",
+    "T_cam2root": [
+      [
+        0.025628644247066703,
+        -0.07098045925782387,
+        0.9971484077095071,
+        0.05423065927779257
+      ],
+      [
+        -0.9992783829499802,
+        -0.029791104953713815,
+        0.023562755240182153,
+        0.0086547609225954
+      ],
+      [
+        0.02803365768017463,
+        -0.9970327298886356,
+        -0.07169274417879104,
+        0.7660949744442773
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "arm_supported": true,
+    "armed": true,
+    "motion_backend": "legacy_timed",
+    "exec_backend": "legacy",
+    "pink_available": true,
+    "hand_move": false,
+    "joints_available": true,
+    "exec": {
+      "running": false,
+      "progress": 1.0,
+      "message": "完成（刚性保持，落点残差 0.009 rad）",
+      "torso_diag": null,
+      "motion_backend": "legacy_timed",
+      "exec_backend": "legacy",
+      "pink_available": true
+    }
+  }
+}

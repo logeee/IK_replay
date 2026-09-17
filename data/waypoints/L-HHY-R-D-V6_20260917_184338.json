@@ -1,0 +1,77 @@
+{
+  "name": "L-HHY-R-D-V6",
+  "arm": "left_arm",
+  "chain_id": "left_arm",
+  "named_joints": {
+    "left_shoulder_pitch_joint": -1.3756399154663086,
+    "left_shoulder_roll_joint": 0.15241537988185883,
+    "left_shoulder_yaw_joint": -0.61472487449646,
+    "left_elbow_joint": 0.6845030188560486,
+    "left_wrist_roll_joint": 1.754262924194336,
+    "left_wrist_pitch_joint": 0.2980237305164337,
+    "left_wrist_yaw_joint": 0.38610777258872986
+  },
+  "arrival_speed_rad_s": 0.4,
+  "created_at": "2026-09-17 18:43:36",
+  "recorded_combo": {
+    "arm": "left_arm",
+    "hand_id": "qiangnao-revo2-left"
+  },
+  "rgbd": {
+    "schema_version": 1,
+    "directory": "L-HHY-R-D-V6_20260917_184338/rgbd",
+    "manifest": "L-HHY-R-D-V6_20260917_184338/rgbd/manifest.json",
+    "capture_id": "76ef5ab952a34a1faba05b2363dd3a36",
+    "frame_id": 238176,
+    "recorded_at": "2026-09-17T18:43:36.703+08:00",
+    "depth_unit": "mm"
+  },
+  "tcp_pose_recorded": {
+    "base_link": "torso_link",
+    "wrist_link": "left_wrist_yaw_link",
+    "T_base_from_tcp": [
+      [
+        0.3574192029911964,
+        -0.9247748985661204,
+        0.1305484596429987,
+        0.565186911215639
+      ],
+      [
+        -0.6193070839422626,
+        -0.3393110466940929,
+        -0.7080443131402797,
+        -0.11498251069400518
+      ],
+      [
+        0.6990781423503879,
+        0.1722190482303882,
+        -0.6939959296094969,
+        0.5377335017531758
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "tcp": {
+      "p_tool_wrist_m": [
+        0.2095773766794327,
+        -0.0484596443700332,
+        0.025312167837534996
+      ],
+      "selection": {
+        "kind": "custom",
+        "key": "L-从左到右扭食指工作点_20260914_005540.json",
+        "label": "L-从左到右扭食指工作点",
+        "xyz_wrist": [
+          0.2095773766794327,
+          -0.0484596443700332,
+          0.025312167837534996
+        ]
+      },
+      "orientation_definition": "wrist_link_axes"
+    }
+  }
+}

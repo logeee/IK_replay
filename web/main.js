@@ -3,6 +3,23 @@ import { OrbitControls } from "/web/vendor/OrbitControls.js";
 import { STLLoader } from "/web/vendor/STLLoader.js";
 import { TransformControls } from "/web/vendor/TransformControls.js";
 
+const workspaceParams = new URLSearchParams(location.search);
+const workspaceMode = workspaceParams.get("workspace");
+const workspaceArm = workspaceParams.get("arm");
+let workspaceRobot = null;
+function armUrl(url, arm = workspaceArm) {
+  const u = new URL(url, location.href);
+  if (["left_arm", "right_arm"].includes(arm) && u.origin === location.origin
+      && u.pathname.startsWith("/api/") && !u.pathname.startsWith("/api/arms/")
+      && !u.pathname.startsWith("/api/dual/")) u.pathname = `/api/arms/${arm}${u.pathname.slice(4)}`;
+  return u.toString();
+}
+if (["left_arm", "right_arm"].includes(workspaceArm)) {
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = (input, options) => originalFetch(
+    input instanceof Request ? new Request(armUrl(input.url), input) : armUrl(String(input)), options);
+}
+
 const PANEL_COLORS = {
   left: 0xd97706,
   right: 0x5c4c9f,
@@ -111,6 +128,14 @@ async function init() {
   window.addEventListener("resize", resize);
   new ResizeObserver(resize).observe(dom.viewport);
   dom.robotSelect.addEventListener("change", async () => {
+    if (workspaceMode === "scene") {
+      // Reload just the scene so hand meshes and preview state belong to the
+      // selected robot. The two arm control windows keep their own state.
+      const url = new URL(location.href);
+      url.searchParams.set("robot", dom.robotSelect.value);
+      location.replace(url);
+      return;
+    }
     await loadRobotData(dom.robotSelect.value);
     if (reach.status) {
       await refreshDexterousHand({ forceModelReload: true });
@@ -120,14 +145,31 @@ async function init() {
   dom.targetMoveButton.addEventListener("click", () => setTargetControlMode("translate"));
   dom.targetRotateButton.addEventListener("click", () => setTargetControlMode("rotate"));
   renderer.domElement.addEventListener("pointerdown", selectTargetFromPointer);
-  await loadRobotData();
-  await initReach();
+  let initialRobot = null;
+  if (workspaceMode === "scene") {
+    try {
+      const workspace = await fetchJson("/api/dual/status");
+      workspaceRobot = workspace.arms[workspace.default_arm]?.status?.robot
+        || Object.values(workspace.arms).find(entry => entry.status?.robot)?.status.robot;
+    } catch (error) { console.warn("读取执行机器人", error); }
+    initialRobot = workspaceParams.get("robot") || workspaceRobot;
+  }
+  await loadRobotData(initialRobot);
+  if (workspaceMode === "scene" && workspaceRobot && state.activeRobot !== workspaceRobot) {
+    const hint = document.createElement("span");
+    hint.textContent = `模型预览 · 执行仍为 ${workspaceRobot.toUpperCase()}`;
+    dom.robotSelect.parentElement.append(hint);
+  }
+  if (workspaceMode === "scene") initWorkspaceScene();
+  else await initReach();
 }
 
 // ---- reach adapter：点击相机取目标 → IK 预演 → 确认后真机执行 ----
 
 const reach = {
   status: null,
+  controlPending: false,
+  recording: false,
   lastPick: null,
   dom: null,
   obstacleGroup: new THREE.Group(),
@@ -149,6 +191,581 @@ const reach = {
   handPollTimer: null,
   handPollBusy: false,
 };
+const orientationUi = { plan: null, planning: false, executing: false, version: 0, references: [],
+  referenceId: "", referenceError: "", waypointError: "" };
+const abDebug = { mode: "classic", a: "", b: "", aPresetRevision: "", offsetABmm: 0, offsetBAmm: 0,
+  offsetABYmm: 0, offsetABZmm: 0, offsetBAYmm: 0, offsetBAZmm: 0,
+  classicStepMode: true,
+  forceABn: 0, forceBAn: 0, assistRampS: .5, assistHoldS: 0, assistReleaseS: .65,
+  entries: [], busy: false, operationsBusy: false, version: 0, ownsPreview: false };
+const debugEl = id => document.getElementById(`reachDebug${id}`);
+const directEl = id => document.getElementById(`reachDirectSettings${id}`);
+const directFields = Object.fromEntries(["A", "B"].flatMap(side => [
+  ...["X", "Y", "Z"].map(axis => [`${side}${axis}`, [`direct${side}${axis}mm`, -100, 100, 0]]),
+  [`${side}Position`, [`direct${side}PositionMm`, .1, 100, 10]],
+  [`${side}Orientation`, [`direct${side}OrientationDeg`, .1, 45, 2]],
+]));
+function directOffsets(reverse) {
+  return ["X", "Y", "Z"].map(axis => abDebug[`direct${reverse ? "A" : "B"}${axis}mm`]);
+}
+function directTolerance(reverse) {
+  const side = reverse ? "A" : "B";
+  return {position_mm:abDebug[`direct${side}PositionMm`], orientation_deg:abDebug[`direct${side}OrientationDeg`]};
+}
+function directToleranceText(reverse) {
+  const limits = directTolerance(reverse);
+  return `位置 ≤ ${limits.position_mm} mm / 朝向 ≤ ${limits.orientation_deg}°`;
+}
+function initDirectSettings() {
+  // Escape the reach panel's stacking context so the dialog also covers the
+  // arm sidebars on narrow screens.
+  document.body.append(directEl("Modal"));
+  const close = () => {
+    directEl("Modal").classList.add("hidden");
+    directEl("Open").focus();
+  };
+  directEl("Open").addEventListener("click", () => {
+    if (abDebug.busy || abDebug.operationsBusy || orientationUi.planning || orientationUi.executing) return;
+    for (const [id, [key]] of Object.entries(directFields)) directEl(id).value = String(abDebug[key]);
+    for (const side of ["A", "B"])
+      directEl(`${side}Name`).textContent = abDebug.entries.find(e => e.file === abDebug[side.toLowerCase()])?.name || "尚未选择点位";
+    directEl("Feedback").textContent = "";
+    directEl("Feedback").classList.remove("error");
+    directEl("Modal").classList.remove("hidden");
+    directEl("AX").focus();
+  });
+  for (const id of ["Close", "Cancel"]) directEl(id).addEventListener("click", close);
+  for (const id of Object.keys(directFields)) directEl(id).addEventListener("input", () => {
+    directEl("Feedback").textContent = "";
+    directEl("Feedback").classList.remove("error");
+  });
+  directEl("Modal").addEventListener("keydown", event => {
+    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); }
+    if (event.key === "Tab") {
+      const controls = [...directEl("Form").querySelectorAll("button, input")].filter(el => !el.disabled && el.getClientRects().length);
+      if (event.shiftKey && document.activeElement === controls[0]) { event.preventDefault(); controls.at(-1).focus(); }
+      else if (!event.shiftKey && document.activeElement === controls.at(-1)) { event.preventDefault(); controls[0].focus(); }
+    }
+  });
+  directEl("Form").addEventListener("submit", event => {
+    event.preventDefault();
+    const values = {};
+    for (const [id, [key, low, high]] of Object.entries(directFields)) {
+      const input = directEl(id), value = input.valueAsNumber;
+      if (!validDebugAssist(value, low, high)) {
+        directEl("Feedback").textContent = `${input.getAttribute("aria-label")}须在 ${low}～${high} 之间。`;
+        directEl("Feedback").classList.add("error");
+        input.focus();
+        return;
+      }
+      values[key] = value;
+    }
+    Object.assign(abDebug, values);
+    ++abDebug.version;
+    reach.sideCache = null;
+    invalidateOrientationPlan();
+    abDebug.ownsPreview = false;
+    saveDebugPreferences();
+    showStepNext(false);
+    close();
+    reachMsg("直接到 A / B 的偏移和容差已保存。", "success");
+  });
+}
+// Preserve the original X storage keys so existing preferences migrate unchanged.
+const debugOffsetFields = {
+  AB: [["OffsetAB", "offsetABmm"], ["OffsetABY", "offsetABYmm"], ["OffsetABZ", "offsetABZmm"]],
+  BA: [["OffsetBA", "offsetBAmm"], ["OffsetBAY", "offsetBAYmm"], ["OffsetBAZ", "offsetBAZmm"]],
+};
+function debugOffsets(reverse, fromInputs = false) {
+  return debugOffsetFields[reverse ? "BA" : "AB"].map(([id, key]) =>
+    fromInputs ? debugEl(id).valueAsNumber : abDebug[key]);
+}
+function debugOffsetsText(values, compact = false) {
+  return values.map((value, i) => compact && value === 0 ? "" : `${"XYZ"[i]} ${debugOffsetText(value)}`)
+    .filter(Boolean).join(" / ");
+}
+const debugAssistFields = {
+  ForceAB: ["forceABn", 0, 40, 0], ForceBA: ["forceBAn", 0, 40, 0],
+  Ramp: ["assistRampS", .1, 5, .5], Hold: ["assistHoldS", 0, 5, 0], Release: ["assistReleaseS", .1, 5, .65],
+};
+function validDebugAssist(value, low, high) { return Number.isFinite(value) && value >= low && value <= high; }
+function debugAssistSpec(reverse) {
+  return {direction:reverse ? "b_to_a" : "a_to_b", force_n:reverse ? abDebug.forceBAn : abDebug.forceABn,
+    ramp_s:abDebug.assistRampS, hold_s:abDebug.assistHoldS, release_s:abDebug.assistReleaseS};
+}
+function debugForceText(reverse) {
+  const force = reverse ? abDebug.forceBAn : abDebug.forceABn;
+  return force ? `助力 ${reverse ? "−X" : "+X"} ${force} N` : "助力关闭";
+}
+function validDebugOffset(value) { return Number.isFinite(value) && Math.abs(value) <= 100; }
+function debugOffsetText(value) { return `${value > 0 ? "+" : value < 0 ? "−" : ""}${Math.abs(value)} mm`; }
+function debugFeedback(text = "", error = false) {
+  debugEl("Feedback").textContent = text;
+  debugEl("Feedback").classList.toggle("error", error);
+}
+function updateDebugOffsetSummary() {
+  debugEl("OffsetSummary").replaceChildren(...[false, true].map(reverse => {
+    const direction = reverse ? "B→A" : "A→B", target = reverse ? "A" : "B";
+    const values = debugOffsets(reverse, true);
+    const span = document.createElement("span");
+    const force = debugEl(direction === "A→B" ? "ForceAB" : "ForceBA").valueAsNumber;
+    span.textContent = values.every(validDebugOffset) ? `${direction}：${target} · ${debugOffsetsText(values)} · ${validDebugAssist(force, 0, 40) ? `助力 ${reverse ? "−X" : "+X"} ${force} N` : "请填写助力"}` : `${direction}：各轴偏移请输入 ±100 mm 内的数值`;
+    return span;
+  }));
+}
+function abDebugEnabled() { return abDebug.mode === "ab"; }
+const requestedAPreset = "L-HHY-L-D-V4_20260917_170714.json";
+function debugStorageKey() { return `reachDebugMode:${reach.status.robot}:${reach.status.chain_id}`; }
+function saveDebugPreferences() {
+  const keys = ["mode", "a", "b", "aPresetRevision", "classicStepMode", ...Object.values(debugOffsetFields).flat().map(([, key]) => key), ...Object.values(debugAssistFields).map(([key]) => key), ...Object.values(directFields).map(([key]) => key)];
+  try { localStorage.setItem(debugStorageKey(), JSON.stringify(Object.fromEntries(keys.map(key => [key, abDebug[key]])))); }
+  catch { /* session only */ }
+}
+function suggestedDebugWaypoint(side) {
+  const names = side.toLowerCase() === "a" ? ["L-HHY-L-D-V4", "L-HHY-L-D-V1"] : ["L-HHY-R-D-V1"];
+  return names.map(name => abDebug.entries.find(e => e.compatible && e.name === name)).find(Boolean);
+}
+function applyRequestedAPreset() {
+  // Apply the requested V4 change once per browser; later manual choices win.
+  if (reach.status.robot !== "h2" || reach.status.chain_id !== "left_arm" ||
+      abDebug.aPresetRevision === requestedAPreset || abDebug.busy || abDebug.operationsBusy ||
+      orientationUi.planning || orientationUi.executing ||
+      !abDebug.entries.some(e => e.file === requestedAPreset && e.compatible)) return;
+  abDebug.a = requestedAPreset;
+  abDebug.aPresetRevision = requestedAPreset;
+  ++abDebug.version;
+  reach.sideCache = null;
+  invalidateOrientationPlan();
+  abDebug.ownsPreview = false;
+  saveDebugPreferences();
+}
+function syncDebugControls() {
+  const busy = abDebug.busy || abDebug.operationsBusy || orientationUi.planning || orientationUi.executing;
+  debugEl("ModeBtn").textContent = `调试方式：${abDebugEnabled() ? "A/B 点位" : "经典"}…`;
+  debugEl("ModeBtn").disabled = busy;
+  const operations = document.getElementById("reachABOpenBtn");
+  operations.hidden = false;
+  operations.textContent = abDebugEnabled() ? "A/B 操作" : "左右操作";
+  operations.title = abDebugEnabled() ? "打开 A/B 方向选择，打开窗口不会运动" : "打开向左 / 向右选择，打开窗口不会运动";
+  operations.disabled = busy;
+  if (reach.dom?.stepLen) reach.dom.stepLen.disabled = abDebugEnabled();
+}
+function closeDebugSettings() {
+  debugEl("Modal").classList.add("hidden");
+  debugEl("ModeBtn").focus();
+}
+async function openDebugSettings() {
+  if (abDebug.busy || orientationUi.planning || orientationUi.executing) return;
+  debugEl("Classic").checked = !abDebugEnabled();
+  debugEl("AB").checked = abDebugEnabled();
+  for (const [id, key] of Object.values(debugOffsetFields).flat()) debugEl(id).value = String(abDebug[key]);
+  for (const [id, [key]] of Object.entries(debugAssistFields)) debugEl(id).value = String(abDebug[key]);
+  updateDebugOffsetSummary();
+  debugEl("Points").classList.toggle("hidden", !abDebugEnabled());
+  debugFeedback("正在读取 RGBD 点位…");
+  debugEl("Save").disabled = true;
+  debugEl("Modal").classList.remove("hidden");
+  (abDebugEnabled() ? debugEl("AB") : debugEl("Classic")).focus();
+  try {
+    const result = await fetchJson("/api/reach/cabinet_waypoints");
+    abDebug.entries = result.waypoints || [];
+    applyRequestedAPreset();
+    for (const [side, preferred] of [["A", abDebug.a], ["B", abDebug.b]]) {
+      const select = debugEl(side);
+      select.replaceChildren(new Option("请选择已录制 RGBD 的点位", ""));
+      for (const entry of abDebug.entries) {
+        const option = new Option(entry.name + (entry.compatible ? "" : `（${entry.error}）`), entry.file);
+        option.disabled = !entry.compatible;
+        select.add(option);
+      }
+      const suggested = suggestedDebugWaypoint(side);
+      select.value = preferred || suggested?.file || "";
+      select.title = select.selectedOptions[0]?.textContent || "";
+    }
+    debugFeedback(abDebug.entries.some(e => e.compatible)
+      ? "" : "当前 TCP 没有可用 RGBD 点位，请先录制或切回录制时的 TCP。");
+  } catch (error) {
+    abDebug.entries = [];
+    for (const side of ["A", "B"]) debugEl(side).replaceChildren(new Option("点位读取失败", ""));
+    debugFeedback(`点位读取失败：${error.message}`, true);
+  } finally {
+    debugEl("Save").disabled = false;
+  }
+}
+function initDebugUi() {
+  for (const [key, , , fallback] of Object.values(directFields)) abDebug[key] = fallback;
+  try {
+    const saved = JSON.parse(localStorage.getItem(debugStorageKey()) || "null");
+    if (saved) Object.assign(abDebug, {mode:saved.mode === "ab" ? "ab" : "classic", a:saved.a || "", b:saved.b || "",
+      aPresetRevision:saved.aPresetRevision || "",
+      classicStepMode:typeof saved.classicStepMode === "boolean" ? saved.classicStepMode : true});
+    for (const [, key] of Object.values(debugOffsetFields).flat())
+      abDebug[key] = validDebugOffset(saved?.[key]) ? saved[key] : 0;
+    for (const [key, low, high, fallback] of Object.values(debugAssistFields))
+      abDebug[key] = validDebugAssist(saved?.[key], low, high) ? saved[key] : fallback;
+    for (const [key, low, high, fallback] of Object.values(directFields))
+      abDebug[key] = validDebugAssist(saved?.[key], low, high) ? saved[key] : fallback;
+  } catch { /* Browser storage may be unavailable. */ }
+  // Older A/B preferences did not store the classic arrival choice. Restore a
+  // manual pause instead of silently running the signed-distance sidestep.
+  reach.dom.stepMode.checked = abDebug.classicStepMode;
+  reach.dom.stepMode.addEventListener("change", () => {
+    abDebug.classicStepMode = reach.dom.stepMode.checked;
+    saveDebugPreferences();
+  });
+  debugEl("ModeBtn").addEventListener("click", openDebugSettings);
+  document.getElementById("reachABOpenBtn").addEventListener("click", () => showStepNext(false));
+  for (const id of ["Close", "Cancel"]) debugEl(id).addEventListener("click", closeDebugSettings);
+  for (const id of ["Classic", "AB"]) debugEl(id).addEventListener("change", () => {
+    debugEl("Points").classList.toggle("hidden", !debugEl("AB").checked);
+  });
+  for (const id of [...Object.values(debugOffsetFields).flat().map(([id]) => id), ...Object.keys(debugAssistFields)]) debugEl(id).addEventListener("input", () => {
+    updateDebugOffsetSummary();
+    if (debugEl("Feedback").classList.contains("error")) debugFeedback();
+  });
+  for (const id of ["A", "B"]) debugEl(id).addEventListener("change", () => {
+    debugEl(id).title = debugEl(id).selectedOptions[0]?.textContent || "";
+    if (debugEl("Feedback").classList.contains("error")) debugFeedback();
+  });
+  debugEl("Modal").addEventListener("keydown", event => {
+    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeDebugSettings(); }
+    if (event.key === "Tab") {
+      const controls = [...debugEl("Form").querySelectorAll("button, input, select")]
+        .filter(el => !el.disabled && el.getClientRects().length);
+      const first = controls[0], last = controls.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
+  });
+  debugEl("Form").addEventListener("submit", event => {
+    event.preventDefault();
+    const mode = debugEl("AB").checked ? "ab" : "classic";
+    const a = debugEl("A").value, b = debugEl("B").value;
+    const offsetSettings = {};
+    for (const [direction, fields] of Object.entries(debugOffsetFields)) {
+      for (const [i, [id, key]] of fields.entries()) {
+        const value = debugEl(id).valueAsNumber;
+        if (mode === "ab" && !validDebugOffset(value)) {
+          debugFeedback(`请填写 ${direction === "AB" ? "A→B" : "B→A"} 的柜面 ${"XYZ"[i]} 偏移（−100～+100 mm），不偏移填 0。`, true);
+          debugEl(id).focus();
+          return;
+        }
+        offsetSettings[key] = validDebugOffset(value) ? value : abDebug[key];
+      }
+    }
+    const assistSettings = {};
+    for (const [id, [key, low, high]] of Object.entries(debugAssistFields)) {
+      const value = debugEl(id).valueAsNumber;
+      if (mode === "ab" && !validDebugAssist(value, low, high)) {
+        debugFeedback(`请填写有效助力参数：${id.startsWith("Force") ? "力度 0～40 N，0 关闭" : `时间 ${low}～${high} 秒`}。`, true);
+        debugEl(id).focus();
+        return;
+      }
+      assistSettings[key] = validDebugAssist(value, low, high) ? value : abDebug[key];
+    }
+    if (mode === "ab" && (!a || !b || a === b || [a,b].some(file =>
+      !abDebug.entries.some(e => e.file === file && e.compatible)))) {
+      debugFeedback("请选择两个不同且与当前 TCP 匹配的 RGBD 点位。", true);
+      return;
+    }
+    Object.assign(abDebug, {mode, a, b, ...offsetSettings, ...assistSettings});
+    if (a) abDebug.aPresetRevision = requestedAPreset;
+    if (mode === "classic") {
+      abDebug.classicStepMode = true;
+      reach.dom.stepMode.checked = true;
+    }
+    ++abDebug.version;
+    reach.sideCache = null;
+    // Existing preview may include classic sidestep/return; require fresh planning.
+    invalidateOrientationPlan();
+    abDebug.ownsPreview = false;
+    hideStepNext();
+    saveDebugPreferences();
+    renderOrientationReferences();
+    syncDebugControls();
+    closeDebugSettings();
+    reachMsg(mode === "ab" ? "A/B 调试已启用：先正常选点到位，再手动选择往返方向。" : "已恢复经典模式：到点后弹窗选择向左或向右。", "success");
+  });
+  initDirectSettings();
+  syncDebugControls();
+}
+
+async function stepNextCabinet(reverse = false, direct = false) {
+  if (abDebug.busy || abDebug.operationsBusy || orientationUi.planning || orientationUi.executing) return;
+  const file = reverse ? abDebug.a : abDebug.b;
+  if (!file) { await openDebugSettings(); return; }
+  const direction = direct ? `直接到 ${reverse ? "A" : "B"}` : reverse ? "B→A" : "A→B";
+  // Direct arrival has independent target offsets and arrival limits.
+  const offsets = direct ? directOffsets(reverse) : debugOffsets(reverse);
+  const arrivalParams = direct ? {arrival_tolerance:directTolerance(reverse)} : {};
+  const offsetParams = Object.fromEntries(offsets.map((value, i) => [`cabinet_${"xyz"[i]}_offset_mm`, value]));
+  const offsetText = debugOffsetsText(offsets), compactOffsets = debugOffsetsText(offsets, true);
+  const assistSpec = debugAssistSpec(reverse);
+  if (direct) assistSpec.force_n = 0;
+  const forceText = direct ? "助力关闭" : debugForceText(reverse);
+  const goalLabel = `${reverse ? "A" : "B"} 点 · 柜面 ${offsetText} · ${forceText}${direct ? ` · ${directToleranceText(reverse)}` : ""}`;
+  const token = ++abDebug.version;
+  abDebug.busy = true;
+  abDebug.ownsPreview = true;
+  orientationUi.planning = true;
+  invalidateOrientationPlan();
+  showStepNext(false);
+  setStepNextBusy(true);
+  syncOrientationControls();
+  const feedback = text => {
+    document.getElementById("reachStepNextHint").textContent = text;
+    reachMsg(text);
+  };
+  const backend = execBackendChoice();
+  try {
+    feedback(`${direction} → ${goalLabel}：正在拍摄定位并规划，请保持机身静止…`);
+    const result = await fetchJson("/api/reach/plan_cabinet_waypoint", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({file, ...offsetParams, ...arrivalParams, cabinet_assist:assistSpec,
+        motion_backend:backend, check_collision:reachCollisionOn()}),
+    });
+    if (token !== abDebug.version) return;
+    if (Object.entries(offsetParams).some(([key, value]) =>
+      result[key] !== value && !(value === 0 && result[key] === undefined))) {
+      throw new Error("执行服务未确认目标偏移，请更新 18001 后重试");
+    }
+    if ((direct || assistSpec.force_n > 0) && Object.entries(assistSpec).some(([key, value]) => result.cabinet_assist?.[key] !== value)) {
+      throw new Error("执行服务未确认柜面助力，请更新 18001 后重试");
+    }
+    if (direct && Object.entries(arrivalParams.arrival_tolerance).some(([key, value]) => result.arrival_tolerance?.[key] !== value)) {
+      throw new Error("执行服务未确认直接到点容差，请更新 18001 后重试");
+    }
+    if (result.already_at_target) {
+      feedback(`${direction}：已在「${result.name}」${offsetText} 的目标容差内，无需运动。位置误差 ${result.goal_position_error_mm.toFixed(2)} mm，朝向误差 ${result.goal_orientation_error_deg.toFixed(2)}°。`);
+      return;
+    }
+    const panel = state.panels[reach.status.chain_id];
+    writePose(panel, "tcp", {xyz:reach.status.p_tool, rpy:[0,0,0]});
+    writePose(panel, "target", poseToScene(result.target_pose));
+    updateTargetMarker(panel);
+    updateTargetHandPose(panel);
+    panel.frames = result.waypoints;
+    panel.frameIndex = 0;
+    panel.currentPlanner = result.planner;
+    panel.currentCollision = result.collision;
+    panel.currentIk = {success:true, error_mm:result.goal_position_error_mm};
+    updateTrajectoryLine(panel);
+    if (result.collision) { updateCollisionMetrics(panel,result.collision); visualizeCollision(panel,result.collision); }
+    applyFrame(panel,0);
+    reach.dom.info.textContent = `${direction} → ${result.orientation.name} · 柜面 ${offsetText}\n${forceText} · 仅约束终点位置和朝向\n终点误差 ${result.goal_position_error_mm.toFixed(2)} mm / ${result.goal_orientation_error_deg.toFixed(2)}°`;
+    if (!reach.status.armed) {
+      replay(panel);
+      feedback("未接管：已生成预演。接管后再次点击目标按钮，会重新定位规划。");
+      return;
+    }
+    orientationUi.planning = false;
+    orientationUi.executing = true;
+    await fetchJson("/api/reach/execute", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({motion_backend:backend, orientation_plan_id:result.orientation.id, ...arrivalParams,
+        cabinet_assist:assistSpec,
+        waypoints:result.waypoints.map(w => w.named_joints),
+        duration:Math.max(1,Number(reach.dom.duration.value || 6)),
+        label:`柜面点位:${direction}${compactOffsets ? ` ${compactOffsets}` : ""}`}),
+    });
+    const final = await pollReachExec();
+    if (token !== abDebug.version) return;
+    if (!final?.message?.startsWith("完成")) throw new Error(final?.message || "运动未完成");
+    showStepNext();
+    feedback(`${direction} 已完成（${goalLabel}），可继续选择方向或关闭。`);
+  } catch (error) {
+    if (token === abDebug.version) {
+      document.getElementById("reachStepNextHint").textContent = `${direction} 未完成：${error.message}`;
+      reachMsg(`${direction} 未完成：${error.message}`, "error");
+    }
+  } finally {
+    abDebug.busy = false;
+    orientationUi.planning = false;
+    orientationUi.executing = false;
+    reach.dom.exec.disabled = true; // A/B proof belongs only to the explicit direction action.
+    setStepNextBusy(false);
+    syncOrientationControls();
+  }
+}
+function cabinetOrientationEnabled() {
+  return ["cabinet", "cabinet_a", "cabinet_b"].includes(document.getElementById("reachOrientationMode")?.value);
+}
+function orientationPointSide() {
+  return ({cabinet_a:"a", cabinet_b:"b"})[document.getElementById("reachOrientationMode")?.value] || null;
+}
+function syncOrientationControls() {
+  const enabled = cabinetOrientationEnabled();
+  const busy = orientationUi.planning || orientationUi.executing;
+  document.getElementById("reachOrientationMode").disabled = busy;
+  document.getElementById("reachOrientationReference").disabled = busy;
+  document.getElementById("reachOrientationRefresh").disabled = busy;
+  document.getElementById("reachOrientationReferenceRow").classList.toggle("hidden", !enabled);
+  document.getElementById("reachOrientationHelp").classList.toggle("hidden", !enabled);
+  const backend = document.getElementById("reachExecBackend");
+  backend.disabled = busy;
+  syncDebugControls();
+  const note = execBackendChoice() === "pink"
+    ? "只约束目标点的 XYZ 和朝向；起点用当前姿态，中途允许转动。PINK 执行需先锚定再取点。"
+    : "只约束目标点的 XYZ 和朝向；起点用当前姿态，中途允许转动。原方案无需锚定，执行后端独立选择。";
+  document.getElementById("reachOrientationHelp").textContent = orientationPointSide()
+    ? `位置使用当前选点；终点采用 ${orientationPointSide().toUpperCase()} 点相对柜面的朝向，并按当前柜面换算。中途朝向自由。${execBackendChoice() === "pink" ? "PINK 需先锚定再取点。" : "原方案无需锚定。"}`
+    : note;
+}
+function invalidateOrientationPlan() {
+  ++orientationUi.version;
+  orientationUi.plan = null;
+  reach.execFrames = null;
+  reach.dom.exec.disabled = true;
+  const panel = state.panels[reach.status?.chain_id];
+  if (panel) {
+    pause(panel);
+    panel.frames = [];
+    panel.currentIk = null;
+    updateTrajectoryLine(panel);
+  }
+  hideStepNext();
+}
+function renderOrientationReferences() {
+  const select = document.getElementById("reachOrientationReference");
+  const side = orientationPointSide();
+  document.getElementById("reachOrientationReferenceLabel").textContent = side ? `${side.toUpperCase()} 点来源` : "已记录朝向";
+  select.setAttribute("aria-label", side ? `${side.toUpperCase()} 点朝向来源` : "已记录朝向");
+  if (side) {
+    select.replaceChildren(new Option(orientationUi.waypointError ? "RGBD 点位读取失败" : `请选择 ${side.toUpperCase()} 点（已录 RGBD）`, ""));
+    for (const entry of abDebug.entries) {
+      const option = new Option(entry.name + (entry.compatible ? "" : `（${entry.error}）`), entry.file);
+      option.disabled = !entry.compatible;
+      select.add(option);
+    }
+    // Match the suggestions in A/B settings, but never silently replace an
+    // explicitly chosen missing or incompatible point with a different record.
+    if (!abDebug[side]) {
+      const suggested = suggestedDebugWaypoint(side);
+      if (suggested) { abDebug[side] = suggested.file; saveDebugPreferences(); }
+    }
+    const valid = abDebug.entries.some(e => e.file === abDebug[side] && e.compatible);
+    select.value = valid ? abDebug[side] : "";
+  } else {
+    select.replaceChildren(...orientationUi.references.map(r => new Option(r.name, r.id)));
+    if (!select.options.length) select.add(new Option(orientationUi.referenceError ? "朝向记录暂不可用" : "本侧暂无匹配的朝向记录", ""));
+    if ([...select.options].some(o => o.value === orientationUi.referenceId)) select.value = orientationUi.referenceId;
+    orientationUi.referenceId = select.value;
+  }
+  select.title = select.selectedOptions[0]?.textContent || "";
+  syncOrientationControls();
+}
+async function refreshOrientationReferences() {
+  const results = await Promise.allSettled([
+    fetchJson("/api/reach/orientation/references"), fetchJson("/api/reach/cabinet_waypoints")]);
+  orientationUi.references = results[0].status === "fulfilled" ? results[0].value.references || [] : [];
+  orientationUi.referenceError = results[0].status === "rejected" ? results[0].reason.message : "";
+  abDebug.entries = results[1].status === "fulfilled" ? results[1].value.waypoints || [] : [];
+  orientationUi.waypointError = results[1].status === "rejected" ? results[1].reason.message : "";
+  applyRequestedAPreset();
+  renderOrientationReferences();
+  const error = orientationPointSide() ? orientationUi.waypointError : orientationUi.referenceError;
+  if (error && cabinetOrientationEnabled()) {
+    reachMsg(`读取朝向来源失败: ${error}`, "error");
+  }
+}
+async function initOrientationUi() {
+  const mode = document.getElementById("reachOrientationMode");
+  mode.addEventListener("change", () => {
+    invalidateOrientationPlan();
+    renderOrientationReferences();
+    reachMsg(orientationPointSide()
+      ? `已选择 ${orientationPointSide().toUpperCase()} 点的柜面相对朝向：目标位置使用当前选点，仅约束终点朝向。请重新规划。`
+      : cabinetOrientationEnabled()
+      ? "已选择目标点使用记录朝向：仅在终点满足 XYZ 和朝向，中途允许转动。请选择记录后重新规划。"
+      : "已恢复原方案，请重新规划", "success");
+  });
+  document.getElementById("reachOrientationReference").addEventListener("change", () => {
+    const value = document.getElementById("reachOrientationReference").value;
+    const side = orientationPointSide();
+    if (side) {
+      abDebug[side] = value;
+      if (side === "a") abDebug.aPresetRevision = requestedAPreset;
+      ++abDebug.version;
+      reach.sideCache = null;
+      saveDebugPreferences();
+    } else orientationUi.referenceId = value;
+    invalidateOrientationPlan();
+    document.getElementById("reachOrientationReference").title = document.getElementById("reachOrientationReference").selectedOptions[0]?.textContent || "";
+    reachMsg("已切换朝向基准，请重新规划", "success");
+  });
+  document.getElementById("reachOrientationRefresh").addEventListener("click", async () => {
+    invalidateOrientationPlan();
+    await refreshOrientationReferences();
+  });
+  await refreshOrientationReferences();
+  syncOrientationControls();
+}
+
+async function planCabinetOrientation(kind) {
+  if (orientationUi.planning || orientationUi.executing) return;
+  const reference = document.getElementById("reachOrientationReference").value;
+  const pointSide = orientationPointSide();
+  const referenceKind = pointSide ? "cabinet_waypoint_orientation" : "recorded_orientation";
+  const pick = reach.lastPick;
+  const panel = state.panels[reach.status?.chain_id];
+  invalidateOrientationPlan();
+  if (!reference || !pick || !panel) {
+    reachMsg(!reference ? (pointSide ? `请先选择已录 RGBD 的 ${pointSide.toUpperCase()} 点` : "请先选择已记录的朝向") : "请先从 7005 取点并确认目标", "error");
+    return;
+  }
+  orientationUi.planning = true;
+  syncOrientationControls();
+  const version = orientationUi.version;
+  reachMsg("正在求解目标位姿并规划轨迹…");
+  try {
+    const joints = await fetchJson("/api/reach/joints");
+    const result = await fetchJson("/api/reach/plan_orientation", {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({reference_id: reference, reference_kind: referenceKind, kind, start_joints: joints.named_joints,
+        target_root: pick.p_root, pick_revision: pick.revision,
+        lift_m: Math.max(0, Number(document.getElementById("reachLiftCm").value || 0)) / 100,
+        check_collision: reachCollisionOn(),
+        via_joints: kind === "direct" && !reach.finePick ? viaWaypoints().map(w => w.named_joints) : []}),
+    });
+    if (version !== orientationUi.version || reach.lastPick !== pick) {
+      throw new Error("目标或朝向选择已变化，请重新规划");
+    }
+    if (pointSide && (result.orientation?.reference_kind !== referenceKind || result.orientation?.reference_id !== reference)) {
+      throw new Error("执行服务未确认 A/B 柜面朝向来源，请更新 18001 后重试");
+    }
+    orientationUi.plan = result.orientation;
+    writePose(panel, "tcp", {xyz: reach.status.p_tool, rpy: [0,0,0]});
+    setJointInputs(panel, joints.named_joints);
+    writePose(panel, "target", poseToScene(result.target_pose));
+    updateTargetMarker(panel);
+    updateTargetHandPose(panel);
+    panel.frames = result.waypoints;
+    panel.frameIndex = 0;
+    panel.currentPlanner = result.planner;
+    panel.currentIk = {success:true, error_mm:result.goal_position_error_mm,
+      error_rotation:result.goal_orientation_error_deg * Math.PI / 180};
+    panel.currentCollision = result.collision;
+    reach.execFrames = panel.frames;
+    updateTrajectoryLine(panel);
+    if (result.collision) { updateCollisionMetrics(panel, result.collision); visualizeCollision(panel, result.collision); }
+    applyFrame(panel, 0);
+    reach.dom.info.textContent = [pointSide ? `目标点使用 ${pointSide.toUpperCase()} 点柜面朝向（XYZ 来自当前选点）` : "目标点使用记录朝向", result.orientation.name,
+      `终点位置误差 ${result.goal_position_error_mm.toFixed(2)} mm · 终点朝向误差 ${result.goal_orientation_error_deg.toFixed(2)}°`,
+      `轨迹 ${panel.frames.length} 点 · 起点为当前姿态 · 中途朝向自由`,
+      result.planner.endsWith("+rrt") ? "已使用 RRT 绕障，请检查预演"
+        : kind === "axis_last" ? "保留平移/进退的顺序，终点满足目标位姿" : "从当前姿态连续规划到目标位姿"].join("\n");
+    reach.dom.exec.disabled = !reach.status.armed;
+    reachMsg("目标位姿轨迹已生成，请检查预演后再执行", "success");
+    replay(panel);
+  } catch (error) {
+    orientationUi.plan = null;
+    reach.dom.exec.disabled = true;
+    reachMsg(`朝向约束规划失败: ${error.message}`, "error");
+  } finally {
+    orientationUi.planning = false;
+    syncOrientationControls();
+  }
+}
 // 固定位点「起手点测试」的基础名；实际位点名按 18001 运行的臂加 R-/L- 前缀
 // （右臂 R-起手点测试 / 左臂 L-起手点测试），与后端 core/arm_assets.py 一致。
 const START_TEST_WAYPOINT_BASE = "起手点测试";
@@ -216,6 +833,17 @@ async function initReach() {
     seqMargin: document.getElementById("reachSeqMargin"),
     handMove: document.getElementById("reachHandMoveBtn"),
     record: document.getElementById("reachRecordBtn"),
+    recordModal: document.getElementById("reachRecordModal"),
+    recordForm: document.getElementById("reachRecordForm"),
+    recordTitle: document.getElementById("reachRecordTitle"),
+    recordRgbdYes: document.getElementById("reachRecordRgbdYes"),
+    recordRgbdNo: document.getElementById("reachRecordRgbdNo"),
+    recordName: document.getElementById("reachRecordName"),
+    recordHint: document.getElementById("reachRecordHint"),
+    recordFeedback: document.getElementById("reachRecordFeedback"),
+    recordSave: document.getElementById("reachRecordSaveBtn"),
+    recordCancel: document.getElementById("reachRecordCancelBtn"),
+    recordClose: document.getElementById("reachRecordCloseBtn"),
     delWp: document.getElementById("reachDelWpBtn"),
     waypointSpeed: document.getElementById("reachWaypointSpeedBtn"),
     stepLen: document.getElementById("reachStepLen"),
@@ -246,6 +874,8 @@ async function initReach() {
     stepNext: document.getElementById("reachStepNext"),
     nextSide: document.getElementById("reachNextSideBtn"),
     nextSideR: document.getElementById("reachNextSideRBtn"),
+    directA: document.getElementById("reachDirectABtn"),
+    directB: document.getElementById("reachDirectBBtn"),
     nextPick: document.getElementById("reachNextPickBtn"),
     nextReturn: document.getElementById("reachNextReturnBtn"),
     nextDone: document.getElementById("reachNextDoneBtn"),
@@ -273,7 +903,7 @@ async function initReach() {
   };
   const d = reach.dom;
   d.panel.classList.remove("hidden");
-  d.video.src = "/api/reach/stream";
+  d.video.src = armUrl("/api/reach/stream");
   d.video.addEventListener("click", onReachVideoClick);
   d.collapse.addEventListener("click", () => d.body.classList.toggle("hidden"));
   d.arm.addEventListener("click", () => toggleReachArm());
@@ -282,6 +912,8 @@ async function initReach() {
   d.exec.addEventListener("click", () => executeReach());
   d.stop.addEventListener("click", () => stopReach());
   initPinkUi(status);
+  initDebugUi();
+  await initOrientationUi();
   d.scan.addEventListener("click", () => scanObstacles());
   d.clearObs.addEventListener("click", () => clearObstacles());
   d.handMove.addEventListener("click", () => toggleHandMove());
@@ -316,7 +948,39 @@ async function initReach() {
       await refreshSequences();
     });
   }
-  d.record.addEventListener("click", () => recordWaypoint());
+  d.record.addEventListener("click", openRecordWaypointModal);
+  d.recordForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    recordWaypoint();
+  });
+  d.recordRgbdYes.addEventListener("change", updateRecordWaypointHint);
+  d.recordRgbdNo.addEventListener("change", updateRecordWaypointHint);
+  d.recordName.addEventListener("input", () => {
+    d.recordName.removeAttribute("aria-invalid");
+    if (d.recordFeedback.classList.contains("error")) recordWaypointFeedback();
+  });
+  d.recordCancel.addEventListener("click", closeRecordWaypointModal);
+  d.recordClose.addEventListener("click", closeRecordWaypointModal);
+  d.recordModal.addEventListener("click", (event) => {
+    if (event.target === d.recordModal) closeRecordWaypointModal();
+  });
+  d.recordModal.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeRecordWaypointModal();
+    } else if (event.key === "Tab") {
+      const controls = [...d.recordForm.querySelectorAll("button:not(:disabled), input:not(:disabled)")];
+      const first = controls[0], last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      } else if (!controls.length) event.preventDefault();
+    }
+  });
   d.waypointSpeed.addEventListener("click", () => openWaypointSpeedModal());
   d.delWp.addEventListener("click", () => deleteWaypoint());
   d.addVia.addEventListener("click", () => addViaWaypoint());
@@ -376,6 +1040,8 @@ async function initReach() {
   d.seqDel.addEventListener("click", () => deleteSequence());
   d.nextSide.addEventListener("click", () => stepNextSidestep());
   d.nextSideR.addEventListener("click", () => stepNextSidestep(true));
+  d.directA.addEventListener("click", () => stepNextCabinet(true, true));
+  d.directB.addEventListener("click", () => stepNextCabinet(false, true));
   // 暂停期间改左移距离：刷新按钮文案并重新预取横移规划
   d.stepLen.addEventListener("change", () => {
     if (!d.stepNext.classList.contains("hidden")) {
@@ -426,11 +1092,12 @@ async function initReach() {
     url.port = "7005";
     url.pathname = "/";
     url.search = "";
+    if (workspaceArm) url.searchParams.set("arm", workspaceArm);
     url.searchParams.set(
       "approach_offset_m",
       String(Number(d.offset.value || 0)),
     );
-    window.open(url.toString(), "ik-replay-pointcloud", "width=1500,height=920");
+    window.open(url.toString(), `ik-replay-pointcloud-${workspaceArm || "default"}`, "width=1500,height=920");
   });
   window.addEventListener("message", async (event) => {
     if (event.data?.type !== "ik-replay-pointcloud-pick") return;
@@ -603,14 +1270,15 @@ function updateReachArmUi() {
   d.handMove.textContent = st.hand_move ? "恢复保持" : "卸力摆位";
   d.handMove.classList.toggle("danger", !!st.hand_move);
   // 录制只需要能读到关节（未接管也可以录，比如遥操作摆好后录）
-  d.record.disabled = !st.joints_available;
-  if (!st.armed) {
+  d.record.disabled = !st.joints_available || reach.recording;
+  if (!st.armed || abDebug.busy || abDebug.ownsPreview) {
     d.exec.disabled = true;
   }
   updateSequenceUi();
 }
 
 async function toggleReachArm() {
+  if (reach.controlPending) return;
   const st = reach.status;
   const d = reach.dom;
   if (!st.armed) {
@@ -628,6 +1296,7 @@ async function toggleReachArm() {
       return;
     }
   }
+  reach.controlPending = true;
   d.arm.disabled = true;
   try {
     const data = await fetchJson(st.armed ? "/api/reach/disarm" : "/api/reach/arm", { method: "POST" });
@@ -636,9 +1305,11 @@ async function toggleReachArm() {
   } catch (error) {
     reachMsg(`操作失败: ${error.message}`, "error");
   } finally {
+    reach.controlPending = false;
     d.arm.disabled = false;
     updateReachArmUi();
     refreshReachDiag();
+    notifyWorkspaceControlChanged();
   }
 }
 
@@ -728,7 +1399,7 @@ async function onReachVideoClick(ev) {
 function openReachFullscreen() {
   const d = reach.dom;
   d.fsMark.classList.add("hidden");
-  d.fsVideo.src = "/api/reach/stream";   // 独立的一路 MJPEG，关闭时断开
+  d.fsVideo.src = armUrl("/api/reach/stream");   // 独立的一路 MJPEG，关闭时断开
   d.fsOverlay.classList.remove("hidden");
   window.addEventListener("keydown", onReachFullscreenKey);
 }
@@ -842,6 +1513,9 @@ async function submitReachPick(u, v) {
 }
 
 async function runReachPlan() {
+  if (abDebug.busy) return;
+  abDebug.ownsPreview = false;
+  if (cabinetOrientationEnabled()) return planCabinetOrientation("direct");
   const st = reach.status;
   const pick = reach.lastPick;
   const panel = state.panels[st.chain_id];
@@ -882,7 +1556,7 @@ async function runReachPlan() {
   const direct = Boolean(reach.finePick);
   // 分段模式下横移/收回都是到位后手动触发、执行时就地重规划的，
   // 取点时预演它们纯属白算（各多一轮插值+逐帧碰撞检查），跳过提速
-  const skipPreviews = direct || Boolean(reach.dom.stepMode?.checked);
+  const skipPreviews = direct || abDebugEnabled() || Boolean(reach.dom.stepMode?.checked);
   const viaWps = direct ? [] : viaWaypoints();
   panel.solverOptions = { solve_orientation: false }; // 指尖是点目标，姿态放开
   try {
@@ -925,7 +1599,8 @@ async function runReachPlan() {
     ...(direct ? ["直达模式：从当前姿态直接规划（跳过经由路点）"] : []),
     ...(viaWps.length
       ? [`经由 ${viaWps.map((w) => `「${w.name}」`).join("→")} 分段规划`] : []),
-    ...(stepCm ? [`到位后沿面${stepCm > 0 ? "左" : "右"}移 ${Math.abs(stepCm)}cm` +
+    ...(abDebugEnabled() ? ["A/B 模式：到位后暂停，手动选择下一步"] : []),
+    ...(!abDebugEnabled() && stepCm ? [`到位后沿面${stepCm > 0 ? "左" : "右"}移 ${Math.abs(stepCm)}cm` +
       (skipPreviews ? "（分段模式：执行时再规划）"
                     : sidestepOk ? "（已并入预演）" : "（横移段规划失败）")] : []),
     ...(endWpPreview ? [`结束后收回到「${endWpPreview.name}」` +
@@ -963,6 +1638,9 @@ async function runReachPlan() {
 // 「左侧规划」：平移在先、进出在后（先竖直+水平对齐，最后才沿根系 ±x 进/出；
 // 拔出则相反：先拔出到目标深度再平移）。与「右侧规划」共用同一条执行链。
 async function planReachLeft() {
+  if (abDebug.busy) return;
+  abDebug.ownsPreview = false;
+  if (cabinetOrientationEnabled()) return planCabinetOrientation("axis_last");
   const st = reach.status;
   const pick = reach.lastPick;
   const panel = state.panels[st.chain_id];
@@ -1643,8 +2321,8 @@ async function appendReturnPreview(panel, wp) {
 // 任务收尾：收回到选定的结束位点。推完开关后的真实姿态和预演会有偏差，
 // 所以不复用预演帧，而是按真机实测关节就地重新规划（纯关节空间插值，
 // 起点偏差自然在整段运动里被慢慢修掉——这段只是收手，精度要求不高）。
-async function returnToWaypoint(wp) {
-  return moveToWaypoint(wp, { verb: `收回到「${wp.name}」`, label: `收回:${wp.name}` });
+async function returnToWaypoint(wp, options = {}) {
+  return moveToWaypoint(wp, { ...options, verb: `收回到「${wp.name}」`, label: `收回:${wp.name}` });
 }
 
 function startTestWaypoint() {
@@ -1861,6 +2539,7 @@ async function moveToWaypoint(wp, options = {}) {
     reachMsg(`${verb}规划失败: ${error.message}`, "error");
     return false;
   }
+  if (options.cancelled?.()) return false;
   panel.frames = seg.waypoints;
   panel.frameIndex = 0;
   panel.currentCollision = seg.collision;
@@ -1915,9 +2594,12 @@ function reachLibraryDistance(item) {
 }
 
 function reachLibraryGroupOf(item) {
-  // 左/右分组特指“已标定距离的左/右臂资产”；
-  // 普通手势即使已标 arm，也应归入“其他”。
+  // 显式预备侧与执行手臂独立：左手也可以使用“右”侧预备点。
+  // 旧资产保留原分组；无距离的普通手势仍归入“其他”。
   if (reachLibraryDistance(item) === null) return "other";
+  if (["left", "right"].includes(item?.preparation_side)) {
+    return item.preparation_side;
+  }
   if (item?.arm === "left_arm") return "left";
   if (item?.arm === "right_arm") return "right";
   const text = `${item?.name || ""} ${item?.file || ""}`;
@@ -1980,7 +2662,7 @@ function populateReachLibraryItems(preferredFile = "") {
     const distance = reachLibraryDistance(item);
     const suffix = reach.libraryMode === "sequence"
       ? ` · ${(item.waypoints || []).length}段`
-      : "";
+      : (item.rgbd ? " · RGBD 已录制" : "");
     option.value = item.file;
     option.textContent = `${distance === null ? "未标距离" : `${distance.toFixed(2)} m`} · ${item.name}${suffix}`;
     d.libraryItem.append(option);
@@ -2007,7 +2689,8 @@ function updateReachLibraryHint() {
   const speed = reach.libraryMode === "waypoint"
     ? ` · 到达速度 ${Number(item.arrival_speed_rad_s ?? 0.4)} rad/s`
     : "";
-  d.libraryHint.textContent = `已按距离从近到远排序 · 第 ${position}/${d.libraryItem.options.length} 项${speed} · ${item.file}`;
+  const rgbd = item.rgbd ? ` · RGBD：data/waypoints/${item.rgbd.directory}/` : "";
+  d.libraryHint.textContent = `已按距离从近到远排序 · 第 ${position}/${d.libraryItem.options.length} 项${speed} · ${item.file}${rgbd}`;
 }
 
 function confirmReachLibrarySelection() {
@@ -2423,7 +3106,7 @@ async function refreshWaypoints() {
   const fill = (sel, placeholder) => {
     const prev = sel.value;
     sel.innerHTML = `<option value="">${placeholder}</option>` + regularWaypoints
-      .map((w) => `<option value="${w.file}">${w.name} · ${Number(w.arrival_speed_rad_s ?? 0.4)} rad/s · ${w.created_at || w.file}</option>`)
+      .map((w) => `<option value="${w.file}">${w.name}${w.rgbd ? " · RGBD 已录制" : ""} · ${Number(w.arrival_speed_rad_s ?? 0.4)} rad/s · ${w.created_at || w.file}</option>`)
       .join("");
     if ([...sel.options].some((o) => o.value === prev)) {
       sel.value = prev;
@@ -2570,6 +3253,7 @@ function viaWaypoints() {
 }
 
 async function toggleHandMove() {
+  if (reach.controlPending) return;
   const on = !reach.status.hand_move;
   if (on) {
     const ok = window.confirm(
@@ -2578,6 +3262,7 @@ async function toggleHandMove() {
       return;
     }
   }
+  reach.controlPending = true;
   try {
     const data = await fetchJson("/api/reach/hand_move", {
       method: "POST",
@@ -2588,26 +3273,95 @@ async function toggleHandMove() {
     reachMsg(data.message, on ? "error" : "success");
   } catch (error) {
     reachMsg(`卸力操作失败: ${error.message}`, "error");
+  } finally {
+    reach.controlPending = false;
+  }
+  updateReachArmUi();
+  notifyWorkspaceControlChanged();
+}
+
+function updateRecordWaypointHint() {
+  reach.dom.recordHint.textContent = reach.dom.recordRgbdYes.checked
+    ? "使用 7005 默认参数拍摄，请保持手臂和机身静止。"
+    : "保存当前机械臂关节角，沿用原有路点录制方式。";
+}
+
+function recordWaypointFeedback(text = "", error = false) {
+  reach.dom.recordFeedback.textContent = text;
+  reach.dom.recordFeedback.classList.toggle("error", error);
+}
+
+function openRecordWaypointModal() {
+  if (reach.recording) return;
+  const d = reach.dom;
+  d.recordTitle.textContent = reach.status.chain_id === "right_arm" ? "录制右臂路点" : "录制左臂路点";
+  d.recordName.value = `中间点${(reach.waypoints?.length || 0) + 1}`;
+  d.recordName.removeAttribute("aria-invalid");
+  recordWaypointFeedback();
+  updateRecordWaypointHint();
+  d.recordModal.classList.remove("hidden");
+  (d.recordRgbdYes.checked ? d.recordRgbdYes : d.recordRgbdNo).focus();
+}
+
+function closeRecordWaypointModal() {
+  if (reach.recording) return;
+  reach.dom.recordModal.classList.add("hidden");
+  reach.dom.record.focus();
+}
+
+function setWaypointRecording(pending) {
+  reach.recording = pending;
+  const d = reach.dom;
+  d.recordForm.setAttribute("aria-busy", String(pending));
+  for (const control of [d.recordName, d.recordRgbdYes, d.recordRgbdNo, d.recordSave, d.recordCancel, d.recordClose]) {
+    control.disabled = pending;
+  }
+  d.recordSave.textContent = pending ? "录制中…" : "录制";
+  d.record.textContent = pending ? (d.recordRgbdYes.checked ? "采集 RGBD…" : "录制中…") : "录制路点";
+  if (pending) {
+    // Keep keyboard focus inside the modal while form controls are disabled.
+    d.recordFeedback.tabIndex = -1;
+    d.recordFeedback.focus();
   }
   updateReachArmUi();
 }
 
 async function recordWaypoint() {
-  const name = window.prompt("路点名字（同名会覆盖）:", `中间点${(reach.waypoints?.length || 0) + 1}`);
-  if (!name?.trim()) {
+  if (reach.recording) return;
+  const d = reach.dom;
+  const name = d.recordName.value.trim();
+  if (!name || /[/\\]|\.\./.test(name)) {
+    recordWaypointFeedback(!name ? "请输入点位名称。" : "点位名称不能包含 /、\\ 或 ..。", true);
+    d.recordName.setAttribute("aria-invalid", "true");
+    d.recordName.focus();
     return;
   }
+  d.recordName.removeAttribute("aria-invalid");
+  const captureRgbd = d.recordRgbdYes.checked;
+  const progress = captureRgbd ? "正在采集 RGBD 和机械臂位姿，请保持静止…" : "正在录制路点…";
+  recordWaypointFeedback(progress);
+  setWaypointRecording(true);
+  reachMsg(progress);
+  let saved = false;
   try {
-    const data = await fetchJson("/api/reach/waypoints", {
+    const data = await fetchJson(captureRgbd ? "/api/reach/waypoints/record_rgbd" : "/api/reach/waypoints", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name.trim() }),
+      body: JSON.stringify({ name, capture_rgbd: captureRgbd }),
     });
+    if (captureRgbd && !data.waypoint?.rgbd) throw new Error("服务未返回 RGBD 存档，请检查服务版本");
     await refreshWaypoints();
     reach.dom.waypointSel.value = data.waypoint.file;
-    reachMsg(`已录制路点「${data.waypoint.name}」→ data/waypoints/${data.waypoint.file}`, "success");
+    const detail = data.waypoint.rgbd ? `；RGBD → data/waypoints/${data.waypoint.rgbd.directory}/` : "";
+    reachMsg(`已录制路点「${data.waypoint.name}」→ data/waypoints/${data.waypoint.file}${detail}`, "success");
+    saved = true;
   } catch (error) {
+    recordWaypointFeedback(`录制失败: ${error.message}`, true);
     reachMsg(`录制失败: ${error.message}`, "error");
+  } finally {
+    setWaypointRecording(false);
+    if (saved) closeRecordWaypointModal();
+    else d.recordSave.focus();
   }
 }
 
@@ -2763,6 +3517,12 @@ function describeReachCollision(panel, collision) {
 }
 
 async function executeReach(options = {}) {
+  if (abDebug.busy || abDebug.ownsPreview) return;
+  const constrained = cabinetOrientationEnabled();
+  if (constrained && !orientationUi.plan) {
+    reachMsg("请先按目标点朝向重新规划", "error");
+    return;
+  }
   const st = reach.status;
   const panel = state.panels[st.chain_id];
   if (!panel?.frames?.length || !reach.lastPick) {
@@ -2771,11 +3531,12 @@ async function executeReach(options = {}) {
   const ik = panel.currentIk;
   const duration = Math.max(1, Number(reach.dom.duration.value || 6));
   const stepCm = Number(reach.dom.stepLen.value || 0);
-  const stepMode = Boolean(reach.dom.stepMode?.checked);
+  const stepMode = abDebugEnabled() || Boolean(reach.dom.stepMode?.checked);
   // 主段 = 取点规划的到位轨迹（预演 frames 可能已拼了横移预览段，真机不直接跑它）
   const mainFrames = (reach.execFrames && reach.execFrames[0] === panel.frames[0])
     ? reach.execFrames : panel.frames;
-  const sidestepNote = stepMode
+  const goalNote = constrained ? `目标点朝向：${orientationUi.plan.name}（仅终点，中途允许转动）\n` : "";
+  const sidestepNote = abDebugEnabled() ? "A/B 模式：到位后暂停，手动选择 A→B、B→A、结束点位或关闭\n" : stepMode
     ? "分段模式：到位后暂停，横移/收回需手动点「继续」\n"
     : (stepCm && reach.plane)
       ? `到位后将沿电柜表面${stepCm > 0 ? "左" : "右"}移 ${Math.abs(stepCm).toFixed(0)}cm\n`
@@ -2789,7 +3550,7 @@ async function executeReach(options = {}) {
     `目标(躯干系): [${pt.map((v) => v.toFixed(3)).join(", ")}] m\n` +
     `IK 误差: ${Number(ik?.error_mm || 0).toFixed(1)} mm\n` +
     `轨迹: ${mainFrames.length} 点 / ${duration}s\n` +
-    sidestepNote + endNote +
+    goalNote + sidestepNote + endNote +
     "\n请确保周围无人无障碍，手不要放在运动路径上。");
   if (!ok) {
     return;
@@ -2798,12 +3559,15 @@ async function executeReach(options = {}) {
   const fine = Boolean(reach.finePick);
   reach.finePick = false;   // 直达标志一次性消费：下次取点恢复经由路点
   reach.dom.exec.disabled = true;
+  orientationUi.executing = true;
+  syncOrientationControls();
   try {
     await fetchJson("/api/reach/execute", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        motion_backend: execBackendChoice(),   // 只有 7005 选点主轨迹允许 pink
+        motion_backend: execBackendChoice(),
+        orientation_plan_id: constrained ? orientationUi.plan.id : null,
         waypoints: mainFrames.map((frame) => frame.named_joints),
         duration,
         label: fine ? "主轨迹(精定位)" : "主轨迹",
@@ -2830,6 +3594,9 @@ async function executeReach(options = {}) {
   } catch (error) {
     reachMsg(`执行请求失败: ${error.message}`, "error");
     reach.dom.exec.disabled = false;
+  } finally {
+    orientationUi.executing = false;
+    syncOrientationControls();
   }
 }
 
@@ -2837,19 +3604,50 @@ async function executeReach(options = {}) {
 // 暂停期间可以随时改左移(cm)/推力(N)等参数，点「继续横移」时按最新值执行，
 // 方便专注调某一段（比如反复调"手上去"的主段，不被后续动作打扰）。
 
-function showStepNext() {
+function showStepNext(arrived = true) {
   const d = reach.dom;
-  const stepCm = Number(d.stepLen.value || 0);
+  const ab = abDebugEnabled();
+  d.stepNext.classList.toggle("reach-step-pop-ab", ab);
+  document.getElementById("reachDirectPoints").hidden = !ab;
+  document.getElementById("reachABSettingsLabel").hidden = !ab;
+  document.getElementById("reachStepNextTitle").textContent = ab ? "A/B 点位操作" : arrived ? "主段已到位，暂停中" : "经典左右操作";
+  document.getElementById("reachStepNextHint").textContent = ab
+    ? "A→B：当前位置到 B；B→A：当前位置到 A。仅终点恢复记录的位置和朝向。"
+    : "可先调参数或重新取点，再选择下一步";
+  d.nextPick.hidden = ab;
+  d.nextDone.textContent = ab ? "关闭" : "结束";
+  d.nextSide.title = ab ? `从当前位置直接前往 B，柜面 ${debugOffsetsText(debugOffsets(false))}` : "从当前位置向左横移，距离取输入值的绝对值";
+  d.nextSideR.title = ab ? `从当前位置直接前往 A，柜面 ${debugOffsetsText(debugOffsets(true))}` : "从当前位置向右横移，距离取输入值的绝对值";
+  if (ab) {
+    for (const [button, reverse, side] of [[d.directA, true, "A"], [d.directB, false, "B"]]) {
+      const offsets = debugOffsetsText(directOffsets(reverse), true);
+      button.textContent = `直接到 ${side}${offsets ? ` · ${offsets}` : ""}`;
+      button.title = `柜面 ${debugOffsetsText(directOffsets(reverse))}；${directToleranceText(reverse)}；无助力`;
+    }
+    const abOffset = debugOffsetsText(debugOffsets(false), true), baOffset = debugOffsetsText(debugOffsets(true), true);
+    d.nextSide.textContent = "A→B" + (abOffset ? ` · ${abOffset}` : "") + (abDebug.forceABn ? ` · +X ${abDebug.forceABn} N` : "");
+    d.nextSideR.textContent = "B→A" + (baOffset ? ` · ${baOffset}` : "") + (abDebug.forceBAn ? ` · −X ${abDebug.forceBAn} N` : "");
+    document.getElementById("reachStepNextHint").textContent =
+      `目标 B：${debugOffsetsText(debugOffsets(false))}，${debugForceText(false)}；目标 A：${debugOffsetsText(debugOffsets(true))}，${debugForceText(true)}。终点朝向使用记录值，助力撤除后检查到位。`;
+    d.nextReturn.textContent = "到结束点位";
+    d.stepNext.classList.remove("hidden");
+    if (arrived) reachMsg("已到位，请选择 A/B 操作。关闭不会触发运动。", "success");
+    return;
+  }
+  const stepCm = Math.abs(Number(d.stepLen.value || 0));
   d.nextSide.textContent = stepCm
-    ? `继续${stepCm > 0 ? "左" : "右"}移 ${Math.abs(stepCm).toFixed(0)}cm`
-    : "继续横移";
+    ? `向左 ${stepCm} cm`
+    : "向左";
   d.nextSideR.textContent = stepCm
-    ? `继续${stepCm > 0 ? "右" : "左"}移 ${Math.abs(stepCm).toFixed(0)}cm`
-    : "继续反向横移";
+    ? `向右 ${stepCm} cm`
+    : "向右";
+  document.getElementById("reachStepNextHint").textContent = stepCm
+    ? "从当前位置选择向左或向右；勾选“分段模式”可在主段到位后自动打开此窗口。"
+    : "请先把横移距离设为非零值，再选择向左或向右。";
   const endWp = selectedEndWaypoint();
   d.nextReturn.textContent = endWp ? `收回到「${endWp.name}」` : "收回到结束位点";
   d.stepNext.classList.remove("hidden");
-  reachMsg("主段到位，已暂停（分段模式）", "success");
+  reachMsg(arrived ? "主段到位，已暂停（分段模式）" : "请选择向左或向右。打开或关闭窗口不会运动。", "success");
   prefetchSidestep();   // 暂停期间手臂静止，趁人看落点的工夫先把横移段算好
 }
 
@@ -2857,6 +3655,7 @@ function showStepNext() {
 // 弹窗一出现就在后台算，点「继续横移」时若起点没动、距离没改则直接用。
 async function prefetchSidestep() {
   reach.sideCache = null;
+  if (abDebugEnabled()) return;
   const stepCm = Number(reach.dom.stepLen.value || 0);
   if (!stepCm || !reach.status?.joints_available) {
     return;
@@ -2891,9 +3690,12 @@ function hideStepNext() {
 }
 
 function setStepNextBusy(busy) {
+  abDebug.operationsBusy = busy;
   const d = reach.dom;
-  [d.nextSide, d.nextSideR, d.nextReturn, d.nextDone]
+  [d.nextSide, d.nextSideR, d.directA, d.directB, d.nextPick, d.nextReturn, d.nextDone]
     .forEach((btn) => { btn.disabled = busy; });
+  directEl("Open").disabled = busy;
+  syncDebugControls();
 }
 
 // 「再次选点」= 人当视觉闭环：粗定位后躯干已扭到新姿态，用现在的相机再点一次
@@ -2906,14 +3708,15 @@ function stepNextRepick() {
   reachMsg("再次选点：全屏中点击新目标，确认后直接真机执行（Esc 返回）", "success");
 }
 
-// flip=true 为"反向横移"按钮：同一条链路，距离符号取反（左↔右完全对称）
+// 经典按钮固定为向左 / 向右，输入值只提供距离大小；A/B 使用各自方向。
 async function stepNextSidestep(flip = false) {
+  if (abDebugEnabled()) return stepNextCabinet(flip);
   const raw = Number(reach.dom.stepLen.value || 0);
   if (!raw) {
-    reachMsg("左移(cm) 为 0，没有可执行的横移", "error");
+    reachMsg("横移距离为 0，请先填写距离再选择向左或向右", "error");
     return;
   }
-  const stepCm = flip ? -raw : raw;
+  const stepCm = (flip ? -1 : 1) * Math.abs(raw);
   if (!(await ensureReachPlane())) {
     reachMsg("还没有拟合出表面平面（服务器也没有），先取一次点", "error");
     return;
@@ -2928,17 +3731,32 @@ async function stepNextSidestep(flip = false) {
 }
 
 async function stepNextReturn() {
+  if (abDebug.busy) return;
   const endWp = selectedEndWaypoint();
   if (!endWp) {
     reachMsg("先在「结束位点」下拉框选一个路点", "error");
     return;
   }
+  const ab = abDebugEnabled();
+  const token = ++abDebug.version;
+  if (ab) {
+    abDebug.busy = true;
+    abDebug.ownsPreview = true;
+    orientationUi.executing = true;
+    syncOrientationControls();
+  }
   setStepNextBusy(true);
   try {
-    await returnToWaypoint(endWp);
-    hideStepNext();
+    const ok = await returnToWaypoint(endWp, ab ? {cancelled: () => token !== abDebug.version} : {});
+    if (ok) hideStepNext();
   } finally {
     setStepNextBusy(false);
+    if (ab) {
+      abDebug.busy = false;
+      orientationUi.executing = false;
+      reach.dom.exec.disabled = true;
+      syncOrientationControls();
+    }
   }
 }
 
@@ -2963,6 +3781,7 @@ async function pollReachExec() {
 }
 
 async function stopReach() {
+  ++abDebug.version; // Cancel pending RGBD/IK response before it can start an execution.
   hideStepNext();
   try {
     await fetchJson("/api/reach/stop", { method: "POST" });
@@ -3001,6 +3820,7 @@ function initPinkUi(status) {
     if (pinkOption) pinkOption.disabled = !available;
     backendSel.value = pinkUi.defaultBackend;
     backendSel.addEventListener("change", () => {
+      syncOrientationControls();
       const note = backendSel.value === "pink"
         ? "本次执行改用 PINK 世界系跟踪（需已锚定；停止 = 世界系保持不撒手）"
         : backendSel.value === "legacy_timed"
@@ -3095,7 +3915,8 @@ async function refreshLiveBody() {
   liveBody.busy = true;
   let body;
   try {
-    body = await fetchJson("/api/reach/pink/body");
+    const selected = workspaceMode === "scene" ? liveBody.workspaceArm : workspaceArm;
+    body = await fetchJson(armUrl("/api/reach/pink/body", selected));
   } catch {
     liveBody.busy = false;
     return;
@@ -3108,7 +3929,7 @@ async function refreshLiveBody() {
   // 正在回放/预演的链：手臂关节以回放帧为准，其余关节仍实时
   const frozen = new Set();
   for (const panel of Object.values(state.panels)) {
-    if (panel.playing) {
+    if (panel.playing || (workspaceMode === "scene" && (workspacePreviewUntil.get(panel.chainId)||0)>performance.now())) {
       for (const name of panel.chain.joint_names || []) frozen.add(name);
     }
   }
@@ -3406,8 +4227,9 @@ async function loadRobotData(robotId = null) {
     selectTargetPanel(Object.values(state.panels)[0]);
     resetView("URDF 加载完成");
     for (const panel of Object.values(state.panels)) {
+      if (workspaceMode === "panel" && panel.chainId !== workspaceArm) continue;
       await updateFk(panel, "初始 FK");
-      await planTrajectory(panel, { initial: true });
+      if (!workspaceMode) await planTrajectory(panel, { initial: true });
     }
     resetView("初始轨迹完成");
     setState("就绪", "success");
@@ -3994,7 +4816,7 @@ function animate(now) {
       panel.lastFrameTime = now;
     }
   }
-  renderer.render(scene, camera);
+  if (workspaceMode !== "panel") renderer.render(scene, camera);
 }
 
 function updateIkMetrics(panel, data, errorMessage = "") {
@@ -4169,7 +4991,7 @@ async function loadRobot(urdfUrl) {
     const group = new THREE.Group();
     group.name = linkName;
     linkGroups.set(linkName, group);
-    for (const visualEl of linkEl.querySelectorAll("visual")) {
+    for (const visualEl of workspaceMode === "panel" ? [] : linkEl.querySelectorAll("visual")) {
       const meshEl = visualEl.querySelector("geometry > mesh");
       if (!meshEl) {
         continue;
@@ -4832,6 +5654,8 @@ function syncActiveTargetFromGizmo() {
   panel.frames = [];
   panel.trajectoryGroup.clear();
   updateFrameLabel();
+  if (workspaceMode === "scene" && state.activeRobot === workspaceRobot) parent.postMessage({type:"dual-target", arm:panel.chainId,
+    target:readPose(panel,"target")}, location.origin);
 }
 
 function selectTargetFromPointer(event) {
@@ -5192,6 +6016,7 @@ function updateFrameLabel() {
 }
 
 function publishRenderState(stage) {
+  publishWorkspacePreview(stage);
   let objectCount = 0;
   let meshCount = 0;
   let lineCount = 0;
@@ -5325,3 +6150,104 @@ function optionLabel(value) {
   };
   return labels[value] || value;
 }
+
+
+// Each control frame owns its planning state; shared control status comes from
+// the workspace so global release/float actions update both panels in place.
+function notifyWorkspaceControlChanged() {
+  if (workspaceMode === "panel") {
+    parent.postMessage({type:"dual-control-changed",arm:workspaceArm},location.origin);
+  }
+}
+
+function applyWorkspaceControlStatus(status) {
+  if (!status || !reach.status || !reach.dom || reach.controlPending) return;
+  const keys = ["armed", "hand_move", "arm_supported", "joints_available"];
+  const changed = keys.some(key => typeof status[key] === "boolean" && reach.status[key] !== status[key]);
+  if (!changed) return;
+  for (const key of keys) {
+    if (typeof status[key] === "boolean") reach.status[key] = status[key];
+  }
+  updateReachArmUi();
+  if (changed) {
+    if (!reach.status.armed) { ++abDebug.version; hideStepNext(); }
+    refreshReachDiag();
+  }
+}
+
+let workspaceLastFrames;
+function publishWorkspacePreview(stage) {
+  if (workspaceMode !== "panel" || !workspaceArm) return;
+  const panel = state.panels[workspaceArm];
+  if (!panel) return;
+  const changed = workspaceLastFrames !== panel.frames;
+  workspaceLastFrames = panel.frames;
+  parent.postMessage({type:"dual-preview",arm:workspaceArm,target:readPose(panel,"target"),
+    frames:changed ? panel.frames : undefined,frameIndex:panel.frameIndex,
+    preview:stage === "轨迹帧更新",tcp:readPose(panel,"tcp")}, location.origin);
+}
+const workspaceHandSlots = new Map();
+const workspacePreviewUntil = new Map();
+const workspaceHandFields = ["handGroup","handJointNodes","handMimics","handMaterials",
+  "handModelKey","handPreview","hiddenNativeHandLink"];
+let workspaceSceneBusy = false;
+let workspaceHandTime = 0;
+async function initWorkspaceScene() {
+  window.addEventListener("message", event => {
+    if (state.activeRobot !== workspaceRobot) return;
+    if(event.origin === location.origin && event.source === parent && event.data?.type === "dual-reset"){
+      const panel=state.panels[event.data.arm];
+      if(panel){panel.frames=[];panel.trajectoryGroup.clear();workspacePreviewUntil.delete(event.data.arm);}
+      return;
+    }
+    if(event.origin !== location.origin || event.source !== parent || event.data?.type !== "dual-preview")return;
+    const message=event.data,panel=state.panels[message.arm];if(!panel)return;
+    if(message.target){writePose(panel,"target",message.target);setPoseGroup(panel.targetGroup,poseToScene(message.target));}
+    if(message.tcp)writePose(panel,"tcp",message.tcp);
+    if(message.frames){panel.frames=message.frames;updateTrajectoryLine(panel);}
+    if(message.preview && panel.frames.length){applyFrame(panel,message.frameIndex);workspacePreviewUntil.set(message.arm,performance.now()+500);}
+  });
+  parent.postMessage({type:"dual-scene-ready"},location.origin);
+  await refreshWorkspaceScene();setInterval(refreshWorkspaceScene,200);
+}
+async function refreshWorkspaceScene() {
+  if(workspaceSceneBusy)return;workspaceSceneBusy=true;
+  try{
+    const data=await fetchJson("/api/dual/status");
+    const updateHands=performance.now()-workspaceHandTime>1000;
+    liveBody.workspaceArm = ["left_arm","right_arm"].find(a=>data.arms[a].enabled && data.arms[a].status?.robot === state.activeRobot && data.arms[a].status?.pink_available);
+    if(liveBody.workspaceArm){liveBody.enabled=true;await refreshLiveBody();}
+    for(const arm of ["left_arm","right_arm"]){
+      const entry=data.arms[arm];if(!entry.enabled||!entry.status?.enabled||entry.status.robot !== state.activeRobot)continue;
+      const panel=state.panels[arm];
+      if(entry.status.joints_available && (workspacePreviewUntil.get(arm)||0)<performance.now()){
+        const joints=await fetchJson(`/api/arms/${arm}/reach/joints`);
+        Object.assign(state.robotJointState,joints.named_joints);setRobotJoints(state.robotJointState);
+      }
+      if(updateHands){
+        const hand=await fetchJson(`/api/arms/${arm}/reach/hand`);
+        if(!hand.enabled)continue;
+        reach.status=entry.status;
+        let slot=workspaceHandSlots.get(arm);
+        if(!slot)slot={handGroup:null,handJointNodes:new Map(),handMimics:new Map(),handMaterials:[],handModelKey:null,handPreview:null,hiddenNativeHandLink:null};
+        Object.assign(state,slot);
+        hand.model.urdf_url=armUrl(hand.model.urdf_url,arm);
+        hand.model.mesh_base_url=armUrl(hand.model.mesh_base_url,arm);
+        if(!state.handGroup||state.handModelKey!==hand.model.key)await loadDexterousHand(hand);
+        else applyDexterousHandPositions(hand);
+        workspaceHandSlots.set(arm,Object.fromEntries(workspaceHandFields.map(key=>[key,state[key]])));
+      }
+    }
+    if(updateHands)workspaceHandTime=performance.now();
+  }catch(error){console.warn("双臂视图刷新",error)}finally{workspaceSceneBusy=false}
+}
+if(workspaceMode === "panel")window.addEventListener("message",event=>{
+  if(event.origin!==location.origin||event.source!==parent||event.data?.arm!==workspaceArm)return;
+  if(event.data.type==="dual-control-status"){
+    applyWorkspaceControlStatus(event.data.status);return;
+  }
+  if(event.data.type!=="dual-target")return;
+  const panel=state.panels[workspaceArm];if(!panel)return;
+  writePose(panel,"target",event.data.target);setPoseGroup(panel.targetGroup,poseToScene(event.data.target));
+  panel.currentIk=null;panel.frames=[];panel.trajectoryGroup.clear();
+});

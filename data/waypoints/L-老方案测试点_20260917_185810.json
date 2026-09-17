@@ -1,0 +1,20 @@
+{
+  "name": "L-老方案测试点",
+  "arm": "left_arm",
+  "chain_id": "left_arm",
+  "named_joints": {
+    "left_shoulder_pitch_joint": -1.0602450370788574,
+    "left_shoulder_roll_joint": 0.7299472093582153,
+    "left_shoulder_yaw_joint": -0.36946767568588257,
+    "left_elbow_joint": -0.37874945998191833,
+    "left_wrist_roll_joint": 1.1465128660202026,
+    "left_wrist_pitch_joint": 0.044809017330408096,
+    "left_wrist_yaw_joint": -0.29904237389564514
+  },
+  "arrival_speed_rad_s": 0.4,
+  "created_at": "2026-09-17 18:58:10",
+  "recorded_combo": {
+    "arm": "left_arm",
+    "hand_id": "qiangnao-revo2-left"
+  }
+}

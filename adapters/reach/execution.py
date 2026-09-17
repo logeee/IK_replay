@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import threading
+from .state import ReachThread
 import time
 import uuid
 from copy import deepcopy
@@ -18,6 +19,7 @@ from core.pick_execution_archive import append_execution
 from control.timed_trajectory import build_timed_trajectory
 
 from .flip_verification import capture_manual_before, verify_manual_after
+from .cabinet_assist import make_assist, validate_execution_assist
 from .state import (_read_joints, _read_torso, _torso_drift, _torso_rotation,
                     router, state)
 
@@ -211,6 +213,7 @@ def reach_arm():
 def reach_disarm():
     """释放手臂：权重渐出、交还本体控制器。调用前请扶住手臂。"""
     with state.arm_lock:
+        state.cabinet_plan_revision += 1
         if state.controller is None:
             return {"ok": True, "armed": False, "message": "本来就未接管"}
         if state.exec_running:
@@ -233,7 +236,7 @@ def _exec_status() -> dict:
     }
 
 
-# 临时保护（验证期）：pink 只允许用于「7005 冻结点云选点 → 规划 → 主轨迹」这一条路径。
+# PINK 用于 7005 选点主轨迹，或带有效服务端凭据的柜面 RGBD 点位轨迹。
 # 动作序列、前往路点、横移、拨旋等一律走原方案——它们的目标不是世界系里的一个点，
 # 也没有取点时刻的 world_T_root，在 pink 下的语义尚未验证。验证充分后删掉这个开关即可。
 PINK_ONLY_FOR_POINTCLOUD_PICK = True
@@ -272,7 +275,8 @@ def _timed_scope_error(label: str | None) -> str | None:
 
 def _resolve_exec_backend(requested, *, label: str | None = None,
                           allow_pink: bool = True,
-                          allow_timed: bool = True) -> tuple[str | None, str | None]:
+                          allow_timed: bool = True,
+                          cabinet_plan: bool = False) -> tuple[str | None, str | None]:
     """/execute、/sequences/run 的 body.motion_backend -> 实际后端；返回 (backend, error)。
 
     ``label``：本次执行段名（用于 pink 作用域保护）；``allow_pink=False`` 的入口
@@ -285,7 +289,7 @@ def _resolve_exec_backend(requested, *, label: str | None = None,
     if backend == "legacy_timed":
         if not allow_timed:
             return None, "验证期保护：该入口（动作序列/路点）不允许 legacy_timed，请用 legacy 执行"
-        scope_error = _timed_scope_error(label)
+        scope_error = None if cabinet_plan else _timed_scope_error(label)
         if scope_error:
             return None, scope_error
     if backend == "pink":
@@ -296,7 +300,7 @@ def _resolve_exec_backend(requested, *, label: str | None = None,
             return None, "验证期保护：该入口（动作序列/路点）不允许 pink，请用原方案执行"
         if not rt.world_frame.anchored:
             return None, "世界系未锚定：请在机器人双脚站定时点「锚定世界系」，再取点、规划、执行"
-        scope_error = _pink_scope_error(label)
+        scope_error = None if cabinet_plan else _pink_scope_error(label)
         if scope_error:
             return None, scope_error
     return backend, None
@@ -451,11 +455,13 @@ def reach_execute(body: dict):
            "stiffness_scale": float?,
            "push": {"direction_root": [x,y,z], "force_n": float}?,
            "push_hold_s": float?,
+           "cabinet_assist": {"direction": "a_to_b" | "b_to_a", "force_n": float,
+                              "ramp_s": float, "hold_s": float, "release_s": float}?,
            "motion_backend": "legacy" | "legacy_timed" | "pink"?,
            "flip_evidence": {"record": str, "flip_from": str?}?}
 
     motion_backend（可选）：本次执行用哪个运动后端；缺省用 18000 配置的默认值。
-    legacy_timed 仅用于 7005 主轨迹；pink 还需要世界系已锚定，否则 409。
+    legacy_timed 用于 7005 主轨迹和柜面 RGBD 点位；pink 还需要世界系已锚定。
     执行中不可切换。
 
     label（可选）：段名，只用于 logs/reach 里区分主轨迹/横移/收回。
@@ -469,6 +475,7 @@ def reach_execute(body: dict):
     纯位置控制的侧向刚度很低（~300 N/m），贴着旋钮也使不上力；
     有了前馈力矩，接触后能持续出力把旋钮拨过去。
     push_hold_s：轨迹指令收敛后保持满推力的秒数，范围 0～5，默认 1.5。
+    cabinet_assist：与柜面点位规划绑定的 X 向助力；独立于旧 push，撤力后验收真实终点。
 
     flip_evidence 仅由 18001 手动横移传入：启动横移前拍头部+右腕，
     横移完成后用头部 YOLO 复核并把 success 写回同一条 7005 记录。
@@ -531,7 +538,24 @@ def reach_execute(body: dict):
             {"ok": False, "error": "flip_evidence 必须是对象"},
             status_code=400,
         )
-    exec_backend, backend_error = _resolve_exec_backend(body.get("motion_backend"), label=label)
+    exec_backend = str(body.get("motion_backend") or state.motion_backend or "legacy").strip().lower()
+    try:
+        from .orientation import execution_constraint, parse_arrival_tolerance
+        orientation_constraint = execution_constraint(body.get("orientation_plan_id"), q_list, exec_backend)
+        submitted_tolerance = parse_arrival_tolerance(body["arrival_tolerance"]) if "arrival_tolerance" in body else None
+        if submitted_tolerance != (orientation_constraint or {}).get("arrival_tolerance"):
+            raise ValueError("到位容差与规划不一致，请重新规划")
+        if orientation_constraint and push is not None:
+            raise ValueError("目标位姿主轨迹不支持叠加推力")
+        validate_execution_assist(body.get("cabinet_assist"), orientation_constraint, push)
+    except (ValueError, TypeError, KeyError, OSError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+
+    # Only a validated server proof enables cabinet-relative trajectories here;
+    # labels or client flags cannot bypass the original backend scope checks.
+    exec_backend, backend_error = _resolve_exec_backend(exec_backend, label=label,
+        cabinet_plan=bool(orientation_constraint and
+                          orientation_constraint.get("reference_kind") == "cabinet_waypoint"))
     if backend_error:
         return JSONResponse({"ok": False, "error": backend_error}, status_code=409)
 
@@ -584,6 +608,7 @@ def reach_execute(body: dict):
             "pick_target_torso": deepcopy(state.pick_target_torso),
             "pick_pixel": deepcopy(state.pick_pixel),
             "pick_torso": deepcopy(state.pick_torso),
+            "orientation_constraint": orientation_constraint,
         }
         flip_before = None
         flip_context = None
@@ -607,7 +632,7 @@ def reach_execute(body: dict):
         state.exec_progress = 0.0
         state.exec_message = "执行中"
         state.exec_backend = exec_backend
-        state.exec_thread = threading.Thread(
+        state.exec_thread = ReachThread(
             target=_exec_loop,
             args=(q_list, duration),
             kwargs={
@@ -691,6 +716,8 @@ def _log_exec(kind: str, result: str, q_target, *, sag=None, settle_trim=None,
                 "max_speed_rad_s": speed,
                 "pushing": pushing,
                 "push_hold_s": push_hold_s,
+                "cabinet_assist": deepcopy((context.get("orientation_constraint") or {}).get("cabinet_assist")),
+                "cabinet_x_axis_root": deepcopy((context.get("orientation_constraint") or {}).get("cabinet_x_axis_root")),
                 "grav_alpha": st.get("grav_alpha"),
                 "payload_kg": st.get("payload_kg"),
                 "kp": st.get("kp"), "kd": st.get("kd"),
@@ -830,7 +857,7 @@ def _start_torso_trace(ctl) -> tuple[list, threading.Event]:
             samples.append(row)
             stop.wait(0.2)
 
-    threading.Thread(target=run, name="reach-torso-trace", daemon=True).start()
+    ReachThread(target=run, name="reach-torso-trace", daemon=True).start()
     return samples, stop
 
 
@@ -1006,7 +1033,17 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
                execution_context: dict | None = None,
                flip_evidence: dict | None = None,
                stiffness_scale: float = 1.0,
-               motion_backend: str | None = None) -> None:
+               motion_backend: str | None = None,
+               check_other_arm_collision: bool = True) -> None:
+    workspace = getattr(state, "workspace", None)
+    if workspace is not None and check_other_arm_collision:
+        try:
+            workspace.check_other_path(state, q_list)
+        except Exception as exc:
+            state.exec_message = f"双臂执行检查失败: {exc}"
+            state.exec_running = False
+            state.exec_phase = "idle"
+            return
     backend = motion_backend or state.motion_backend
     state.exec_backend = backend
     if backend == "pink":
@@ -1026,14 +1063,18 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
                stiffness_scale=stiffness_scale)
     completed = False
     stiffness_snapshot = None
+    orientation_constraint = (execution_context or {}).get("orientation_constraint")
+    assist = None
     try:
         if command_start_q is None:
             raise RuntimeError("缺少上一帧已发送关节命令，拒绝启动轨迹")
         stiffness_snapshot = _apply_stiffness_scale(ctl, stiffness_scale)
         state.last_settle_trim = None   # 上一段的修正偏置不代表本段
         control_q_list = _build_control_waypoints(q_list, command_start_q)
-        state.exec_phase = "traj"
-        ctl.enable_jog()
+        if orientation_constraint:
+            from .orientation import execution_constraint, check_joint_path
+            execution_constraint(orientation_constraint["id"], q_list, backend)
+            check_joint_path(control_q_list)
         # 分段限速：普通段默认 0.2 慢而稳；带推力的快拨段至少放行到 0.4；
         # 调用方也可以按段指定，最终仍不超 --arm-max-speed 天花板。
         if hasattr(ctl, "set_max_speed"):
@@ -1050,6 +1091,9 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
             log["extra"] = timed.diagnostics
             if duration > float(timed.diagnostics["requested_duration_s"]) + 1.0e-6:
                 state.exec_message = f"时长过短，50Hz 时间轨迹拉长到 {duration:.1f}s"
+        state.exec_phase = "traj"
+        ctl.enable_jog()
+        assist = make_assist(ctl, orientation_constraint, _position_jacobian)
         n = len(control_q_list)
         # 时长下限：限速滑动（矢量同步）跑完全程所需时间。短于它路点节拍会
         # 一直超前于指令，falling-behind 的关节仍会扭曲路径，所以自动拉长。
@@ -1078,18 +1122,25 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
                 remaining = target_t - time.monotonic()
                 if remaining <= 0 or state.exec_cancel.is_set():
                     break
-                time.sleep(min(remaining, 0.05))
+                if assist:
+                    assist.update()
+                time.sleep(min(remaining, 0.02 if assist else 0.05))
         # 最终目标已下发；等限速滑动真正到位再冻结（时长偏短时控制器会滞后）
         state.exec_message = "收敛中"
         state.exec_phase = "converge"
         deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline and not state.exec_cancel.is_set():
+            if assist:
+                assist.update()
             status = ctl.status()
             gap = float(np.max(np.abs(
                 np.asarray(status["desired_rad"]) - np.asarray(status["cmd_rad"]))))
             if gap < 1e-3:
                 break
-            time.sleep(0.1)
+            time.sleep(0.02 if assist else 0.1)
+
+        if assist:
+            assist.finish()
 
         # 推力模式：位置到不到位没有意义（被旋钮/表面顶着），收敛后按
         # 调用方配置继续保持满力，然后撤力刚性保持。
@@ -1153,9 +1204,16 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
                 status = ctl.status()
                 measured = np.asarray(status["measured_rad"] or ctl.read_measured().tolist())
                 sag = float(np.max(np.abs(target - measured)))
-                trim_info = _run_settle_trim(ctl, target)
+                trim_info = None if assist else _run_settle_trim(ctl, target)
                 state.last_settle_trim = trim_info
 
+        goal_note = ""
+        if orientation_constraint and not state.exec_cancel.is_set():
+            from .orientation import check_arrival_pose, joint_pose
+            errors = check_arrival_pose(joint_pose(ctl.read_measured()),
+                                     orientation_constraint["target_root"],
+                                     orientation_constraint["R_root_tcp"], orientation_constraint)
+            goal_note = f"，位置误差 {errors['position_error_mm']:.2f} mm，终点朝向误差 {errors['orientation_error_deg']:.2f}°"
         ctl.disable_jog()
         state.exec_progress = 1.0
         sag_note = f"，落点残差 {sag:.3f} rad" if sag is not None else ""
@@ -1164,7 +1222,7 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
                          f"{trim_info['final_residual_max_rad']:.3f} rad")
         cancelled = state.exec_cancel.is_set()
         state.exec_message = ("已中止（保持当前位置）" if cancelled
-                              else f"完成（刚性保持{sag_note}{_finish_torso_diag()}）")
+                              else f"完成（刚性保持{sag_note}{goal_note}{_finish_torso_diag()}）")
         _log_exec(label, "cancelled" if cancelled else "done", target,
                   sag=sag, settle_trim=trim_info, **log)
         completed = not cancelled
@@ -1176,6 +1234,8 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
         state.exec_message = f"执行出错已停止: {exc}"
         _log_exec(label, f"error: {exc}", q_list[-1], **log)
     finally:
+        if assist:
+            assist.clear()
         _restore_stiffness(ctl, stiffness_snapshot)
         trace_stop.set()
         if completed and flip_evidence is not None:
@@ -1203,6 +1263,7 @@ def _exec_loop(q_list: list[np.ndarray], duration: float,
 @router.post("/stop")
 def reach_stop():
     """急停：中止执行线程并冻结在当前指令位。"""
+    state.cabinet_plan_revision += 1
     if state.controller is None:
         return JSONResponse({"ok": False, "error": "手臂未接管"}, status_code=409)
     state.exec_cancel.set()

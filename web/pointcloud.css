@@ -81,6 +81,7 @@ input, select {
 .status { margin-top: 9px; font-size: 12px; color: #8fa0b7; line-height: 1.45; }
 .status.error { color: #ff8585; }
 .status.ok { color: #67d394; }
+.knob-scene-help { color: #9fb0c5; font-size: 12px; line-height: 1.5; margin: 7px 0 10px; }
 
 .segmented { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
 .segmented button.active { background: #1769aa; border-color: #3b91d4; }

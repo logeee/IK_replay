@@ -33,6 +33,21 @@ class PointcloudClient:
         return self._post(f"/api/pointcloud/auto-target/{capture_id}",
                           None, 60.0)
 
+    def recording_capture(self, arm: str) -> bytes:
+        """7005 defaults; return the exact RGBD + pose without replacing UI picks."""
+        try:
+            r = self._session.post(f"{self.base}/api/pointcloud/recording-capture",
+                                   json={"arm": arm}, timeout=(3.0, 120.0))
+            if not r.ok:
+                try:
+                    detail = r.json().get("error") or r.text
+                except ValueError:
+                    detail = r.text
+                raise RuntimeError(f"7005 RGBD 采集失败 ({r.status_code}): {detail}")
+            return r.content
+        except requests.RequestException as exc:
+            raise RuntimeError(f"7005 RGBD 采集不可达: {exc}") from exc
+
     def save_scene_mismatch(self, capture_id: str, body: dict) -> dict:
         """保存识别类别与任务预期不一致的训练样本。"""
         return self._post(

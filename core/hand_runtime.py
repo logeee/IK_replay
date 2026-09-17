@@ -411,6 +411,12 @@ class HandRuntime:
         self._catalog: Any = None
         self._catalog_at = 0.0
         self._catalog_lock = threading.Lock()
+        self.scoped_api = False
+        self.connection_options: dict[str, Any] = {}
+
+    def _api_path(self, operation: str) -> str:
+        prefix = f"api/arms/{self.config.side}" if self.scoped_api else "api"
+        return f"{prefix}/{operation}"
 
     def _fetch(self, path: str) -> Any:
         return self.fetch_json(
@@ -461,7 +467,7 @@ class HandRuntime:
         status = None
         service_error = None
         try:
-            status = self._fetch("/api/status")
+            status = self._fetch(self._api_path("status"))
         except Exception as exc:
             service_error = str(exc) or type(exc).__name__
         status = status if isinstance(status, dict) else {}
@@ -556,11 +562,13 @@ class HandRuntime:
             "side": self.config.side,
             "hand_name": self.config.hand_name,
         }
-        url = urljoin(self.config.service_url, "api/connect")
+        url = urljoin(self.config.service_url, self._api_path("connect"))
+        payload = build_hand_connection_request(self.config.device_id, self.config.side)
+        if self.connection_options:
+            payload["options"] = {**payload.get("options", {}), **self.connection_options}
         try:
             body = self.post_json(
-                url, build_hand_connection_request(
-                    self.config.device_id, self.config.side),
+                url, payload,
                 self.connect_timeout_s, self.verify_tls)
         except HTTPError as exc:
             try:
@@ -591,7 +599,7 @@ class HandRuntime:
             "side": self.config.side,
             "hand_name": self.config.hand_name,
         }
-        url = urljoin(self.config.service_url, "api/command")
+        url = urljoin(self.config.service_url, self._api_path("command"))
         payload = {
             "side": self.config.side,
             "positions": [float(value) for value in positions],
@@ -633,6 +641,12 @@ _runtime: HandRuntime | None = None
 _runtime_lock = threading.Lock()
 
 
+def _current_runtime():
+    # Import lazily: standalone hand tools do not depend on the reach adapter.
+    from adapters.reach.state import current_state
+    return getattr(current_state(), "hand_runtime", _runtime)
+
+
 def configure_hand_runtime(runtime: HandRuntime | None) -> None:
     global _runtime
     with _runtime_lock:
@@ -641,7 +655,7 @@ def configure_hand_runtime(runtime: HandRuntime | None) -> None:
 
 def hand_snapshot() -> dict[str, Any]:
     with _runtime_lock:
-        runtime = _runtime
+        runtime = _current_runtime()
     if runtime is None:
         return {"enabled": False}
     return runtime.snapshot()
@@ -649,7 +663,7 @@ def hand_snapshot() -> dict[str, Any]:
 
 def hand_asset_path(relative_path: str) -> Path:
     with _runtime_lock:
-        runtime = _runtime
+        runtime = _current_runtime()
     if runtime is None:
         raise FileNotFoundError("hand runtime is not configured")
     return runtime.asset_path(relative_path)
@@ -661,7 +675,7 @@ def hand_connect() -> dict[str, Any]:
     当前手型号没绑 18089 设备时返回 enabled=False（不算错误）。
     """
     with _runtime_lock:
-        runtime = _runtime
+        runtime = _current_runtime()
     if runtime is None:
         return {"ok": False, "enabled": False,
                 "error": "当前组合未绑定 18089 灵巧手"}
@@ -672,7 +686,7 @@ def hand_command(positions: list[float],
                  duration_ms: int = 500) -> dict[str, Any]:
     """向激活组合的灵巧手下发姿态（手臂运动中也可调用）。"""
     with _runtime_lock:
-        runtime = _runtime
+        runtime = _current_runtime()
     if runtime is None:
         return {"ok": False, "enabled": False,
                 "error": "当前组合未绑定 18089 灵巧手"}

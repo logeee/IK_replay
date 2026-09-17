@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import math
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar, copy_context
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -111,9 +113,53 @@ class ReachState:
         self.motion_backend = "legacy"
         self.exec_backend = "legacy"
         self.pink_runtime = None           # execution_pink.PinkRuntime
+        self.orientation_plan = None       # server-issued cabinet-orientation plan
+        self.cabinet_plan_lock = threading.Lock()
+        self.cabinet_plan_revision = 0  # stop/release invalidates in-flight planning
 
 
-state = ReachState()
+_default_state = ReachState()
+_request_state: ContextVar[ReachState | None] = ContextVar("reach_arm_state", default=None)
+
+
+def current_state() -> ReachState:
+    return _request_state.get() or _default_state
+
+
+@contextmanager
+def use_state(value: ReachState):
+    token = _request_state.set(value)
+    try:
+        yield value
+    finally:
+        _request_state.reset(token)
+
+
+class StateProxy:
+    """Legacy imports keep working; each request/thread owns one arm's state."""
+
+    def __getattr__(self, name):
+        return getattr(current_state(), name)
+
+    def __setattr__(self, name, value):
+        setattr(current_state(), name, value)
+
+    def __delattr__(self, name):
+        delattr(current_state(), name)
+
+
+class ReachThread(threading.Thread):
+    """Carry the selected arm into execution and diagnostic worker threads."""
+
+    def __init__(self, *args, **kwargs):
+        self._reach_context = copy_context()
+        super().__init__(*args, **kwargs)
+
+    def run(self):
+        self._reach_context.run(super().run)
+
+
+state = StateProxy()
 
 
 def configure(*, camera, wrist_camera=None, robot_model, robot_id: str, chain_id: str,

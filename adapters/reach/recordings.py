@@ -12,7 +12,11 @@ from __future__ import annotations
 import json
 import math
 import multiprocessing as mp
+import os
+import shutil
+import tempfile
 import threading
+from .state import ReachThread
 import time
 from datetime import datetime
 from pathlib import Path
@@ -157,7 +161,7 @@ def reach_waypoints(scope: str = ""):
 @router.post("/waypoints")
 def reach_record_waypoint(body: dict):
     """把真机当前关节角录制为命名路点，每个路点单独落盘为
-    data/waypoints/<名字>_<时间戳>.json。Body: {"name": str}
+    data/waypoints/<名字>_<时间戳>.json。Body: {"name": str, "capture_rgbd": bool}
 
     典型流程：接管手臂 → 卸力 → 人手摆到中间位 → 恢复保持 → 录制。
     """
@@ -171,10 +175,21 @@ def reach_record_waypoint(body: dict):
         name = arm_assets.prefixed_name(_own_arm(), name)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    capture_rgbd = body.get("capture_rgbd", False)
+    if not isinstance(capture_rgbd, bool):
+        return JSONResponse({"ok": False, "error": "capture_rgbd 必须为 boolean"}, status_code=400)
+    bundle = None
     try:
-        q = [float(v) for v in _read_joints()]
+        if capture_rgbd:
+            from .waypoint_rgbd import capture_bundle
+            bundle = capture_bundle()
+            q = [bundle["pose"]["named_joints"][n] for n in state.joint_names]
+        else:
+            q = [float(v) for v in _read_joints()]
+        if len(q) != len(state.joint_names) or not np.isfinite(q).all():
+            raise ValueError("关节数据无效")
     except Exception as exc:
-        return JSONResponse({"ok": False, "error": f"读不到真机关节: {exc}"}, status_code=503)
+        return JSONResponse({"ok": False, "error": f"{'RGBD 点位采集失败，未保存路点' if capture_rgbd else '读不到真机关节'}: {exc}"}, status_code=503)
     stamp = time.strftime("%Y%m%d_%H%M%S")
     item = {
         "name": name,
@@ -188,11 +203,42 @@ def reach_record_waypoint(body: dict):
     if combo:
         # 来源戳：认领可见性下，自己录的位点即刻可见（无需先认领）
         item["recorded_combo"] = combo
-    state.waypoints_dir.mkdir(parents=True, exist_ok=True)
     path = state.waypoints_dir / f"{name}_{stamp}.json"
-    path.write_text(json.dumps(item, ensure_ascii=False, indent=2))
+    committed_assets = False
+    try:
+        state.waypoints_dir.mkdir(parents=True, exist_ok=True)
+        if path.exists() or path.with_suffix("").exists():
+            raise FileExistsError("同一秒内已有同名路点，请稍后再录制或修改名字")
+        with tempfile.TemporaryDirectory(prefix=".record-", dir=state.waypoints_dir) as tmp:
+            staging = Path(tmp)
+            if bundle is not None:
+                from .waypoint_rgbd import write_bundle
+                item["rgbd"] = write_bundle(staging / "rgbd", bundle, path.name)
+                item["created_at"] = datetime.fromisoformat(bundle["pose"]["recorded_at"]).strftime("%Y-%m-%d %H:%M:%S")
+                item["tcp_pose_recorded"] = {k: bundle["pose"][k] for k in
+                                             ("base_link", "wrist_link", "T_base_from_tcp", "tcp")}
+                assets = staging / "assets"
+                assets.mkdir()
+                (staging / "rgbd").rename(assets / "rgbd")
+            (staging / "waypoint.json").write_text(json.dumps(item, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
+            if bundle is not None:
+                assets.rename(path.with_suffix(""))
+                committed_assets = True
+            # Commit without overwriting even if two browsers record together.
+            os.link(staging / "waypoint.json", path)
+    except Exception as exc:
+        if committed_assets:
+            shutil.rmtree(path.with_suffix(""))
+        return JSONResponse({"ok": False, "error": f"路点保存失败: {exc}"},
+                            status_code=409 if isinstance(exc, FileExistsError) else 500)
     item["file"] = path.name
     return {"ok": True, "waypoint": item}
+
+
+@router.post("/waypoints/record_rgbd")
+def reach_record_rgbd_waypoint(body: dict):
+    # Separate URL prevents an old server from silently ignoring capture_rgbd.
+    return reach_record_waypoint({**body, "capture_rgbd": True})
 
 
 @router.post("/waypoints/speeds")
@@ -425,12 +471,15 @@ def reach_run_sequence(body: dict):
 
     执行方式（v2）：第一次运行用「直线优先、撞了才 RRT-Connect」逐段规划出
     无碰撞轨迹，并把完整轨迹帧录进序列文件（trajectory 字段）；之后运行直接
-    回放录制轨迹——不算 RRT、不算 IK、不做碰撞检查，请求即执行。
+    回放录制轨迹——不算 RRT、不算 IK；默认仍做启动前的双臂碰撞检查。
+    已录制 trajectory.check_other_arm_collision=false 可显式跳过该检查。
+    此选项随重新规划生成的新 trajectory 清除，不影响其他执行入口。
     起点与录制起点漂移超过 0.5 rad → 拒绝执行（409），绝不隐式重规划：
     通用规划器不知道录制时人工绕开的障碍，覆盖已验证轨迹更是事故源。
     只有「文件里还没有轨迹」或显式 replan=true 才会规划并写入文件。
 
     Body: {"file": str, "joint_speed": float=0.35, "max_speed_rad_s": float=0.4,
+           "reverse": bool=false,   # 仅倒序回放已录 trajectory，不重新规划
            "replan": bool=false,    # replan=true 强制丢弃录制轨迹重规划
            "margin_m": float=0.01}  # 墙面退让：正=墙逼近(更保守)，负=墙后退
     首次规划（或 replan）不直接执行：把轨迹录进文件并回传 preview 帧给前端
@@ -474,15 +523,41 @@ def reach_run_sequence(body: dict):
         except Exception as exc:
             return JSONResponse({"ok": False, "error": f"读不到真机关节: {exc}"}, status_code=503)
 
-        # ---- 优先回放录制轨迹（免 RRT/IK/碰撞检查，零计算耗时） ----
+        # ---- 优先回放录制轨迹（免 RRT/IK） ----
         planned = False
         q_list: list[np.ndarray] | None = None
         rec = seq.get("trajectory")
+        reverse = bool(body.get("reverse"))
+        if reverse and bool(body.get("replan")):
+            return JSONResponse(
+                {"ok": False, "error": "倒序回放不能同时要求重新规划"},
+                status_code=400,
+            )
+        if reverse:
+            frames = [np.asarray(f, dtype=float) for f in (rec or {}).get("frames") or []]
+            if not frames or frames[-1].shape != q0.shape:
+                return JSONResponse(
+                    {"ok": False,
+                     "error": "该起手式没有可倒序回放的已录 trajectory"},
+                    status_code=409,
+                )
+            drift = float(np.max(np.abs(frames[-1] - q0)))
+            if drift > SEQ_REPLAY_DRIFT_RAD:
+                return JSONResponse(
+                    {"ok": False,
+                     "error": f"当前位置与起手式终点相差 {drift:.2f} rad"
+                              f"（>{SEQ_REPLAY_DRIFT_RAD}），已拒绝倒序回放。"
+                              "请先回到该起手式终点"},
+                    status_code=409,
+                )
+            q_list = [q0] + list(reversed(frames))
         if rec and not bool(body.get("replan")):
             frames = [np.asarray(f, dtype=float) for f in rec.get("frames") or []]
             if frames and frames[0].shape == q0.shape:
                 drift = float(np.max(np.abs(frames[0] - q0)))
-                if drift <= SEQ_REPLAY_DRIFT_RAD:
+                if reverse:
+                    pass
+                elif drift <= SEQ_REPLAY_DRIFT_RAD:
                     q_list = [q0] + frames   # 从当前实测平滑接入第一帧
                 else:
                     # 起点漂移绝不隐式重规划：通用规划器不知道录制时人工
@@ -559,7 +634,8 @@ def reach_run_sequence(body: dict):
                     "replayed": False, "frames": len(q_list),
                     "duration_s": round(duration, 2),
                     "preview_frames": frames_preview}
-        label = f"序列:{str(seq.get('name') or path.stem)}"[:32]
+        direction_label = "倒序:" if reverse else "序列:"
+        label = f"{direction_label}{str(seq.get('name') or path.stem)}"[:32]
         # 运动后端与 /execute 同一套规则：body.motion_backend 缺省用 18000 默认；
         # 选 pink 需运行时可用且已锚定，否则 409（不进执行线程）
         exec_backend, backend_error = _resolve_exec_backend(
@@ -582,6 +658,11 @@ def reach_run_sequence(body: dict):
                 {"ok": False, "error": f"无法取得连续控制起点: {exc}"},
                 status_code=409,
             )
+        # Only the saved trajectory may opt out. JSON false must be literal;
+        # request bodies and other motion entry points cannot disable this.
+        check_other_arm_collision = not (
+            isinstance(rec, dict) and rec.get("check_other_arm_collision") is False
+        )
         command_handoff = {
             "planned_start_rad": q_list[0].tolist(),
             "measured_start_rad": q0.tolist(),
@@ -593,7 +674,8 @@ def reach_run_sequence(body: dict):
             "snapshot_sequence": snapshot_meta["sequence"],
             "snapshot_age_ms": snapshot_meta["age_ms"],
             "last_sent_tau_ff_nm": snapshot_meta["tau_ff_nm"],
-            "source": "sequence_replay",
+            "source": "sequence_reverse_replay" if reverse else "sequence_replay",
+            "other_arm_collision_check": check_other_arm_collision,
         }
 
         state.exec_cancel.clear()
@@ -601,7 +683,7 @@ def reach_run_sequence(body: dict):
         state.exec_progress = 0.0
         state.exec_message = "执行中"
         state.exec_backend = exec_backend
-        state.exec_thread = threading.Thread(
+        state.exec_thread = ReachThread(
             target=_exec_loop,
             args=(q_list, duration),
             kwargs={
@@ -611,12 +693,14 @@ def reach_run_sequence(body: dict):
                 "label": label,
                 "command_start_q": command_start,
                 "command_handoff": command_handoff,
+                "check_other_arm_collision": check_other_arm_collision,
             },
             daemon=True,
         )
         state.exec_thread.start()
     return {"ok": True, "duration_s": round(duration, 2), "frames": len(q_list),
-            "planned": planned, "replayed": not planned, **_exec_status()}
+            "planned": planned, "replayed": not planned, "reverse": reverse,
+            "other_arm_collision_check": check_other_arm_collision, **_exec_status()}
 
 
 @router.delete("/sequences/{filename}")

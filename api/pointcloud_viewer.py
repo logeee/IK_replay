@@ -40,6 +40,13 @@ from core.capability_client import (
     fetch_snapshot,
 )
 from core.capability_registry import cabinet_frame_config, target_model_config
+from core.dispatch_defaults import (
+    DEFAULT_DISPATCH_DEFAULTS_PATH,
+    OFFSET_LIMIT_MM,
+    PRESET_NAME_MAX,
+    load_dispatch_defaults,
+    update_dispatch_defaults,
+)
 from core.target_models import (
     PANEL_ANCHOR,
     TARGET_MODEL_LABELS,
@@ -57,6 +64,7 @@ from .pointcloud_core import (
     fit_surface_plane,
     point_from_pixel,
 )
+from .switch_states import SCENE_CLASSES
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -64,8 +72,10 @@ WEB_DIR = ROOT / "web"
 SCENE_MISMATCH_TRAINING_DIR = (
     ROOT / "data" / "training_samples" / "scene_mismatch"
 )
-OFFSET_PRESETS_PATH = ROOT / "data" / "point_offset_presets.json"
-OFFSET_PRESET_LIMIT_MM = 500.0
+# 7005 and 17001 share the same canonical static-preset store.  The old
+# data/point_offset_presets.json was migrated into this file in schema v8.
+OFFSET_PRESETS_PATH = DEFAULT_DISPATCH_DEFAULTS_PATH
+OFFSET_PRESET_LIMIT_MM = OFFSET_LIMIT_MM
 
 app = FastAPI(title="pointcloud-viewer")
 app.mount("/web", StaticFiles(directory=WEB_DIR), name="pointcloud-web")
@@ -117,6 +127,14 @@ class Capture:
 
 
 _latest: Capture | None = None
+_latest_by_arm: dict[str, Capture] = {}
+
+
+def _reach_url(path: str, arm: str | None = None) -> str:
+    if arm not in (None, "left_arm", "right_arm"):
+        raise ValueError("arm 必须是 left_arm/right_arm")
+    prefix = f"/api/arms/{arm}/reach" if arm else "/api/reach"
+    return f"{_reach_base}{prefix}/{path}"
 
 
 def _target_model_version() -> str:
@@ -167,12 +185,19 @@ def capture_progress(operation_id: str):
         )
 
 
-def _fetch_rgbd_snapshot(timeout_s: float = 15.0) -> dict[str, Any]:
+def _fetch_rgbd_snapshot(timeout_s: float = 15.0, arm: str | None = None,
+                         *, include_robot_pose: bool = False) -> dict[str, Any]:
     response = _http.get(
-        f"{_reach_base}/api/reach/rgbd_snapshot",
+        _reach_url("rgbd_snapshot", arm) + ("?include_robot_pose=true" if include_robot_pose else ""),
         timeout=(3.0, timeout_s),
     )
     try:
+        if response.status_code >= 400:
+            try:
+                detail = response.json().get("error") or response.text
+            except ValueError:
+                detail = response.text
+            raise RuntimeError(detail)
         response.raise_for_status()
         with np.load(io.BytesIO(response.content), allow_pickle=False) as archive:
             jpeg = archive["jpeg"].astype(np.uint8, copy=True).tobytes()
@@ -274,11 +299,15 @@ def page():
 
 
 @app.get("/api/pointcloud/stream")
-def camera_stream():
+def camera_stream(arm: str | None = None):
     """Proxy reach_server's MJPEG stream for the integrated live preview."""
     try:
+        url = _reach_url("stream", arm)
+    except ValueError as exc:
+        return Response(str(exc), status_code=400, media_type="text/plain")
+    try:
         upstream = _http.get(
-            f"{_reach_base}/api/reach/stream",
+            url,
             stream=True,
             timeout=(3.0, None),
         )
@@ -307,9 +336,12 @@ def camera_stream():
 
 
 @app.get("/api/pointcloud/status")
-def status():
+def status(arm: str | None = None):
+    if arm not in (None, "left_arm", "right_arm"):
+        return JSONResponse({"ok": False, "error": "未知手臂"}, 400)
     with _capture_lock:
-        latest_id = None if _latest is None else _latest.capture_id
+        selected = _latest_by_arm.get(arm) if arm else _latest
+        latest_id = None if selected is None else selected.capture_id
     return {
         "ok": True,
         "model": _model_name,
@@ -346,8 +378,8 @@ def _normalize_offset_preset(raw: Any) -> dict[str, Any]:
     name = str(raw.get("name") or "").strip()
     if not name:
         raise ValueError("预设名称不能为空")
-    if len(name) > 60:
-        raise ValueError("预设名称不能超过 60 个字符")
+    if len(name) > PRESET_NAME_MAX:
+        raise ValueError(f"预设名称不能超过 {PRESET_NAME_MAX} 个字符")
     if any(ord(char) < 32 for char in name):
         raise ValueError("预设名称不能包含控制字符")
     offset = raw.get("offset_mm")
@@ -370,35 +402,34 @@ def _normalize_offset_preset(raw: Any) -> dict[str, Any]:
 
 
 def _load_offset_presets() -> list[dict[str, Any]]:
-    if not OFFSET_PRESETS_PATH.is_file():
-        return []
-    payload = json.loads(OFFSET_PRESETS_PATH.read_text(encoding="utf-8"))
-    raw_presets = payload.get("presets") if isinstance(payload, dict) else None
-    if not isinstance(raw_presets, list):
-        raise ValueError("偏移预设文件格式错误：缺少 presets 数组")
-    presets: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for raw in raw_presets:
-        preset = _normalize_offset_preset(raw)
-        if preset["name"] in seen:
-            continue
-        seen.add(preset["name"])
-        presets.append(preset)
-    return presets
+    payload = load_dispatch_defaults(OFFSET_PRESETS_PATH)
+    return [
+        {"name": preset["name"], "offset_mm": dict(preset["offset_mm"])}
+        for preset in payload.get("offset_presets") or []
+        if preset.get("mode") == "static"
+    ]
 
 
 def _save_offset_presets(presets: list[dict[str, Any]]) -> None:
-    OFFSET_PRESETS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temporary = OFFSET_PRESETS_PATH.with_suffix(".json.tmp")
-    temporary.write_text(
-        json.dumps(
-            {"schema_version": 1, "presets": presets},
-            ensure_ascii=False,
-            indent=2,
-        ) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(OFFSET_PRESETS_PATH)
+    normalized = [_normalize_offset_preset(preset) for preset in presets]
+
+    def mutate(cfg: dict[str, Any]) -> dict[str, Any]:
+        curves = [
+            preset for preset in cfg["offset_presets"]
+            if preset.get("mode") != "static"
+        ]
+        cfg["offset_presets"] = curves + [
+            {**preset, "mode": "static"} for preset in normalized
+        ]
+        names = {preset["name"] for preset in cfg["offset_presets"]}
+        by_kind = cfg["defaults"].get("offset_preset_by_kind") or {}
+        cfg["defaults"]["offset_preset_by_kind"] = {
+            kind: name if name in names else ""
+            for kind, name in by_kind.items()
+        }
+        return cfg
+
+    update_dispatch_defaults(mutate, OFFSET_PRESETS_PATH)
 
 
 @app.get("/api/pointcloud/offset-presets")
@@ -411,7 +442,11 @@ def offset_presets_list():
             {"ok": False, "error": f"读取偏移预设失败：{exc}"},
             status_code=500,
         )
-    return {"ok": True, "presets": presets}
+    return {
+        "ok": True,
+        "presets": presets,
+        "storage": "shared_dispatch_defaults",
+    }
 
 
 @app.post("/api/pointcloud/offset-presets")
@@ -419,16 +454,29 @@ def offset_presets_save(body: dict[str, Any]):
     try:
         preset = _normalize_offset_preset(body)
         with _offset_presets_lock:
-            presets = _load_offset_presets()
             replaced = False
-            for index, current in enumerate(presets):
-                if current["name"] == preset["name"]:
-                    presets[index] = preset
-                    replaced = True
-                    break
-            if not replaced:
-                presets.append(preset)
-            _save_offset_presets(presets)
+
+            def mutate(cfg: dict[str, Any]) -> dict[str, Any]:
+                nonlocal replaced
+                replacement = {**preset, "mode": "static"}
+                updated: list[dict[str, Any]] = []
+                for current in cfg["offset_presets"]:
+                    if current["name"] == preset["name"]:
+                        replaced = True
+                        updated.append(replacement)
+                    else:
+                        updated.append(current)
+                if not replaced:
+                    updated.append(replacement)
+                cfg["offset_presets"] = updated
+                return cfg
+
+            saved = update_dispatch_defaults(mutate, OFFSET_PRESETS_PATH)
+            presets = [
+                {"name": item["name"], "offset_mm": item["offset_mm"]}
+                for item in saved["offset_presets"]
+                if item.get("mode") == "static"
+            ]
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
     except (OSError, json.JSONDecodeError) as exc:
@@ -437,7 +485,7 @@ def offset_presets_save(body: dict[str, Any]):
             status_code=500,
         )
     return {"ok": True, "preset": preset, "presets": presets,
-            "replaced": replaced}
+            "replaced": replaced, "storage": "shared_dispatch_defaults"}
 
 
 @app.post("/api/pointcloud/offset-presets/delete")
@@ -449,28 +497,66 @@ def offset_presets_delete(body: dict[str, Any]):
         )
     try:
         with _offset_presets_lock:
-            presets = _load_offset_presets()
-            remaining = [item for item in presets if item["name"] != name]
-            if len(remaining) == len(presets):
+            found = False
+
+            def mutate(cfg: dict[str, Any]) -> dict[str, Any]:
+                nonlocal found
+                remaining = []
+                for item in cfg["offset_presets"]:
+                    if item["name"] == name and item.get("mode") == "static":
+                        found = True
+                    else:
+                        remaining.append(item)
+                if not found:
+                    return cfg
+                cfg["offset_presets"] = remaining
+                by_kind = cfg["defaults"].get("offset_preset_by_kind") or {}
+                cfg["defaults"]["offset_preset_by_kind"] = {
+                    kind: "" if selected == name else selected
+                    for kind, selected in by_kind.items()
+                }
+                return cfg
+
+            saved = update_dispatch_defaults(mutate, OFFSET_PRESETS_PATH)
+            if not found:
                 return JSONResponse(
                     {"ok": False, "error": f"偏移预设不存在：{name}"},
                     status_code=404,
                 )
-            _save_offset_presets(remaining)
+            remaining = [
+                {"name": item["name"], "offset_mm": item["offset_mm"]}
+                for item in saved["offset_presets"]
+                if item.get("mode") == "static"
+            ]
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return JSONResponse(
             {"ok": False, "error": f"删除偏移预设失败：{exc}"},
             status_code=500,
         )
-    return {"ok": True, "presets": remaining}
+    return {"ok": True, "presets": remaining,
+            "storage": "shared_dispatch_defaults"}
 
 
 @app.post("/api/pointcloud/capture")
 def capture(body: dict | None = None):
+    return _capture(body)
+
+
+@app.post("/api/pointcloud/recording-capture")
+def recording_capture(body: dict):
+    """Isolated default capture: no latest-frame replacement or target confirmation."""
+    if body.get("arm") not in ("left_arm", "right_arm"):
+        return JSONResponse({"ok": False, "error": "录制必须指定 left_arm/right_arm"}, status_code=400)
+    return _capture({"arm": body["arm"]}, recording=True)
+
+
+def _capture(body: dict | None = None, *, recording: bool = False):
     global _latest
     body = body or {}
     operation_id = body.get("operation_id")
+    arm = body.get("arm")
     try:
+        _reach_url("rgbd_snapshot", arm)
         if operation_id is not None:
             operation_id = str(operation_id)
             if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", operation_id):
@@ -489,7 +575,12 @@ def capture(body: dict | None = None):
     _set_capture_progress(operation_id, 1, "1/7 获取并对齐同帧 RGB-D…")
     stage_started = time.perf_counter()
     try:
-        snapshot = _fetch_rgbd_snapshot()
+        if recording:
+            snapshot = _fetch_rgbd_snapshot(arm=arm, include_robot_pose=True)
+            if snapshot["metadata"].get("robot_pose", {}).get("arm") != arm:
+                raise ValueError("18001 未返回对应手臂的采集位姿，请更新服务")
+        else:
+            snapshot = _fetch_rgbd_snapshot(arm=arm) if arm else _fetch_rgbd_snapshot()
     except Exception as exc:
         _set_capture_progress(
             operation_id, 1, f"1/7 RGB-D 获取失败：{exc}", done=True, error=True
@@ -611,6 +702,7 @@ def capture(body: dict | None = None):
     metadata = {
         "ok": True,
         "capture_id": capture_id,
+        "arm": arm,
         "data_url": f"/api/pointcloud/data/{capture_id}",
         "image_url": f"/api/pointcloud/image/{capture_id}",
         "point_count": cloud.count,
@@ -650,8 +742,19 @@ def capture(body: dict | None = None):
                        "pixels_u16x2", "class_ids_i16"],
         },
     }
+    if recording:
+        metadata["recording"] = {"defaults": True, "cabinet_frame_config": _cabinet_frame_config,
+                                 "target_model_config": _target_model_config}
+        payload = io.BytesIO()
+        np.savez_compressed(
+            payload, jpeg=np.frombuffer(snapshot["jpeg"], dtype=np.uint8),
+            depth_mm=snapshot["depth_mm"], cloud=np.frombuffer(binary, dtype=np.uint8),
+            capture_json=np.frombuffer(json.dumps(metadata, ensure_ascii=False, allow_nan=False).encode("utf-8"), dtype=np.uint8),
+        )
+        return Response(payload.getvalue(), media_type="application/x-npz",
+                        headers={"Cache-Control": "no-store", "X-RGBD-Capture-Id": capture_id})
     with _capture_lock:
-        _latest = Capture(
+        capture_value = Capture(
             capture_id=capture_id,
             binary=binary,
             jpeg=snapshot["jpeg"],
@@ -664,6 +767,10 @@ def capture(body: dict | None = None):
             cloud=cloud,
             boxes=boxes,
         )
+        if arm:
+            _latest_by_arm[arm] = capture_value
+        else:
+            _latest = capture_value
     _set_capture_progress(
         operation_id,
         5,
@@ -675,9 +782,8 @@ def capture(body: dict | None = None):
 
 @app.get("/api/pointcloud/image/{capture_id}")
 def capture_image(capture_id: str):
-    with _capture_lock:
-        capture_value = _latest
-    if capture_value is None or capture_value.capture_id != capture_id:
+    capture_value = _capture_by_id(capture_id)
+    if capture_value is None:
         return JSONResponse(
             {"ok": False, "error": "快照图像不存在或已被新快照替换"},
             status_code=404,
@@ -758,9 +864,8 @@ def save_scene_mismatch_training_sample(capture_id: str, body: dict | None = Non
 
 @app.get("/api/pointcloud/data/{capture_id}")
 def pointcloud_data(capture_id: str):
-    with _capture_lock:
-        capture_value = _latest
-    if capture_value is None or capture_value.capture_id != capture_id:
+    capture_value = _capture_by_id(capture_id)
+    if capture_value is None:
         return JSONResponse(
             {"ok": False, "error": "点云快照不存在或已被新快照替换"},
             status_code=404,
@@ -774,10 +879,10 @@ def pointcloud_data(capture_id: str):
 
 def _capture_by_id(capture_id: str) -> Capture | None:
     with _capture_lock:
-        capture_value = _latest
-    if capture_value is None or capture_value.capture_id != capture_id:
-        return None
-    return capture_value
+        for value in (_latest, *_latest_by_arm.values()):
+            if value is not None and value.capture_id == capture_id:
+                return value
+    return None
 
 
 # --------------- 选点记录：每次 confirm 存档，便于事后复查 ---------------
@@ -937,6 +1042,8 @@ def _save_pick_record(
             "target_point_slot": request_body.get("target_point_slot"),
             "matched_detection_name":
                 request_body.get("matched_detection_name"),
+            "knob_scene_source": request_body.get("knob_scene_source"),
+            "knob_scene_override": request_body.get("knob_scene_override"),
             "panel_center_camera_m": panel_center,
             "reference_camera_m": [float(v) for v in reference],
             "adjustment_camera_m": [float(v) for v in adjustment],
@@ -1147,8 +1254,16 @@ def _ensure_wall_plane(capture_value: Capture) -> dict[str, Any]:
 
 
 @app.post("/api/pointcloud/auto-target/{capture_id}")
-def auto_target(capture_id: str):
+def auto_target(capture_id: str, body: dict | None = None):
     """Use the frozen RGB-D frame to predict point 1 or point 3 in memory."""
+    scene_override = (body or {}).get("knob_scene_override")
+    if scene_override in (None, "", "auto"):
+        scene_override = None
+    elif scene_override not in SCENE_CLASSES:
+        return JSONResponse(
+            {"ok": False, "error": "旋钮类别只能选择自动识别、旋钮左或旋钮右"},
+            status_code=400,
+        )
     capture_value = _capture_by_id(capture_id)
     if capture_value is None:
         return JSONResponse(
@@ -1156,8 +1271,12 @@ def auto_target(capture_id: str):
             status_code=404,
         )
     with _auto_target_lock:
-        if capture_value.auto_target is not None:
+        if (capture_value.auto_target is not None
+                and capture_value.auto_target.get("knob_scene_override") == scene_override):
             return capture_value.auto_target
+        # Switching category must not reuse the other slot, or leave that old
+        # prediction available if the new request fails.
+        capture_value.auto_target = None
         started = time.perf_counter()
         timings: dict[str, float] = {}
         wall_plane = None
@@ -1181,8 +1300,13 @@ def auto_target(capture_id: str):
                 )
 
                 params = _target_model_config["params"]
-                # 先定左右（旋钮类），再拟合面板：没旋钮就不必白跑拟合
-                _, knob_box = select_knob_detection(capture_value.boxes)
+                # A manual category supplies only the slot decision. Geometry
+                # still comes from this frame's measured panel and wall axes.
+                if scene_override is None:
+                    _, knob_box = select_knob_detection(capture_value.boxes)
+                    knob_name = str(knob_box.get("name", ""))
+                else:
+                    knob_name = scene_override
                 panel_fit = fit_panel_reference(
                     capture_value.cloud,
                     capture_value.boxes,
@@ -1195,12 +1319,16 @@ def auto_target(capture_id: str):
                 )
                 predict_started = time.perf_counter()
                 prediction = predict_target_panel_anchor(
-                    panel_fit, str(knob_box.get("name", "")), wall_plane, params
+                    panel_fit, knob_name, wall_plane, params
                 )
             else:
                 from .cabinet_panel_fit import analyze_yolo_mask_panel
                 from .cabinet_target_finder import predict_target
 
+                if scene_override is not None and not any(
+                    box.get("name") in SCENE_CLASSES for box in capture_value.boxes
+                ):
+                    raise ValueError("当前旋钮中心模型仍需旋钮轮廓；遮挡调试请在 18000 选择面板锚点模型")
                 panel_fit = analyze_yolo_mask_panel(
                     capture_value.cloud,
                     capture_value.boxes,
@@ -1231,7 +1359,12 @@ def auto_target(capture_id: str):
                         )
                     )
                 predict_started = time.perf_counter()
-                prediction = predict_target(panel_fit, wall_plane)
+                if scene_override is None:
+                    prediction = predict_target(panel_fit, wall_plane)
+                else:
+                    prediction = predict_target(
+                        panel_fit, wall_plane, knob_scene_override=scene_override,
+                    )
             timings["predict"] = round(
                 (time.perf_counter() - predict_started) * 1000.0, 1
             )
@@ -1252,6 +1385,8 @@ def auto_target(capture_id: str):
                 "wall_coordinate": wall_plane,
                 "panel_fit": panel_fit,
                 "target_model": _target_model_config["method"],
+                "knob_scene_source": "manual" if scene_override is not None else "yolo",
+                "knob_scene_override": scene_override,
                 "timings_ms": timings,
             }
             _save_panel_debug_image(
@@ -1298,7 +1433,7 @@ def auto_target(capture_id: str):
                 status_code=500,
             )
         with _capture_lock:
-            if _latest is capture_value:
+            if _latest is capture_value or any(v is capture_value for v in _latest_by_arm.values()):
                 capture_value.wall_plane = wall_plane
                 capture_value.panel_fit = panel_fit
                 capture_value.auto_target = result
@@ -1347,6 +1482,9 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
             {"ok": False, "error": "快照不存在或已被新快照替换"},
             status_code=404,
         )
+    arm = capture_value.metadata.get("arm")
+    if body.get("arm") != arm:
+        return JSONResponse({"ok": False, "error": "快照所属手臂与确认窗口不一致，请重新取点"}, 409)
     try:
         p_camera = np.asarray(body["p_camera"], dtype=float).reshape(3)
         reference = np.asarray(
@@ -1416,6 +1554,17 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
         selection_source = str(body.get("selection_source") or "manual")
         model_version = body.get("model_version")
         matched_detection_name = body.get("matched_detection_name")
+        knob_scene_source = body.get("knob_scene_source")
+        knob_scene_override = body.get("knob_scene_override")
+        if knob_scene_source not in (None, "manual", "yolo"):
+            raise ValueError("knob_scene_source 仅支持 manual 或 yolo")
+        if knob_scene_override is not None:
+            if knob_scene_override not in SCENE_CLASSES or knob_scene_source != "manual":
+                raise ValueError("手动旋钮类别或来源无效")
+        if knob_scene_source == "manual" and (
+            knob_scene_override not in SCENE_CLASSES or knob_scene_override != matched_detection_name
+        ):
+            raise ValueError("手动旋钮类别与找点结果不一致")
         target_point_slot = body.get("target_point_slot")
         if len(selection_source) > 80:
             raise ValueError("selection_source 过长")
@@ -1471,6 +1620,8 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
                 "model_version": model_version,
                 "target_point_slot": target_point_slot,
                 "matched_detection_name": matched_detection_name,
+                "knob_scene_source": knob_scene_source,
+                "knob_scene_override": knob_scene_override,
                 "adjustment_wall_mm": adjustment_wall_mm,
                 **extra_wall_offsets,
                 "flow_round": flow_round,
@@ -1483,7 +1634,7 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
         )
     try:
         upstream = _http.post(
-            f"{_reach_base}/api/reach/confirm_pointcloud_pick",
+            _reach_url("confirm_pointcloud_pick", arm),
             json=request_body,
             timeout=(3.0, 15.0),
         )
@@ -1498,6 +1649,7 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
             status_code=502,
         )
     result["capture_id"] = capture_id
+    result["arm"] = arm
     result["capture_age_s"] = round(
         time.monotonic() - capture_value.created_monotonic, 3
     )
@@ -1511,7 +1663,7 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
         # 才能把拨动前后证据追加到同一条 pick_history 记录。
         try:
             attached = _http.post(
-                f"{_reach_base}/api/reach/attach_pick_record",
+                _reach_url("attach_pick_record", arm),
                 json={"capture_id": capture_id, "record": record},
                 timeout=(2.0, 5.0),
             ).json()
@@ -1520,7 +1672,7 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
         except (requests.RequestException, ValueError):
             pass
     with _capture_lock:
-        if _latest is capture_value:
+        if _latest is capture_value or any(v is capture_value for v in _latest_by_arm.values()):
             capture_value.metadata["confirmed_selection"] = {
                 "base_camera": reference.tolist(),
                 "p_camera": p_camera.tolist(),

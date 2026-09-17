@@ -108,6 +108,18 @@ def _wall_plane() -> dict:
 
 
 class PredictTest(unittest.TestCase):
+    def test_manual_category_preserves_measured_knob_geometry(self):
+        from api.cabinet_target_finder import predict_target
+        panel = self.reference()
+        panel["detection"] = {"name": SCENE_LEFT, "conf": .9}
+        automatic = predict_target(panel, _wall_plane())
+        manual = predict_target(panel, _wall_plane(), knob_scene_override=SCENE_RIGHT)
+        self.assertEqual(automatic["target_point_slot"], 3)
+        self.assertEqual(manual["target_point_slot"], 1)
+        self.assertEqual(manual["panel_detection"]["name"], SCENE_LEFT)
+        self.assertEqual(manual["matched_detection_name"], SCENE_RIGHT)
+        self.assertEqual(manual["reference_center_camera_m"], automatic["reference_center_camera_m"])
+
     def params(self) -> dict:
         # 预测函数只认传入的 params 字典；这里直接构造，不经过（会改回常量的）校验
         return {**tm.default_target_model_params(tm.PANEL_ANCHOR),

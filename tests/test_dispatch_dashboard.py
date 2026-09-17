@@ -91,12 +91,13 @@ class DispatchDashboardTests(unittest.TestCase):
             ],
         }
         with (
-            patch.object(dispatch, "_current_defaults", return_value=config),
             patch.object(
                 dispatch,
-                "save_dispatch_defaults",
-                side_effect=lambda payload: payload,
-            ) as save,
+                "update_dispatch_defaults",
+                side_effect=lambda mutator: mutator(
+                    json.loads(json.dumps(config))
+                ),
+            ),
         ):
             response = dispatch.config_defaults_set({
                 "site": "factory",
@@ -104,7 +105,7 @@ class DispatchDashboardTests(unittest.TestCase):
             })
 
         self.assertTrue(response["ok"])
-        saved = save.call_args.args[0]["defaults"]["offset_preset_by_kind"]
+        saved = response["defaults"]["offset_preset_by_kind"]
         self.assertEqual(saved["remote_to_close"], "新左拨")
         self.assertEqual(saved["close_to_remote"], "保留右拨")
 

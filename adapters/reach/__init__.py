@@ -28,9 +28,9 @@ from .state import ReachState, configure, router, state
 # 导入各模块以注册路由（execution 先于依赖它的模块被隐式加载，顺序无碍：
 # 各路由路径互不冲突）
 from . import (execution, hand, locomotion, perception, planning, tcp,  # noqa: E402,F401
-               pointcloud_source, recordings, service)
+               pointcloud_source, recordings, service, orientation, cabinet_waypoints)
 # pink 后端路由（/pink/status|anchor|hold|resume）；模块顶层不 import pinocchio，
-# legacy 后端下只是几个返回 409 的接口
+# 运行时可用时，原方案默认下也能为单次 PINK 执行锚定世界系
 from . import execution_pink  # noqa: E402,F401
 from .planning import _axis_last_worker  # noqa: F401  tools/test_axis_last_rrt.py 在用
 

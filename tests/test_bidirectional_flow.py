@@ -82,6 +82,111 @@ class FlipIntentTests(unittest.TestCase):
             "push_force_n": 25.0,
         }
 
+    @staticmethod
+    def _xiaoshan_config():
+        return {
+            "display_name": "萧山展会版本",
+            "fist_pose": "L-握拳起收",
+            "prepare_pose": "L-预备抓取",
+            "grasp_pose": "L-完全捏住",
+            "distance_min_m": 0.35,
+            "distance_max_m": 0.50,
+            "distance_step_m": 0.01,
+            "sequence_name_by_direction": {
+                "ltr": "L-{distance:.2f}-左到右起手式",
+                "rtl": "L-{distance:.2f}-右到左起手式",
+            },
+            "main_motion_backend": "legacy_timed",
+            "sequence_motion_backend": "legacy",
+            "hand_duration_ms": 500,
+            "endpoint_speed_rad_s": 0.3,
+            "sidestep_cm": 10.0,
+            "push_force_n": 10.0,
+        }
+
+    def test_xiaoshan_rounds_distance_and_selects_directional_sequence(self):
+        client = mock.Mock()
+        client.sequences.return_value = {
+            "sequences": [
+                {
+                    "name": "L-0.42-左到右起手式",
+                    "arm": "left_arm",
+                    "file": "ltr.json",
+                    "waypoints": ["L-start_20260917_000000.json",
+                                  "L-ltr-end_20260917_000001.json"],
+                },
+                {
+                    "name": "L-0.43-右到左起手式",
+                    "arm": "left_arm",
+                    "file": "rtl.json",
+                    "waypoints": ["L-start_20260917_000000.json",
+                                  "L-rtl-end_20260917_000001.json"],
+                },
+            ]
+        }
+        ltr = SwitchFlow(
+            client=client, arm="left_arm", site="factory",
+            flip_kind="close_to_remote", workflow_mode="xiaoshan_expo_v1",
+            xiaoshan_config=self._xiaoshan_config(),
+        )
+        rtl = SwitchFlow(
+            client=client, arm="left_arm", site="factory",
+            flip_kind="remote_to_close", workflow_mode="xiaoshan_expo_v1",
+            xiaoshan_config=self._xiaoshan_config(),
+        )
+
+        ltr_pose = ltr._choose_xiaoshan_sequence(0.424)
+        rtl_pose = rtl._choose_xiaoshan_sequence(0.425)
+
+        self.assertEqual(ltr_pose["name"], "L-0.42-左到右起手式")
+        self.assertEqual(ltr_pose["endpoint_name"], "L-ltr-end")
+        self.assertEqual(rtl_pose["name"], "L-0.43-右到左起手式")
+        self.assertEqual(rtl_pose["endpoint_name"], "L-rtl-end")
+        self.assertEqual(ltr.sidestep_cm, -10.0)
+        self.assertEqual(rtl.sidestep_cm, 10.0)
+        self.assertEqual(ltr.push_force_n, 10.0)
+        self.assertEqual(rtl.push_force_n, 10.0)
+        client.sequences.assert_called_with(scope="all")
+
+        with self.assertRaisesRegex(FlowError, "0.35~0.50"):
+            ltr._choose_xiaoshan_sequence(0.51)
+
+    def test_xiaoshan_success_returns_endpoint_then_reverses_opening(self):
+        client = mock.Mock()
+        client.disarm.return_value = {"ok": True}
+        flow = SwitchFlow(
+            client=client, arm="left_arm", site="factory",
+            flip_kind="close_to_remote", workflow_mode="xiaoshan_expo_v1",
+            xiaoshan_config=self._xiaoshan_config(), max_flip_rounds=2,
+        )
+        pose = {
+            "name": "L-0.42-左到右起手式",
+            "file": "ltr.json",
+            "min_distance_m": 0.42,
+            "start_waypoint": "L-start",
+            "endpoint_name": "L-end",
+        }
+        events = []
+        flow._choose_xiaoshan_sequence = mock.Mock(return_value=pose)
+        flow._set_hand_pose = mock.Mock()
+        flow._run_xiaoshan_sequence = mock.Mock(
+            side_effect=lambda _pose, **kwargs: events.append(
+                "reverse" if kwargs.get("reverse") else "forward"
+            )
+        )
+        flow.detect_points = mock.Mock(return_value=[{"p_root": [0.1, 0.2, 0.3]}])
+        flow.flip_switch = mock.Mock()
+        flow.verify_flip = mock.Mock(return_value=True)
+        flow._xiaoshan_return_to_endpoint = mock.Mock(
+            side_effect=lambda *_args: events.append("endpoint")
+        )
+
+        result = flow._run_xiaoshan_expo(0.0, 0.421)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(events, ["forward", "endpoint", "reverse"])
+        client.disarm.assert_called_once_with()
+
     def test_dexterous_main_uses_50hz_then_grasps_before_flick(self):
         client = mock.Mock()
         client.joints.return_value = {"ok": True, "named_joints": {"j": 0.0}}
