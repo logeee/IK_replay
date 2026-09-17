@@ -32,10 +32,10 @@ OFFSET_LIMIT_MM = 100.0    # 单轴上限，与 /task/flip 的校验一致
 PRESET_NAME_MAX = 40
 LIFT_LIMIT_MM = 50.0       # 拨点上抬各项上限（首轮/每轮递增/封顶）
 PUSH_FORCE_LIMIT_N = 40.0  # 与 reach /execute 的推力钳位一致
-OFFSET_KEYFRAME_MIN_DISTANCE_M = 0.35
+OFFSET_KEYFRAME_MIN_DISTANCE_M = 0.30
 OFFSET_KEYFRAME_MAX_DISTANCE_M = 0.60
 OFFSET_KEYFRAME_STEP_M = 0.01
-OFFSET_KEYFRAME_MAX_COUNT = 26
+OFFSET_KEYFRAME_MAX_COUNT = 31
 
 # 拨点上抬（抵消重力下垂）出厂值：首轮 10 mm，每重试一轮 +10 mm，封顶 30 mm
 DEFAULT_LIFT_MM: dict[str, float] = {"base": 10.0, "step": 10.0, "max": 30.0}
@@ -75,8 +75,8 @@ DEFAULT_XIAOSHAN_EXPO_V1: dict[str, Any] = {
     "fist_pose": "L-握拳起收",
     "prepare_pose": "L-预备抓取",
     "grasp_pose": "L-完全捏住",
-    "distance_min_m": 0.35,
-    "distance_max_m": 0.50,
+    "distance_min_m": 0.34,
+    "distance_max_m": 0.54,
     "distance_step_m": 0.01,
     "sequence_name_by_direction": {
         "ltr": "L-{distance:.2f}-左到右起手式",
@@ -86,6 +86,7 @@ DEFAULT_XIAOSHAN_EXPO_V1: dict[str, Any] = {
     "sequence_motion_backend": "legacy",
     "opening_joint_speed_rad_s": 0.35,
     "reverse_joint_speed_rad_s": 0.35,
+    "stable_window_s": 1.5,
     "stable_waist_range_deg": 0.03,
     "stable_imu_range_deg": 0.03,
     "target_duration_s": 6.0,
@@ -458,6 +459,7 @@ def validate_dispatch_defaults(payload: Any) -> dict[str, Any]:
         "distance_step_m": (0.01, 0.01),
         "opening_joint_speed_rad_s": (0.05, 2.0),
         "reverse_joint_speed_rad_s": (0.05, 2.0),
+        "stable_window_s": (0.25, 10.0),
         "stable_waist_range_deg": (0.01, 5.0),
         "stable_imu_range_deg": (0.01, 5.0),
         "target_duration_s": (1.0, 30.0),

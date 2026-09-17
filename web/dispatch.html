@@ -681,8 +681,9 @@
       萧山展会版本 · 拨动推力（N）
       <input id="xiaoshanPushForce" type="number" min="0" max="40" step="1" value="10" />
     </label>
-    <div class="modal-field" title="取点前连续观察1.5秒；腰关节和IMU各轴在窗口内的最大摆幅都低于对应值才算稳定，等待最多20秒">
-      萧山展会版本 · 取点前判稳允许摆幅(°)
+    <div class="modal-field" title="取点前按设定时间连续观察；腰关节和IMU各轴在窗口内的最大摆幅都低于对应值才算稳定，等待最多20秒">
+      萧山展会版本 · 取点前判稳
+      <label>连续时间(s) <input id="xiaoshanStableWindow" type="number" min="0.25" max="10" step="0.25" value="1.5" /></label>
       <label>腰关节 <input id="xiaoshanStableWaistRange" type="number" min="0.01" max="5" step="0.01" value="0.03" /></label>
       <label>IMU <input id="xiaoshanStableImuRange" type="number" min="0.01" max="5" step="0.01" value="0.03" /></label>
     </div>
@@ -1316,6 +1317,11 @@ function readStableRange(id) {
   return Math.min(5, Math.max(0.01, Math.round(value * 1000) / 1000));
 }
 
+function readStableWindow(id) {
+  const value = Number($(id).value) || 0.25;
+  return Math.min(10, Math.max(0.25, Math.round(value * 100) / 100));
+}
+
 function readTargetDuration(id) {
   const value = Number($(id).value) || 1;
   return Math.min(30, Math.max(1, Math.round(value * 10) / 10));
@@ -1341,13 +1347,14 @@ let currentDefaults = {
   },
   xiaoshan_expo_v1: {
     display_name: "萧山展会版本",
-    distance_min_m: 0.35,
-    distance_max_m: 0.50,
+    distance_min_m: 0.34,
+    distance_max_m: 0.54,
     sidestep_cm: 10,
     push_force_n: 10,
     opening_joint_speed_rad_s: 0.35,
     endpoint_speed_rad_s: 0.30,
     reverse_joint_speed_rad_s: 0.35,
+    stable_window_s: 1.5,
     stable_waist_range_deg: 0.03,
     stable_imu_range_deg: 0.03,
     main_motion_backend: "legacy_timed",
@@ -1365,7 +1372,7 @@ let currentDefaults = {
     remote_to_close: 15,
   },
 };
-let offsetKeyframeDistance = { min: 0.35, max: 0.60, step: 0.01 };
+let offsetKeyframeDistance = { min: 0.30, max: 0.60, step: 0.01 };
 let manualCurvePresetName = "";
 let presetEditorMode = "static";
 let editingPresetOriginalName = "";
@@ -1491,7 +1498,7 @@ function renderConfigSummary() {
   const waypointSpeeds = currentDefaults.dexterous_ltr_v1?.waypoint_speed_rad_s
     || { start: 0.3, approach: 0.3, retry: 0.3, return: 0.5 };
   const xiaoshan = currentDefaults.xiaoshan_expo_v1
-    || { distance_min_m: 0.35, distance_max_m: 0.50, sidestep_cm: 10, push_force_n: 10 };
+    || { distance_min_m: 0.34, distance_max_m: 0.54, sidestep_cm: 10, push_force_n: 10 };
   $("configSummary").textContent =
     `默认现场：${SITE_LABELS[currentDefaults.site] || currentDefaults.site}`
     + ` ｜ 流程：${workflowLabel(currentDefaults.workflow_mode)}`
@@ -1506,7 +1513,8 @@ function renderConfigSummary() {
     + `、双向${xiaoshan.sidestep_cm} cm、${xiaoshan.push_force_n} N`
     + `、起手/回终点/倒序 ${xiaoshan.opening_joint_speed_rad_s}`
     + `/${xiaoshan.endpoint_speed_rad_s}/${xiaoshan.reverse_joint_speed_rad_s} rad/s`
-    + `、判稳 腰/IMU≤${xiaoshan.stable_waist_range_deg}`
+    + `、判稳 ${xiaoshan.stable_window_s ?? 1.5}s `
+    + `腰/IMU≤${xiaoshan.stable_waist_range_deg}`
     + `/${xiaoshan.stable_imu_range_deg}°`
     + `、到目标 ${xiaoshan.main_motion_backend === "pink" ? "PINK" : "50Hz"}`
     + ` ${xiaoshan.target_duration_s}s/${xiaoshan.target_max_speed_rad_s} rad/s`
@@ -1555,7 +1563,7 @@ async function loadDefaultsConfig() {
     if (!data.ok) throw new Error(data.error || `HTTP ${response.status}`);
     offsetPresets = data.offset_presets || [];
     offsetKeyframeDistance = data.offset_keyframe_distance
-      || { min: 0.35, max: 0.60, step: 0.01 };
+      || { min: 0.30, max: 0.60, step: 0.01 };
     const wasFirstLoad = !defaultsLoadedOnce;
     const savedDefaults = data.defaults || {};
     const legacyPushForce = Number(savedDefaults.push_force_n ?? 15);
@@ -1572,13 +1580,14 @@ async function loadDefaultsConfig() {
       },
       xiaoshan_expo_v1: savedDefaults.xiaoshan_expo_v1 || {
         display_name: "萧山展会版本",
-        distance_min_m: 0.35,
-        distance_max_m: 0.50,
+        distance_min_m: 0.34,
+        distance_max_m: 0.54,
         sidestep_cm: 10,
         push_force_n: 10,
         opening_joint_speed_rad_s: 0.35,
         endpoint_speed_rad_s: 0.30,
         reverse_joint_speed_rad_s: 0.35,
+        stable_window_s: 1.5,
         stable_waist_range_deg: 0.03,
         stable_imu_range_deg: 0.03,
         main_motion_backend: "legacy_timed",
@@ -1714,6 +1723,8 @@ $("editDefaults").addEventListener("click", () => {
   $("xiaoshanReverseSpeed").value =
     Number(xiaoshan.reverse_joint_speed_rad_s ?? 0.35);
   $("xiaoshanPushForce").value = Number(xiaoshan.push_force_n ?? 10);
+  $("xiaoshanStableWindow").value =
+    Number(xiaoshan.stable_window_s ?? 1.5);
   $("xiaoshanStableWaistRange").value =
     Number(xiaoshan.stable_waist_range_deg ?? 0.03);
   $("xiaoshanStableImuRange").value =
@@ -1750,6 +1761,7 @@ $("saveDefaults").addEventListener("click", async () => {
       endpoint_speed_rad_s: readXiaoshanSpeed("xiaoshanEndpointSpeed"),
       reverse_joint_speed_rad_s: readXiaoshanSpeed("xiaoshanReverseSpeed"),
       push_force_n: readPushForce("xiaoshanPushForce"),
+      stable_window_s: readStableWindow("xiaoshanStableWindow"),
       stable_waist_range_deg: readStableRange("xiaoshanStableWaistRange"),
       stable_imu_range_deg: readStableRange("xiaoshanStableImuRange"),
       main_motion_backend: $("xiaoshanMainMotionBackend").value,

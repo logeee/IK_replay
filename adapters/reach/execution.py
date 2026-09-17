@@ -257,6 +257,12 @@ def _pink_scope_error(label: str | None) -> str | None:
     rt = state.pink_runtime
     if rt is None or rt.pick_world_T_root is None or rt.pick_world_frame_anchor != rt.world_frame.anchor_count:
         return "验证期保护：pink 需要「锚定之后」在 7005 取的点（当前取点早于锚定或已失效），请重新取点或用原方案执行"
+    capture_id = str(ctx.get("capture_id") or "")
+    if capture_id and not rt.pick_frame_matches(capture_id):
+        return (
+            "验证期保护：PINK 世界姿态与当前 7005 capture_id 不匹配，"
+            "请重新判稳、锚定并拍摄 RGB-D"
+        )
     return None
 
 

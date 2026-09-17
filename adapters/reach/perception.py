@@ -268,6 +268,36 @@ def confirm_pointcloud_pick(body: dict):
         return (T[:3, :3] @ point + T[:3, 3]).tolist()
 
     p_root_surface = to_frame(state.T_cam2root, p_cam)
+    pink_world_binding = None
+    if state.pink_runtime is not None:
+        runtime = state.pink_runtime
+        capture_id = str(body.get("capture_id") or "")
+        source_frame_id = str(body.get("source_frame_id") or "")
+        require_capture_frame = bool(
+            body.get("require_capture_world_frame", False)
+        )
+        if capture_id and runtime.pick_frame_matches(capture_id):
+            # 世界姿态已由 /rgbd_snapshot 在冻结该帧时采集。这里只核对
+            # capture_id 并复用，绝不用算法完成/人工确认时的姿态覆盖。
+            pink_world_binding = "rgbd_capture"
+        elif require_capture_frame:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": (
+                        "PINK 拍摄时世界姿态与当前 capture_id 不匹配，"
+                        "请重新判稳、锚定并拍摄 RGB-D"
+                    ),
+                },
+                status_code=409,
+            )
+        else:
+            # 兼容旧网页/非 PINK 调用；新的萧山 PINK 流程不会走此分支。
+            runtime.capture_pick_frame(
+                capture_id=capture_id or None,
+                source_frame_id=source_frame_id or None,
+            )
+            pink_world_binding = "confirmation_fallback"
     if state.collision_checker is not None:
         state.collision_checker.set_environment_exclusions(
             [(p_root_surface, state.target_exclusion_m)]
@@ -278,9 +308,6 @@ def confirm_pointcloud_pick(body: dict):
     state.pick_pixel = pixel
     state.pick_torso = _read_torso()
     state.torso_diag = None
-    if state.pink_runtime is not None:
-        # pink 后端：目标从这一刻起冻结在世界系里（world_T_root 由 IMU+腿运动学估计）
-        state.pink_runtime.capture_pick_frame()
     state.pick_context = {
         "selection_mode": "frozen_rgbd_pointcloud",
         "selection_source": body.get("selection_source", "manual"),
@@ -289,6 +316,7 @@ def confirm_pointcloud_pick(body: dict):
         "matched_detection_name": body.get("matched_detection_name"),
         "source_frame_id": body.get("source_frame_id"),
         "capture_id": body.get("capture_id"),
+        "pink_world_binding": pink_world_binding,
         "pixel": pixel,
         "p_camera_surface": p_cam.tolist(),
         "adjustment_camera_m": adjustment.tolist(),
@@ -320,6 +348,7 @@ def confirm_pointcloud_pick(body: dict):
         "p_root": state.pick_target_root,
         "p_root_surface": p_root_surface,
         "plane": plane,
+        "pink_world_binding": pink_world_binding,
     }
 
 

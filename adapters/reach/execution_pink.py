@@ -102,6 +102,8 @@ class PinkRuntime:
         self.last_summary: dict[str, Any] | None = None
         self.pick_world_T_root: np.ndarray | None = None
         self.pick_world_frame_anchor: int | None = None
+        self.pick_world_frame_capture_id: str | None = None
+        self.pick_world_frame_source_id: str | None = None
         self.anchor_world_T_pelvis: np.ndarray | None = None
         self.last_error: str | None = None
 
@@ -132,6 +134,8 @@ class PinkRuntime:
             # The shared anchor count invalidates picks in both arm runtimes.
             self.pick_world_T_root = None
             self.pick_world_frame_anchor = None
+            self.pick_world_frame_capture_id = None
+            self.pick_world_frame_source_id = None
             self.anchor_world_T_pelvis = _pelvis_pose_matrix(fb)
             self.world_frame.reach_anchor_world_T_pelvis = self.anchor_world_T_pelvis
             return fb.to_dict()
@@ -162,11 +166,22 @@ class PinkRuntime:
             sample = self.sampler.sample()
             return sample, self.world_frame.update(sample)
 
-    def capture_pick_frame(self) -> np.ndarray | None:
-        """取点时刻调用：记录 world_T_root，之后的规划结果都相对它提升到世界系。"""
+    def capture_pick_frame(
+        self,
+        capture_id: str | None = None,
+        source_frame_id: str | None = None,
+    ) -> np.ndarray | None:
+        """RGB-D 冻结时记录 ``world_T_root``。
+
+        ``capture_id`` 把世界姿态与 7005 的冻结帧绑定；后续目标确认
+        和 PINK 执行必须使用同一编号，不能拿确认时刻的姿态覆盖它。
+        不传编号保留给调试页和旧调用方式。
+        """
         if not self.world_frame.anchored:
             self.pick_world_T_root = None
             self.pick_world_frame_anchor = None
+            self.pick_world_frame_capture_id = None
+            self.pick_world_frame_source_id = None
             return None
         try:
             _, fb = self.update_world()
@@ -175,7 +190,22 @@ class PinkRuntime:
             return None
         self.pick_world_T_root = fb.world_T_root.copy()
         self.pick_world_frame_anchor = self.world_frame.anchor_count
+        self.pick_world_frame_capture_id = (
+            None if capture_id is None else str(capture_id)
+        )
+        self.pick_world_frame_source_id = (
+            None if source_frame_id is None else str(source_frame_id)
+        )
         return self.pick_world_T_root
+
+    def pick_frame_matches(self, capture_id: str) -> bool:
+        """当前取点世界姿态是否与指定 7005 冻结帧严格匹配。"""
+        return bool(
+            capture_id
+            and self.pick_world_T_root is not None
+            and self.pick_world_frame_anchor == self.world_frame.anchor_count
+            and self.pick_world_frame_capture_id == str(capture_id)
+        )
 
     def status(self, refresh_world: bool = False) -> dict[str, Any]:
         """``refresh_world=True``：空闲时也用最新 lowstate 刷一帧浮动基座，供页面实时观察
@@ -196,6 +226,8 @@ class PinkRuntime:
             "lowstate_age_ms": self.sampler.age_ms(),
             "pick_world_frame": None if self.pick_world_T_root is None else {
                 "anchor_count": self.pick_world_frame_anchor,
+                "capture_id": self.pick_world_frame_capture_id,
+                "source_frame_id": self.pick_world_frame_source_id,
                 "world_T_root": self.pick_world_T_root.tolist(),
             },
             "session": None if session is None else {

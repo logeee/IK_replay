@@ -282,9 +282,13 @@ class SwitchFlow:
         self.carousel_direction_configs = dict(
             carousel_direction_configs or {}
         )
+        self.stable_window_s = self.WAIST_STABLE_WINDOW_S
         self.stable_waist_range_deg = self.WAIST_STABLE_MAX_RANGE_DEG
         self.stable_imu_range_deg = self.IMU_STABLE_MAX_RANGE_DEG
         if self.workflow_mode == "xiaoshan_expo_v1":
+            self.stable_window_s = float(
+                self.xiaoshan_config.get("stable_window_s", 1.5)
+            )
             self.stable_waist_range_deg = float(
                 self.xiaoshan_config.get("stable_waist_range_deg", 0.03)
             )
@@ -856,8 +860,8 @@ class SwitchFlow:
     def _choose_xiaoshan_sequence(self, distance_m: float) -> dict[str, Any]:
         """按实测距离四舍五入到厘米档，选择当前方向的展会起手式。"""
         cfg = self.xiaoshan_config
-        minimum = float(cfg.get("distance_min_m", 0.35))
-        maximum = float(cfg.get("distance_max_m", 0.50))
+        minimum = float(cfg.get("distance_min_m", 0.34))
+        maximum = float(cfg.get("distance_max_m", 0.54))
         step = float(cfg.get("distance_step_m", 0.01))
         if distance_m < minimum - 1e-9 or distance_m > maximum + 1e-9:
             raise FlowError(
@@ -1553,10 +1557,9 @@ class SwitchFlow:
         手臂前伸会被整机配平带着把躯干转过去，实测漂移 +3.5~+9.9°（越往前伸
         越大，摆过「0.5以上」时最大），方向固定往正。先按配置的验收范围判断，
         超出时才向目标角纠偏。
-        判据用 3 帧中位数（防单帧污染），纠偏由服务器闭环做，抬手状态下服务端
-        只往 - 方向纠：yaw 低于目标时它只等不纠（那个方向和身体自己的 + 向
-        回转同向，越纠越远，07-31 两次甩到 +30° 都是这么起头的）。所以真正靠
-        3️⃣ 的过打量把落点摆在目标的 + 侧，这里只负责收掉多出来的那部分。
+        判据用 3 帧中位数（防单帧污染），纠偏由服务器闭环做。抬手状态下也
+        按当前实测误差双向纠偏：yaw 高于或低于目标都会立即发送对应方向的
+        转身指令，不再等待自然回转。
         另有单杆 ≤5°、累计 ≤30°，以及拟合点数、偏差上限（±24°）、运控无响应
         三道闸（见 adapters/reach.py）。
         """
@@ -2197,7 +2200,7 @@ class SwitchFlow:
         required = max(
             2,
             math.ceil(
-                self.WAIST_STABLE_WINDOW_S / self.WAIST_STABLE_SAMPLE_GAP_S
+                self.stable_window_s / self.WAIST_STABLE_SAMPLE_GAP_S
             ) + 1,
         )
         waist_samples: deque[list[float]] = deque(maxlen=required)
@@ -2207,7 +2210,7 @@ class SwitchFlow:
         last_waist_range_deg: float | None = None
         last_imu_range_deg: float | None = None
         self._log(
-            f"等待机器人稳定：连续 {self.WAIST_STABLE_WINDOW_S:g}s "
+            f"等待机器人稳定：连续 {self.stable_window_s:g}s "
             f"腰关节摆幅 ≤{self.stable_waist_range_deg:g}°，"
             f"IMU摆幅 ≤{self.stable_imu_range_deg:g}°"
         )
@@ -2267,7 +2270,7 @@ class SwitchFlow:
                     and last_imu_range_deg <= self.stable_imu_range_deg
                 ):
                     self._log(
-                        f"机器人已稳定（{self.WAIST_STABLE_WINDOW_S:g}s："
+                        f"机器人已稳定（{self.stable_window_s:g}s："
                         f"腰关节最大摆幅 {last_waist_range_deg:.3f}°，"
                         f"IMU最大摆幅 {last_imu_range_deg:.3f}°），开始取点"
                     )
@@ -2371,9 +2374,16 @@ class SwitchFlow:
         self, attempt: int, round_no: int = 1
     ) -> tuple[dict | None, str]:
         """拍帧 → 算法找点 → 人工微调 → 18001 确认。返回 (picked, 错误)。"""
-        cap = self.pointcloud.capture()
+        use_pink = self._uses_pink_main_motion()
+        cap = self.pointcloud.capture(bind_pink_world=use_pink)
         if not cap.get("ok"):
             return None, f"拍帧失败: {cap.get('error')}"
+        if use_pink:
+            binding = (cap.get("source") or {}).get("pink_pick_world_frame") or {}
+            self._log(
+                f"RGB-D 冻结帧 {cap['capture_id']} 已同步绑定 PINK 世界姿态"
+                f"（锚定序号 {binding.get('anchor_count')}）"
+            )
         tgt = self.pointcloud.auto_target(cap["capture_id"])
         if not tgt.get("ok"):
             return None, f"算法找点失败: {tgt.get('error')}"
@@ -2479,6 +2489,7 @@ class SwitchFlow:
             "model_version": tgt.get("model_version"),
             "target_point_slot": tgt.get("target_point_slot"),
             "matched_detection_name": name or None,
+            "require_capture_world_frame": use_pink,
         })
         if not res.get("ok"):
             return None, f"18001 确认目标失败: {res.get('error')}"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 
 import numpy as np
 from fastapi.responses import JSONResponse, Response
@@ -12,13 +13,25 @@ from .state import router, state
 
 
 @router.get("/rgbd_snapshot")
-def reach_rgbd_snapshot(include_robot_pose: bool = False):
+def reach_rgbd_snapshot(
+    include_robot_pose: bool = False,
+    pick_capture_id: str | None = None,
+):
     """Return one ZMQ message as a compressed NPZ payload.
 
     The JPEG and aligned depth are copied from the same subscriber update.
-    This endpoint is intentionally read-only and is available in camera-only
-    mode before hand-eye calibration exists.
+    It is available in camera-only mode before hand-eye calibration exists.
+    When ``pick_capture_id`` is supplied and PINK is available, the same
+    snapshot operation also stores the current ``world_T_root`` under that
+    7005 capture id, before any point-cloud inference starts.
     """
+    if pick_capture_id is not None:
+        pick_capture_id = str(pick_capture_id)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", pick_capture_id):
+            return JSONResponse(
+                {"ok": False, "error": "pick_capture_id 格式非法"},
+                status_code=400,
+            )
     snapshot_reader = getattr(state.camera, "rgbd_snapshot", None)
     if snapshot_reader is None:
         return JSONResponse(
@@ -45,6 +58,31 @@ def reach_rgbd_snapshot(include_robot_pose: bool = False):
     metadata["handeye_ready"] = bool(state.handeye_ready)
     if include_robot_pose:
         metadata["robot_pose"] = pose
+    if pick_capture_id is not None:
+        binding = {
+            "capture_id": pick_capture_id,
+            "source_frame_id": str(metadata.get("frame_id") or ""),
+            "bound": False,
+        }
+        runtime = state.pink_runtime
+        if runtime is None:
+            binding["error"] = "PINK 运行时不可用"
+        else:
+            try:
+                world_root = runtime.capture_pick_frame(
+                    capture_id=pick_capture_id,
+                    source_frame_id=binding["source_frame_id"],
+                )
+                if world_root is None:
+                    binding["error"] = "PINK 世界系尚未锚定"
+                else:
+                    binding.update({
+                        "bound": True,
+                        "anchor_count": runtime.pick_world_frame_anchor,
+                    })
+            except Exception as exc:
+                binding["error"] = str(exc)
+        metadata["pink_pick_world_frame"] = binding
     payload = io.BytesIO()
     np.savez_compressed(
         payload,

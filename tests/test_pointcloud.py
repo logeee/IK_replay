@@ -942,6 +942,7 @@ class ReachPointCloudConfirmationTest(unittest.TestCase):
             "enabled", "T_cam2root", "T_cam2torso", "collision_checker",
             "plane", "pick_target_torso", "pick_target_root", "pick_pixel",
             "pick_torso", "pick_context", "pick_revision", "torso_diag",
+            "pink_runtime",
         ]
         saved = {name: getattr(state, name) for name in attributes}
         try:
@@ -954,6 +955,8 @@ class ReachPointCloudConfirmationTest(unittest.TestCase):
             state.T_cam2torso = transform
             state.collision_checker = None
             state.pick_revision = 7
+            state.pink_runtime = mock.Mock()
+            state.pink_runtime.pick_frame_matches.return_value = True
             with mock.patch.object(perception, "_read_torso", return_value=None):
                 result = perception.confirm_pointcloud_pick({
                     "p_camera_surface": [0.1, 0.2, 1.0],
@@ -961,6 +964,8 @@ class ReachPointCloudConfirmationTest(unittest.TestCase):
                     "adjustment_camera_m": [0.001, -0.002, 0.003],
                     "approach_offset_m": 0.01,
                     "source_frame_id": "frame-1",
+                    "capture_id": "capture-1",
+                    "require_capture_world_frame": True,
                     "selection_source": "target-finder/0.2.0-s",
                     "model_version": "0.2.0-s",
                     "target_point_slot": 3,
@@ -980,6 +985,11 @@ class ReachPointCloudConfirmationTest(unittest.TestCase):
             self.assertEqual(result["revision"], 8)
             np.testing.assert_allclose(result["p_root"], [0.99, 0.1, 0.2])
             self.assertEqual(result["selection_mode"], "frozen_rgbd_pointcloud")
+            self.assertEqual(result["pink_world_binding"], "rgbd_capture")
+            state.pink_runtime.pick_frame_matches.assert_called_once_with(
+                "capture-1"
+            )
+            state.pink_runtime.capture_pick_frame.assert_not_called()
             self.assertEqual(result["pixel"], [320, 240])
             self.assertEqual(result["plane"]["source"], "frozen_rgbd")
             np.testing.assert_allclose(
@@ -1014,6 +1024,40 @@ class ReachPointCloudConfirmationTest(unittest.TestCase):
             self.assertEqual(latest["selection_source"], "target-finder/0.2.0-s")
             np.testing.assert_allclose(latest["p_root"], result["p_root"])
             np.testing.assert_allclose(latest["p_torso"], result["p_torso"])
+        finally:
+            for name, value in saved.items():
+                setattr(state, name, value)
+
+    def test_confirm_rejects_mismatched_capture_world_pose_without_mutation(self):
+        state = perception.state
+        attributes = [
+            "enabled", "T_cam2root", "T_cam2torso", "collision_checker",
+            "pick_target_root", "pick_target_torso", "pink_runtime",
+        ]
+        saved = {name: getattr(state, name) for name in attributes}
+        try:
+            state.enabled = True
+            state.T_cam2root = np.eye(4)
+            state.T_cam2torso = np.eye(4)
+            state.collision_checker = None
+            state.pick_target_root = [9.0, 9.0, 9.0]
+            state.pick_target_torso = [8.0, 8.0, 8.0]
+            state.pink_runtime = mock.Mock()
+            state.pink_runtime.pick_frame_matches.return_value = False
+
+            response = perception.confirm_pointcloud_pick({
+                "p_camera_surface": [0.1, 0.2, 1.0],
+                "approach_offset_m": 0.0,
+                "source_frame_id": "frame-new",
+                "capture_id": "capture-new",
+                "require_capture_world_frame": True,
+            })
+
+            self.assertEqual(response.status_code, 409)
+            self.assertIn("capture_id 不匹配", json.loads(response.body)["error"])
+            self.assertEqual(state.pick_target_root, [9.0, 9.0, 9.0])
+            self.assertEqual(state.pick_target_torso, [8.0, 8.0, 8.0])
+            state.pink_runtime.capture_pick_frame.assert_not_called()
         finally:
             for name, value in saved.items():
                 setattr(state, name, value)

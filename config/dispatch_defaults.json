@@ -91,19 +91,20 @@
       "fist_pose": "L-握拳起收",
       "prepare_pose": "L-预备抓取",
       "grasp_pose": "L-完全捏住",
-      "distance_min_m": 0.35,
-      "distance_max_m": 0.5,
+      "distance_min_m": 0.34,
+      "distance_max_m": 0.54,
       "distance_step_m": 0.01,
       "sequence_name_by_direction": {
         "ltr": "L-{distance:.2f}-左到右起手式",
         "rtl": "L-{distance:.2f}-右到左起手式"
       },
-      "main_motion_backend": "legacy_timed",
+      "main_motion_backend": "pink",
       "sequence_motion_backend": "legacy",
       "opening_joint_speed_rad_s": 1.0,
       "reverse_joint_speed_rad_s": 1.0,
-      "stable_waist_range_deg": 0.05,
-      "stable_imu_range_deg": 0.05,
+      "stable_window_s": 0.25,
+      "stable_waist_range_deg": 0.2,
+      "stable_imu_range_deg": 0.2,
       "target_duration_s": 6.0,
       "target_max_speed_rad_s": 0.4,
       "hand_duration_ms": 500,
@@ -234,11 +235,19 @@
           }
         },
         {
+          "distance_m": 0.43,
+          "offset_mm": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 50.0
+          }
+        },
+        {
           "distance_m": 0.48,
           "offset_mm": {
-            "x": 15.0,
-            "y": 10.0,
-            "z": 35.0
+            "x": 0.0,
+            "y": 0.0,
+            "z": 50.0
           }
         }
       ]
@@ -250,25 +259,25 @@
         {
           "distance_m": 0.42,
           "offset_mm": {
-            "x": 20.0,
-            "y": 20.0,
-            "z": 45.0
+            "x": 28.0,
+            "y": 8.0,
+            "z": 43.0
           }
         },
         {
           "distance_m": 0.46,
           "offset_mm": {
             "x": 30.0,
-            "y": 20.0,
-            "z": 30.0
+            "y": 8.0,
+            "z": 48.0
           }
         },
         {
           "distance_m": 0.48,
           "offset_mm": {
-            "x": 40.0,
-            "y": 10.0,
-            "z": 30.0
+            "x": 35.0,
+            "y": 8.0,
+            "z": 50.0
           }
         }
       ]

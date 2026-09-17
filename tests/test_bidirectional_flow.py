@@ -91,8 +91,8 @@ class FlipIntentTests(unittest.TestCase):
             "fist_pose": "L-握拳起收",
             "prepare_pose": "L-预备抓取",
             "grasp_pose": "L-完全捏住",
-            "distance_min_m": 0.35,
-            "distance_max_m": 0.50,
+            "distance_min_m": 0.34,
+            "distance_max_m": 0.54,
             "distance_step_m": 0.01,
             "sequence_name_by_direction": {
                 "ltr": "L-{distance:.2f}-左到右起手式",
@@ -117,6 +117,13 @@ class FlipIntentTests(unittest.TestCase):
         client.sequences.return_value = {
             "sequences": [
                 {
+                    "name": "L-0.34-左到右起手式",
+                    "arm": "left_arm",
+                    "file": "ltr-034.json",
+                    "waypoints": ["L-start_20260917_000000.json",
+                                  "L-ltr-034-end_20260917_000001.json"],
+                },
+                {
                     "name": "L-0.42-左到右起手式",
                     "arm": "left_arm",
                     "file": "ltr.json",
@@ -129,6 +136,13 @@ class FlipIntentTests(unittest.TestCase):
                     "file": "rtl.json",
                     "waypoints": ["L-start_20260917_000000.json",
                                   "L-rtl-end_20260917_000001.json"],
+                },
+                {
+                    "name": "L-0.54-左到右起手式",
+                    "arm": "left_arm",
+                    "file": "ltr-054.json",
+                    "waypoints": ["L-start_20260917_000000.json",
+                                  "L-ltr-054-end_20260917_000001.json"],
                 },
             ]
         }
@@ -155,9 +169,15 @@ class FlipIntentTests(unittest.TestCase):
         self.assertEqual(ltr.push_force_n, 10.0)
         self.assertEqual(rtl.push_force_n, 10.0)
         client.sequences.assert_called_with(scope="all")
+        self.assertEqual(
+            ltr._choose_xiaoshan_sequence(0.34)["min_distance_m"], 0.34
+        )
+        self.assertEqual(
+            ltr._choose_xiaoshan_sequence(0.54)["min_distance_m"], 0.54
+        )
 
-        with self.assertRaisesRegex(FlowError, "0.35~0.50"):
-            ltr._choose_xiaoshan_sequence(0.51)
+        with self.assertRaisesRegex(FlowError, "0.34~0.54"):
+            ltr._choose_xiaoshan_sequence(0.55)
 
     def test_xiaoshan_sequence_uses_forward_and_reverse_speeds(self):
         client = mock.Mock()
@@ -341,8 +361,56 @@ class FlipIntentTests(unittest.TestCase):
         self.assertEqual(result, expected)
         self.assertEqual(events, ["stable", "anchor", "7005"])
 
+    def test_xiaoshan_pink_binds_capture_world_frame_and_requires_it_on_confirm(self):
+        pointcloud = mock.Mock()
+        pointcloud.capture.return_value = {
+            "ok": True,
+            "capture_id": "capture-pink",
+            "source": {
+                "pink_pick_world_frame": {
+                    "bound": True,
+                    "capture_id": "capture-pink",
+                    "anchor_count": 9,
+                }
+            },
+        }
+        cfg = self._xiaoshan_config()
+        cfg["main_motion_backend"] = "pink"
+        flow = SwitchFlow(
+            client=mock.Mock(), pointcloud=pointcloud, arm="left_arm",
+            site="factory", flip_kind="close_to_remote",
+            workflow_mode="xiaoshan_expo_v1", xiaoshan_config=cfg,
+        )
+        pointcloud.auto_target.return_value = {
+            "ok": True,
+            "matched_detection_name": flow.flip_from,
+            "target_point_slot": 1,
+            "panel_center_wall_m": [0.0, 0.0, 0.0],
+            "target_wall_m": [0.01, 0.02, 0.03],
+            "target_camera_m": [0.1, 0.2, 1.0],
+            "wall_axes_camera": [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+        }
+        pointcloud.confirm.return_value = {
+            "ok": True,
+            "p_root": [0.1, 0.2, 1.0],
+        }
+        flow._log = mock.Mock()
+
+        picked, error = flow._pointcloud_pick_once(1)
+
+        self.assertEqual(error, "")
+        self.assertIsNotNone(picked)
+        pointcloud.capture.assert_called_once_with(bind_pink_world=True)
+        confirm_body = pointcloud.confirm.call_args.args[1]
+        self.assertTrue(confirm_body["require_capture_world_frame"])
+
     def test_xiaoshan_stability_ranges_come_from_config(self):
         cfg = self._xiaoshan_config()
+        cfg["stable_window_s"] = 2.75
         cfg["stable_waist_range_deg"] = 0.12
         cfg["stable_imu_range_deg"] = 0.25
         flow = SwitchFlow(
@@ -351,8 +419,32 @@ class FlipIntentTests(unittest.TestCase):
             xiaoshan_config=cfg,
         )
 
+        self.assertEqual(flow.stable_window_s, 2.75)
         self.assertEqual(flow.stable_waist_range_deg, 0.12)
         self.assertEqual(flow.stable_imu_range_deg, 0.25)
+
+    def test_xiaoshan_stability_window_controls_sample_count(self):
+        client = mock.Mock()
+        client.torso.return_value = {
+            "ok": True,
+            "waist_names": ["waist_yaw", "waist_roll", "waist_pitch"],
+            "waist_rad": [0.1, -0.05, 0.02],
+            "imu_rpy": [0.01, -0.02, 0.03],
+        }
+        cfg = self._xiaoshan_config()
+        cfg["stable_window_s"] = 0.5
+        flow = SwitchFlow(
+            client=client, arm="left_arm", site="factory",
+            flip_kind="close_to_remote", workflow_mode="xiaoshan_expo_v1",
+            xiaoshan_config=cfg,
+        )
+        flow._log = mock.Mock()
+
+        with mock.patch("api.flow.time.sleep"):
+            flow._wait_robot_stable()
+
+        # 0.25 s 采样间隔，0.5 s 窗口需要首尾共 3 帧。
+        self.assertEqual(client.torso.call_count, 3)
 
     def test_carousel_yolo_selects_first_direction_from_current_side(self):
         for scene, expected_kind, expected_direction in (

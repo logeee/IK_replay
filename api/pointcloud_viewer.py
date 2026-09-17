@@ -186,9 +186,18 @@ def capture_progress(operation_id: str):
 
 
 def _fetch_rgbd_snapshot(timeout_s: float = 15.0, arm: str | None = None,
-                         *, include_robot_pose: bool = False) -> dict[str, Any]:
+                         *, include_robot_pose: bool = False,
+                         pick_capture_id: str | None = None) -> dict[str, Any]:
+    query = []
+    if include_robot_pose:
+        query.append("include_robot_pose=true")
+    if pick_capture_id is not None:
+        query.append(f"pick_capture_id={pick_capture_id}")
+    url = _reach_url("rgbd_snapshot", arm)
+    if query:
+        url += "?" + "&".join(query)
     response = _http.get(
-        _reach_url("rgbd_snapshot", arm) + ("?include_robot_pose=true" if include_robot_pose else ""),
+        url,
         timeout=(3.0, timeout_s),
     )
     try:
@@ -567,9 +576,14 @@ def _capture(body: dict | None = None, *, recording: bool = False):
         conf = float(body.get("conf", _default_conf))
         if not 0.01 <= conf <= 1.0:
             raise ValueError("conf 必须在 0.01~1.0")
+        bind_pink_world = bool(body.get("bind_pink_world", False))
     except (TypeError, ValueError) as exc:
         return JSONResponse({"ok": False, "error": f"参数非法: {exc}"}, status_code=400)
 
+    # 在请求 RGB-D 之前就分配编号，让 18001 能在取出该帧的同一
+    # 接口内把 world_T_root 与这个 capture_id 绑定。YOLO/点云计算再慢
+    # 也不会把“确认时刻”的身体姿态当成“拍摄时刻”。
+    capture_id = uuid.uuid4().hex
     started = time.perf_counter()
     timings: dict[str, float] = {}
     _set_capture_progress(operation_id, 1, "1/7 获取并对齐同帧 RGB-D…")
@@ -580,7 +594,12 @@ def _capture(body: dict | None = None, *, recording: bool = False):
             if snapshot["metadata"].get("robot_pose", {}).get("arm") != arm:
                 raise ValueError("18001 未返回对应手臂的采集位姿，请更新服务")
         else:
-            snapshot = _fetch_rgbd_snapshot(arm=arm) if arm else _fetch_rgbd_snapshot()
+            fetch_kwargs: dict[str, Any] = {}
+            if arm:
+                fetch_kwargs["arm"] = arm
+            if bind_pink_world:
+                fetch_kwargs["pick_capture_id"] = capture_id
+            snapshot = _fetch_rgbd_snapshot(**fetch_kwargs)
     except Exception as exc:
         _set_capture_progress(
             operation_id, 1, f"1/7 RGB-D 获取失败：{exc}", done=True, error=True
@@ -589,6 +608,21 @@ def _capture(body: dict | None = None, *, recording: bool = False):
             {"ok": False, "error": f"无法从 reach_server 获取同帧 RGB-D: {exc}"},
             status_code=502,
         )
+    if bind_pink_world:
+        binding = snapshot["metadata"].get("pink_pick_world_frame") or {}
+        if not binding.get("bound") or binding.get("capture_id") != capture_id:
+            detail = binding.get("error") or "18001 未返回拍摄时世界姿态"
+            _set_capture_progress(
+                operation_id,
+                1,
+                f"1/7 RGB-D 已获取，但 PINK 世界姿态绑定失败：{detail}",
+                done=True,
+                error=True,
+            )
+            return JSONResponse(
+                {"ok": False, "error": f"RGB-D 拍摄时世界姿态绑定失败: {detail}"},
+                status_code=502,
+            )
     timings["rgbd"] = round((time.perf_counter() - stage_started) * 1000.0, 1)
     _set_capture_progress(
         operation_id,
@@ -692,7 +726,6 @@ def _capture(body: dict | None = None, *, recording: bool = False):
         )
     timings["encode"] = round((time.perf_counter() - stage_started) * 1000.0, 1)
 
-    capture_id = uuid.uuid4().hex
     class_counts = {
         str(int(cls)): int(np.count_nonzero(cloud.class_ids == cls))
         for cls in np.unique(cloud.class_ids)
@@ -1550,6 +1583,11 @@ def confirm_pointcloud_target(capture_id: str, body: dict):
                 "frame_id"
             ),
             "capture_id": capture_id,
+            # PINK 主轨迹要求 18001 必须复用 RGB-D 冻结时已经
+            # 与该 capture_id 绑定的 world_T_root，禁止确认时重采。
+            "require_capture_world_frame": bool(
+                body.get("require_capture_world_frame", False)
+            ),
         }
         selection_source = str(body.get("selection_source") or "manual")
         model_version = body.get("model_version")

@@ -549,18 +549,11 @@ ALIGN_DEADBAND_DEG = 1.5         # 只在抬手时放宽到这个死区：抬手
                                  # 服务器停在带边缘 1.46°，流程独立复测量出 1.57°）
 ALIGN_ARMUP_MAX_HOLD_S = 1.5     # 抬手时单杆上限（≈5°），杜绝 22° 的整体转身
 
-# 抬手后的扰动是单向的：手臂前伸，身体自己往 + 方向转（07-31 十几次记录无一例外，
-# 幅度 +3.5~+9.9°，而且我们每下发一杆它还会跟着晃 ~1.5°/s 好几秒）。于是：
-#   ① 只许往 - 方向纠（对抗扰动）。需要往 + 转时一律不动——那是在和扰动同向
-#      叠加，15:34/15:35 两次把机器人甩到 +30°，起手都是那一杆"往 + 转 2.6°"；
-#      yaw 低于目标时干脆等着，自然回转本来就会把它带上来。
-#   ② 既然只往一个方向纠，打过头也不怕（自然回转会填回来），所以可以放心
-#      从第一杆使用提速档，但仍限制单杆角度和累计转身预算。
-ALIGN_ARMUP_ONE_WAY = True
-ALIGN_ARMUP_WAIT_S = 1.5         # yaw 低于目标时每次等多久再复测
-ALIGN_ARMUP_WAIT_MAX = 3         # 等这么多次还没被自然回转带进带里就收工
+# 抬手后也按当前 yaw 误差做双向纠偏：正误差往 - 方向纠，
+# 负误差往 + 方向纠。不再等待身体“自然回转”。旧日志曾显示
+# 误差变大时自动反号会在过冲后选错方向，因此抬手状态仍禁用反号
+# 兜底，每一杆都直接依据当前实测误差决定方向。
 ALIGN_ARMUP_START_BOOST = True   # 抬手后普通 6°/s 无法对抗配平，第一杆直接 20°/s
-ALIGN_ARMUP_ESCALATE_STEP = 3    # 打到第几杆还没进带 → 切提速档加大力度
 ALIGN_ARMUP_BUDGET_DEG = 30.0    # 抬手时累计转身预算（要够纠 24° 上限内的漂移），
                                  # 超了停手报错，杜绝上午那种连转 130° 的空转。
                                  # 按"实测转过的角度"扣，不按预计角——14:39 那轮
@@ -586,9 +579,10 @@ def _align_loop_hold(tol: float, dmin: float, dmax: float,
     与旧版（定长 0.5°/2° 脉冲逐步磨）的区别：时长连续可变、带死区补偿，
     正常情况 2~3 杆收敛。方向约定与旧版相同（yaw_err>0 → 左转），同样保留
     "偏差变大就反号"的兜底。target ≠ 0 时对到指定角度而非 0。
-    抬手状态下改成单向纠偏：只往 - 方向打，yaw 低于目标时只等不纠（见
-    ALIGN_ARMUP_ONE_WAY），第一杆直接使用 20°/s 提速档；小于 1.2° 的残差仍
-    使用 3°/s 慢杆收尾。未抬手时若大杆不响应，也会从 6°/s 自动提到 20°/s。
+    抬手状态下同样按实测误差做双向纠偏，不再等自然回转；但为避免
+    过冲后误反号，抬手时禁用方向反号兜底。第一杆直接使用 20°/s 提速档；
+    小于 1.2° 的残差仍使用 3°/s 慢杆收尾。未抬手时若大杆不响应，
+    也会从 6°/s 自动提到 20°/s。
     提速档单杆预计角仍卡在 5° 内，提速后还不动才判运控未响应。
     逐步日志写 align_<日期>.jsonl，mode=hold。
     """
@@ -603,12 +597,10 @@ def _align_loop_hold(tol: float, dmin: float, dmax: float,
     prev_yaw: float | None = None
     stall = 0             # 连续"下发大杆但没动"的次数
     turned_deg = 0.0      # 累计转身量，按实测逐步累加
-    one_way = armup and ALIGN_ARMUP_ONE_WAY   # 抬手时只许往 - 方向纠
     boost = bool(armup and ALIGN_ARMUP_START_BOOST)
-    waited = 0            # 单向模式下"低于目标只能干等"的次数
     _align_log({"event": "start", "mode": "hold", "tol_deg": tol,
                 "tol_eff_deg": tol_eff, "target_deg": target, "armup": armup,
-                "boost": boost, "err_cap_deg": err_cap,
+                "boost": boost, "bidirectional": True, "err_cap_deg": err_cap,
                 "dmin": dmin, "dmax": dmax})
     try:
         for step in range(1, HOLD_ALIGN_MAX_STEPS + 1):
@@ -662,8 +654,7 @@ def _align_loop_hold(tol: float, dmin: float, dmax: float,
             if prev_yaw is not None:
                 moved = abs(yaw - prev_yaw)
                 if prev_expect != 0.0:
-                    # 预算按实测扣：没兑现的杆不该占额度；而单向模式下"只等不纠"
-                    # 那几轮的自然回转不是我们转的，也不该占
+                    # 预算按实测扣：没兑现的杆不该占额度。
                     turned_deg += moved
                 if abs(prev_expect) >= ALIGN_STALL_MIN_EXPECT_DEG:
                     if moved < ALIGN_STALL_RATIO * abs(prev_expect):
@@ -691,44 +682,11 @@ def _align_loop_hold(tol: float, dmin: float, dmax: float,
                         stall = 0
             prev_yaw = yaw
 
-            # 单向闸：yaw 低于目标时不许往 + 转，等自然回转把它带上来
-            if one_way and err < 0:
-                waited += 1
-                _align_log({"event": "one_way_wait", "mode": "hold", "step": step,
-                            "yaw_err_deg": round(yaw, 3), "err_deg": round(err, 3),
-                            "count": waited})
-                if waited >= ALIGN_ARMUP_WAIT_MAX:
-                    state.align_message = (
-                        f"yaw {yaw:+.2f}° 低于目标 {target:+.1f}° 且等不来自然回转"
-                        f"（等了 {waited} 次）。抬手状态下不做正向纠偏——那与身体"
-                        f"自己的 + 向回转同向，会越纠越远")
-                    _align_log({"event": "one_way_giveup", "mode": "hold",
-                                "step": step, "yaw_err_deg": round(yaw, 3)})
-                    return
-                state.align_message = (
-                    f"第 {step} 步：yaw {yaw:+.2f}° 低于目标 {target:+.1f}°，"
-                    f"抬手时不反向纠偏，等自然回转（第 {waited}/"
-                    f"{ALIGN_ARMUP_WAIT_MAX} 次）")
-                prev_expect = 0.0      # 没下发，不参与无响应/反号判定
-                if state.align_cancel.wait(ALIGN_ARMUP_WAIT_S):
-                    state.align_message = "已中止"
-                    _align_log({"event": "cancelled", "mode": "hold", "step": step})
-                    return
-                continue
-
-            # 兼容关闭 START_BOOST 的配置：久纠不进后再加大力度。
-            if one_way and not boost and step >= ALIGN_ARMUP_ESCALATE_STEP:
-                boost = True
-                _align_log({"event": "boost_on", "mode": "hold", "step": step,
-                            "reason": "escalate",
-                            "cmd_deg_s": HOLD_ALIGN_BOOST_CMD_DEG_S})
-
             # 反号兜底只信"大杆"的结果：短杆/小脉冲的响应本身随机，
             # 偏差涨一点不代表方向错（第 4 轮真机就是被这个误触发震荡的）。
-            # 单向模式下方向是钉死的，这条兜底本身就没有意义——而且 07-31
-            # 15:34/15:35 两次正是被它误触发：偏差"变大"其实是冲过头（误差
-            # 从负变正），方向压根没错，一反号就朝错误方向又打一杆。
-            if (not one_way and prev_err is not None
+            # 抬手时不使用这条兜底：07-31 15:34/15:35 两次曾在过冲后
+            # 误反号。抬手时每一杆都直接按当前误差选方向。
+            if (not armup and prev_err is not None
                     and abs(err) > abs(prev_err) + 0.3
                     and abs(prev_expect) >= HOLD_ALIGN_FLIP_MIN_DEG):
                 sign = -sign

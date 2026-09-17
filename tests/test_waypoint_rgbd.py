@@ -179,5 +179,30 @@ def test_plain_rgbd_snapshot_still_works_without_robot_state(context):
     assert context.reads == [False]
 
 
+def test_rgbd_snapshot_binds_pink_world_pose_to_capture_id(context):
+    calls = []
+    runtime = SimpleNamespace(pick_world_frame_anchor=12)
+    runtime.capture_pick_frame = lambda **kwargs: (
+        calls.append(kwargs) or np.eye(4)
+    )
+    context.s.pink_runtime = runtime
+
+    response = source.reach_rgbd_snapshot(pick_capture_id="capture_12345678")
+
+    assert response.status_code == 200
+    with np.load(io.BytesIO(response.body), allow_pickle=False) as archive:
+        metadata = json.loads(archive["metadata_json"].tobytes())
+    assert calls == [{
+        "capture_id": "capture_12345678",
+        "source_frame_id": "record-frame",
+    }]
+    assert metadata["pink_pick_world_frame"] == {
+        "capture_id": "capture_12345678",
+        "source_frame_id": "record-frame",
+        "bound": True,
+        "anchor_count": 12,
+    }
+
+
 def test_7005_rejects_unscoped_recording():
     assert pc.recording_capture({}).status_code == 400
